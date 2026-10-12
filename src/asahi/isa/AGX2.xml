@@ -38,6 +38,11 @@
   <define modifier="waitgroup" bit="30" kind="group"/>
   <define modifier="coherency" bit="44:45" kind="coherent"/>
 
+  <!-- M3 (G15C) 96-bit bitfield insert: dst (reg+half+size32), src (imm-or-reg), shift, count -->
+  <define dest="m3bfi_d" kind="m3bfi_dst" bit="68 24 25:29"/>
+  <define src="m3bfi_s" kind="m3bfi_src" bit="59:66 71 83"/>
+  <define src="m3bfi_t" kind="m3bfi_t" bit="41:46"/>
+
   <enum kind="hint" name="Register hint">
     <value value="1" default="true">none</value>
     <value value="2" display="$">cache</value>
@@ -712,6 +717,30 @@
     </case>
   </encoding>
 
+  <!-- M3 (G15C) bfi operands: dst is a reg (half+reg) with a size32 bit; src is an
+       8-bit immediate OR a 5-bit register (selected by two mode bits); the shift is
+       a raw number (the register number, stored << 1). -->
+  <encoding name="m3bfi_dst">
+    <modifier name="size32" bit="0"/>
+    <immediate name="reg" bit="1:6"/>
+  </encoding>
+
+  <encoding name="m3bfi_src">
+    <case>
+      <zero bit="8:9"/>
+      <immediate name="imm" bit="0:7"/>
+    </case>
+    <case>
+      <exact bit="8:9">11</exact>
+      <property name="size32"/>
+      <immediate name="reg" bit="1:5" shift="1"/>
+    </case>
+  </encoding>
+
+  <encoding name="m3bfi_t">
+    <immediate name="imm" bit="0:5"/>
+  </encoding>
+
   <enum kind="sr" name="Special registers">
     <value value="0">threadgroup_in_grid_x</value>
     <value value="1">threadgroup_in_grid_y</value>
@@ -977,6 +1006,18 @@
     <ins name="shrhi" opcode="101"/>
     <ins name="asr" opcode="011"/>
     <ins name="asrh" opcode="111"/>
+  </group>
+
+  <!-- M3 (G15C) 96-bit bitfield insert: a distinct opcode (byte0 0x27) from the
+       G13/G14 64-bit bfi, so it's a clean add — no chip-awareness needed. -->
+  <group name="M3 bfi" length="12">
+    <exact bit="0:2 5 18 20 22 33 76">111111111</exact>
+    <zero bit="3:4 6:17 19 21 23 30:32 34:40 47:49 53:58 67 69:70 72:75 77:82 84:95"/>
+    <m3bfi_d/>
+    <m3bfi_s/>
+    <m3bfi_t/>
+    <immediate name="count" bit="50:52"/>
+    <ins name="bfi_m3" display="bfi"/>
   </group>
 
   <ins name="ffma" length="6/8">
