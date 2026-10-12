@@ -659,7 +659,11 @@ agx_open_device(void *memctx, struct agx_device *dev)
       dev->libagx_programs = libagx_g13g;
    }
 
-   if (dev->params.gpu_generation >= 14 && dev->params.num_clusters_total > 1) {
+   if (dev->params.gpu_generation >= 15 && dev->params.num_clusters_total > 1) {
+      dev->chip = AGX_CHIP_G15X;
+   } else if (dev->params.gpu_generation >= 15) {
+      dev->chip = AGX_CHIP_G15G;
+   } else if (dev->params.gpu_generation >= 14 && dev->params.num_clusters_total > 1) {
       dev->chip = AGX_CHIP_G14X;
    } else if (dev->params.gpu_generation >= 14) {
       dev->chip = AGX_CHIP_G14G;
