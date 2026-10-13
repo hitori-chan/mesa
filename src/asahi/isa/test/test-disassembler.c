@@ -62,7 +62,7 @@ main(int argc, const char **argv)
          continue;
 
       /* Parse the hex */
-      uint8_t code[16];
+      uint8_t code[16] = {0};
       const char *cursor = line;
       const char *end = line + len;
       uint32_t i = 0;
