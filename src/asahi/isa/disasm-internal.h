@@ -202,9 +202,11 @@ _disassemble_instr(BITSET_WORD *code, FILE *fp, struct disasm_spec *specs,
       for (unsigned i = 0; i < ARRAY_SIZE(tmp); ++i) {
          masked[i] = tmp[i];
 
-         uint32_t bytes_left = (n - (i * 4));
-         if (bytes_left < 4) {
-            masked[i] &= ((1 << (bytes_left * 8)) - 1);
+         /* Clear everything past the end of the instruction */
+         if (n <= (i * 4)) {
+            masked[i] = 0;
+         } else if ((n - (i * 4)) < 4) {
+            masked[i] &= ((1 << ((n - (i * 4)) * 8)) - 1);
          }
 
          if ((masked[i] & spec->mask[i]) != spec->exact[i]) {
