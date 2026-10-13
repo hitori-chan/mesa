@@ -49,7 +49,7 @@ main(int argc, const char **argv)
       return 1;
    }
 
-   char line[128];
+   char line[512];
    unsigned nr_fail = 0, nr_pass = 0;
 
    while (fgets(line, sizeof(line), fp) != NULL) {
@@ -61,8 +61,10 @@ main(int argc, const char **argv)
       if (len <= 1)
          continue;
 
-      /* Parse the hex */
-      uint8_t code[16] = {0};
+      /* Parse the hex. Zero-pad to the longest instruction the disassembler
+       * reads, so nothing depends on stale bytes.
+       */
+      uint8_t code[32] = {0};
       const char *cursor = line;
       const char *end = line + len;
       uint32_t i = 0;
