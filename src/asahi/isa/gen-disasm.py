@@ -93,9 +93,9 @@ print_${k}(struct disasm_ctx *ctx, BITSET_WORD *orig, uint64_t v, bool source)
 % if case.kind is not None:
           .kind = KIND_${case.kind.name.upper()},
 % if case.kind.kind == 'signed':
-          .value = util_sign_extend(${extract_bits(case.kind)} << ${case.kind.shift}, ${case.kind.bits.size()}),
+          .value = util_sign_extend((${extract_bits(case.kind)}) << ${case.kind.shift}, ${case.kind.bits.size() + case.kind.shift}),
 % else:
-          .value = ${extract_bits(case.kind)} << ${case.kind.shift},
+          .value = (${extract_bits(case.kind)}) << ${case.kind.shift},
 % endif
 % endif
 % for mod in case.modifiers:
