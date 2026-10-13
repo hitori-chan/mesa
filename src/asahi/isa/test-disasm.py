@@ -5,12 +5,24 @@ import sys
 import os
 import textwrap
 import binascii
+import argparse
+import test.disasm
 from test.disasm import disasm
+
+parser = argparse.ArgumentParser()
+parser.add_argument('cases')
+parser.add_argument('--xml', help='ISA description (default: AGX2.xml)')
+parser.add_argument('-u', '--update', action='store_true',
+                    help='rewrite the cases with the current output')
+args = parser.parse_args()
+
+if args.xml:
+    test.disasm.select(args.xml)
 
 errors = False
 new_cases = []
 
-for case in open(sys.argv[1]).read().strip().split('\n'):
+for case in open(args.cases).read().strip().split('\n'):
     first = case.split(' ')[0]
     ref = case[len(first):].strip()
 
@@ -35,9 +47,8 @@ for case in open(sys.argv[1]).read().strip().split('\n'):
     errors |= error
 
 # If there were errors, optionally update expectations.
-if len(sys.argv) >= 3:
-    assert(sys.argv[2] in ['-u', '--update'])
-    open(sys.argv[1], 'w').write(''.join(new_cases))
+if args.update:
+    open(args.cases, 'w').write(''.join(new_cases))
 
 if errors:
     print('Fail.')
