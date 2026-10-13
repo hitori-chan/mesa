@@ -1,0 +1,3447 @@
+<!--
+ SPDX-License-Identifier: MIT
+
+ AGX3, the G15 (Apple M3) shader ISA. The encodings follow the M3
+ instruction descriptors of applegpu (Dougall Johnson and TellowKrinkle,
+ BSD-3-Clause, branch M3), from which this file was generated: the same
+ instructions and operand order, printed in Mesa's register syntax
+ ($ cache, ^ discard, dr/du for 64-bit pairs). Operands print in document
+ order (ordered="true").
+
+ applegpu's "unsure constants" (bits it expects set without knowing why)
+ are modifiers that print nothing when set and flag the instruction
+ otherwise; bits it decodes but does not print are "hidden" modifiers.
+-->
+<isa ordered="true">
+
+  <enum kind="wait" name="Wait for load groups (mask)">
+    <value value="0" default="true">none</value>
+    <value value="1">wait 0</value>
+    <value value="2">wait 1</value>
+    <value value="3">wait 01</value>
+    <value value="4">wait 2</value>
+    <value value="5">wait 02</value>
+    <value value="6">wait 12</value>
+    <value value="7">wait 012</value>
+    <value value="8">wait 3</value>
+    <value value="9">wait 03</value>
+    <value value="10">wait 13</value>
+    <value value="11">wait 013</value>
+    <value value="12">wait 23</value>
+    <value value="13">wait 023</value>
+    <value value="14">wait 123</value>
+    <value value="15">wait 0123</value>
+    <value value="16">wait 4</value>
+    <value value="17">wait 04</value>
+    <value value="18">wait 14</value>
+    <value value="19">wait 014</value>
+    <value value="20">wait 24</value>
+    <value value="21">wait 024</value>
+    <value value="22">wait 124</value>
+    <value value="23">wait 0124</value>
+    <value value="24">wait 34</value>
+    <value value="25">wait 034</value>
+    <value value="26">wait 134</value>
+    <value value="27">wait 0134</value>
+    <value value="28">wait 234</value>
+    <value value="29">wait 0234</value>
+    <value value="30">wait 1234</value>
+    <value value="31">wait 01234</value>
+    <value value="32">wait 5</value>
+    <value value="33">wait 05</value>
+    <value value="34">wait 15</value>
+    <value value="35">wait 015</value>
+    <value value="36">wait 25</value>
+    <value value="37">wait 025</value>
+    <value value="38">wait 125</value>
+    <value value="39">wait 0125</value>
+    <value value="40">wait 35</value>
+    <value value="41">wait 035</value>
+    <value value="42">wait 135</value>
+    <value value="43">wait 0135</value>
+    <value value="44">wait 235</value>
+    <value value="45">wait 0235</value>
+    <value value="46">wait 1235</value>
+    <value value="47">wait 01235</value>
+    <value value="48">wait 45</value>
+    <value value="49">wait 045</value>
+    <value value="50">wait 145</value>
+    <value value="51">wait 0145</value>
+    <value value="52">wait 245</value>
+    <value value="53">wait 0245</value>
+    <value value="54">wait 1245</value>
+    <value value="55">wait 01245</value>
+    <value value="56">wait 345</value>
+    <value value="57">wait 0345</value>
+    <value value="58">wait 1345</value>
+    <value value="59">wait 01345</value>
+    <value value="60">wait 2345</value>
+    <value value="61">wait 02345</value>
+    <value value="62">wait 12345</value>
+    <value value="63">wait 012345</value>
+  </enum>
+
+  <enum kind="wait_bare" name="Load groups to wait for (mask)">
+    <value value="0">none</value>
+    <value value="1">0</value>
+    <value value="2">1</value>
+    <value value="3">01</value>
+    <value value="4">2</value>
+    <value value="5">02</value>
+    <value value="6">12</value>
+    <value value="7">012</value>
+    <value value="8">3</value>
+    <value value="9">03</value>
+    <value value="10">13</value>
+    <value value="11">013</value>
+    <value value="12">23</value>
+    <value value="13">023</value>
+    <value value="14">123</value>
+    <value value="15">0123</value>
+    <value value="16">4</value>
+    <value value="17">04</value>
+    <value value="18">14</value>
+    <value value="19">014</value>
+    <value value="20">24</value>
+    <value value="21">024</value>
+    <value value="22">124</value>
+    <value value="23">0124</value>
+    <value value="24">34</value>
+    <value value="25">034</value>
+    <value value="26">134</value>
+    <value value="27">0134</value>
+    <value value="28">234</value>
+    <value value="29">0234</value>
+    <value value="30">1234</value>
+    <value value="31">01234</value>
+    <value value="32">5</value>
+    <value value="33">05</value>
+    <value value="34">15</value>
+    <value value="35">015</value>
+    <value value="36">25</value>
+    <value value="37">025</value>
+    <value value="38">125</value>
+    <value value="39">0125</value>
+    <value value="40">35</value>
+    <value value="41">035</value>
+    <value value="42">135</value>
+    <value value="43">0135</value>
+    <value value="44">235</value>
+    <value value="45">0235</value>
+    <value value="46">1235</value>
+    <value value="47">01235</value>
+    <value value="48">45</value>
+    <value value="49">045</value>
+    <value value="50">145</value>
+    <value value="51">0145</value>
+    <value value="52">245</value>
+    <value value="53">0245</value>
+    <value value="54">1245</value>
+    <value value="55">01245</value>
+    <value value="56">345</value>
+    <value value="57">0345</value>
+    <value value="58">1345</value>
+    <value value="59">01345</value>
+    <value value="60">2345</value>
+    <value value="61">02345</value>
+    <value value="62">12345</value>
+    <value value="63">012345</value>
+  </enum>
+
+  <enum kind="wait1" name="Wait for one load group">
+    <value value="0" default="true">none</value>
+    <value value="1">wait 0</value>
+    <value value="2">wait 1</value>
+    <value value="3">wait 2</value>
+    <value value="4">wait 3</value>
+    <value value="5">wait 4</value>
+    <value value="6">wait 5</value>
+  </enum>
+
+  <enum kind="sr" name="Special register">
+    <value value="0">sr0</value>
+    <value value="1">sr1 (core_id?)</value>
+    <value value="2">sr2 (thread_index_in_simdgroup)</value>
+    <value value="3">sr3 (thread_index_in_quadgroup?)</value>
+    <value value="4">sr4 (is_active_thread)</value>
+    <value value="5">sr5 (simdgroup_index_in_threadgroup)</value>
+    <value value="6">sr6</value>
+    <value value="7">sr7</value>
+    <value value="8">sr8</value>
+    <value value="9">sr9</value>
+    <value value="10">sr10</value>
+    <value value="11">sr11</value>
+    <value value="12">sr12</value>
+    <value value="13">sr13</value>
+    <value value="14">sr14</value>
+    <value value="15">sr15</value>
+    <value value="16">sr16</value>
+    <value value="17">sr17</value>
+    <value value="18">sr18</value>
+    <value value="19">sr19</value>
+    <value value="20">sr20 (active_thread_index_in_quadgroup)</value>
+    <value value="21">sr21 (active_thread_index_in_simdgroup)</value>
+    <value value="22">sr22 (num_active_threads_in_quadgroup?)</value>
+    <value value="23">sr23 (num_active_threads_in_simdgroup?)</value>
+    <value value="24">sr24 (threads_per_threadgroup.x)</value>
+    <value value="25">sr25 (threads_per_threadgroup.y)</value>
+    <value value="26">sr26 (threads_per_threadgroup.z)</value>
+    <value value="27">sr27</value>
+    <value value="28">sr28 (threadgroup_position_in_grid.x)</value>
+    <value value="29">sr29 (threadgroup_position_in_grid.y)</value>
+    <value value="30">sr30 (threadgroup_position_in_grid.z)</value>
+    <value value="31">sr31</value>
+    <value value="32">sr32 (thread_position_in_grid.x)</value>
+    <value value="33">sr33 (thread_position_in_grid.y)</value>
+    <value value="34">sr34 (thread_position_in_grid.z)</value>
+    <value value="35">sr35</value>
+    <value value="36">sr36 (thread_position_in_threadgroup.x)</value>
+    <value value="37">sr37 (thread_position_in_threadgroup.y)</value>
+    <value value="38">sr38 (thread_position_in_threadgroup.z)</value>
+    <value value="39">sr39 (thread_index_in_threadgroup)</value>
+    <value value="40">sr40 (dispatch_threads_per_threadgroup.x)</value>
+    <value value="41">sr41 (dispatch_threads_per_threadgroup.y)</value>
+    <value value="42">sr42 (dispatch_threads_per_threadgroup.z)</value>
+    <value value="43">sr43</value>
+    <value value="44">sr44</value>
+    <value value="45">sr45</value>
+    <value value="46">sr46</value>
+    <value value="47">sr47</value>
+    <value value="48">sr48</value>
+    <value value="49">sr49</value>
+    <value value="50">sr50</value>
+    <value value="51">sr51</value>
+    <value value="52">sr52</value>
+    <value value="53">sr53</value>
+    <value value="54">sr54</value>
+    <value value="55">sr55</value>
+    <value value="56">sr56</value>
+    <value value="57">sr57</value>
+    <value value="58">sr58</value>
+    <value value="59">sr59</value>
+    <value value="60">sr60</value>
+    <value value="61">sr61</value>
+    <value value="62">sr62</value>
+    <value value="63">sr63</value>
+    <value value="64">sr64</value>
+    <value value="65">sr65</value>
+    <value value="66">sr66</value>
+    <value value="67">sr67</value>
+    <value value="68">sr68</value>
+    <value value="69">sr69</value>
+    <value value="70">sr70</value>
+    <value value="71">sr71</value>
+    <value value="72">sr72</value>
+    <value value="73">sr73</value>
+    <value value="74">sr74</value>
+    <value value="75">sr75</value>
+    <value value="76">sr76</value>
+    <value value="77">sr77</value>
+    <value value="78">sr78</value>
+    <value value="79">sr79</value>
+    <value value="80">sr80</value>
+    <value value="81">sr81</value>
+    <value value="82">sr82</value>
+    <value value="83">sr83</value>
+    <value value="84">sr84</value>
+    <value value="85">sr85</value>
+    <value value="86">sr86</value>
+    <value value="87">sr87</value>
+    <value value="88">sr88</value>
+    <value value="89">sr89</value>
+    <value value="90">sr90</value>
+    <value value="91">sr91</value>
+    <value value="92">sr92</value>
+    <value value="93">sr93</value>
+    <value value="94">sr94</value>
+    <value value="95">sr95</value>
+    <value value="96">sr96</value>
+    <value value="97">sr97</value>
+    <value value="98">sr98</value>
+    <value value="99">sr99</value>
+    <value value="100">sr100</value>
+    <value value="101">sr101</value>
+    <value value="102">sr102</value>
+    <value value="103">sr103</value>
+    <value value="104">sr104</value>
+    <value value="105">sr105</value>
+    <value value="106">sr106</value>
+    <value value="107">sr107</value>
+    <value value="108">sr108</value>
+    <value value="109">sr109</value>
+    <value value="110">sr110</value>
+    <value value="111">sr111</value>
+    <value value="112">sr112</value>
+    <value value="113">sr113</value>
+    <value value="114">sr114</value>
+    <value value="115">sr115</value>
+    <value value="116">sr116</value>
+    <value value="117">sr117</value>
+    <value value="118">sr118</value>
+    <value value="119">sr119</value>
+    <value value="120">sr120</value>
+    <value value="121">sr121</value>
+    <value value="122">sr122</value>
+    <value value="123">sr123</value>
+    <value value="124">sr124</value>
+    <value value="125">sr125</value>
+    <value value="126">sr126</value>
+    <value value="127">sr127</value>
+  </enum>
+
+  <enum kind="dst_vt" name="Destination t/v consistency">
+    <value value="1" default="true">none</value>
+    <value value="2" default="true">none</value>
+  </enum>
+
+  <enum kind="vgroup" name="Output group (variable-length)">
+    <value value="0" default="true">none</value>
+    <value value="1">group 1</value>
+    <value value="2">group 2</value>
+    <value value="3">group 3</value>
+    <value value="4">group 4</value>
+    <value value="5">group 5</value>
+    <value value="6">group 6</value>
+    <value value="7">group 7</value>
+    <value value="8" default="true">none</value>
+    <value value="9">group 1</value>
+    <value value="10">group 2</value>
+    <value value="11">group 3</value>
+    <value value="12">group 4</value>
+    <value value="13">group 5</value>
+    <value value="14">group 6</value>
+    <value value="15">group 7</value>
+    <value value="16" default="true">none</value>
+    <value value="17">group 1</value>
+    <value value="18">group 2</value>
+    <value value="19">group 3</value>
+    <value value="20">group 4</value>
+    <value value="21">group 5</value>
+    <value value="22">group 6</value>
+    <value value="23">group 7</value>
+    <value value="24">group 0</value>
+    <value value="25">group 1</value>
+    <value value="26">group 2</value>
+    <value value="27">group 3</value>
+    <value value="28">group 4</value>
+    <value value="29">group 5</value>
+    <value value="30">group 6</value>
+    <value value="31">group 7</value>
+    <value value="32">group 0</value>
+    <value value="33">group 1</value>
+    <value value="34">group 2</value>
+    <value value="35">group 3</value>
+    <value value="36">group 4</value>
+    <value value="37">group 5</value>
+    <value value="38">group 6</value>
+    <value value="39">group 7</value>
+    <value value="40">group 0</value>
+    <value value="41">group 1</value>
+    <value value="42">group 2</value>
+    <value value="43">group 3</value>
+    <value value="44">group 4</value>
+    <value value="45">group 5</value>
+    <value value="46">group 6</value>
+    <value value="47">group 7</value>
+    <value value="48">group 0</value>
+    <value value="49">group 1</value>
+    <value value="50">group 2</value>
+    <value value="51">group 3</value>
+    <value value="52">group 4</value>
+    <value value="53">group 5</value>
+    <value value="54">group 6</value>
+    <value value="55">group 7</value>
+    <value value="56">group 0</value>
+    <value value="57">group 1</value>
+    <value value="58">group 2</value>
+    <value value="59">group 3</value>
+    <value value="60">group 4</value>
+    <value value="61">group 5</value>
+    <value value="62">group 6</value>
+    <value value="63">group 7</value>
+  </enum>
+
+  <enum kind="expect1" name="Unknown, normally all set">
+    <value value="1" default="true">none</value>
+  </enum>
+
+  <enum kind="device_load_type" name="device_load type">
+    <value value="0">i16</value>
+    <value value="1">i32</value>
+    <value value="2">i8</value>
+    <value value="3">i32</value>
+  </enum>
+
+  <enum kind="device_load_mask" name="device_load mask">
+    <value value="0" default="true">none</value>
+    <value value="1">x</value>
+    <value value="2">yw</value>
+    <value value="3">xyw</value>
+    <value value="4">zw</value>
+    <value value="5">xzw</value>
+    <value value="6">yzw</value>
+    <value value="7">xyzw</value>
+    <value value="8">y</value>
+    <value value="9">xy</value>
+    <value value="10">z</value>
+    <value value="11">xz</value>
+    <value value="12">yz</value>
+    <value value="13">xyz</value>
+    <value value="14">w</value>
+    <value value="15">xw</value>
+  </enum>
+
+  <enum kind="memshift" name="Index shift">
+    <value value="0">lsl 4</value>
+    <value value="1" default="true">none</value>
+    <value value="2">lsl 1</value>
+    <value value="3">lsl 2</value>
+    <value value="4">lsl 3</value>
+    <value value="5">lsl 4</value>
+    <value value="6">lsl 5</value>
+    <value value="7">lsl 6</value>
+  </enum>
+
+  <enum kind="expect2" name="Unknown, normally all set">
+    <value value="3" default="true">none</value>
+  </enum>
+
+  <enum kind="device_store_type" name="device_store type">
+    <value value="0">i16</value>
+    <value value="1">i32</value>
+    <value value="2">i8</value>
+    <value value="3">i32</value>
+  </enum>
+
+  <enum kind="device_store_mask" name="device_store mask">
+    <value value="0" default="true">none</value>
+    <value value="1">x</value>
+    <value value="2">yw</value>
+    <value value="3">xyw</value>
+    <value value="4">zw</value>
+    <value value="5">xzw</value>
+    <value value="6">yzw</value>
+    <value value="7">xyzw</value>
+    <value value="8">y</value>
+    <value value="9">xy</value>
+    <value value="10">z</value>
+    <value value="11">xz</value>
+    <value value="12">yz</value>
+    <value value="13">xyz</value>
+    <value value="14">w</value>
+    <value value="15">xw</value>
+  </enum>
+
+  <enum kind="texture_sample_mask" name="texture_sample mask">
+    <value value="0">x</value>
+    <value value="1">y</value>
+    <value value="2">z</value>
+    <value value="3">w</value>
+    <value value="4">xw</value>
+    <value value="5">xy</value>
+    <value value="6">xyz</value>
+    <value value="7">xyzw</value>
+    <value value="8">xz</value>
+    <value value="9">yz</value>
+    <value value="10">yw</value>
+    <value value="11">zw</value>
+    <value value="12">xzw</value>
+    <value value="13">xyw</value>
+    <value value="14">yzw</value>
+    <value value="15" default="true">none</value>
+  </enum>
+
+  <enum kind="expect5" name="Unknown, normally all set">
+    <value value="31" default="true">none</value>
+  </enum>
+
+  <enum kind="texture_load_mask" name="texture_load mask">
+    <value value="0">x</value>
+    <value value="1">y</value>
+    <value value="2">z</value>
+    <value value="3">w</value>
+    <value value="4">xw</value>
+    <value value="5">xy</value>
+    <value value="6">xyz</value>
+    <value value="7">xyzw</value>
+    <value value="8">xz</value>
+    <value value="9">yz</value>
+    <value value="10">yw</value>
+    <value value="11">zw</value>
+    <value value="12">xzw</value>
+    <value value="13">xyw</value>
+    <value value="14">yzw</value>
+    <value value="15" default="true">none</value>
+  </enum>
+
+  <enum kind="expect4" name="Unknown, normally all set">
+    <value value="15" default="true">none</value>
+  </enum>
+
+  <enum kind="bitop_unary_op" name="bitop_unary op">
+    <value value="0">zero</value>
+    <value value="1">mov</value>
+    <value value="2">2</value>
+    <value value="3">3</value>
+    <value value="4">4</value>
+    <value value="5">mov5</value>
+    <value value="6">6</value>
+    <value value="7">7</value>
+  </enum>
+
+  <enum kind="tt" name="Truth table (tt0 tt1 tt2 tt3)">
+    <value value="0">0000</value>
+    <value value="1">1000</value>
+    <value value="2">0100</value>
+    <value value="3">1100</value>
+    <value value="4">0010</value>
+    <value value="5">1010</value>
+    <value value="6">0110</value>
+    <value value="7">1110</value>
+    <value value="8">0001</value>
+    <value value="9">1001</value>
+    <value value="10">0101</value>
+    <value value="11">1101</value>
+    <value value="12">0011</value>
+    <value value="13">1011</value>
+    <value value="14">0111</value>
+    <value value="15">1111</value>
+  </enum>
+
+  <enum kind="fgroup" name="Output group (fixed-length)">
+    <value value="0">group 0</value>
+    <value value="1">group 1</value>
+    <value value="2">group 2</value>
+    <value value="3">group 3</value>
+    <value value="4">group 4</value>
+    <value value="5">group 5</value>
+    <value value="6">group 6</value>
+    <value value="7">group 7</value>
+    <value value="8" default="true">none</value>
+    <value value="9">group 1</value>
+    <value value="10">group 2</value>
+    <value value="11">group 3</value>
+    <value value="12">group 4</value>
+    <value value="13">group 5</value>
+    <value value="14">group 6</value>
+    <value value="15">group 7</value>
+  </enum>
+
+  <enum kind="expect3" name="Unknown, normally all set">
+    <value value="7" default="true">none</value>
+  </enum>
+
+  <enum kind="mask" name="Bitfield mask">
+    <value value="0" default="true">none</value>
+    <value value="1">mask 0x1</value>
+    <value value="2">mask 0x3</value>
+    <value value="3">mask 0x7</value>
+    <value value="4">mask 0xF</value>
+    <value value="5">mask 0x1F</value>
+    <value value="6">mask 0x3F</value>
+    <value value="7">mask 0x7F</value>
+    <value value="8">mask 0xFF</value>
+    <value value="9">mask 0x1FF</value>
+    <value value="10">mask 0x3FF</value>
+    <value value="11">mask 0x7FF</value>
+    <value value="12">mask 0xFFF</value>
+    <value value="13">mask 0x1FFF</value>
+    <value value="14">mask 0x3FFF</value>
+    <value value="15">mask 0x7FFF</value>
+    <value value="16">mask 0xFFFF</value>
+    <value value="17">mask 0x1FFFF</value>
+    <value value="18">mask 0x3FFFF</value>
+    <value value="19">mask 0x7FFFF</value>
+    <value value="20">mask 0xFFFFF</value>
+    <value value="21">mask 0x1FFFFF</value>
+    <value value="22">mask 0x3FFFFF</value>
+    <value value="23">mask 0x7FFFFF</value>
+    <value value="24">mask 0xFFFFFF</value>
+    <value value="25">mask 0x1FFFFFF</value>
+    <value value="26">mask 0x3FFFFFF</value>
+    <value value="27">mask 0x7FFFFFF</value>
+    <value value="28">mask 0xFFFFFFF</value>
+    <value value="29">mask 0x1FFFFFFF</value>
+    <value value="30">mask 0x3FFFFFFF</value>
+    <value value="31">mask 0x7FFFFFFF</value>
+  </enum>
+
+  <enum kind="iadd_q" name="Function-start flags (clear on the first op)">
+    <value value="0">first</value>
+    <value value="1">q1</value>
+    <value value="2">q2</value>
+    <value value="3" default="true">none</value>
+  </enum>
+
+  <enum kind="lsl" name="Shift">
+    <value value="0">lsl 4</value>
+    <value value="1">lsl 1</value>
+    <value value="2">lsl 2</value>
+    <value value="3">lsl 3</value>
+  </enum>
+
+  <enum kind="ignore1" name="Not printed">
+    <value value="0" default="true">none</value>
+    <value value="1" default="true">none</value>
+  </enum>
+
+  <enum kind="cmpselcc3" name="Compare to a condition code (with Z and cmp)">
+    <value value="0">!fgtn</value>
+    <value value="1">!fltn</value>
+    <value value="2">!fgt</value>
+    <value value="3">!flt</value>
+    <value value="4">ule</value>
+    <value value="5">uge</value>
+    <value value="6">sle</value>
+    <value value="7">sge</value>
+    <value value="8">fgtn</value>
+    <value value="9">fltn</value>
+    <value value="10">fgt</value>
+    <value value="11">flt</value>
+    <value value="12">ugt</value>
+    <value value="13">ult</value>
+    <value value="14">sgt</value>
+    <value value="15">slt</value>
+    <value value="16">fgtn</value>
+    <value value="17">fltn</value>
+    <value value="18">fgt</value>
+    <value value="19">flt</value>
+    <value value="20">ugt</value>
+    <value value="21">ult</value>
+    <value value="22">sgt</value>
+    <value value="23">slt</value>
+    <value value="24">!fgtn</value>
+    <value value="25">!fltn</value>
+    <value value="26">!fgt</value>
+    <value value="27">!flt</value>
+    <value value="28">ule</value>
+    <value value="29">uge</value>
+    <value value="30">sle</value>
+    <value value="31">sge</value>
+  </enum>
+
+  <enum kind="ccdst" name="Condition code">
+    <value value="0">cc0</value>
+    <value value="1">cc1</value>
+    <value value="2">cc2</value>
+    <value value="3">cc3</value>
+    <value value="4">cc4</value>
+    <value value="5">cc5</value>
+    <value value="6">cc_always</value>
+    <value value="7">cc_never</value>
+  </enum>
+
+  <enum kind="cmpselcc4" name="Compare to a condition code (with Z and cmp)">
+    <value value="0">!fgtn</value>
+    <value value="1">!fltn</value>
+    <value value="2">!fgt</value>
+    <value value="3">!flt</value>
+    <value value="4">ule</value>
+    <value value="5">uge</value>
+    <value value="6">sle</value>
+    <value value="7">sge</value>
+    <value value="8">fne</value>
+    <value value="9">!9</value>
+    <value value="10">!fge</value>
+    <value value="11">!fle</value>
+    <value value="12">!12</value>
+    <value value="13">!13</value>
+    <value value="14">testz</value>
+    <value value="15">ine</value>
+    <value value="16">fgtn</value>
+    <value value="17">fltn</value>
+    <value value="18">fgt</value>
+    <value value="19">flt</value>
+    <value value="20">ugt</value>
+    <value value="21">ult</value>
+    <value value="22">sgt</value>
+    <value value="23">slt</value>
+    <value value="24">feq</value>
+    <value value="25">9</value>
+    <value value="26">fge</value>
+    <value value="27">fle</value>
+    <value value="28">12</value>
+    <value value="29">13</value>
+    <value value="30">test</value>
+    <value value="31">ieq</value>
+    <value value="32">fgtn</value>
+    <value value="33">fltn</value>
+    <value value="34">fgt</value>
+    <value value="35">flt</value>
+    <value value="36">ugt</value>
+    <value value="37">ult</value>
+    <value value="38">sgt</value>
+    <value value="39">slt</value>
+    <value value="40">feq</value>
+    <value value="41">9</value>
+    <value value="42">fge</value>
+    <value value="43">fle</value>
+    <value value="44">12</value>
+    <value value="45">13</value>
+    <value value="46">test</value>
+    <value value="47">ieq</value>
+    <value value="48">!fgtn</value>
+    <value value="49">!fltn</value>
+    <value value="50">!fgt</value>
+    <value value="51">!flt</value>
+    <value value="52">ule</value>
+    <value value="53">uge</value>
+    <value value="54">sle</value>
+    <value value="55">sge</value>
+    <value value="56">fne</value>
+    <value value="57">!9</value>
+    <value value="58">!fge</value>
+    <value value="59">!fle</value>
+    <value value="60">!12</value>
+    <value value="61">!13</value>
+    <value value="62">testz</value>
+    <value value="63">ine</value>
+  </enum>
+
+  <enum kind="cmpsel_cc3" name="Compare">
+    <value value="0">fgtn</value>
+    <value value="1">fltn</value>
+    <value value="2">fgt</value>
+    <value value="3">flt</value>
+    <value value="4">ugt</value>
+    <value value="5">ult</value>
+    <value value="6">sgt</value>
+    <value value="7">slt</value>
+  </enum>
+
+  <enum kind="cmov_cc" name="cmov condition (Z selects the order)">
+    <value value="0">!fgtn</value>
+    <value value="1">!fltn</value>
+    <value value="2">!fgt</value>
+    <value value="3">!flt</value>
+    <value value="4">ule</value>
+    <value value="5">uge</value>
+    <value value="6">sle</value>
+    <value value="7">sge</value>
+    <value value="8">fne</value>
+    <value value="9">9</value>
+    <value value="10">!fge</value>
+    <value value="11">!fle</value>
+    <value value="12">12</value>
+    <value value="13">13</value>
+    <value value="14">testz</value>
+    <value value="15">ine</value>
+    <value value="16">fgtn</value>
+    <value value="17">fltn</value>
+    <value value="18">fgt</value>
+    <value value="19">flt</value>
+    <value value="20">ugt</value>
+    <value value="21">ult</value>
+    <value value="22">sgt</value>
+    <value value="23">slt</value>
+    <value value="24">feq</value>
+    <value value="25">25</value>
+    <value value="26">fge</value>
+    <value value="27">fle</value>
+    <value value="28">28</value>
+    <value value="29">29</value>
+    <value value="30">test</value>
+    <value value="31">ieq</value>
+  </enum>
+
+  <enum kind="cmpsel_cc" name="Compare">
+    <value value="0">fgtn</value>
+    <value value="1">fltn</value>
+    <value value="2">fgt</value>
+    <value value="3">flt</value>
+    <value value="4">ugt</value>
+    <value value="5">ult</value>
+    <value value="6">sgt</value>
+    <value value="7">slt</value>
+    <value value="8">feq</value>
+    <value value="9">9</value>
+    <value value="10">fge</value>
+    <value value="11">fle</value>
+    <value value="12">12</value>
+    <value value="13">13</value>
+    <value value="14">test</value>
+    <value value="15">ieq</value>
+  </enum>
+
+  <enum kind="ccsrc" name="Condition code">
+    <value value="0">cc0</value>
+    <value value="1">cc1</value>
+    <value value="2">cc2</value>
+    <value value="3">cc3</value>
+    <value value="4">cc4</value>
+    <value value="5">cc5</value>
+    <value value="6">cc_always</value>
+    <value value="7">cc_never</value>
+    <value value="8">cc0.neg</value>
+    <value value="9">cc1.neg</value>
+    <value value="10">cc2.neg</value>
+    <value value="11">cc3.neg</value>
+    <value value="12">cc4.neg</value>
+    <value value="13">cc5.neg</value>
+    <value value="14">cc_always.neg</value>
+    <value value="15">cc_never.neg</value>
+  </enum>
+
+  <enum kind="convert_mode" name="convert mode">
+    <value value="0">f_to_u32</value>
+    <value value="1">f_to_s8</value>
+    <value value="2">f_to_u8</value>
+    <value value="3">f_to_s16</value>
+    <value value="4">f_to_u16</value>
+    <value value="5">f_to_s32</value>
+    <value value="6">f_to_u8_6</value>
+    <value value="7">f_to_s16_7</value>
+  </enum>
+
+  <enum kind="i2f" name="Integer to float">
+    <value value="0">u16_to_f</value>
+    <value value="1">u8_to_f</value>
+    <value value="2">s16_to_f</value>
+    <value value="3">s8_to_f</value>
+    <value value="4">u32_to_f</value>
+    <value value="5">u32_to_f_1</value>
+    <value value="6">s32_to_f</value>
+    <value value="7">s32_to_f_1</value>
+  </enum>
+
+  <enum kind="convert_rnd" name="convert rnd">
+    <value value="0">rte</value>
+    <value value="1">rtz</value>
+  </enum>
+
+  <enum kind="unpack_unorm" name="Unpack format">
+    <value value="0">r8unorm_0</value>
+    <value value="1">r8unorm_srgb</value>
+    <value value="2">r16snorm</value>
+    <value value="3">r8snorm</value>
+    <value value="4">r16unorm</value>
+    <value value="5">r8unorm_srgb_5</value>
+    <value value="6">r8unorm</value>
+    <value value="7">r8snorm_7</value>
+    <value value="8">rg8unorm_linear_srgb</value>
+    <value value="9">rg8unorm_srgb</value>
+    <value value="10">rg16snorm</value>
+    <value value="11">rg8snorm</value>
+    <value value="12">rg16unorm</value>
+    <value value="13">rg8unorm_srgb_linear</value>
+    <value value="14">rg8unorm</value>
+    <value value="15">rg8snorm_7</value>
+  </enum>
+
+  <enum kind="unpack_mode" name="unpack mode">
+    <value value="0">rgb10a2_unorm_to_half</value>
+    <value value="1">rgb10a2_unorm_to_float</value>
+    <value value="2">rgb9e5_to_float</value>
+    <value value="3">rg11b10f_to_float</value>
+    <value value="4">rgb9e5_to_half</value>
+    <value value="5">rg11b10f_to_half</value>
+    <value value="6">rgb9e5_to_half_6</value>
+    <value value="7">rg11b10f_to_half_7</value>
+  </enum>
+
+  <enum kind="pack_unorm" name="Pack format">
+    <value value="0">r8unorm_0</value>
+    <value value="1">r8unorm_srgb</value>
+    <value value="2">r16snorm</value>
+    <value value="3">r8snorm</value>
+    <value value="4">r16unorm</value>
+    <value value="5">r8unorm_srgb_5</value>
+    <value value="6">r8unorm</value>
+    <value value="7">r8snorm_7</value>
+    <value value="8">rg8unorm_linear_srgb</value>
+    <value value="9">rg8unorm_srgb</value>
+    <value value="10">rg16snorm</value>
+    <value value="11">rg8snorm</value>
+    <value value="12">rg16unorm</value>
+    <value value="13">rg8unorm_srgb_linear</value>
+    <value value="14">rg8unorm</value>
+    <value value="15">rg8snorm_7</value>
+    <value value="16">rg8unorm_linear_srgb</value>
+    <value value="17">rg8unorm_srgb</value>
+    <value value="18">rg16snorm</value>
+    <value value="19">rg8snorm</value>
+    <value value="20">rg16unorm</value>
+    <value value="21">rg8unorm_srgb_linear</value>
+    <value value="22">rg8unorm</value>
+    <value value="23">rg8snorm_7</value>
+    <value value="24">rg8unorm_linear_srgb</value>
+    <value value="25">rg8unorm_srgb</value>
+    <value value="26">rg16snorm</value>
+    <value value="27">rg8snorm</value>
+    <value value="28">rg16unorm</value>
+    <value value="29">rg8unorm_srgb_linear</value>
+    <value value="30">rg8unorm</value>
+    <value value="31">rg8snorm_7</value>
+  </enum>
+
+  <enum kind="pack_mode" name="pack mode">
+    <value value="0">rgb9e5</value>
+    <value value="1">rg11b10f</value>
+    <value value="2">rgb10a2_unorm</value>
+    <value value="3">rg11b10f_3</value>
+  </enum>
+
+  <enum kind="icmp_ballot_cc" name="icmp_ballot cc">
+    <value value="0">0</value>
+    <value value="1">ieq</value>
+    <value value="2">sgt</value>
+    <value value="3">slt</value>
+    <value value="4">4</value>
+    <value value="5">ugt</value>
+    <value value="6">ult</value>
+    <value value="7">7</value>
+    <value value="8">8</value>
+    <value value="9">ine</value>
+    <value value="10">sle</value>
+    <value value="11">sge</value>
+    <value value="12">12</value>
+    <value value="13">ule</value>
+    <value value="14">uge</value>
+    <value value="15">15</value>
+  </enum>
+
+  <enum kind="icmp_quad_ballot_cc" name="icmp_quad_ballot cc">
+    <value value="0">0</value>
+    <value value="1">ieq</value>
+    <value value="2">sgt</value>
+    <value value="3">slt</value>
+    <value value="4">4</value>
+    <value value="5">ugt</value>
+    <value value="6">ult</value>
+    <value value="7">7</value>
+    <value value="8">8</value>
+    <value value="9">ine</value>
+    <value value="10">sle</value>
+    <value value="11">sge</value>
+    <value value="12">12</value>
+    <value value="13">ule</value>
+    <value value="14">uge</value>
+    <value value="15">15</value>
+  </enum>
+
+  <enum kind="fcmp_ballot_cc" name="fcmp_ballot cc">
+    <value value="0">feq</value>
+    <value value="1">fge</value>
+    <value value="2">fgt</value>
+    <value value="3">fle</value>
+    <value value="4">flt</value>
+    <value value="5">5</value>
+    <value value="6">6</value>
+    <value value="7">7</value>
+    <value value="8">fne</value>
+    <value value="9">!fge</value>
+    <value value="10">!fgt</value>
+    <value value="11">!fle</value>
+    <value value="12">!flt</value>
+    <value value="13">13</value>
+    <value value="14">14</value>
+    <value value="15">15</value>
+  </enum>
+
+  <enum kind="fcmp_quad_ballot_cc" name="fcmp_quad_ballot cc">
+    <value value="0">feq</value>
+    <value value="1">fge</value>
+    <value value="2">fgt</value>
+    <value value="3">fle</value>
+    <value value="4">flt</value>
+    <value value="5">5</value>
+    <value value="6">6</value>
+    <value value="7">7</value>
+    <value value="8">fne</value>
+    <value value="9">!fge</value>
+    <value value="10">!fgt</value>
+    <value value="11">!fle</value>
+    <value value="12">!flt</value>
+    <value value="13">13</value>
+    <value value="14">14</value>
+    <value value="15">15</value>
+  </enum>
+
+  <enum kind="shufflemod" name="Shuffle modulus">
+    <value value="0">mod 16</value>
+    <value value="1">mod 2</value>
+    <value value="2" default="true">none</value>
+    <value value="3">mod 4</value>
+    <value value="4">mod 8</value>
+    <value value="5">rawmod 5</value>
+    <value value="6">rawmod 6</value>
+    <value value="7">rawmod 7</value>
+  </enum>
+
+  <!--
+   Destination of the variable-length ALU instructions (VariableDstDesc), 20 bits:
+    0 l, 1:4 reg, 5:6 x, 7 h, 8:11 j, 12:13 y, 14 z (register: bits 0:14),
+    15 s (32-bit), 16 c (cache; coordinate if uniform; stack bit 16),
+    17 u (uniform; stack bit 15), 18 k (stack), 19 b (bfloat16)
+  -->
+  <encoding name="vdst">
+    <case>
+      <exact bit="15 18:19">011</exact>
+      <immediate name="stack" bit="1:14 17 16" shift="1"/>
+      <property name="size32"/>
+    </case>
+    <case>
+      <exact bit="15 18">10</exact>
+      <immediate name="stack" bit="0:14 17 16"/>
+      <modifier name="bfloat" bit="19"/>
+    </case>
+    <case>
+      <exact bit="18">1</exact>
+      <immediate name="stack" bit="0:14 17 16"/>
+    </case>
+    <case>
+      <exact bit="16:17">11</exact>
+      <immediate name="cr" bit="1:14"/>
+    </case>
+    <case>
+      <exact bit="15 17">11</exact>
+      <immediate name="uniform" bit="1:14" shift="1"/>
+      <property name="size32"/>
+    </case>
+    <case>
+      <exact bit="17">1</exact>
+      <immediate name="uniform" bit="0:14"/>
+      <modifier name="bfloat" bit="19"/>
+    </case>
+    <case>
+      <exact bit="15 19">01</exact>
+      <immediate name="reg" bit="1:14" shift="1"/>
+      <modifier name="cache" bit="16"/>
+      <property name="size32"/>
+    </case>
+    <case>
+      <exact bit="15">0</exact>
+      <immediate name="reg" bit="0:14"/>
+      <modifier name="cache" bit="16"/>
+      <modifier name="bfloat" bit="19"/>
+    </case>
+    <case>
+      <!-- 32-bit bfloat16 is 16-bit -->
+      <immediate name="reg" bit="0:14"/>
+      <modifier name="cache" bit="16"/>
+    </case>
+  </encoding>
+
+  <!--
+   Source of the variable-length ALU instructions (VariableSrcDesc), 17 bits:
+    0 l, 1:6 reg, 7 h (register: l, reg, h; uniform: l, reg, d, h),
+    8 c (cache; immediate if uniform), 9 d (discard; uniform bit 7),
+    10 s (32-bit), 11 u (uniform), 12 n (neg, or sx if integer), 13 a (abs),
+    14 b (bfloat16), 15 q (saturate), 16 integer (immediates are integers, n is sx)
+  -->
+  <encoding name="vsrc">
+    <case>
+      <exact bit="8 11 16">111</exact>
+      <immediate name="imm" bit="0:6 9"/>
+    </case>
+    <case>
+      <exact bit="8 11 16">011</exact>
+      <immediate name="fimm" bit="0:6 9"/>
+    </case>
+    <case>
+      <exact bit="10:11 16">111</exact>
+      <immediate name="uniform" bit="1:6 9 7" shift="1"/>
+      <modifier name="sx" bit="12"/>
+      <property name="size32"/>
+    </case>
+    <case>
+      <exact bit="11 16">11</exact>
+      <immediate name="uniform" bit="0:6 9 7"/>
+      <modifier name="sx" bit="12"/>
+    </case>
+    <case>
+      <exact bit="10:11">11</exact>
+      <immediate name="uniform" bit="1:6 9 7" shift="1"/>
+      <modifier name="abs" bit="13"/>
+      <modifier name="neg" bit="12"/>
+      <modifier name="sat" bit="15"/>
+      <property name="size32"/>
+    </case>
+    <case>
+      <exact bit="11">1</exact>
+      <immediate name="uniform" bit="0:6 9 7"/>
+      <modifier name="bfloat" bit="14"/>
+      <modifier name="abs" bit="13"/>
+      <modifier name="neg" bit="12"/>
+      <modifier name="sat" bit="15"/>
+    </case>
+    <case>
+      <exact bit="10 14 16">101</exact>
+      <immediate name="reg" bit="1:7" shift="1"/>
+      <modifier name="cache" bit="8"/>
+      <modifier name="lu" bit="9"/>
+      <modifier name="sx" bit="12"/>
+      <property name="size32"/>
+    </case>
+    <case>
+      <exact bit="16">1</exact>
+      <immediate name="reg" bit="0:7"/>
+      <modifier name="cache" bit="8"/>
+      <modifier name="lu" bit="9"/>
+      <modifier name="sx" bit="12"/>
+    </case>
+    <case>
+      <exact bit="10 14">01</exact>
+      <immediate name="reg" bit="1:7" shift="1"/>
+      <modifier name="cache" bit="8"/>
+      <modifier name="lu" bit="9"/>
+      <modifier name="abs" bit="13"/>
+      <modifier name="neg" bit="12"/>
+      <modifier name="sat" bit="15"/>
+      <property name="size32"/>
+    </case>
+    <case>
+      <exact bit="10">0</exact>
+      <immediate name="reg" bit="0:7"/>
+      <modifier name="cache" bit="8"/>
+      <modifier name="lu" bit="9"/>
+      <modifier name="bfloat" bit="14"/>
+      <modifier name="abs" bit="13"/>
+      <modifier name="neg" bit="12"/>
+      <modifier name="sat" bit="15"/>
+    </case>
+    <case>
+      <!-- 32-bit bfloat16 is 16-bit -->
+      <immediate name="reg" bit="0:7"/>
+      <modifier name="cache" bit="8"/>
+      <modifier name="lu" bit="9"/>
+      <modifier name="abs" bit="13"/>
+      <modifier name="neg" bit="12"/>
+      <modifier name="sat" bit="15"/>
+    </case>
+  </encoding>
+
+  <!-- vsrc that prints nothing when it is r0l (the unused selects of cmp) -->
+  <encoding name="vsrc_omit_r0l">
+    <case>
+      <!-- r0l -->
+      <exact bit="0:9 11:12">000000000000</exact>
+    </case>
+    <case>
+      <exact bit="8 11 16">111</exact>
+      <immediate name="imm" bit="0:6 9"/>
+    </case>
+    <case>
+      <exact bit="8 11 16">011</exact>
+      <immediate name="fimm" bit="0:6 9"/>
+    </case>
+    <case>
+      <exact bit="10:11 16">111</exact>
+      <immediate name="uniform" bit="1:6 9 7" shift="1"/>
+      <modifier name="sx" bit="12"/>
+      <property name="size32"/>
+    </case>
+    <case>
+      <exact bit="11 16">11</exact>
+      <immediate name="uniform" bit="0:6 9 7"/>
+      <modifier name="sx" bit="12"/>
+    </case>
+    <case>
+      <exact bit="10:11">11</exact>
+      <immediate name="uniform" bit="1:6 9 7" shift="1"/>
+      <modifier name="abs" bit="13"/>
+      <modifier name="neg" bit="12"/>
+      <modifier name="sat" bit="15"/>
+      <property name="size32"/>
+    </case>
+    <case>
+      <exact bit="11">1</exact>
+      <immediate name="uniform" bit="0:6 9 7"/>
+      <modifier name="bfloat" bit="14"/>
+      <modifier name="abs" bit="13"/>
+      <modifier name="neg" bit="12"/>
+      <modifier name="sat" bit="15"/>
+    </case>
+    <case>
+      <exact bit="10 14 16">101</exact>
+      <immediate name="reg" bit="1:7" shift="1"/>
+      <modifier name="cache" bit="8"/>
+      <modifier name="lu" bit="9"/>
+      <modifier name="sx" bit="12"/>
+      <property name="size32"/>
+    </case>
+    <case>
+      <exact bit="16">1</exact>
+      <immediate name="reg" bit="0:7"/>
+      <modifier name="cache" bit="8"/>
+      <modifier name="lu" bit="9"/>
+      <modifier name="sx" bit="12"/>
+    </case>
+    <case>
+      <exact bit="10 14">01</exact>
+      <immediate name="reg" bit="1:7" shift="1"/>
+      <modifier name="cache" bit="8"/>
+      <modifier name="lu" bit="9"/>
+      <modifier name="abs" bit="13"/>
+      <modifier name="neg" bit="12"/>
+      <modifier name="sat" bit="15"/>
+      <property name="size32"/>
+    </case>
+    <case>
+      <exact bit="10">0</exact>
+      <immediate name="reg" bit="0:7"/>
+      <modifier name="cache" bit="8"/>
+      <modifier name="lu" bit="9"/>
+      <modifier name="bfloat" bit="14"/>
+      <modifier name="abs" bit="13"/>
+      <modifier name="neg" bit="12"/>
+      <modifier name="sat" bit="15"/>
+    </case>
+    <case>
+      <!-- 32-bit bfloat16 is 16-bit -->
+      <immediate name="reg" bit="0:7"/>
+      <modifier name="cache" bit="8"/>
+      <modifier name="lu" bit="9"/>
+      <modifier name="abs" bit="13"/>
+      <modifier name="neg" bit="12"/>
+      <modifier name="sat" bit="15"/>
+    </case>
+  </encoding>
+
+  <!--
+   Destination of the fixed-length instructions (FixedDstDesc), 15 bits:
+    0 l, 1:7 reg, 8 c (cache; uniform bit 8), 9 r (register, else uniform),
+    10 t (else texture coordinate), 11:12 size (0 16-bit, 1 32-bit, 2 64-bit),
+    13 i (not bfloat16), 14 float
+  -->
+  <encoding name="fdst">
+    <case>
+      <!-- texture coordinate -->
+      <exact bit="10:14">10000</exact>
+      <immediate name="cr" bit="1:7"/>
+      <property name="bfloat"/>
+    </case>
+    <case>
+      <exact bit="10">0</exact>
+      <immediate name="cr" bit="1:7"/>
+    </case>
+    <case>
+      <exact bit="9 11:12">010</exact>
+      <immediate name="uniform" bit="1:8" shift="1"/>
+      <property name="size32"/>
+    </case>
+    <case>
+      <exact bit="9 11:12">100</exact>
+      <immediate name="uniform" bit="1:8" shift="1"/>
+      <property name="size64"/>
+    </case>
+    <case>
+      <exact bit="9 11:14">10000</exact>
+      <immediate name="uniform" bit="0:8"/>
+      <property name="bfloat"/>
+    </case>
+    <case>
+      <exact bit="9 11:12">000</exact>
+      <immediate name="uniform" bit="0:8"/>
+    </case>
+    <case>
+      <exact bit="9 11:12">011</exact>
+      <immediate name="reg" bit="1:7" shift="1"/>
+      <modifier name="cache" bit="8"/>
+      <property name="size32"/>
+    </case>
+    <case>
+      <exact bit="9 11:12">101</exact>
+      <immediate name="reg" bit="1:7" shift="1"/>
+      <modifier name="cache" bit="8"/>
+      <property name="size64"/>
+    </case>
+    <case>
+      <exact bit="9 11:14">10001</exact>
+      <immediate name="reg" bit="0:7"/>
+      <modifier name="cache" bit="8"/>
+      <property name="bfloat"/>
+    </case>
+    <case>
+      <exact bit="9 11:12">001</exact>
+      <immediate name="reg" bit="0:7"/>
+      <modifier name="cache" bit="8"/>
+    </case>
+  </encoding>
+
+  <!-- fdst with the size bit inverted (1 is 16-bit), as in the floating-point unary ops -->
+  <encoding name="fdst_inv">
+    <case>
+      <!-- texture coordinate -->
+      <exact bit="10:14">10010</exact>
+      <immediate name="cr" bit="1:7"/>
+      <property name="bfloat"/>
+    </case>
+    <case>
+      <exact bit="10">0</exact>
+      <immediate name="cr" bit="1:7"/>
+    </case>
+    <case>
+      <exact bit="9 11:12">000</exact>
+      <immediate name="uniform" bit="1:8" shift="1"/>
+      <property name="size32"/>
+    </case>
+    <case>
+      <exact bit="9 11:14">10010</exact>
+      <immediate name="uniform" bit="0:8"/>
+      <property name="bfloat"/>
+    </case>
+    <case>
+      <exact bit="9 11:12">010</exact>
+      <immediate name="uniform" bit="0:8"/>
+    </case>
+    <case>
+      <exact bit="9 11:12">001</exact>
+      <immediate name="reg" bit="1:7" shift="1"/>
+      <modifier name="cache" bit="8"/>
+      <property name="size32"/>
+    </case>
+    <case>
+      <exact bit="9 11:14">10011</exact>
+      <immediate name="reg" bit="0:7"/>
+      <modifier name="cache" bit="8"/>
+      <property name="bfloat"/>
+    </case>
+    <case>
+      <exact bit="9 11:12">011</exact>
+      <immediate name="reg" bit="0:7"/>
+      <modifier name="cache" bit="8"/>
+    </case>
+  </encoding>
+
+  <!--
+   Source of the fixed-length instructions (FixedSrcDesc), 17 bits:
+    0 l, 1:7 reg, 8 c (cache; uniform bit 8), 9 r (register), 10 d (discard;
+    uniform if not a register, else an 8-bit immediate), 11:12 size,
+    13 n (sx, or neg if float), 14 a (abs), 15 i (not bfloat16), 16 float
+  -->
+  <encoding name="fsrc">
+    <case>
+      <exact bit="9:10 16">100</exact>
+      <immediate name="fimm" bit="0:7"/>
+    </case>
+    <case>
+      <exact bit="9:10 16">000</exact>
+      <immediate name="imm" bit="0:7"/>
+    </case>
+    <case>
+      <exact bit="9 11:12 16">0000</exact>
+      <immediate name="uniform" bit="0:8"/>
+      <modifier name="sx" bit="13"/>
+      <modifier name="abs" bit="14"/>
+    </case>
+    <case>
+      <exact bit="9 11:12 16">0010</exact>
+      <immediate name="uniform" bit="1:8" shift="1"/>
+      <modifier name="sx" bit="13"/>
+      <modifier name="abs" bit="14"/>
+      <property name="size32"/>
+    </case>
+    <case>
+      <exact bit="9 11:12 16">0100</exact>
+      <immediate name="uniform" bit="1:8" shift="1"/>
+      <modifier name="sx" bit="13"/>
+      <modifier name="abs" bit="14"/>
+      <property name="size64"/>
+    </case>
+    <case>
+      <exact bit="9 11:12 15:16">10000</exact>
+      <immediate name="uniform" bit="0:8"/>
+      <modifier name="abs" bit="14"/>
+      <modifier name="neg" bit="13"/>
+      <property name="bfloat"/>
+    </case>
+    <case>
+      <exact bit="9 11:12 16">1000</exact>
+      <immediate name="uniform" bit="0:8"/>
+      <modifier name="abs" bit="14"/>
+      <modifier name="neg" bit="13"/>
+    </case>
+    <case>
+      <exact bit="9 11:12 15:16">10010</exact>
+      <immediate name="uniform" bit="1:8" shift="1"/>
+      <modifier name="abs" bit="14"/>
+      <modifier name="neg" bit="13"/>
+      <property name="size32"/>
+    </case>
+    <case>
+      <exact bit="9 11:12 15:16">10100</exact>
+      <immediate name="uniform" bit="1:8" shift="1"/>
+      <modifier name="abs" bit="14"/>
+      <modifier name="neg" bit="13"/>
+      <property name="size64"/>
+    </case>
+    <case>
+      <exact bit="9 11:12 16">0001</exact>
+      <immediate name="reg" bit="0:7"/>
+      <modifier name="cache" bit="8"/>
+      <modifier name="lu" bit="10"/>
+      <modifier name="sx" bit="13"/>
+      <modifier name="abs" bit="14"/>
+    </case>
+    <case>
+      <exact bit="9 11:12 16">0011</exact>
+      <immediate name="reg" bit="1:7" shift="1"/>
+      <modifier name="cache" bit="8"/>
+      <modifier name="lu" bit="10"/>
+      <modifier name="sx" bit="13"/>
+      <modifier name="abs" bit="14"/>
+      <property name="size32"/>
+    </case>
+    <case>
+      <exact bit="9 11:12 16">0101</exact>
+      <immediate name="reg" bit="1:7" shift="1"/>
+      <modifier name="cache" bit="8"/>
+      <modifier name="lu" bit="10"/>
+      <modifier name="sx" bit="13"/>
+      <modifier name="abs" bit="14"/>
+      <property name="size64"/>
+    </case>
+    <case>
+      <exact bit="9 11:12 15:16">10001</exact>
+      <immediate name="reg" bit="0:7"/>
+      <modifier name="cache" bit="8"/>
+      <modifier name="lu" bit="10"/>
+      <modifier name="abs" bit="14"/>
+      <modifier name="neg" bit="13"/>
+      <property name="bfloat"/>
+    </case>
+    <case>
+      <exact bit="9 11:12 16">1001</exact>
+      <immediate name="reg" bit="0:7"/>
+      <modifier name="cache" bit="8"/>
+      <modifier name="lu" bit="10"/>
+      <modifier name="abs" bit="14"/>
+      <modifier name="neg" bit="13"/>
+    </case>
+    <case>
+      <exact bit="9 11:12 15:16">10011</exact>
+      <immediate name="reg" bit="1:7" shift="1"/>
+      <modifier name="cache" bit="8"/>
+      <modifier name="lu" bit="10"/>
+      <modifier name="abs" bit="14"/>
+      <modifier name="neg" bit="13"/>
+      <property name="size32"/>
+    </case>
+    <case>
+      <exact bit="9 11:12 15:16">10101</exact>
+      <immediate name="reg" bit="1:7" shift="1"/>
+      <modifier name="cache" bit="8"/>
+      <modifier name="lu" bit="10"/>
+      <modifier name="abs" bit="14"/>
+      <modifier name="neg" bit="13"/>
+      <property name="size64"/>
+    </case>
+  </encoding>
+
+  <!-- fsrc + 17 u: the second pack source, not printed if 0.0 when neither r nor u -->
+  <encoding name="fsrc_pack_b">
+    <case>
+      <!-- single-element pack -->
+      <exact bit="0:7 9:10 17">00000000000</exact>
+    </case>
+    <case>
+      <exact bit="9:10 16">100</exact>
+      <immediate name="fimm" bit="0:7"/>
+    </case>
+    <case>
+      <exact bit="9:10 16">000</exact>
+      <immediate name="imm" bit="0:7"/>
+    </case>
+    <case>
+      <exact bit="9 11:12 16">0000</exact>
+      <immediate name="uniform" bit="0:8"/>
+      <modifier name="sx" bit="13"/>
+      <modifier name="abs" bit="14"/>
+    </case>
+    <case>
+      <exact bit="9 11:12 16">0010</exact>
+      <immediate name="uniform" bit="1:8" shift="1"/>
+      <modifier name="sx" bit="13"/>
+      <modifier name="abs" bit="14"/>
+      <property name="size32"/>
+    </case>
+    <case>
+      <exact bit="9 11:12 16">0100</exact>
+      <immediate name="uniform" bit="1:8" shift="1"/>
+      <modifier name="sx" bit="13"/>
+      <modifier name="abs" bit="14"/>
+      <property name="size64"/>
+    </case>
+    <case>
+      <exact bit="9 11:12 15:16">10000</exact>
+      <immediate name="uniform" bit="0:8"/>
+      <modifier name="abs" bit="14"/>
+      <modifier name="neg" bit="13"/>
+      <property name="bfloat"/>
+    </case>
+    <case>
+      <exact bit="9 11:12 16">1000</exact>
+      <immediate name="uniform" bit="0:8"/>
+      <modifier name="abs" bit="14"/>
+      <modifier name="neg" bit="13"/>
+    </case>
+    <case>
+      <exact bit="9 11:12 15:16">10010</exact>
+      <immediate name="uniform" bit="1:8" shift="1"/>
+      <modifier name="abs" bit="14"/>
+      <modifier name="neg" bit="13"/>
+      <property name="size32"/>
+    </case>
+    <case>
+      <exact bit="9 11:12 15:16">10100</exact>
+      <immediate name="uniform" bit="1:8" shift="1"/>
+      <modifier name="abs" bit="14"/>
+      <modifier name="neg" bit="13"/>
+      <property name="size64"/>
+    </case>
+    <case>
+      <exact bit="9 11:12 16">0001</exact>
+      <immediate name="reg" bit="0:7"/>
+      <modifier name="cache" bit="8"/>
+      <modifier name="lu" bit="10"/>
+      <modifier name="sx" bit="13"/>
+      <modifier name="abs" bit="14"/>
+    </case>
+    <case>
+      <exact bit="9 11:12 16">0011</exact>
+      <immediate name="reg" bit="1:7" shift="1"/>
+      <modifier name="cache" bit="8"/>
+      <modifier name="lu" bit="10"/>
+      <modifier name="sx" bit="13"/>
+      <modifier name="abs" bit="14"/>
+      <property name="size32"/>
+    </case>
+    <case>
+      <exact bit="9 11:12 16">0101</exact>
+      <immediate name="reg" bit="1:7" shift="1"/>
+      <modifier name="cache" bit="8"/>
+      <modifier name="lu" bit="10"/>
+      <modifier name="sx" bit="13"/>
+      <modifier name="abs" bit="14"/>
+      <property name="size64"/>
+    </case>
+    <case>
+      <exact bit="9 11:12 15:16">10001</exact>
+      <immediate name="reg" bit="0:7"/>
+      <modifier name="cache" bit="8"/>
+      <modifier name="lu" bit="10"/>
+      <modifier name="abs" bit="14"/>
+      <modifier name="neg" bit="13"/>
+      <property name="bfloat"/>
+    </case>
+    <case>
+      <exact bit="9 11:12 16">1001</exact>
+      <immediate name="reg" bit="0:7"/>
+      <modifier name="cache" bit="8"/>
+      <modifier name="lu" bit="10"/>
+      <modifier name="abs" bit="14"/>
+      <modifier name="neg" bit="13"/>
+    </case>
+    <case>
+      <exact bit="9 11:12 15:16">10011</exact>
+      <immediate name="reg" bit="1:7" shift="1"/>
+      <modifier name="cache" bit="8"/>
+      <modifier name="lu" bit="10"/>
+      <modifier name="abs" bit="14"/>
+      <modifier name="neg" bit="13"/>
+      <property name="size32"/>
+    </case>
+    <case>
+      <exact bit="9 11:12 15:16">10101</exact>
+      <immediate name="reg" bit="1:7" shift="1"/>
+      <modifier name="cache" bit="8"/>
+      <modifier name="lu" bit="10"/>
+      <modifier name="abs" bit="14"/>
+      <modifier name="neg" bit="13"/>
+      <property name="size64"/>
+    </case>
+  </encoding>
+
+  <!--
+   fsrc + 17:18 mode: the fourth float pack source, only printed for rgb10a2
+   (mode 2) unless it is not 0.0
+  -->
+  <encoding name="fsrc_pack_w">
+    <case>
+      <exact bit="0:7 9:10 18">00000000000</exact>
+    </case>
+    <case>
+      <exact bit="0:7 9:10 17">10000000000</exact>
+    </case>
+    <case>
+      <exact bit="9:10 16">100</exact>
+      <immediate name="fimm" bit="0:7"/>
+    </case>
+    <case>
+      <exact bit="9:10 16">000</exact>
+      <immediate name="imm" bit="0:7"/>
+    </case>
+    <case>
+      <exact bit="9 11:12 16">0000</exact>
+      <immediate name="uniform" bit="0:8"/>
+      <modifier name="sx" bit="13"/>
+      <modifier name="abs" bit="14"/>
+    </case>
+    <case>
+      <exact bit="9 11:12 16">0010</exact>
+      <immediate name="uniform" bit="1:8" shift="1"/>
+      <modifier name="sx" bit="13"/>
+      <modifier name="abs" bit="14"/>
+      <property name="size32"/>
+    </case>
+    <case>
+      <exact bit="9 11:12 16">0100</exact>
+      <immediate name="uniform" bit="1:8" shift="1"/>
+      <modifier name="sx" bit="13"/>
+      <modifier name="abs" bit="14"/>
+      <property name="size64"/>
+    </case>
+    <case>
+      <exact bit="9 11:12 15:16">10000</exact>
+      <immediate name="uniform" bit="0:8"/>
+      <modifier name="abs" bit="14"/>
+      <modifier name="neg" bit="13"/>
+      <property name="bfloat"/>
+    </case>
+    <case>
+      <exact bit="9 11:12 16">1000</exact>
+      <immediate name="uniform" bit="0:8"/>
+      <modifier name="abs" bit="14"/>
+      <modifier name="neg" bit="13"/>
+    </case>
+    <case>
+      <exact bit="9 11:12 15:16">10010</exact>
+      <immediate name="uniform" bit="1:8" shift="1"/>
+      <modifier name="abs" bit="14"/>
+      <modifier name="neg" bit="13"/>
+      <property name="size32"/>
+    </case>
+    <case>
+      <exact bit="9 11:12 15:16">10100</exact>
+      <immediate name="uniform" bit="1:8" shift="1"/>
+      <modifier name="abs" bit="14"/>
+      <modifier name="neg" bit="13"/>
+      <property name="size64"/>
+    </case>
+    <case>
+      <exact bit="9 11:12 16">0001</exact>
+      <immediate name="reg" bit="0:7"/>
+      <modifier name="cache" bit="8"/>
+      <modifier name="lu" bit="10"/>
+      <modifier name="sx" bit="13"/>
+      <modifier name="abs" bit="14"/>
+    </case>
+    <case>
+      <exact bit="9 11:12 16">0011</exact>
+      <immediate name="reg" bit="1:7" shift="1"/>
+      <modifier name="cache" bit="8"/>
+      <modifier name="lu" bit="10"/>
+      <modifier name="sx" bit="13"/>
+      <modifier name="abs" bit="14"/>
+      <property name="size32"/>
+    </case>
+    <case>
+      <exact bit="9 11:12 16">0101</exact>
+      <immediate name="reg" bit="1:7" shift="1"/>
+      <modifier name="cache" bit="8"/>
+      <modifier name="lu" bit="10"/>
+      <modifier name="sx" bit="13"/>
+      <modifier name="abs" bit="14"/>
+      <property name="size64"/>
+    </case>
+    <case>
+      <exact bit="9 11:12 15:16">10001</exact>
+      <immediate name="reg" bit="0:7"/>
+      <modifier name="cache" bit="8"/>
+      <modifier name="lu" bit="10"/>
+      <modifier name="abs" bit="14"/>
+      <modifier name="neg" bit="13"/>
+      <property name="bfloat"/>
+    </case>
+    <case>
+      <exact bit="9 11:12 16">1001</exact>
+      <immediate name="reg" bit="0:7"/>
+      <modifier name="cache" bit="8"/>
+      <modifier name="lu" bit="10"/>
+      <modifier name="abs" bit="14"/>
+      <modifier name="neg" bit="13"/>
+    </case>
+    <case>
+      <exact bit="9 11:12 15:16">10011</exact>
+      <immediate name="reg" bit="1:7" shift="1"/>
+      <modifier name="cache" bit="8"/>
+      <modifier name="lu" bit="10"/>
+      <modifier name="abs" bit="14"/>
+      <modifier name="neg" bit="13"/>
+      <property name="size32"/>
+    </case>
+    <case>
+      <exact bit="9 11:12 15:16">10101</exact>
+      <immediate name="reg" bit="1:7" shift="1"/>
+      <modifier name="cache" bit="8"/>
+      <modifier name="lu" bit="10"/>
+      <modifier name="abs" bit="14"/>
+      <modifier name="neg" bit="13"/>
+      <property name="size64"/>
+    </case>
+  </encoding>
+
+  <!-- Destination of unpack unorm/snorm: 0 l, 1:7 reg, 8 c, 9 s (32-bit), 10 n (two) -->
+  <encoding name="unpack_unorm_dst">
+    <case>
+      <exact bit="9:10">00</exact>
+      <immediate name="reg" bit="0:7"/>
+      <modifier name="cache" bit="8"/>
+    </case>
+    <case>
+      <exact bit="9:10">10</exact>
+      <immediate name="reg" bit="1:7" shift="1"/>
+      <modifier name="cache" bit="8"/>
+      <property name="count">2</property>
+    </case>
+    <case>
+      <exact bit="9:10">01</exact>
+      <immediate name="reg" bit="1:7" shift="1"/>
+      <modifier name="cache" bit="8"/>
+      <property name="size32"/>
+    </case>
+    <case>
+      <exact bit="9:10">11</exact>
+      <immediate name="reg" bit="1:7" shift="1"/>
+      <modifier name="cache" bit="8"/>
+      <property name="size32"/>
+      <property name="count">2</property>
+    </case>
+  </encoding>
+
+  <!--
+   Destination of unpack rgb10a2/rg11b10f/rgb9e5: 0 =0, 1:7 reg, 8 c, 9 r,
+   10:12 mode (to float: 32-bit; rgb10a2: four components)
+  -->
+  <encoding name="unpack_float_dst">
+    <case>
+      <exact bit="9:12">0001</exact>
+      <immediate name="reg" bit="0:7"/>
+      <modifier name="cache" bit="8"/>
+      <property name="count">4</property>
+    </case>
+    <case>
+      <exact bit="9:12">0011</exact>
+      <immediate name="reg" bit="1:7" shift="1"/>
+      <modifier name="cache" bit="8"/>
+      <property name="size32"/>
+      <property name="count">4</property>
+    </case>
+    <case>
+      <exact bit="9 11:12">011</exact>
+      <immediate name="reg" bit="1:7" shift="1"/>
+      <modifier name="cache" bit="8"/>
+      <property name="size32"/>
+      <property name="count">3</property>
+    </case>
+    <case>
+      <exact bit="9 12">11</exact>
+      <immediate name="reg" bit="0:7"/>
+      <modifier name="cache" bit="8"/>
+      <property name="count">3</property>
+    </case>
+    <case>
+      <exact bit="9:12">0000</exact>
+      <immediate name="uniform" bit="0:8"/>
+      <property name="count">4</property>
+    </case>
+    <case>
+      <exact bit="9:12">0010</exact>
+      <immediate name="uniform" bit="1:8" shift="1"/>
+      <property name="size32"/>
+      <property name="count">4</property>
+    </case>
+    <case>
+      <exact bit="9 11:12">010</exact>
+      <immediate name="uniform" bit="1:8" shift="1"/>
+      <property name="size32"/>
+      <property name="count">3</property>
+    </case>
+    <case>
+      <exact bit="9 12">10</exact>
+      <immediate name="uniform" bit="0:8"/>
+      <property name="count">3</property>
+    </case>
+  </encoding>
+
+  <!-- Source of unpack unorm/snorm: 0 l, 1:7 reg, 8 c, 9 d, 10 s (two 16-bit halves) -->
+  <encoding name="unpack_unorm_src">
+    <case>
+      <exact bit="10">0</exact>
+      <immediate name="reg" bit="0:7"/>
+      <modifier name="cache" bit="8"/>
+      <modifier name="lu" bit="9"/>
+    </case>
+    <case>
+      <exact bit="10">1</exact>
+      <immediate name="reg" bit="1:7" shift="1"/>
+      <modifier name="cache" bit="8"/>
+      <modifier name="lu" bit="9"/>
+      <property name="count">2</property>
+    </case>
+  </encoding>
+
+  <!--
+   Destination of pack unorm/snorm: 0 l, 1:7 reg, 8 c, 9 r, 10 Br, 11 Bu,
+   12:14 mode (two 16-bit results for rg16)
+  -->
+  <encoding name="pack_unorm_dst">
+    <case>
+      <!-- one element -->
+      <exact bit="9:11">001</exact>
+      <immediate name="reg" bit="0:7"/>
+      <modifier name="cache" bit="8"/>
+    </case>
+    <case>
+      <!-- rg16snorm -->
+      <exact bit="9 12:14">0101</exact>
+      <immediate name="reg" bit="1:7" shift="1"/>
+      <modifier name="cache" bit="8"/>
+      <property name="count">2</property>
+    </case>
+    <case>
+      <!-- rg16unorm -->
+      <exact bit="9 12:14">1001</exact>
+      <immediate name="reg" bit="1:7" shift="1"/>
+      <modifier name="cache" bit="8"/>
+      <property name="count">2</property>
+    </case>
+    <case>
+      <exact bit="9">1</exact>
+      <immediate name="reg" bit="0:7"/>
+      <modifier name="cache" bit="8"/>
+    </case>
+    <case>
+      <!-- one element -->
+      <exact bit="9:11">000</exact>
+      <immediate name="uniform" bit="0:8"/>
+    </case>
+    <case>
+      <!-- rg16snorm -->
+      <exact bit="9 12:14">0100</exact>
+      <immediate name="uniform" bit="1:8" shift="1"/>
+      <property name="count">2</property>
+    </case>
+    <case>
+      <!-- rg16unorm -->
+      <exact bit="9 12:14">1000</exact>
+      <immediate name="uniform" bit="1:8" shift="1"/>
+      <property name="count">2</property>
+    </case>
+    <case>
+      <exact bit="9">0</exact>
+      <immediate name="uniform" bit="0:8"/>
+    </case>
+  </encoding>
+
+  <!-- Shuffled value (ShuffleSrcDesc): 0 l, 1:7 reg, 8 c, 9 d, 10 s (32-bit) -->
+  <encoding name="shsrc">
+    <case>
+      <exact bit="10">0</exact>
+      <immediate name="reg" bit="0:7"/>
+      <modifier name="cache" bit="8"/>
+      <modifier name="lu" bit="9"/>
+    </case>
+    <case>
+      <exact bit="10">1</exact>
+      <immediate name="reg" bit="1:7" shift="1"/>
+      <modifier name="cache" bit="8"/>
+      <modifier name="lu" bit="9"/>
+      <property name="size32"/>
+    </case>
+  </encoding>
+
+  <!--
+   Stack register (StackSrcDesc): 0:16 reg, 17 d (discard), 18 s (32-bit). An
+   odd 32-bit stack register reads its halves swapped (stNhl).
+  -->
+  <encoding name="stack_src">
+    <case>
+      <exact bit="0 18">11</exact>
+      <immediate name="stack" bit="1:16" shift="1"/>
+      <modifier name="lu" bit="17"/>
+      <property name="size32"/>
+      <property name="hl"/>
+    </case>
+    <case>
+      <exact bit="18">1</exact>
+      <immediate name="stack" bit="1:16" shift="1"/>
+      <modifier name="lu" bit="17"/>
+      <property name="size32"/>
+    </case>
+    <case>
+      <exact bit="18">0</exact>
+      <immediate name="stack" bit="0:16"/>
+      <modifier name="lu" bit="17"/>
+    </case>
+  </encoding>
+
+  <!--
+   Loaded/stored registers: 0 l, 1:7 reg, 8:9 type (0 i16, 1/3 i32, 2 i8),
+   10:13 mask (count: 0 1 2 3 2 3 3 4 1 2 1 2 2 3 1 2; i8 packs two per 16-bit register)
+  -->
+  <encoding name="memreg">
+    <case>
+      <!-- no components -->
+      <exact bit="10:13">0000</exact>
+    </case>
+    <case>
+      <exact bit="8">1</exact>
+      <immediate name="reg" bit="1:7" shift="1"/>
+      <modifier name="count" bit="10:13" table="0 1 2 3 2 3 3 4 1 2 1 2 2 3 1 2"/>
+      <property name="size32"/>
+    </case>
+    <case>
+      <exact bit="8:9">00</exact>
+      <immediate name="reg" bit="0:7"/>
+      <modifier name="count" bit="10:13" table="0 1 2 3 2 3 3 4 1 2 1 2 2 3 1 2"/>
+    </case>
+    <case>
+      <exact bit="8:9">10</exact>
+      <immediate name="reg" bit="0:7"/>
+      <modifier name="count" bit="10:13" table="0 1 1 2 1 2 2 2 1 1 1 1 1 2 1 1"/>
+    </case>
+  </encoding>
+
+  <!-- Memory base (MemoryBaseDesc): 0:6 reg, 7 r (64-bit register, else 64-bit uniform) -->
+  <encoding name="membase">
+    <case>
+      <exact bit="7">1</exact>
+      <immediate name="reg" bit="0:6" shift="1"/>
+      <property name="size64"/>
+    </case>
+    <case>
+      <exact bit="7">0</exact>
+      <immediate name="uniform" bit="0:6" shift="2"/>
+      <property name="size64"/>
+    </case>
+  </encoding>
+
+  <!--
+   Memory index (MemoryIndexDesc), instruction bits 39:54 then sx and t:
+    0:15 16-bit immediate if t = 0; else 0 l, 1:7 reg, 14 s (32-bit) with
+    10:13 and 15 clear, and the discard bit at 8 (loads) or 9 (stores);
+    16 sx, 17:18 t (0 immediate, 1 register, 2 uniform)
+  -->
+  <encoding name="memidx_load">
+    <case>
+      <exact bit="17:18">00</exact>
+      <immediate name="imm" bit="0:15"/>
+    </case>
+    <case>
+      <exact bit="10:15 17:18">01010000</exact>
+      <immediate name="reg" bit="1:7" shift="1"/>
+      <modifier name="sx" bit="16"/>
+      <modifier name="lu" bit="8"/>
+      <property name="size32"/>
+    </case>
+    <case>
+      <exact bit="10:15 17:18">01000000</exact>
+      <immediate name="reg" bit="0:7"/>
+      <modifier name="sx" bit="16"/>
+      <modifier name="lu" bit="8"/>
+    </case>
+    <case>
+      <exact bit="10:15 17:18">10010000</exact>
+      <immediate name="uniform" bit="1:7" shift="1"/>
+      <modifier name="sx" bit="16"/>
+      <modifier name="lu" bit="8"/>
+      <property name="size32"/>
+    </case>
+    <case>
+      <exact bit="10:15 17:18">10000000</exact>
+      <immediate name="uniform" bit="0:7"/>
+      <modifier name="sx" bit="16"/>
+      <modifier name="lu" bit="8"/>
+    </case>
+  </encoding>
+
+  <!-- memidx_load with the discard bit at 9 -->
+  <encoding name="memidx_store">
+    <case>
+      <exact bit="17:18">00</exact>
+      <immediate name="imm" bit="0:15"/>
+    </case>
+    <case>
+      <exact bit="10:15 17:18">01010000</exact>
+      <immediate name="reg" bit="1:7" shift="1"/>
+      <modifier name="sx" bit="16"/>
+      <modifier name="lu" bit="9"/>
+      <property name="size32"/>
+    </case>
+    <case>
+      <exact bit="10:15 17:18">01000000</exact>
+      <immediate name="reg" bit="0:7"/>
+      <modifier name="sx" bit="16"/>
+      <modifier name="lu" bit="9"/>
+    </case>
+    <case>
+      <exact bit="10:15 17:18">10010000</exact>
+      <immediate name="uniform" bit="1:7" shift="1"/>
+      <modifier name="sx" bit="16"/>
+      <modifier name="lu" bit="9"/>
+      <property name="size32"/>
+    </case>
+    <case>
+      <exact bit="10:15 17:18">10000000</exact>
+      <immediate name="uniform" bit="0:7"/>
+      <modifier name="sx" bit="16"/>
+      <modifier name="lu" bit="9"/>
+    </case>
+  </encoding>
+
+  <!--
+   Texture result (TextureRegDesc): 0:6 reg (32-bit registers count whole
+   registers), 7 s (32-bit), 8:11 mask (count: 1 1 1 1 2 2 3 4 2 2 2 2 3 3 3 0)
+  -->
+  <encoding name="texreg">
+    <case>
+      <!-- no components -->
+      <exact bit="8:11">1111</exact>
+    </case>
+    <case>
+      <exact bit="7">1</exact>
+      <immediate name="reg" bit="0:6" shift="1"/>
+      <modifier name="count" bit="8:11" table="1 1 1 1 2 2 3 4 2 2 2 2 3 3 3 0"/>
+      <property name="size32"/>
+    </case>
+    <case>
+      <exact bit="7">0</exact>
+      <immediate name="reg" bit="0:6"/>
+      <modifier name="count" bit="8:11" table="1 1 1 1 2 2 3 4 2 2 2 2 3 3 3 0"/>
+    </case>
+  </encoding>
+
+  <!-- Texture state -->
+  <encoding name="ts">
+    <case>
+      <immediate name="ts" bit="0:7"/>
+    </case>
+  </encoding>
+
+  <!-- Texture coordinate register -->
+  <encoding name="cr">
+    <case>
+      <immediate name="cr" bit="0:5"/>
+    </case>
+  </encoding>
+
+  <!-- Branch target (BranchOffsetDesc): 0 absolute, 1:47 offset in halfwords -->
+  <encoding name="branch">
+    <case>
+      <exact bit="0">0</exact>
+      <immediate name="imm" bit="1:47" shift="1" kind="signed"/>
+    </case>
+    <case>
+      <exact bit="0">1</exact>
+      <immediate name="imm" bit="1:47" shift="1"/>
+      <property name="hex"/>
+    </case>
+  </encoding>
+
+  <!-- mov_imm, 7-bit immediate -->
+  <ins name="mov_imm7" display="mov_imm" length="2">
+    <exact bit="0:2 15">0100</exact>
+    <dest kind="vdst" bit="=0 4:7 =00 =0 =0000 =00 =0 3 =0 =0 =0 =0"/>
+    <immediate name="imm7" bit="8:14"/>
+  </ins>
+
+  <!-- mov_imm, 32-bit immediate -->
+  <ins name="mov_imm32" display="mov_imm" length="8/10">
+    <exact bit="0:2 15 17 20">011100</exact>
+    <modifier name="length" bit="16"/>
+    <dest kind="vdst" bit="18 4:7 22:23 60 =0000 =00 =0 3 21 70 =0 =0"/>
+    <immediate name="imm32" bit="8:14 33:36 42:43 48:59 25:31"/>
+    <modifier name="group" bit="77:79 70 21 =0" kind="vgroup"/>
+  </ins>
+
+  <ins name="get_sr" display="get_sr" length="4/8">
+    <exact bit="0:2 15 17 20 25:26">11101100</exact>
+    <modifier name="length" bit="16"/>
+    <immediate name="g" bit="29:31"/>
+    <dest kind="vdst" bit="18 4:7 22:23 60 =0000 =00 =0 3 21 =0 =0 =0"/>
+    <modifier name="sr" bit="8:14" kind="sr"/>
+  </ins>
+
+  <ins name="get_stack" display="get_stack" length="4/8">
+    <exact bit="0:2 15 17">01100</exact>
+    <modifier name="length" bit="16"/>
+    <immediate name="g" bit="29:31"/>
+    <immediate name="q" bit="20 25:26"/>
+    <dest kind="vdst" bit="18 4:7 22:23 60 =0000 =00 =0 3 21 =0 =0 =0"/>
+    <src kind="stack_src" bit="8:14 33:36 42:43 48:51 19 3"/>
+    <modifier name="wait" bit="45:47 61:63" kind="wait"/>
+    <modifier name="unk" bit="24" kind="expect1"/>
+  </ins>
+
+  <ins name="device_load" display="device_load" length="14">
+    <exact bit="0:11">000001100111</exact>
+    <immediate name="g" bit="70:72"/>
+    <modifier name="type" bit="68:69" kind="device_load_type"/>
+    <modifier name="mask" bit="64:67" kind="device_load_mask"/>
+    <dest kind="memreg" bit="24 25:31 68:69 64:67"/>
+    <src kind="membase" bit="32:38 101"/>
+    <src kind="memidx_load" bit="39:54 75 102:103"/>
+    <modifier name="shift" bit="97:99" kind="memshift"/>
+    <immediate name="offset" bit="77:92" kind="signed"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <immediate name="l1" bit="94"/>
+    <immediate name="q0" bit="20"/>
+    <immediate name="q1" bit="74"/>
+    <modifier name="unk" bit="18 22" kind="expect2"/>
+  </ins>
+
+  <ins name="device_store" display="device_store" length="14">
+    <exact bit="0:11">000011100111</exact>
+    <immediate name="g" bit="70:72"/>
+    <modifier name="type" bit="68:69" kind="device_store_type"/>
+    <modifier name="mask" bit="64:67" kind="device_store_mask"/>
+    <src kind="memreg" bit="24 25:31 68:69 64:67"/>
+    <src kind="membase" bit="32:38 99"/>
+    <src kind="memidx_store" bit="39:54 73 100:101"/>
+    <modifier name="shift" bit="95:97" kind="memshift"/>
+    <immediate name="offset" bit="75:90" kind="signed"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <immediate name="l1" bit="92"/>
+    <immediate name="q0" bit="20"/>
+    <modifier name="unk" bit="18 22" kind="expect2"/>
+  </ins>
+
+  <ins name="texture_sample" display="texture_sample" length="14/20">
+    <exact bit="0:2 48:56">000001001101</exact>
+    <modifier name="length" bit="73"/>
+    <immediate name="g0" bit="45:47"/>
+    <immediate name="g1" bit="42:44"/>
+    <modifier name="mask" bit="27:28 37 86" kind="texture_sample_mask"/>
+    <dest kind="texreg" bit="3 4:7 22:23 15 27:28 37 86"/>
+    <src kind="ts" bit="71 11:14 68:70"/>
+    <src kind="cr" bit="8:10 24:26"/>
+    <immediate name="q1" bit="29"/>
+    <immediate name="q2" bit="31"/>
+    <modifier name="wait" bit="39:41" kind="wait1"/>
+    <modifier name="unk" bit="18:19 36 84 96" kind="expect5"/>
+  </ins>
+
+  <ins name="texture_load" display="texture_load" length="14/20">
+    <exact bit="0:2 48:56">100010111101</exact>
+    <modifier name="length" bit="73"/>
+    <immediate name="g0" bit="45:47"/>
+    <immediate name="g1" bit="42:44"/>
+    <modifier name="mask" bit="27:28 37 86" kind="texture_load_mask"/>
+    <dest kind="texreg" bit="3 4:7 22:23 15 27:28 37 86"/>
+    <src kind="ts" bit="71 11:14 68:70"/>
+    <src kind="cr" bit="8:10 24:26"/>
+    <immediate name="q1" bit="29"/>
+    <immediate name="q2" bit="31"/>
+    <modifier name="wait" bit="39:41" kind="wait1"/>
+    <modifier name="unk" bit="18:19 36 96" kind="expect4"/>
+  </ins>
+
+  <!-- bitop_unary, op 1 -->
+  <ins name="mov" display="mov" length="4">
+    <exact bit="0:2 16:18">001011</exact>
+    <dest kind="vdst" bit="24 4:7 22:23 =0 =0000 =00 =0 3 21 26 25 =0"/>
+    <src kind="vsrc" bit="8 9:14 28 15 19 3 27 =0 =0 =0 =0 =1"/>
+    <modifier name="group" bit="=000 26 21 25" kind="vgroup"/>
+    <modifier name="wait" bit="29:31" kind="wait1"/>
+  </ins>
+
+  <!-- bitop_unary, op 0 -->
+  <ins name="bitop_unary_zero" display="bitop_unary" length="4">
+    <exact bit="0:2 16:18">000011</exact>
+    <modifier name="op" bit="16:18" kind="bitop_unary_op"/>
+    <dest kind="vdst" bit="24 4:7 22:23 =0 =0000 =00 =0 3 21 26 25 =0"/>
+    <src kind="vsrc" bit="8 9:14 28 15 19 3 27 =0 =0 =0 =0 =1"/>
+    <modifier name="group" bit="=000 26 21 25" kind="vgroup"/>
+    <modifier name="wait" bit="29:31" kind="wait1"/>
+  </ins>
+
+  <!-- bitop_unary, op 5 -->
+  <ins name="bitop_unary_mov5" display="bitop_unary" length="4">
+    <exact bit="0:2 16:18">101011</exact>
+    <modifier name="op" bit="16:18" kind="bitop_unary_op"/>
+    <dest kind="vdst" bit="24 4:7 22:23 =0 =0000 =00 =0 3 21 26 25 =0"/>
+    <src kind="vsrc" bit="8 9:14 28 15 19 3 27 =0 =0 =0 =0 =1"/>
+    <modifier name="group" bit="=000 26 21 25" kind="vgroup"/>
+    <modifier name="wait" bit="29:31" kind="wait1"/>
+  </ins>
+
+  <!-- bitop op 2: and -->
+  <ins name="and4" display="and" length="4">
+    <exact bit="0:2 16:18">010011</exact>
+    <dest kind="vdst" bit="=0 4:7 22:23 =0 =0000 =00 =0 3 21 =0 =0 =0"/>
+    <src kind="vsrc" bit="=0 9:14 =0 15 19 8 =0 =0 =0 =0 =0 =1"/>
+    <src kind="vsrc" bit="=0 25:30 =0 31 20 24 =0 =0 =0 =0 =0 =1"/>
+  </ins>
+
+  <!-- bitop op 3: xor -->
+  <ins name="xor4" display="xor" length="4">
+    <exact bit="0:2 16:18">011011</exact>
+    <dest kind="vdst" bit="=0 4:7 22:23 =0 =0000 =00 =0 3 21 =0 =0 =0"/>
+    <src kind="vsrc" bit="=0 9:14 =0 15 19 8 =0 =0 =0 =0 =0 =1"/>
+    <src kind="vsrc" bit="=0 25:30 =0 31 20 24 =0 =0 =0 =0 =0 =1"/>
+  </ins>
+
+  <!-- bitop op 4: or -->
+  <ins name="or4" display="or" length="4">
+    <exact bit="0:2 16:18">100011</exact>
+    <dest kind="vdst" bit="=0 4:7 22:23 =0 =0000 =00 =0 3 21 =0 =0 =0"/>
+    <src kind="vsrc" bit="=0 9:14 =0 15 19 8 =0 =0 =0 =0 =0 =1"/>
+    <src kind="vsrc" bit="=0 25:30 =0 31 20 24 =0 =0 =0 =0 =0 =1"/>
+  </ins>
+
+  <!-- bitop 1010 with B = r0l: not -->
+  <ins name="not10" display="not" length="10">
+    <exact bit="0:2 16:18 20 24:33 36 41:43">100001000000000110011</exact>
+    <dest kind="vdst" bit="34 4:7 22:23 44 50:53 67:68 76 3 21 38 37 =0"/>
+    <src kind="vsrc" bit="35 9:14 40 15 19 8 39 =0 =0 =0 =0 =1"/>
+    <modifier name="group" bit="58:60 38 21 37" kind="vgroup"/>
+    <modifier name="wait" bit="45:47 61:63" kind="wait"/>
+  </ins>
+
+  <!-- bitop 0101 with B = r0l: mov -->
+  <ins name="mov10" display="mov" length="10">
+    <exact bit="0:2 16:18 20 24:33 36 41:43">000010000000000111011</exact>
+    <dest kind="vdst" bit="34 4:7 22:23 44 50:53 67:68 76 3 21 38 37 =0"/>
+    <src kind="vsrc" bit="35 9:14 40 15 19 8 39 =0 =0 =0 =0 =1"/>
+    <modifier name="group" bit="58:60 38 21 37" kind="vgroup"/>
+    <modifier name="wait" bit="45:47 61:63" kind="wait"/>
+  </ins>
+
+  <!-- bitop 0001: and -->
+  <ins name="and10" display="and" length="10">
+    <exact bit="0:2 16:18 32:33 43">000111011</exact>
+    <dest kind="vdst" bit="34 4:7 22:23 44 50:53 67:68 76 3 21 38 37 =0"/>
+    <src kind="vsrc" bit="35 9:14 40 15 19 8 39 =0 =0 =0 =0 =1"/>
+    <src kind="vsrc" bit="36 25:30 42 31 20 24 41 =0 =0 =0 =0 =1"/>
+    <modifier name="group" bit="58:60 38 21 37" kind="vgroup"/>
+    <modifier name="wait" bit="45:47 61:63" kind="wait"/>
+  </ins>
+
+  <!-- bitop 0010: andn1 -->
+  <ins name="andn110" display="andn1" length="10">
+    <exact bit="0:2 16:18 32:33 43">100110011</exact>
+    <dest kind="vdst" bit="34 4:7 22:23 44 50:53 67:68 76 3 21 38 37 =0"/>
+    <src kind="vsrc" bit="35 9:14 40 15 19 8 39 =0 =0 =0 =0 =1"/>
+    <src kind="vsrc" bit="36 25:30 42 31 20 24 41 =0 =0 =0 =0 =1"/>
+    <modifier name="group" bit="58:60 38 21 37" kind="vgroup"/>
+    <modifier name="wait" bit="45:47 61:63" kind="wait"/>
+  </ins>
+
+  <!-- bitop 0100: andn2 -->
+  <ins name="andn210" display="andn2" length="10">
+    <exact bit="0:2 16:18 32:33 43">010110011</exact>
+    <dest kind="vdst" bit="34 4:7 22:23 44 50:53 67:68 76 3 21 38 37 =0"/>
+    <src kind="vsrc" bit="35 9:14 40 15 19 8 39 =0 =0 =0 =0 =1"/>
+    <src kind="vsrc" bit="36 25:30 42 31 20 24 41 =0 =0 =0 =0 =1"/>
+    <modifier name="group" bit="58:60 38 21 37" kind="vgroup"/>
+    <modifier name="wait" bit="45:47 61:63" kind="wait"/>
+  </ins>
+
+  <!-- bitop 0110: xor -->
+  <ins name="xor10" display="xor" length="10">
+    <exact bit="0:2 16:18 32:33 43">110110011</exact>
+    <dest kind="vdst" bit="34 4:7 22:23 44 50:53 67:68 76 3 21 38 37 =0"/>
+    <src kind="vsrc" bit="35 9:14 40 15 19 8 39 =0 =0 =0 =0 =1"/>
+    <src kind="vsrc" bit="36 25:30 42 31 20 24 41 =0 =0 =0 =0 =1"/>
+    <modifier name="group" bit="58:60 38 21 37" kind="vgroup"/>
+    <modifier name="wait" bit="45:47 61:63" kind="wait"/>
+  </ins>
+
+  <!-- bitop 0111: or -->
+  <ins name="or10" display="or" length="10">
+    <exact bit="0:2 16:18 32:33 43">110111011</exact>
+    <dest kind="vdst" bit="34 4:7 22:23 44 50:53 67:68 76 3 21 38 37 =0"/>
+    <src kind="vsrc" bit="35 9:14 40 15 19 8 39 =0 =0 =0 =0 =1"/>
+    <src kind="vsrc" bit="36 25:30 42 31 20 24 41 =0 =0 =0 =0 =1"/>
+    <modifier name="group" bit="58:60 38 21 37" kind="vgroup"/>
+    <modifier name="wait" bit="45:47 61:63" kind="wait"/>
+  </ins>
+
+  <!-- bitop 1000: nor -->
+  <ins name="nor10" display="nor" length="10">
+    <exact bit="0:2 16:18 32:33 43">001110011</exact>
+    <dest kind="vdst" bit="34 4:7 22:23 44 50:53 67:68 76 3 21 38 37 =0"/>
+    <src kind="vsrc" bit="35 9:14 40 15 19 8 39 =0 =0 =0 =0 =1"/>
+    <src kind="vsrc" bit="36 25:30 42 31 20 24 41 =0 =0 =0 =0 =1"/>
+    <modifier name="group" bit="58:60 38 21 37" kind="vgroup"/>
+    <modifier name="wait" bit="45:47 61:63" kind="wait"/>
+  </ins>
+
+  <!-- bitop 1001: xnor -->
+  <ins name="xnor10" display="xnor" length="10">
+    <exact bit="0:2 16:18 32:33 43">001111011</exact>
+    <dest kind="vdst" bit="34 4:7 22:23 44 50:53 67:68 76 3 21 38 37 =0"/>
+    <src kind="vsrc" bit="35 9:14 40 15 19 8 39 =0 =0 =0 =0 =1"/>
+    <src kind="vsrc" bit="36 25:30 42 31 20 24 41 =0 =0 =0 =0 =1"/>
+    <modifier name="group" bit="58:60 38 21 37" kind="vgroup"/>
+    <modifier name="wait" bit="45:47 61:63" kind="wait"/>
+  </ins>
+
+  <!-- bitop 1011: orn1 -->
+  <ins name="orn110" display="orn1" length="10">
+    <exact bit="0:2 16:18 32:33 43">101111011</exact>
+    <dest kind="vdst" bit="34 4:7 22:23 44 50:53 67:68 76 3 21 38 37 =0"/>
+    <src kind="vsrc" bit="35 9:14 40 15 19 8 39 =0 =0 =0 =0 =1"/>
+    <src kind="vsrc" bit="36 25:30 42 31 20 24 41 =0 =0 =0 =0 =1"/>
+    <modifier name="group" bit="58:60 38 21 37" kind="vgroup"/>
+    <modifier name="wait" bit="45:47 61:63" kind="wait"/>
+  </ins>
+
+  <!-- bitop 1101: orn2 -->
+  <ins name="orn210" display="orn2" length="10">
+    <exact bit="0:2 16:18 32:33 43">011111011</exact>
+    <dest kind="vdst" bit="34 4:7 22:23 44 50:53 67:68 76 3 21 38 37 =0"/>
+    <src kind="vsrc" bit="35 9:14 40 15 19 8 39 =0 =0 =0 =0 =1"/>
+    <src kind="vsrc" bit="36 25:30 42 31 20 24 41 =0 =0 =0 =0 =1"/>
+    <modifier name="group" bit="58:60 38 21 37" kind="vgroup"/>
+    <modifier name="wait" bit="45:47 61:63" kind="wait"/>
+  </ins>
+
+  <!-- bitop 1110: nand -->
+  <ins name="nand10" display="nand" length="10">
+    <exact bit="0:2 16:18 32:33 43">111110011</exact>
+    <dest kind="vdst" bit="34 4:7 22:23 44 50:53 67:68 76 3 21 38 37 =0"/>
+    <src kind="vsrc" bit="35 9:14 40 15 19 8 39 =0 =0 =0 =0 =1"/>
+    <src kind="vsrc" bit="36 25:30 42 31 20 24 41 =0 =0 =0 =0 =1"/>
+    <modifier name="group" bit="58:60 38 21 37" kind="vgroup"/>
+    <modifier name="wait" bit="45:47 61:63" kind="wait"/>
+  </ins>
+
+  <!-- bitop, any truth table -->
+  <ins name="bitop10" display="bitop" length="10">
+    <exact bit="0:2 17:18">11011</exact>
+    <modifier name="tt" bit="32 33 43 16" kind="tt"/>
+    <dest kind="vdst" bit="34 4:7 22:23 44 50:53 67:68 76 3 21 38 37 =0"/>
+    <src kind="vsrc" bit="35 9:14 40 15 19 8 39 =0 =0 =0 =0 =1"/>
+    <src kind="vsrc" bit="36 25:30 42 31 20 24 41 =0 =0 =0 =0 =1"/>
+    <modifier name="group" bit="58:60 38 21 37" kind="vgroup"/>
+    <modifier name="wait" bit="45:47 61:63" kind="wait"/>
+  </ins>
+
+  <ins name="bitrev" display="bitrev" length="8">
+    <exact bit="0:11">010010100111</exact>
+    <dest kind="fdst" bit="24 25:31 32 33 54 50 =0 =0 =0"/>
+    <modifier name="vt" bit="57 54" kind="dst_vt"/>
+    <src kind="fsrc" bit="41 42:48 49 58 52 51 =0 =0 =0 =0 =0"/>
+    <modifier name="group" bit="53 55:56 54" kind="fgroup"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <ins name="popcount" display="popcount" length="8">
+    <exact bit="0:11">010100100111</exact>
+    <dest kind="fdst" bit="24 25:31 32 33 54 50 =0 =0 =0"/>
+    <modifier name="vt" bit="57 54" kind="dst_vt"/>
+    <src kind="fsrc" bit="41 42:48 49 58 52 51 =0 =0 =0 =0 =0"/>
+    <modifier name="group" bit="53 55:56 54" kind="fgroup"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <ins name="ffs" display="ffs" length="8">
+    <exact bit="0:11">010110100111</exact>
+    <dest kind="fdst" bit="24 25:31 32 33 54 50 =0 =0 =0"/>
+    <modifier name="vt" bit="57 54" kind="dst_vt"/>
+    <src kind="fsrc" bit="41 42:48 49 58 52 51 =0 =0 =0 =0 =0"/>
+    <modifier name="group" bit="53 55:56 54" kind="fgroup"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <ins name="bfi" display="bfi" length="12">
+    <exact bit="0:11">000000100111</exact>
+    <dest kind="fdst" bit="24 25:31 32 33 76 68 =0 =0 =0"/>
+    <modifier name="vt" bit="79 76" kind="dst_vt"/>
+    <src kind="fsrc" bit="59 60:66 67 83 74 71 =0 =0 =0 =0 =0"/>
+    <src kind="fsrc" bit="41 42:48 49 80 72 69 =0 81 =0 =0 =0"/>
+    <src kind="fsrc" bit="50 51:57 58 82 73 70 =0 =0 =0 =0 =0"/>
+    <modifier name="mask" bit="84:88" kind="mask"/>
+    <modifier name="group" bit="75 77:78 76" kind="fgroup"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <ins name="bfeil" display="bfeil" length="12">
+    <exact bit="0:11">000010100111</exact>
+    <dest kind="fdst" bit="24 25:31 32 33 76 68 =0 =0 =0"/>
+    <modifier name="vt" bit="79 76" kind="dst_vt"/>
+    <src kind="fsrc" bit="59 60:66 67 83 74 71 =0 =0 =0 =0 =0"/>
+    <src kind="fsrc" bit="41 42:48 49 80 72 69 =0 81 =0 =0 =0"/>
+    <src kind="fsrc" bit="50 51:57 58 82 73 70 =0 =0 =0 =0 =0"/>
+    <modifier name="mask" bit="84:88" kind="mask"/>
+    <modifier name="group" bit="75 77:78 76" kind="fgroup"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <ins name="extr" display="extr" length="12">
+    <exact bit="0:11">000100100111</exact>
+    <dest kind="fdst" bit="24 25:31 32 33 76 68 =0 =0 =0"/>
+    <modifier name="vt" bit="79 76" kind="dst_vt"/>
+    <src kind="fsrc" bit="59 60:66 67 83 74 71 =0 =0 =0 =0 =0"/>
+    <src kind="fsrc" bit="41 42:48 49 80 72 69 =0 81 =0 =0 =0"/>
+    <src kind="fsrc" bit="50 51:57 58 82 73 70 =0 =0 =0 =0 =0"/>
+    <modifier name="mask" bit="84:88" kind="mask"/>
+    <modifier name="group" bit="75 77:78 76" kind="fgroup"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <ins name="shlhi" display="shlhi" length="12">
+    <exact bit="0:11">001000100111</exact>
+    <dest kind="fdst" bit="24 25:31 32 33 76 68 =0 =0 =0"/>
+    <modifier name="vt" bit="79 76" kind="dst_vt"/>
+    <src kind="fsrc" bit="59 60:66 67 83 74 71 =0 =0 =0 =0 =0"/>
+    <src kind="fsrc" bit="41 42:48 49 80 72 69 =0 81 =0 =0 =0"/>
+    <src kind="fsrc" bit="50 51:57 58 82 73 70 =0 =0 =0 =0 =0"/>
+    <modifier name="mask" bit="84:88" kind="mask"/>
+    <modifier name="group" bit="75 77:78 76" kind="fgroup"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <ins name="shrhi" display="shrhi" length="12">
+    <exact bit="0:11">001010100111</exact>
+    <dest kind="fdst" bit="24 25:31 32 33 76 68 =0 =0 =0"/>
+    <modifier name="vt" bit="79 76" kind="dst_vt"/>
+    <src kind="fsrc" bit="59 60:66 67 83 74 71 =0 =0 =0 =0 =0"/>
+    <src kind="fsrc" bit="41 42:48 49 80 72 69 =0 81 =0 =0 =0"/>
+    <src kind="fsrc" bit="50 51:57 58 82 73 70 =0 =0 =0 =0 =0"/>
+    <modifier name="mask" bit="84:88" kind="mask"/>
+    <modifier name="group" bit="75 77:78 76" kind="fgroup"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <ins name="asr" display="asr" length="10">
+    <exact bit="0:11">000110100111</exact>
+    <dest kind="fdst" bit="24 25:31 32 33 65 59 =0 =0 =0"/>
+    <modifier name="vt" bit="68 65" kind="dst_vt"/>
+    <src kind="fsrc" bit="41 42:48 49 69 62 60 =0 70 =0 =0 =0"/>
+    <src kind="fsrc" bit="50 51:57 58 71 63 61 =0 =0 =0 =0 =0"/>
+    <modifier name="group" bit="64 66:67 65" kind="fgroup"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <ins name="asrh" display="asrh" length="10">
+    <exact bit="0:11">001110100111</exact>
+    <dest kind="fdst" bit="24 25:31 32 33 65 59 =0 =0 =0"/>
+    <modifier name="vt" bit="68 65" kind="dst_vt"/>
+    <src kind="fsrc" bit="41 42:48 49 69 62 60 =0 70 =0 =0 =0"/>
+    <src kind="fsrc" bit="50 51:57 58 71 63 61 =0 =0 =0 =0 =0"/>
+    <modifier name="group" bit="64 66:67 65" kind="fgroup"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <!-- IAddInstructionDesc -->
+  <group name="iadd" length="10">
+    <exact bit="0:6 8 18 60 64">10110011111</exact>
+    <exact bit="7">variant</exact>
+    <dest kind="fdst" bit="24 25:31 32 33 68 59:60 =0 =0"/>
+    <modifier name="vt" bit="71 68" kind="dst_vt"/>
+    <modifier name="wt" bit="37 68" kind="dst_vt"/>
+    <src kind="fsrc" bit="41 42:48 49 72 65 61 =0 73 =0 =0 =0"/>
+    <src kind="fsrc" bit="50 51:57 58 74 66 63 =0 75 =0 =0 =0"/>
+    <modifier name="group" bit="67 69:70 68" kind="fgroup"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="sat" bit="62" display="sat"/>
+    <modifier name="q" bit="20 22" kind="iadd_q"/>
+    <ins name="iadd" display="iadd" variant="1"/>
+    <ins name="isub" display="isub" variant="0"/>
+  </group>
+
+  <!-- IAdd64InstructionDesc -->
+  <group name="iadd64" length="10">
+    <exact bit="0:6 8 18 59:60">10110011111</exact>
+    <exact bit="7">variant</exact>
+    <dest kind="fdst" bit="24 25:31 32 33 68 59:60 =0 =0"/>
+    <modifier name="vt" bit="71 68" kind="dst_vt"/>
+    <modifier name="wt" bit="37 68" kind="dst_vt"/>
+    <src kind="fsrc" bit="41 42:48 49 72 65 61:62 73 =0 =0 =0"/>
+    <src kind="fsrc" bit="50 51:57 58 74 66 63:64 75 =0 =0 =0"/>
+    <modifier name="group" bit="67 69:70 68" kind="fgroup"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="q" bit="20 22" kind="iadd_q"/>
+    <ins name="iadd64" display="iadd" variant="1"/>
+    <ins name="isub64" display="isub" variant="0"/>
+  </group>
+
+  <!-- IAddShiftedInstructionDesc -->
+  <group name="iadd_shift" length="10">
+    <exact bit="0:6 8 18 60 64">00110011111</exact>
+    <exact bit="7">variant</exact>
+    <dest kind="fdst" bit="24 25:31 32 33 68 59:60 =0 =0"/>
+    <modifier name="vt" bit="71 68" kind="dst_vt"/>
+    <modifier name="wt" bit="37 68" kind="dst_vt"/>
+    <src kind="fsrc" bit="41 42:48 49 72 65 61 =0 73 =0 =0 =0"/>
+    <src kind="fsrc" bit="50 51:57 58 74 66 63 =0 75 =0 =0 =0"/>
+    <modifier name="shift" bit="62 76" kind="lsl"/>
+    <modifier name="group" bit="67 69:70 68" kind="fgroup"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="q" bit="20 22" kind="iadd_q"/>
+    <ins name="iadd_shift" display="iadd" variant="1"/>
+    <ins name="isub_shift" display="isub" variant="0"/>
+  </group>
+
+  <group name="imadd" length="12">
+    <exact bit="0:6 8 18">100011111</exact>
+    <exact bit="7">variant</exact>
+    <dest kind="fdst" bit="24 25:31 32 33 77 68:69 =0 =0"/>
+    <modifier name="vt" bit="80 77" kind="dst_vt"/>
+    <src kind="fsrc" bit="41 42:48 49 81 73 70 =0 82 =0 =0 =0"/>
+    <src kind="fsrc" bit="50 51:57 58 83 74 71 =0 84 =0 =0 =0"/>
+    <src kind="fsrc" bit="59 60:66 67 85 75 72 =0 86 =0 =0 =0"/>
+    <modifier name="group" bit="76 78:79 77" kind="fgroup"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="sat" bit="87" display="sat"/>
+    <modifier name="q" bit="20 22" kind="iadd_q"/>
+    <ins name="imadd" display="imadd" variant="1"/>
+    <ins name="imsub" display="imsub" variant="0"/>
+  </group>
+
+  <!-- ffma D, A, D, B (4 bytes, Z = 1) -->
+  <ins name="ffma4_z1" display="ffma" length="4">
+    <exact bit="0:2 16:18">011001</exact>
+    <dest kind="vdst" bit="=0 4:7 22:23 =0 =0000 =00 =0 3 21 =0 =0 =0"/>
+    <src kind="vsrc" bit="=0 9:14 =0 15 19 8 =0 =0 =0 =0 =0 =0"/>
+    <src kind="vdst" bit="=0 4:7 22:23 =0 =0000 =00 =0 3 21 =0 =0 =0"/>
+    <src kind="vsrc" bit="=0 25:30 =0 31 20 =1 =0 =0 =0 =0 =0 =0"/>
+    <modifier name="hidden" bit="24" kind="ignore1"/>
+  </ins>
+
+  <!-- ffma D, A, B, D (4 bytes, Z = 0) -->
+  <ins name="ffma4_z0" display="ffma" length="4">
+    <exact bit="0:2 16:18">010001</exact>
+    <dest kind="vdst" bit="=0 4:7 22:23 =0 =0000 =00 =0 3 21 =0 =0 =0"/>
+    <src kind="vsrc" bit="=0 9:14 =0 15 19 8 =0 =0 =0 =0 =0 =0"/>
+    <src kind="vsrc" bit="=0 25:30 =0 31 20 24 =0 =0 =0 =0 =0 =0"/>
+    <src kind="vdst" bit="=0 4:7 22:23 =0 =0000 =00 =0 3 21 =0 =0 =0"/>
+  </ins>
+
+  <ins name="ffma6" display="ffma" length="6">
+    <exact bit="0:2 16:18 32:33">00110001</exact>
+    <dest kind="vdst" bit="34 4:7 22:23 =0 =0000 =00 =0 3 21 =0 =0 =0"/>
+    <src kind="vsrc" bit="35 9:14 =0 15 19 8 =0 =0 =0 =0 =0 =0"/>
+    <src kind="vsrc" bit="36 25:30 38 31 20 24 37 =0 =0 =0 =0 =0"/>
+    <src kind="vsrc" bit="40 41:46 =0 47 39 =1 =0 =0 =0 =0 =0 =0"/>
+  </ins>
+
+  <ins name="ffma8" display="ffma" length="8">
+    <exact bit="0:2 16:18 32:33">01110001</exact>
+    <dest kind="vdst" bit="50 4:7 22:23 60 =0000 =00 =0 3 21 54 53 =0"/>
+    <src kind="vsrc" bit="51 9:14 56 15 19 8 55 =0 =0 =0 =0 =0"/>
+    <src kind="vsrc" bit="52 25:30 58 31 20 24 57 59 =0 =0 =0 =0"/>
+    <src kind="vsrc" bit="40 41:46 38 47 39 49 37 36 35 34 =0 =0"/>
+    <modifier name="wait" bit="61:63" kind="wait1"/>
+  </ins>
+
+  <ins name="ffma10" display="ffma" length="10/12">
+    <exact bit="0:2 16:18 33">1110001</exact>
+    <modifier name="length" bit="32"/>
+    <dest kind="vdst" bit="50 4:7 22:23 60 66:69 =00 =0 3 21 54 53 70"/>
+    <src kind="vsrc" bit="51 9:14 56 15 19 8 55 65 80 71 =0 =0"/>
+    <src kind="vsrc" bit="52 25:30 58 31 20 24 57 59 81 72 =0 =0"/>
+    <src kind="vsrc" bit="40 41:46 38 47 39 49 37 36 35 34 =0 =0"/>
+    <modifier name="group" bit="74:76 54 21 53" kind="vgroup"/>
+    <modifier name="wait" bit="61:63 77:79" kind="wait"/>
+    <modifier name="sat" bit="73" display="sat"/>
+    <modifier name="first" bit="88" display="first"/>
+  </ins>
+
+  <ins name="fmul4" display="fmul" length="4">
+    <exact bit="0:2 16:18">001001</exact>
+    <dest kind="vdst" bit="=0 4:7 22:23 =0 =0000 =00 =0 3 21 =0 =0 =0"/>
+    <src kind="vsrc" bit="=0 9:14 =0 15 19 8 =0 =0 =0 =0 =0 =0"/>
+    <src kind="vsrc" bit="=0 25:30 =0 31 20 24 =0 =0 =0 =0 =0 =0"/>
+  </ins>
+
+  <ins name="fmul6" display="fmul" length="6">
+    <exact bit="0:2 16:18 32:33">00101001</exact>
+    <dest kind="vdst" bit="34 4:7 22:23 44 =0000 =00 =0 3 21 38 37 =0"/>
+    <src kind="vsrc" bit="35 9:14 40 15 19 8 39 =0 =0 =0 =0 =0"/>
+    <src kind="vsrc" bit="36 25:30 42 31 20 24 41 43 =0 =0 =0 =0"/>
+    <modifier name="wait" bit="45:47" kind="wait1"/>
+  </ins>
+
+  <ins name="fmul8" display="fmul" length="8">
+    <exact bit="0:2 16:18 32:33">01101001</exact>
+    <dest kind="vdst" bit="34 4:7 22:23 44 50:53 =00 =0 3 21 38 37 54"/>
+    <src kind="vsrc" bit="35 9:14 40 15 19 8 39 49 =0 55 =0 =0"/>
+    <src kind="vsrc" bit="36 25:30 42 31 20 24 41 43 =0 56 =0 =0"/>
+    <modifier name="group" bit="58:60 38 21 37" kind="vgroup"/>
+    <modifier name="wait" bit="45:47 61:63" kind="wait"/>
+    <modifier name="sat" bit="57" display="sat"/>
+  </ins>
+
+  <ins name="fmul12" display="fmul" length="12">
+    <exact bit="0:2 16:18 32:33">10101001</exact>
+    <dest kind="vdst" bit="34 4:7 22:23 44 50:53 =00 =0 3 21 38 37 54"/>
+    <src kind="vsrc" bit="35 9:14 40 15 19 8 39 49 64 55 =0 =0"/>
+    <src kind="vsrc" bit="36 25:30 42 31 20 24 41 43 65 56 =0 =0"/>
+    <modifier name="group" bit="58:60 38 21 37" kind="vgroup"/>
+    <modifier name="wait" bit="45:47 61:63" kind="wait"/>
+    <modifier name="sat" bit="57" display="sat"/>
+  </ins>
+
+  <ins name="fadd4" display="fadd" length="4">
+    <exact bit="0:2 16:18">000001</exact>
+    <dest kind="vdst" bit="=0 4:7 22:23 =0 =0000 =00 =0 3 21 =0 =0 =0"/>
+    <src kind="vsrc" bit="=0 9:14 =0 15 19 8 =0 =0 =0 =0 =0 =0"/>
+    <src kind="vsrc" bit="=0 25:30 =0 31 20 24 =0 =0 =0 =0 =0 =0"/>
+  </ins>
+
+  <ins name="fadd6" display="fadd" length="6">
+    <exact bit="0:2 16:18 32:33">00100001</exact>
+    <dest kind="vdst" bit="34 4:7 22:23 44 =0000 =00 =0 3 21 38 37 =0"/>
+    <src kind="vsrc" bit="35 9:14 40 15 19 8 39 =0 =0 =0 =0 =0"/>
+    <src kind="vsrc" bit="36 25:30 42 31 20 24 41 43 =0 =0 =0 =0"/>
+    <modifier name="wait" bit="45:47" kind="wait1"/>
+  </ins>
+
+  <ins name="fadd8" display="fadd" length="8">
+    <exact bit="0:2 16:18 32:33">01100001</exact>
+    <dest kind="vdst" bit="34 4:7 22:23 44 50:53 =00 =0 3 21 38 37 54"/>
+    <src kind="vsrc" bit="35 9:14 40 15 19 8 39 49 =0 55 =0 =0"/>
+    <src kind="vsrc" bit="36 25:30 42 31 20 24 41 43 =0 56 =0 =0"/>
+    <modifier name="group" bit="58:60 38 21 37" kind="vgroup"/>
+    <modifier name="wait" bit="45:47 61:63" kind="wait"/>
+    <modifier name="sat" bit="57" display="sat"/>
+  </ins>
+
+  <ins name="fadd10" display="fadd" length="10">
+    <exact bit="0:2 16:18 32:33">10100001</exact>
+    <dest kind="vdst" bit="34 4:7 22:23 44 50:53 =00 =0 3 21 38 37 54"/>
+    <src kind="vsrc" bit="35 9:14 40 15 19 8 39 49 64 55 =0 =0"/>
+    <src kind="vsrc" bit="36 25:30 42 31 20 24 41 43 65 56 =0 =0"/>
+    <modifier name="group" bit="58:60 38 21 37" kind="vgroup"/>
+    <modifier name="wait" bit="45:47 61:63" kind="wait"/>
+    <modifier name="sat" bit="57" display="sat"/>
+  </ins>
+
+  <!-- hfma D, A, D, B (4 bytes, Z = 1) -->
+  <ins name="hfma4_z1" display="hfma" length="4">
+    <exact bit="0:2 16:18">011000</exact>
+    <dest kind="vdst" bit="3 4:7 22:23 =0 =0000 =00 =0 =0 21 =0 =0 =0"/>
+    <src kind="vsrc" bit="8 9:14 =0 15 19 =0 =0 =0 =0 =0 =0 =0"/>
+    <src kind="vdst" bit="3 4:7 22:23 =0 =0000 =00 =0 =0 21 =0 =0 =0"/>
+    <src kind="vsrc" bit="24 25:30 =0 31 20 =0 =0 =0 =0 =0 =0 =0"/>
+  </ins>
+
+  <!-- hfma D, A, B, D (4 bytes, Z = 0) -->
+  <ins name="hfma4_z0" display="hfma" length="4">
+    <exact bit="0:2 16:18">010000</exact>
+    <dest kind="vdst" bit="3 4:7 22:23 =0 =0000 =00 =0 =0 21 =0 =0 =0"/>
+    <src kind="vsrc" bit="8 9:14 =0 15 19 =0 =0 =0 =0 =0 =0 =0"/>
+    <src kind="vsrc" bit="24 25:30 =0 31 20 =0 =0 =0 =0 =0 =0 =0"/>
+    <src kind="vdst" bit="3 4:7 22:23 =0 =0000 =00 =0 =0 21 =0 =0 =0"/>
+  </ins>
+
+  <ins name="hfma6" display="hfma" length="6">
+    <exact bit="0:2 16:18 32:33">00110000</exact>
+    <dest kind="vdst" bit="3 4:7 22:23 =0 =0000 =00 =0 =0 21 =0 =0 =0"/>
+    <src kind="vsrc" bit="8 9:14 =0 15 19 =0 =0 =0 =0 =0 35 =0"/>
+    <src kind="vsrc" bit="24 25:30 38 31 20 =0 37 =0 =0 =0 36 =0"/>
+    <src kind="vsrc" bit="40 41:46 =0 47 39 =0 =0 =0 =0 =0 =0 =0"/>
+  </ins>
+
+  <ins name="hfma8" display="hfma" length="8">
+    <exact bit="0:2 16:18 32:33">01110000</exact>
+    <dest kind="vdst" bit="3 4:7 22:23 60 =0000 =00 =0 =0 21 54 =0 =0"/>
+    <src kind="vsrc" bit="8 9:14 56 15 19 =0 55 =0 =0 =0 51 =0"/>
+    <src kind="vsrc" bit="24 25:30 58 31 20 =0 57 59 =0 =0 52 =0"/>
+    <src kind="vsrc" bit="40 41:46 38 47 39 =0 37 36 35 =0 50 =0"/>
+    <modifier name="wait" bit="61:63" kind="wait1"/>
+  </ins>
+
+  <ins name="hfma10" display="hfma" length="10/12">
+    <exact bit="0:2 16:18 33">1110000</exact>
+    <modifier name="length" bit="32"/>
+    <dest kind="vdst" bit="3 4:7 22:23 60 66:69 =00 =0 =0 21 54 =0 =0"/>
+    <src kind="vsrc" bit="8 9:14 56 15 19 =0 55 65 80 =0 51 =0"/>
+    <src kind="vsrc" bit="24 25:30 58 31 20 =0 57 59 81 =0 52 =0"/>
+    <src kind="vsrc" bit="40 41:46 38 47 39 =0 37 36 35 =0 50 =0"/>
+    <modifier name="wait" bit="61:63 77:79" kind="wait"/>
+    <modifier name="sat" bit="73" display="sat"/>
+    <modifier name="first" bit="88" display="first"/>
+  </ins>
+
+  <ins name="hmul4" display="hmul" length="4">
+    <exact bit="0:2 16:18">001000</exact>
+    <dest kind="vdst" bit="3 4:7 22:23 =0 =0000 =00 =0 =0 21 =0 =0 =0"/>
+    <src kind="vsrc" bit="8 9:14 =0 15 19 =0 =0 =0 =0 =0 =0 =0"/>
+    <src kind="vsrc" bit="24 25:30 =0 31 20 =0 =0 =0 =0 =0 =0 =0"/>
+  </ins>
+
+  <ins name="hmul6" display="hmul" length="6">
+    <exact bit="0:2 16:18 32:33">00101000</exact>
+    <dest kind="vdst" bit="3 4:7 22:23 44 =0000 =00 =0 =0 21 38 =0 =0"/>
+    <src kind="vsrc" bit="8 9:14 40 15 19 =0 39 =0 =0 =0 35 =0"/>
+    <src kind="vsrc" bit="24 25:30 42 31 20 =0 41 43 =0 =0 36 =0"/>
+    <modifier name="wait" bit="45:47" kind="wait1"/>
+  </ins>
+
+  <ins name="hmul8" display="hmul" length="8">
+    <exact bit="0:2 16:18 32:33">01101000</exact>
+    <dest kind="vdst" bit="3 4:7 22:23 44 50:53 =00 =0 =0 21 38 =0 =0"/>
+    <src kind="vsrc" bit="8 9:14 40 15 19 =0 39 49 =0 =0 35 =0"/>
+    <src kind="vsrc" bit="24 25:30 42 31 20 =0 41 43 =0 =0 36 =0"/>
+    <modifier name="wait" bit="45:47 61:63" kind="wait"/>
+    <modifier name="sat" bit="57" display="sat"/>
+  </ins>
+
+  <ins name="hmul10" display="hmul" length="10">
+    <exact bit="0:2 16:18 32:33">10101000</exact>
+    <dest kind="vdst" bit="3 4:7 22:23 44 50:53 =00 =0 =0 21 38 =0 =0"/>
+    <src kind="vsrc" bit="8 9:14 40 15 19 =0 39 49 64 =0 35 =0"/>
+    <src kind="vsrc" bit="24 25:30 42 31 20 =0 41 43 65 =0 36 =0"/>
+    <modifier name="wait" bit="45:47 61:63" kind="wait"/>
+    <modifier name="sat" bit="57" display="sat"/>
+  </ins>
+
+  <ins name="hadd4" display="hadd" length="4">
+    <exact bit="0:2 16:18">000000</exact>
+    <dest kind="vdst" bit="3 4:7 22:23 =0 =0000 =00 =0 =0 21 =0 =0 =0"/>
+    <src kind="vsrc" bit="8 9:14 =0 15 19 =0 =0 =0 =0 =0 =0 =0"/>
+    <src kind="vsrc" bit="24 25:30 =0 31 20 =0 =0 =0 =0 =0 =0 =0"/>
+  </ins>
+
+  <ins name="hadd6" display="hadd" length="6">
+    <exact bit="0:2 16:18 32:33">00100000</exact>
+    <dest kind="vdst" bit="3 4:7 22:23 44 =0000 =00 =0 =0 21 38 =0 =0"/>
+    <src kind="vsrc" bit="8 9:14 40 15 19 =0 39 =0 =0 =0 35 =0"/>
+    <src kind="vsrc" bit="24 25:30 42 31 20 =0 41 43 =0 =0 36 =0"/>
+    <modifier name="wait" bit="45:47" kind="wait1"/>
+  </ins>
+
+  <ins name="hadd8" display="hadd" length="8">
+    <exact bit="0:2 16:18 32:33">01100000</exact>
+    <dest kind="vdst" bit="3 4:7 22:23 44 50:53 =00 =0 =0 21 38 =0 =0"/>
+    <src kind="vsrc" bit="8 9:14 40 15 19 =0 39 49 =0 =0 35 =0"/>
+    <src kind="vsrc" bit="24 25:30 42 31 20 =0 41 43 =0 =0 36 =0"/>
+    <modifier name="wait" bit="45:47 61:63" kind="wait"/>
+    <modifier name="sat" bit="57" display="sat"/>
+  </ins>
+
+  <ins name="hadd10" display="hadd" length="10">
+    <exact bit="0:2 16:18 32:33">10100000</exact>
+    <dest kind="vdst" bit="3 4:7 22:23 44 50:53 =00 =0 =0 21 38 =0 =0"/>
+    <src kind="vsrc" bit="8 9:14 40 15 19 =0 39 49 64 =0 35 =0"/>
+    <src kind="vsrc" bit="24 25:30 42 31 20 =0 41 43 65 =0 36 =0"/>
+    <modifier name="wait" bit="45:47 61:63" kind="wait"/>
+    <modifier name="sat" bit="57" display="sat"/>
+  </ins>
+
+  <ins name="rint" display="rint" length="10">
+    <exact bit="0:11 65:66">00000000101111</exact>
+    <dest kind="fdst_inv" bit="24 25:31 32 33 55 61 =0 50 =1"/>
+    <modifier name="vt" bit="59 55" kind="dst_vt"/>
+    <src kind="fsrc" bit="41 42:48 49 62 53 52 =0 64 63 51 =1"/>
+    <modifier name="group" bit="54 56:57 55" kind="fgroup"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <ins name="floor" display="floor" length="10">
+    <exact bit="0:11 65:66">01000000101111</exact>
+    <dest kind="fdst_inv" bit="24 25:31 32 33 55 61 =0 50 =1"/>
+    <modifier name="vt" bit="59 55" kind="dst_vt"/>
+    <src kind="fsrc" bit="41 42:48 49 62 53 52 =0 64 63 51 =1"/>
+    <modifier name="group" bit="54 56:57 55" kind="fgroup"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <ins name="ceil" display="ceil" length="10">
+    <exact bit="0:11 65:66">10000000101111</exact>
+    <dest kind="fdst_inv" bit="24 25:31 32 33 55 61 =0 50 =1"/>
+    <modifier name="vt" bit="59 55" kind="dst_vt"/>
+    <src kind="fsrc" bit="41 42:48 49 62 53 52 =0 64 63 51 =1"/>
+    <modifier name="group" bit="54 56:57 55" kind="fgroup"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <ins name="trunc" display="trunc" length="10">
+    <exact bit="0:11 65:66">11000000101111</exact>
+    <dest kind="fdst_inv" bit="24 25:31 32 33 55 61 =0 50 =1"/>
+    <modifier name="vt" bit="59 55" kind="dst_vt"/>
+    <src kind="fsrc" bit="41 42:48 49 62 53 52 =0 64 63 51 =1"/>
+    <modifier name="group" bit="54 56:57 55" kind="fgroup"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <ins name="rcp" display="rcp" length="10">
+    <exact bit="0:11">000010101111</exact>
+    <dest kind="fdst_inv" bit="24 25:31 32 33 62 68 =0 57 =1"/>
+    <modifier name="vt" bit="66 62" kind="dst_vt"/>
+    <src kind="fsrc" bit="41 42:48 49 69 52 59 =0 71 70 58 =1"/>
+    <modifier name="group" bit="61 63:64 62" kind="fgroup"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <ins name="rsqrt" display="rsqrt" length="10">
+    <exact bit="0:11">000110101111</exact>
+    <dest kind="fdst_inv" bit="24 25:31 32 33 55 61 =0 50 =1"/>
+    <modifier name="vt" bit="59 55" kind="dst_vt"/>
+    <src kind="fsrc" bit="41 42:48 49 62 53 52 =0 64 63 51 =1"/>
+    <modifier name="group" bit="54 56:57 55" kind="fgroup"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <ins name="rsqrt_special" display="rsqrt_special" length="10">
+    <exact bit="0:11">000100101111</exact>
+    <dest kind="fdst_inv" bit="24 25:31 32 33 55 61 =0 50 =1"/>
+    <modifier name="vt" bit="59 55" kind="dst_vt"/>
+    <src kind="fsrc" bit="41 42:48 49 62 53 52 =0 64 63 51 =1"/>
+    <modifier name="group" bit="54 56:57 55" kind="fgroup"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <ins name="sinc" display="sinc" length="10">
+    <exact bit="0:11">001100101111</exact>
+    <dest kind="fdst_inv" bit="24 25:31 32 33 55 61 =0 50 =1"/>
+    <modifier name="vt" bit="59 55" kind="dst_vt"/>
+    <src kind="fsrc" bit="41 42:48 49 62 53 52 =0 64 63 51 =1"/>
+    <modifier name="group" bit="54 56:57 55" kind="fgroup"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <ins name="log2" display="log2" length="10">
+    <exact bit="0:11">001000101111</exact>
+    <dest kind="fdst_inv" bit="24 25:31 32 33 55 61 =0 50 =1"/>
+    <modifier name="vt" bit="59 55" kind="dst_vt"/>
+    <src kind="fsrc" bit="41 42:48 49 62 53 52 =0 64 63 51 =1"/>
+    <modifier name="group" bit="54 56:57 55" kind="fgroup"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <ins name="exp2" display="exp2" length="10">
+    <exact bit="0:11">001010101111</exact>
+    <dest kind="fdst_inv" bit="24 25:31 32 33 55 61 =0 50 =1"/>
+    <modifier name="vt" bit="59 55" kind="dst_vt"/>
+    <src kind="fsrc" bit="41 42:48 49 62 53 52 =0 64 63 51 =1"/>
+    <modifier name="group" bit="54 56:57 55" kind="fgroup"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <!-- cmpselcc (6 bytes), cmp = 1 -->
+  <ins name="cmpcc6" display="cmp" length="6">
+    <exact bit="0:3 16:17 21">1101010</exact>
+    <modifier name="cc" bit="32:34 4 21" kind="cmpselcc3"/>
+    <modifier name="D" bit="5:7" kind="ccdst"/>
+    <src kind="vsrc" bit="35 9:14 40 15 19 8 39 =0 =0 =0 =0 34"/>
+    <src kind="vsrc" bit="36 25:30 42 31 20 24 41 43 =0 =0 =0 34"/>
+    <modifier name="wait" bit="45:47" kind="wait1"/>
+  </ins>
+
+  <!-- cmpselcc (6 bytes), cmp = 0 -->
+  <ins name="cmpselcc6" display="cmpsel" length="6">
+    <exact bit="0:3 16:17 21">0101010</exact>
+    <modifier name="cc" bit="32:34 4 21" kind="cmpselcc3"/>
+    <modifier name="D" bit="5:7" kind="ccdst"/>
+    <src kind="vsrc" bit="35 9:14 40 15 19 8 39 =0 =0 =0 =0 34"/>
+    <src kind="vsrc" bit="36 25:30 42 31 20 24 41 43 =0 =0 =0 34"/>
+    <modifier name="wait" bit="45:47" kind="wait1"/>
+  </ins>
+
+  <!-- cmpselcc (10 bytes), cmp = 1 -->
+  <ins name="cmpcc10" display="cmp" length="10">
+    <exact bit="0:3 16:17 21 32:33">101111010</exact>
+    <modifier name="cc" bit="48:50 34 4 21" kind="cmpselcc4"/>
+    <modifier name="D" bit="5:7" kind="ccdst"/>
+    <src kind="vsrc" bit="51 9:14 56 15 19 8 55 65 =0 =0 =0 50"/>
+    <src kind="vsrc" bit="52 25:30 58 31 20 24 57 59 =0 =0 =0 50"/>
+    <src kind="vsrc_omit_r0l" bit="40 41:46 38 47 39 =0 37 36 35 =0 =0 =1"/>
+    <src kind="vsrc_omit_r0l" bit="72 73:78 70 79 71 =0 69 68 67 =0 =0 =1"/>
+    <modifier name="wait" bit="61:63" kind="wait1"/>
+  </ins>
+
+  <!-- cmpselcc (10 bytes), cmp = 0 -->
+  <ins name="cmpselcc10" display="cmpsel" length="10">
+    <exact bit="0:3 16:17 21 32:33">100111010</exact>
+    <modifier name="cc" bit="48:50 34 4 21" kind="cmpselcc4"/>
+    <modifier name="D" bit="5:7" kind="ccdst"/>
+    <src kind="vsrc" bit="51 9:14 56 15 19 8 55 65 =0 =0 =0 50"/>
+    <src kind="vsrc" bit="52 25:30 58 31 20 24 57 59 =0 =0 =0 50"/>
+    <src kind="vsrc" bit="40 41:46 38 47 39 =0 37 36 35 =0 =0 =1"/>
+    <src kind="vsrc" bit="72 73:78 70 79 71 =0 69 68 67 =0 =0 =1"/>
+    <modifier name="wait" bit="61:63" kind="wait1"/>
+  </ins>
+
+  <!-- cmpselcc (14 bytes), cmp = 1 -->
+  <ins name="cmpcc14" display="cmp" length="14">
+    <exact bit="0:3 16:17 21 32:33">111111010</exact>
+    <modifier name="cc" bit="48:50 34 4 21" kind="cmpselcc4"/>
+    <modifier name="D" bit="5:7" kind="ccdst"/>
+    <src kind="vsrc" bit="51 9:14 56 15 19 8 55 65 96 87 =0 50"/>
+    <src kind="vsrc" bit="52 25:30 58 31 20 24 57 59 97 88 =0 50"/>
+    <src kind="vsrc_omit_r0l" bit="40 41:46 38 47 39 =0 37 36 35 =0 =0 =1"/>
+    <src kind="vsrc_omit_r0l" bit="72 73:78 70 79 71 =0 69 68 67 =0 =0 =1"/>
+    <modifier name="wait" bit="61:63 93:95" kind="wait"/>
+  </ins>
+
+  <!-- cmpselcc (14 bytes), cmp = 0 -->
+  <ins name="cmpselcc14" display="cmpsel" length="14">
+    <exact bit="0:3 16:17 21 32:33">110111010</exact>
+    <modifier name="cc" bit="48:50 34 4 21" kind="cmpselcc4"/>
+    <modifier name="D" bit="5:7" kind="ccdst"/>
+    <src kind="vsrc" bit="51 9:14 56 15 19 8 55 65 96 87 =0 50"/>
+    <src kind="vsrc" bit="52 25:30 58 31 20 24 57 59 97 88 =0 50"/>
+    <src kind="vsrc" bit="40 41:46 38 47 39 =0 37 36 35 =0 =0 =1"/>
+    <src kind="vsrc" bit="72 73:78 70 79 71 =0 69 68 67 =0 =0 =1"/>
+    <modifier name="wait" bit="61:63 93:95" kind="wait"/>
+  </ins>
+
+  <!-- cmpsel (6 bytes) whose selects differ from its compares -->
+  <ins name="cmpsel6_full0" display="cmpsel" length="6">
+    <exact bit="0:2 16:17 24 41">0100010</exact>
+    <modifier name="cc" bit="32:34" kind="cmpsel_cc3"/>
+    <dest kind="vdst" bit="3 4:7 22:23 44 =0000 =00 =0 17 21 38 =0 =0"/>
+    <src kind="vsrc" bit="35 9:14 40 15 19 8 39 =0 =0 =0 =0 34"/>
+    <src kind="vsrc" bit="36 25:30 42 31 20 24 41 43 =0 =0 =0 34"/>
+    <src kind="vsrc" bit="35 9:14 40 15 19 17 39 =0 =0 =0 =0 18"/>
+    <src kind="vsrc" bit="36 25:30 42 31 20 17 41 43 =0 =0 =0 18"/>
+    <modifier name="group" bit="=000 38 21 =0" kind="vgroup"/>
+    <modifier name="wait" bit="45:47" kind="wait1"/>
+  </ins>
+
+  <ins name="cmpsel6_full1" display="cmpsel" length="6">
+    <exact bit="0:2 8 15:17">1000010</exact>
+    <modifier name="cc" bit="32:34" kind="cmpsel_cc3"/>
+    <dest kind="vdst" bit="3 4:7 22:23 44 =0000 =00 =0 17 21 38 =0 =0"/>
+    <src kind="vsrc" bit="35 9:14 40 15 19 8 39 =0 =0 =0 =0 34"/>
+    <src kind="vsrc" bit="36 25:30 42 31 20 24 41 43 =0 =0 =0 34"/>
+    <src kind="vsrc" bit="35 9:14 40 15 19 17 39 =0 =0 =0 =0 18"/>
+    <src kind="vsrc" bit="36 25:30 42 31 20 17 41 43 =0 =0 =0 18"/>
+    <modifier name="group" bit="=000 38 21 =0" kind="vgroup"/>
+    <modifier name="wait" bit="45:47" kind="wait1"/>
+  </ins>
+
+  <ins name="cmpsel6_full2" display="cmpsel" length="6">
+    <exact bit="0:2 8 16:17 39">0001010</exact>
+    <modifier name="cc" bit="32:34" kind="cmpsel_cc3"/>
+    <dest kind="vdst" bit="3 4:7 22:23 44 =0000 =00 =0 17 21 38 =0 =0"/>
+    <src kind="vsrc" bit="35 9:14 40 15 19 8 39 =0 =0 =0 =0 34"/>
+    <src kind="vsrc" bit="36 25:30 42 31 20 24 41 43 =0 =0 =0 34"/>
+    <src kind="vsrc" bit="35 9:14 40 15 19 17 39 =0 =0 =0 =0 18"/>
+    <src kind="vsrc" bit="36 25:30 42 31 20 17 41 43 =0 =0 =0 18"/>
+    <modifier name="group" bit="=000 38 21 =0" kind="vgroup"/>
+    <modifier name="wait" bit="45:47" kind="wait1"/>
+  </ins>
+
+  <ins name="cmpsel6_full3" display="cmpsel" length="6">
+    <exact bit="0:2 16:17 24 41">0010010</exact>
+    <modifier name="cc" bit="32:34" kind="cmpsel_cc3"/>
+    <dest kind="vdst" bit="3 4:7 22:23 44 =0000 =00 =0 17 21 38 =0 =0"/>
+    <src kind="vsrc" bit="35 9:14 40 15 19 8 39 =0 =0 =0 =0 34"/>
+    <src kind="vsrc" bit="36 25:30 42 31 20 24 41 43 =0 =0 =0 34"/>
+    <src kind="vsrc" bit="35 9:14 40 15 19 17 39 =0 =0 =0 =0 18"/>
+    <src kind="vsrc" bit="36 25:30 42 31 20 17 41 43 =0 =0 =0 18"/>
+    <modifier name="group" bit="=000 38 21 =0" kind="vgroup"/>
+    <modifier name="wait" bit="45:47" kind="wait1"/>
+  </ins>
+
+  <ins name="cmpsel6_full4" display="cmpsel" length="6">
+    <exact bit="0:2 16 18 34 43">1010010</exact>
+    <modifier name="cc" bit="32:34" kind="cmpsel_cc3"/>
+    <dest kind="vdst" bit="3 4:7 22:23 44 =0000 =00 =0 17 21 38 =0 =0"/>
+    <src kind="vsrc" bit="35 9:14 40 15 19 8 39 =0 =0 =0 =0 34"/>
+    <src kind="vsrc" bit="36 25:30 42 31 20 24 41 43 =0 =0 =0 34"/>
+    <src kind="vsrc" bit="35 9:14 40 15 19 17 39 =0 =0 =0 =0 18"/>
+    <src kind="vsrc" bit="36 25:30 42 31 20 17 41 43 =0 =0 =0 18"/>
+    <modifier name="group" bit="=000 38 21 =0" kind="vgroup"/>
+    <modifier name="wait" bit="45:47" kind="wait1"/>
+  </ins>
+
+  <ins name="cmpsel6_full5" display="cmpsel" length="6">
+    <exact bit="0:2 16 18 34 43">1100010</exact>
+    <modifier name="cc" bit="32:34" kind="cmpsel_cc3"/>
+    <dest kind="vdst" bit="3 4:7 22:23 44 =0000 =00 =0 17 21 38 =0 =0"/>
+    <src kind="vsrc" bit="35 9:14 40 15 19 8 39 =0 =0 =0 =0 34"/>
+    <src kind="vsrc" bit="36 25:30 42 31 20 24 41 43 =0 =0 =0 34"/>
+    <src kind="vsrc" bit="35 9:14 40 15 19 17 39 =0 =0 =0 =0 18"/>
+    <src kind="vsrc" bit="36 25:30 42 31 20 17 41 43 =0 =0 =0 18"/>
+    <modifier name="group" bit="=000 38 21 =0" kind="vgroup"/>
+    <modifier name="wait" bit="45:47" kind="wait1"/>
+  </ins>
+
+  <ins name="cmpsel6_full6" display="cmpsel" length="6">
+    <exact bit="0:2 16:17 24 31">0100010</exact>
+    <modifier name="cc" bit="32:34" kind="cmpsel_cc3"/>
+    <dest kind="vdst" bit="3 4:7 22:23 44 =0000 =00 =0 17 21 38 =0 =0"/>
+    <src kind="vsrc" bit="35 9:14 40 15 19 8 39 =0 =0 =0 =0 34"/>
+    <src kind="vsrc" bit="36 25:30 42 31 20 24 41 43 =0 =0 =0 34"/>
+    <src kind="vsrc" bit="35 9:14 40 15 19 17 39 =0 =0 =0 =0 18"/>
+    <src kind="vsrc" bit="36 25:30 42 31 20 17 41 43 =0 =0 =0 18"/>
+    <modifier name="group" bit="=000 38 21 =0" kind="vgroup"/>
+    <modifier name="wait" bit="45:47" kind="wait1"/>
+  </ins>
+
+  <ins name="cmpsel6_full7" display="cmpsel" length="6">
+    <exact bit="0:2 8 16:17 39">0100010</exact>
+    <modifier name="cc" bit="32:34" kind="cmpsel_cc3"/>
+    <dest kind="vdst" bit="3 4:7 22:23 44 =0000 =00 =0 17 21 38 =0 =0"/>
+    <src kind="vsrc" bit="35 9:14 40 15 19 8 39 =0 =0 =0 =0 34"/>
+    <src kind="vsrc" bit="36 25:30 42 31 20 24 41 43 =0 =0 =0 34"/>
+    <src kind="vsrc" bit="35 9:14 40 15 19 17 39 =0 =0 =0 =0 18"/>
+    <src kind="vsrc" bit="36 25:30 42 31 20 17 41 43 =0 =0 =0 18"/>
+    <modifier name="group" bit="=000 38 21 =0" kind="vgroup"/>
+    <modifier name="wait" bit="45:47" kind="wait1"/>
+  </ins>
+
+  <ins name="cmpsel6_full8" display="cmpsel" length="6">
+    <exact bit="0:2 16:17 24 31">0010010</exact>
+    <modifier name="cc" bit="32:34" kind="cmpsel_cc3"/>
+    <dest kind="vdst" bit="3 4:7 22:23 44 =0000 =00 =0 17 21 38 =0 =0"/>
+    <src kind="vsrc" bit="35 9:14 40 15 19 8 39 =0 =0 =0 =0 34"/>
+    <src kind="vsrc" bit="36 25:30 42 31 20 24 41 43 =0 =0 =0 34"/>
+    <src kind="vsrc" bit="35 9:14 40 15 19 17 39 =0 =0 =0 =0 18"/>
+    <src kind="vsrc" bit="36 25:30 42 31 20 17 41 43 =0 =0 =0 18"/>
+    <modifier name="group" bit="=000 38 21 =0" kind="vgroup"/>
+    <modifier name="wait" bit="45:47" kind="wait1"/>
+  </ins>
+
+  <ins name="cmpsel6_full9" display="cmpsel" length="6">
+    <exact bit="0:2 8 15:17">0001010</exact>
+    <modifier name="cc" bit="32:34" kind="cmpsel_cc3"/>
+    <dest kind="vdst" bit="3 4:7 22:23 44 =0000 =00 =0 17 21 38 =0 =0"/>
+    <src kind="vsrc" bit="35 9:14 40 15 19 8 39 =0 =0 =0 =0 34"/>
+    <src kind="vsrc" bit="36 25:30 42 31 20 24 41 43 =0 =0 =0 34"/>
+    <src kind="vsrc" bit="35 9:14 40 15 19 17 39 =0 =0 =0 =0 18"/>
+    <src kind="vsrc" bit="36 25:30 42 31 20 17 41 43 =0 =0 =0 18"/>
+    <modifier name="group" bit="=000 38 21 =0" kind="vgroup"/>
+    <modifier name="wait" bit="45:47" kind="wait1"/>
+  </ins>
+
+  <ins name="cmpsel6_full10" display="cmpsel" length="6">
+    <exact bit="0:2 16 18 31 34 41">11100010</exact>
+    <modifier name="cc" bit="32:34" kind="cmpsel_cc3"/>
+    <dest kind="vdst" bit="3 4:7 22:23 44 =0000 =00 =0 17 21 38 =0 =0"/>
+    <src kind="vsrc" bit="35 9:14 40 15 19 8 39 =0 =0 =0 =0 34"/>
+    <src kind="vsrc" bit="36 25:30 42 31 20 24 41 43 =0 =0 =0 34"/>
+    <src kind="vsrc" bit="35 9:14 40 15 19 17 39 =0 =0 =0 =0 18"/>
+    <src kind="vsrc" bit="36 25:30 42 31 20 17 41 43 =0 =0 =0 18"/>
+    <modifier name="group" bit="=000 38 21 =0" kind="vgroup"/>
+    <modifier name="wait" bit="45:47" kind="wait1"/>
+  </ins>
+
+  <ins name="cmpsel6_full11" display="cmpsel" length="6">
+    <exact bit="0:2 15:16 18 34 39">10101010</exact>
+    <modifier name="cc" bit="32:34" kind="cmpsel_cc3"/>
+    <dest kind="vdst" bit="3 4:7 22:23 44 =0000 =00 =0 17 21 38 =0 =0"/>
+    <src kind="vsrc" bit="35 9:14 40 15 19 8 39 =0 =0 =0 =0 34"/>
+    <src kind="vsrc" bit="36 25:30 42 31 20 24 41 43 =0 =0 =0 34"/>
+    <src kind="vsrc" bit="35 9:14 40 15 19 17 39 =0 =0 =0 =0 18"/>
+    <src kind="vsrc" bit="36 25:30 42 31 20 17 41 43 =0 =0 =0 18"/>
+    <modifier name="group" bit="=000 38 21 =0" kind="vgroup"/>
+    <modifier name="wait" bit="45:47" kind="wait1"/>
+  </ins>
+
+  <ins name="cmpsel6_full12" display="cmpsel" length="6">
+    <exact bit="0:2 15:16 18 34 39">11001010</exact>
+    <modifier name="cc" bit="32:34" kind="cmpsel_cc3"/>
+    <dest kind="vdst" bit="3 4:7 22:23 44 =0000 =00 =0 17 21 38 =0 =0"/>
+    <src kind="vsrc" bit="35 9:14 40 15 19 8 39 =0 =0 =0 =0 34"/>
+    <src kind="vsrc" bit="36 25:30 42 31 20 24 41 43 =0 =0 =0 34"/>
+    <src kind="vsrc" bit="35 9:14 40 15 19 17 39 =0 =0 =0 =0 18"/>
+    <src kind="vsrc" bit="36 25:30 42 31 20 17 41 43 =0 =0 =0 18"/>
+    <modifier name="group" bit="=000 38 21 =0" kind="vgroup"/>
+    <modifier name="wait" bit="45:47" kind="wait1"/>
+  </ins>
+
+  <ins name="cmpsel6_full13" display="cmpsel" length="6">
+    <exact bit="0:2 16 18 31 34 41">10110010</exact>
+    <modifier name="cc" bit="32:34" kind="cmpsel_cc3"/>
+    <dest kind="vdst" bit="3 4:7 22:23 44 =0000 =00 =0 17 21 38 =0 =0"/>
+    <src kind="vsrc" bit="35 9:14 40 15 19 8 39 =0 =0 =0 =0 34"/>
+    <src kind="vsrc" bit="36 25:30 42 31 20 24 41 43 =0 =0 =0 34"/>
+    <src kind="vsrc" bit="35 9:14 40 15 19 17 39 =0 =0 =0 =0 18"/>
+    <src kind="vsrc" bit="36 25:30 42 31 20 17 41 43 =0 =0 =0 18"/>
+    <modifier name="group" bit="=000 38 21 =0" kind="vgroup"/>
+    <modifier name="wait" bit="45:47" kind="wait1"/>
+  </ins>
+
+  <!-- cmpsel (6 bytes) as min/max: D = A cc B ? A : B -->
+  <group name="minmax6" length="6">
+    <exact bit="0:2 16">0010</exact>
+    <exact bit="32:34">variant</exact>
+    <dest kind="vdst" bit="3 4:7 22:23 44 =0000 =00 =0 17 21 38 =0 =0"/>
+    <src kind="vsrc" bit="35 9:14 40 15 19 8 39 =0 =0 =0 =0 34"/>
+    <src kind="vsrc" bit="36 25:30 42 31 20 24 41 43 =0 =0 =0 34"/>
+    <modifier name="group" bit="=000 38 21 =0" kind="vgroup"/>
+    <modifier name="wait" bit="45:47" kind="wait1"/>
+    <modifier name="hidden" bit="18" kind="ignore1"/>
+    <ins name="fmax" display="fmax" variant="000"/>
+    <ins name="fmin" display="fmin" variant="001"/>
+    <ins name="fmaxsse" display="fmaxsse" variant="010"/>
+    <ins name="fminsse" display="fminsse" variant="011"/>
+    <ins name="umax" display="umax" variant="100"/>
+    <ins name="umin" display="umin" variant="101"/>
+    <ins name="smax" display="smax" variant="110"/>
+    <ins name="smin" display="smin" variant="111"/>
+  </group>
+
+  <!-- cmpsel (8 bytes) as cmov -->
+  <ins name="cmov8" display="cmov" length="8">
+    <exact bit="0:2 16 33">01010</exact>
+    <modifier name="cc" bit="48:50 34 32" kind="cmov_cc"/>
+    <dest kind="vdst" bit="3 4:7 22:23 60 =0000 =00 =0 17 21 54 =0 =0"/>
+    <src kind="vsrc" bit="51 9:14 56 15 19 8 55 =0 =0 =0 =0 50"/>
+    <src kind="vsrc" bit="52 25:30 58 31 20 24 57 59 =0 =0 =0 50"/>
+    <src kind="vsrc" bit="40 41:46 38 47 39 17 37 36 35 =0 =0 18"/>
+    <modifier name="group" bit="=000 54 21 =0" kind="vgroup"/>
+    <modifier name="wait" bit="61:63" kind="wait1"/>
+  </ins>
+
+  <ins name="cmpsel10" display="cmpsel" length="10">
+    <exact bit="0:2 16 32:33">101010</exact>
+    <modifier name="cc" bit="48:50 34" kind="cmpsel_cc"/>
+    <dest kind="vdst" bit="3 4:7 22:23 60 =0000 =00 =0 17 21 54 =0 =0"/>
+    <src kind="vsrc" bit="51 9:14 56 15 19 8 55 65 =0 =0 =0 50"/>
+    <src kind="vsrc" bit="52 25:30 58 31 20 24 57 59 =0 =0 =0 50"/>
+    <src kind="vsrc" bit="40 41:46 38 47 39 17 37 36 35 =0 =0 18"/>
+    <src kind="vsrc" bit="72 73:78 70 79 71 17 69 68 67 =0 =0 18"/>
+    <modifier name="group" bit="=000 54 21 =0" kind="vgroup"/>
+    <modifier name="wait" bit="61:63" kind="wait1"/>
+  </ins>
+
+  <ins name="cmpsel14" display="cmpsel" length="14">
+    <exact bit="0:2 16 32:33">111010</exact>
+    <modifier name="cc" bit="48:50 34" kind="cmpsel_cc"/>
+    <dest kind="vdst" bit="3 4:7 22:23 60 82:85 =00 =0 17 21 54 =0 =0"/>
+    <src kind="vsrc" bit="51 9:14 56 15 19 8 55 65 96 87 =0 50"/>
+    <src kind="vsrc" bit="52 25:30 58 31 20 24 57 59 97 88 =0 50"/>
+    <src kind="vsrc" bit="40 41:46 38 47 39 17 37 36 35 =0 =0 18"/>
+    <src kind="vsrc" bit="72 73:78 70 79 71 17 69 68 67 =0 =0 18"/>
+    <modifier name="group" bit="90:92 54 21 =0" kind="vgroup"/>
+    <modifier name="wait" bit="61:63 93:95" kind="wait"/>
+  </ins>
+
+  <!-- if cc_always -->
+  <ins name="push_exec" display="push_exec" length="4">
+    <exact bit="0:11 26:28">110010100001111</exact>
+    <immediate name="n" bit="24:25"/>
+    <modifier name="An" bit="29" kind="ignore1"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <ins name="if" display="if" length="4">
+    <exact bit="0:11">010100001111</exact>
+    <modifier name="A" bit="26:28 29" kind="ccsrc"/>
+    <immediate name="n" bit="24:25"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <ins name="else" display="else" length="4">
+    <exact bit="0:11">010000001111</exact>
+    <modifier name="A" bit="26:28 29" kind="ccsrc"/>
+    <immediate name="n" bit="24:25"/>
+    <modifier name="unk" bit="18 21" kind="expect2"/>
+  </ins>
+
+  <ins name="while" display="while" length="4">
+    <exact bit="0:11">010010001111</exact>
+    <modifier name="A" bit="26:28 29" kind="ccsrc"/>
+    <immediate name="n" bit="24:25"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <ins name="break" display="break" length="6">
+    <exact bit="0:11">010110001111</exact>
+    <modifier name="A" bit="40:42 43" kind="ccsrc"/>
+    <immediate name="n" bit="24:39"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <ins name="pop_exec" display="pop_exec" length="6">
+    <exact bit="0:11">011000001111</exact>
+    <immediate name="n" bit="24:39"/>
+    <modifier name="unk" bit="18" kind="expect1"/>
+  </ins>
+
+  <ins name="jmp_exec_none" display="jmp_exec_none" length="10">
+    <exact bit="0:11">000100001111</exact>
+    <src kind="branch" bit="24 25:71"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <ins name="jmp_exec_any" display="jmp_exec_any" length="10">
+    <exact bit="0:11">000000001111</exact>
+    <src kind="branch" bit="24 25:71"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <ins name="call" display="call" length="10">
+    <exact bit="0:11">000010001111</exact>
+    <src kind="branch" bit="24 25:71"/>
+    <immediate name="unk" bit="12:15"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <ins name="ret" display="ret" length="4">
+    <exact bit="0:11">001010001111</exact>
+    <immediate name="unk" bit="12:15"/>
+    <modifier name="unk" bit="17:18 20 22" kind="expect4"/>
+  </ins>
+
+  <!-- convert float to integer -->
+  <ins name="convert_f2i" display="convert" length="10">
+    <exact bit="0:11">011100100111</exact>
+    <modifier name="mode" bit="62:64" kind="convert_mode"/>
+    <dest kind="fdst" bit="24 25:31 32 33 55 50 =0 =0 =0"/>
+    <modifier name="vt" bit="58 55" kind="dst_vt"/>
+    <src kind="fsrc" bit="41 42:48 49 59 53 52 =0 61 60 51 =1"/>
+    <modifier name="group" bit="54 56:57 55" kind="fgroup"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22 65" kind="expect4"/>
+  </ins>
+
+  <!-- convert integer to float -->
+  <ins name="convert_i2f" display="convert" length="8">
+    <exact bit="0:11">011110100111</exact>
+    <modifier name="mode" bit="52 62 51" kind="i2f"/>
+    <dest kind="fdst" bit="24 25:31 32 33 55 50 =0 =0 =0"/>
+    <modifier name="vt" bit="59 55" kind="dst_vt"/>
+    <src kind="fsrc" bit="41 42:48 49 61 53 51 =0 =0 =0 =0 =0"/>
+    <modifier name="rnd" bit="60" kind="convert_rnd"/>
+    <modifier name="group" bit="54 56:57 55" kind="fgroup"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <!-- unpack unorm/snorm 8/16 -->
+  <ins name="unpack_unorm" display="unpack" length="8">
+    <exact bit="0:11">010000010111</exact>
+    <modifier name="mode" bit="60:62 63" kind="unpack_unorm"/>
+    <dest kind="unpack_unorm_dst" bit="24 25:31 32 50 63"/>
+    <src kind="unpack_unorm_src" bit="41 42:48 49 52 51"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22 57 59" kind="expect5"/>
+  </ins>
+
+  <!-- unpack rgb10a2/rg11b10f/rgb9e5 -->
+  <ins name="unpack_float" display="unpack" length="8">
+    <exact bit="0:11">011000100111</exact>
+    <modifier name="mode" bit="49:50 58" kind="unpack_mode"/>
+    <dest kind="unpack_float_dst" bit="=0 24:30 31 32 49:50 58"/>
+    <src kind="fsrc" bit="=0 41:47 48 =1 52 51 =0 =0 =0 =0 =0"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22 54 59" kind="expect5"/>
+  </ins>
+
+  <!-- pack unorm/snorm 8/16 -->
+  <ins name="pack_unorm" display="pack" length="10">
+    <exact bit="0:11">010010010111</exact>
+    <modifier name="mode" bit="77:79 73 75" kind="pack_unorm"/>
+    <dest kind="pack_unorm_dst" bit="24 25:31 32 33 73 75 77:79"/>
+    <src kind="fsrc" bit="41 42:48 49 70 63 60 =0 72 71 59 =1"/>
+    <src kind="fsrc_pack_b" bit="50 51:57 58 73 64 62 =0 76 74 61 =1 75"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22 66" kind="expect4"/>
+  </ins>
+
+  <!-- pack rgb10a2/rg11b10f/rgb9e5 -->
+  <ins name="pack_float" display="pack" length="14">
+    <exact bit="0:11">011010100111</exact>
+    <modifier name="mode" bit="107:108" kind="pack_mode"/>
+    <dest kind="fdst" bit="24 25:31 32 33 =1 77 =0 =0 =0"/>
+    <src kind="fsrc" bit="41 42:48 49 95 86 79 =0 97 96 78 =1"/>
+    <src kind="fsrc" bit="50 51:57 58 98 87 81 =0 100 99 80 =1"/>
+    <src kind="fsrc" bit="59 60:66 67 101 88 83 =0 103 102 82 =1"/>
+    <src kind="fsrc_pack_w" bit="68 69:75 76 104 89 85 =0 106 105 84 =1 107:108"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22 91" kind="expect4"/>
+  </ins>
+
+  <ins name="icmp_ballot" display="icmp_ballot" length="10">
+    <exact bit="0:11">011100010111</exact>
+    <modifier name="cc" bit="73:76" kind="icmp_ballot_cc"/>
+    <dest kind="fdst" bit="24 25:31 32 33 65 59 =0 =0 =0"/>
+    <modifier name="vt" bit="68 65" kind="dst_vt"/>
+    <src kind="fsrc" bit="41 42:48 49 69 62 60 =0 70 =0 =0 =0"/>
+    <src kind="fsrc" bit="50 51:57 58 71 63 61 =0 72 =0 =0 =0"/>
+    <modifier name="group" bit="64 66:67 65" kind="fgroup"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <ins name="icmp_quad_ballot" display="icmp_quad_ballot" length="10">
+    <exact bit="0:11">001000010111</exact>
+    <modifier name="cc" bit="73:76" kind="icmp_quad_ballot_cc"/>
+    <dest kind="fdst" bit="24 25:31 32 33 65 59 =0 =0 =0"/>
+    <modifier name="vt" bit="68 65" kind="dst_vt"/>
+    <src kind="fsrc" bit="41 42:48 49 69 62 60 =0 70 =0 =0 =0"/>
+    <src kind="fsrc" bit="50 51:57 58 71 63 61 =0 72 =0 =0 =0"/>
+    <modifier name="group" bit="64 66:67 65" kind="fgroup"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <ins name="fcmp_ballot" display="fcmp_ballot" length="12">
+    <exact bit="0:11">011110010111</exact>
+    <modifier name="cc" bit="77:80" kind="fcmp_ballot_cc"/>
+    <dest kind="fdst" bit="24 25:31 32 33 67 59 =0 =0 =0"/>
+    <modifier name="vt" bit="70 67" kind="dst_vt"/>
+    <src kind="fsrc" bit="41 42:48 49 71 64 61 =0 73 72 60 =1"/>
+    <src kind="fsrc" bit="50 51:57 58 74 65 63 =0 76 75 62 =1"/>
+    <modifier name="group" bit="66 68:69 67" kind="fgroup"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <ins name="fcmp_quad_ballot" display="fcmp_quad_ballot" length="12">
+    <exact bit="0:11">001110010111</exact>
+    <modifier name="cc" bit="77:80" kind="fcmp_quad_ballot_cc"/>
+    <dest kind="fdst" bit="24 25:31 32 33 67 59 =0 =0 =0"/>
+    <modifier name="vt" bit="70 67" kind="dst_vt"/>
+    <src kind="fsrc" bit="41 42:48 49 71 64 61 =0 73 72 60 =1"/>
+    <src kind="fsrc" bit="50 51:57 58 74 65 63 =0 76 75 62 =1"/>
+    <modifier name="group" bit="66 68:69 67" kind="fgroup"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <ins name="simd_shuffle" display="simd_shuffle" length="10">
+    <exact bit="0:11">010001000111</exact>
+    <dest kind="fdst" bit="24 25:31 32 33 61 58 =0 =0 =0"/>
+    <modifier name="vt" bit="64 61" kind="dst_vt"/>
+    <src kind="shsrc" bit="41 42:48 65 66 59"/>
+    <src kind="fsrc" bit="49 50:56 57 68 67 =00 =0 =0 =0 =0"/>
+    <modifier name="group" bit="60 62:63 61" kind="fgroup"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <ins name="quad_shuffle" display="quad_shuffle" length="10">
+    <exact bit="0:11">000001000111</exact>
+    <dest kind="fdst" bit="24 25:31 32 33 61 58 =0 =0 =0"/>
+    <modifier name="vt" bit="64 61" kind="dst_vt"/>
+    <src kind="shsrc" bit="41 42:48 65 66 59"/>
+    <src kind="fsrc" bit="49 50:56 57 68 67 =00 =0 =0 =0 =0"/>
+    <modifier name="group" bit="60 62:63 61" kind="fgroup"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <ins name="simd_shuffle_xor" display="simd_shuffle_xor" length="10">
+    <exact bit="0:11">010011000111</exact>
+    <dest kind="fdst" bit="24 25:31 32 33 61 58 =0 =0 =0"/>
+    <modifier name="vt" bit="64 61" kind="dst_vt"/>
+    <src kind="shsrc" bit="41 42:48 65 66 59"/>
+    <src kind="fsrc" bit="49 50:56 57 68 67 =00 =0 =0 =0 =0"/>
+    <modifier name="group" bit="60 62:63 61" kind="fgroup"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <ins name="quad_shuffle_xor" display="quad_shuffle_xor" length="10">
+    <exact bit="0:11">000011000111</exact>
+    <dest kind="fdst" bit="24 25:31 32 33 61 58 =0 =0 =0"/>
+    <modifier name="vt" bit="64 61" kind="dst_vt"/>
+    <src kind="shsrc" bit="41 42:48 65 66 59"/>
+    <src kind="fsrc" bit="49 50:56 57 68 67 =00 =0 =0 =0 =0"/>
+    <modifier name="group" bit="60 62:63 61" kind="fgroup"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <ins name="simd_shuffle_up" display="simd_shuffle_up" length="10">
+    <exact bit="0:11">010101000111</exact>
+    <dest kind="fdst" bit="24 25:31 32 33 61 58 =0 =0 =0"/>
+    <modifier name="vt" bit="64 61" kind="dst_vt"/>
+    <src kind="shsrc" bit="41 42:48 65 66 59"/>
+    <src kind="fsrc" bit="49 50:56 57 68 67 =00 =0 =0 =0 =0"/>
+    <modifier name="group" bit="60 62:63 61" kind="fgroup"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <ins name="quad_shuffle_up" display="quad_shuffle_up" length="10">
+    <exact bit="0:11">000101000111</exact>
+    <dest kind="fdst" bit="24 25:31 32 33 61 58 =0 =0 =0"/>
+    <modifier name="vt" bit="64 61" kind="dst_vt"/>
+    <src kind="shsrc" bit="41 42:48 65 66 59"/>
+    <src kind="fsrc" bit="49 50:56 57 68 67 =00 =0 =0 =0 =0"/>
+    <modifier name="group" bit="60 62:63 61" kind="fgroup"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <ins name="simd_shuffle_down" display="simd_shuffle_down" length="10">
+    <exact bit="0:11">010111000111</exact>
+    <dest kind="fdst" bit="24 25:31 32 33 61 58 =0 =0 =0"/>
+    <modifier name="vt" bit="64 61" kind="dst_vt"/>
+    <src kind="shsrc" bit="41 42:48 65 66 59"/>
+    <src kind="fsrc" bit="49 50:56 57 68 67 =00 =0 =0 =0 =0"/>
+    <modifier name="group" bit="60 62:63 61" kind="fgroup"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <ins name="quad_shuffle_down" display="quad_shuffle_down" length="10">
+    <exact bit="0:11">000111000111</exact>
+    <dest kind="fdst" bit="24 25:31 32 33 61 58 =0 =0 =0"/>
+    <modifier name="vt" bit="64 61" kind="dst_vt"/>
+    <src kind="shsrc" bit="41 42:48 65 66 59"/>
+    <src kind="fsrc" bit="49 50:56 57 68 67 =00 =0 =0 =0 =0"/>
+    <modifier name="group" bit="60 62:63 61" kind="fgroup"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <ins name="simd_shuffle_and_fill_up" display="simd_shuffle_and_fill_up" length="12">
+    <exact bit="0:11">011001000111</exact>
+    <dest kind="fdst" bit="24 25:31 32 33 68 66 =0 =0 =0"/>
+    <modifier name="vt" bit="71 68" kind="dst_vt"/>
+    <src kind="shsrc" bit="41 42:48 72 73 81"/>
+    <src kind="shsrc" bit="58 59:65 76 77 81"/>
+    <src kind="fsrc" bit="49 50:56 57 82 74 =00 =0 =0 =0 =0"/>
+    <modifier name="mod" bit="78:80" kind="shufflemod"/>
+    <modifier name="group" bit="67 69:70 68" kind="fgroup"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <ins name="simd_shuffle_and_fill_down" display="simd_shuffle_and_fill_down" length="12">
+    <exact bit="0:11">011011000111</exact>
+    <dest kind="fdst" bit="24 25:31 32 33 68 66 =0 =0 =0"/>
+    <modifier name="vt" bit="71 68" kind="dst_vt"/>
+    <src kind="shsrc" bit="41 42:48 72 73 81"/>
+    <src kind="shsrc" bit="58 59:65 76 77 81"/>
+    <src kind="fsrc" bit="49 50:56 57 82 74 =00 =0 =0 =0 =0"/>
+    <modifier name="mod" bit="78:80" kind="shufflemod"/>
+    <modifier name="group" bit="67 69:70 68" kind="fgroup"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <ins name="stop" display="stop" length="4">
+    <exact bit="0:31">00000000000000000000000000001110</exact>
+  </ins>
+
+  <ins name="nop" display="nop" length="2">
+    <exact bit="0:15">0000000000000110</exact>
+  </ins>
+
+  <ins name="wait_long" display="wait_long" length="8">
+    <exact bit="0:9 16:63">0000000000000110000000000000011000000000000001100000000110</exact>
+    <modifier name="wait" bit="10:15" kind="wait_bare"/>
+  </ins>
+
+  <ins name="wait" display="wait" length="2">
+    <exact bit="0:9">0000000110</exact>
+    <modifier name="wait" bit="10:15" kind="wait_bare"/>
+  </ins>
+
+</isa>

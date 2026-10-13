@@ -1,0 +1,1545 @@
+fca05006             get_sr   0, r31, sr32 (thread_position_in_grid.x)
+0604060006000600     wait_long 0
+9f11543e0200f8c81004 iadd     r31, 0, r31, lsl 1, wait 0
+67005400061f2000570100404000 device_load 5, i32, xyzw, r0_r1_r2_r3, du12, r31, lsl 4, 0, 1, 1, 0
+67005408061f2000570102404000 device_load 5, i32, xyzw, r4_r5_r6_r7, du12, r31, lsl 4, 16, 1, 1, 0
+0680060006000600     wait_long 5
+0b0001c0             mov      r0, r0, wait 5
+fb0040c0             bitop_unary zero, r31, r0, wait 5
+06fc060006000600     wait_long 012345
+9ff1573e0200f8c81014 iadd     r31, 0, r31, lsl 3, wait 012345
+e7005400071f2000170000101000 device_store 0, i32, xyzw, r0_r1_r2_r3, du14, r31, lsl 4, 0, 1, 1
+e7005408071f2000178000101000 device_store 0, i32, xyzw, r4_r5_r6_r7, du14, r31, lsl 4, 16, 1, 1
+e7005410071f2000170001101000 device_store 0, i32, xyzw, r8_r9_r10_r11, du14, r31, lsl 4, 32, 1, 1
+e7005418071f2000178001101000 device_store 0, i32, xyzw, r12_r13_r14_r15, du14, r31, lsl 4, 48, 1, 1
+e7005420071f2000170002101000 device_store 0, i32, xyzw, r16_r17_r18_r19, du14, r31, lsl 4, 64, 1, 1
+e7005428071f2000178002101000 device_store 0, i32, xyzw, r20_r21_r22_r23, du14, r31, lsl 4, 80, 1, 1
+e7005430071f2000170003101000 device_store 0, i32, xyzw, r24_r25_r26_r27, du14, r31, lsl 4, 96, 1, 1
+e7005438071f2000178003101000 device_store 0, i32, xyzw, r28_r29_r30_r31, du14, r31, lsl 4, 112, 1, 1
+0e000000             stop
+03000000             bitop_unary zero, r0l, r0l
+03000200             and      r0l, r0l, r0l
+03000600000000000000 bitop    0000, r0l, r0l, r0l
+1f015400020000001105 isub     r0l, r0l, r0l
+1f015400020000001005 isub     r0l, r0l, r0l, lsl 4
+1f015400020000101005 isub     dr0, r0l, r0l
+9f0054000200000000202a00 imadd    r0l, r0l, r0l, r0l
+01000200             ffma     r0l, r0l, r0l, r0l
+010006000000         ffma     r0l, r0l, r0l, r0
+0100060001000000     ffma     r0l, r0l, r0l, r0l
+01000600020000000000 ffma     r0l, r0l, r0l, r0l
+01000000             fadd     r0l, r0l, r0l
+010004000000         fadd     r0l, r0l, r0l
+0100040001000000     fadd     r0l, r0l, r0l
+01000400020000000000 fadd     r0l, r0l, r0l
+01000100             fmul     r0l, r0l, r0l
+010005000000         fmul     r0l, r0l, r0l
+0100050001000000     fmul     r0l, r0l, r0l
+00000200             hfma     r0l, r0l, r0l, r0l
+000006000000         hfma     r0l, r0l, r0l, r0l
+0000060001000000     hfma     r0l, r0l, r0l, r0l
+00000600020000000000 hfma     r0l, r0l, r0l, r0l
+270054000200000000100000 bfi      r0l, 0, 0, 0
+a70054000200000000100000 bfeil    r0l, 0, 0, 0
+270154000200000000100000 extr     r0l, 0, 0, 0
+270254000200000000100000 shlhi    r0l, 0, 0, 0
+a70254000200000000100000 shrhi    r0l, 0, 0, 0
+a7015400020000000200 asr      r0l, 0, 0
+a7035400020000000200 asrh     r0l, 0, 0
+8c00                 mov_imm  r8, 0
+9c00                 mov_imm  r9, 0
+ac00                 mov_imm  r10, 0
+bc00                 mov_imm  r11, 0
+cc00                 mov_imm  r12, 0
+dc00                 mov_imm  r13, 0
+ec00                 mov_imm  r14, 0
+fc00                 mov_imm  r15, 0
+0b004000             bitop_unary zero, r16, r0
+1b004000             bitop_unary zero, r17, r0
+2b004000             bitop_unary zero, r18, r0
+3b004000             bitop_unary zero, r19, r0
+4b004000             bitop_unary zero, r20, r0
+5b004000             bitop_unary zero, r21, r0
+6b004000             bitop_unary zero, r22, r0
+7b004000             bitop_unary zero, r23, r0
+8b004000             bitop_unary zero, r24, r0
+9b004000             bitop_unary zero, r25, r0
+ab004000             bitop_unary zero, r26, r0
+bb004000             bitop_unary zero, r27, r0
+cb004000             bitop_unary zero, r28, r0
+db004000             bitop_unary zero, r29, r0
+eb004000             bitop_unary zero, r30, r0
+270054000200000010100000 bfi      r0, 0, 0, 0
+270054020204041810100000 bfi      r1, 3, 2, 1
+270054000200002810100000 bfi      r0, 5, 0, 0
+270054000200001090100800 bfi      r0, r1, 0, 0
+2700540002081c2013100000 bfi      r0, 100, 4, 7
+27005400020000f817100000 bfi      r0, 255, 0, 0
+2700543e0206182810100000 bfi      r31, 5, 3, 6
+2700541e020e0cf091100800 bfi      r15, r31, 7, 3
+2700543e0200002810100000 bfi      r31, 5, 0, 0
+270154000200001090100800 extr     r0, r1, 0, 0
+270154000202001090100800 extr     r0, r1, 1, 0
+270154000200041090100800 extr     r0, r1, 0, 1
+2701540002000c1090100800 extr     r0, r1, 0, 3
+270154000200002090100800 extr     r0, r2, 0, 0
+270154020200001090100800 extr     r1, r1, 0, 0
+270254000200001090100800 shlhi    r0, r1, 0, 0
+270254000202001090100800 shlhi    r0, r1, 1, 0
+270254000200081090100800 shlhi    r0, r1, 0, 2
+270254000200003090100800 shlhi    r0, r3, 0, 0
+270254020200001090100800 shlhi    r1, r1, 0, 0
+a70054000200001090100800 bfeil    r0, r1, 0, 0
+a70054000202001090100800 bfeil    r0, r1, 1, 0
+a70054000200081090100800 bfeil    r0, r1, 0, 2
+a70054000200003090100800 bfeil    r0, r3, 0, 0
+a70054020200001090100800 bfeil    r1, r1, 0, 0
+a70254000200001090100800 shrhi    r0, r1, 0, 0
+a70254000202001090100800 shrhi    r0, r1, 1, 0
+a70254000200081090100800 shrhi    r0, r1, 0, 2
+a70254000200003090100800 shrhi    r0, r3, 0, 0
+a70254020200001090100800 shrhi    r1, r1, 0, 0
+0c05                 mov_imm  r0, 5
+1464                 mov_imm  r1l, 100
+2cef02de1a0c6d05     mov_imm  r2, 3735928559
+34b4060008080000     mov_imm  r3h, 4660
+0b020100             mov      r0, r1
+03060108             mov      r0l, u3l
+5b870108             mov      r5, 7
+2b080108             mov      r2, u4
+1b050600010800000000 not      r1, r2
+0b030205             and      r0, r1, r2
+0b030705020a00000000 or       r0, r1, u2
+0b0316fe120a00000000 xor      r0, r1, 255
+0b030605000800000000 andn1    r0, r1, r2
+3b09060b010000000000 nor      r3, r4, r5
+0b030705000800000000 bitop    0011, r0, r1, r2
+09030005             fadd     r0, r1, r2
+010204041000         fadd     r0l, r1l, r2h
+0903040701020200     fadd     r0, r1.neg, u3
+090304c0020200000100 fadd     r0, r1.abs, 2.0
+3101040501004000     fadd     r3l.bfloat, r0, r2
+490b040d01000002     fadd     r4, r5, r6, sat
+390905a00002         fmul     r3, r4, 0.5
+31010103             fmul     r3l, r0, r1
+090305050020         fmul     r0, r1, r2, wait 0
+090306050006         ffma     r0, r1, r2, r3
+3100060201040000     ffma     r3l, r0l, r1l, r2l
+31010603020402004000 ffma     r3l.bfloat, r0, r1, r2
+09030205             ffma     r0, r1, r2, r0
+09030305             ffma     r0, r1, r0, r2
+490b060d2310020002020200 ffma     r4, r5.neg, r6.abs, u8, sat
+300006020004         hfma     r3l, r0l, r1l, r2l
+00020005             hadd     r0l, r1l, r2h
+080205b00002         hmul     r0h, r1l, 1.0
+9f015400020410a81105 iadd     r0, r1, r2
+9f015400020414281101 iadd     r0, r1, 5
+1f015400020410a81105 isub     r0, r1, r2
+9f015400020410a81503 iadd     r0, r1.sx, u2
+9f0154000200f8c81004 iadd     r0, 0, r31, lsl 1
+9f015400020820501105 iadd     dr0, dr2, dr4
+9f00540002041030d0212a00 imadd    r0, r1, r2, r3
+1f00540002041030d0212a00 imsub    r0, r1, r2, r3
+270054000204100030108100 bfi      r0, 0, r1, 4, mask 0xFF
+a70054000204200030100101 bfeil    r0, 0, r1, 8, mask 0xFFFF
+2701540002080c10b0100900 extr     r0, r1, r2, 3
+a7015400020408182200 asr      r0, r1, 2
+a703540002041038a200 asrh     r0, r1, r2
+2705540002044c04     popcount r0, r1
+a704540002044c04     bitrev   r0, r1
+a705540002044c04     ffs      r0, r1
+020302050000         fmax     r0, r1, r2
+020302050100         fmin     r0, r1, r2
+020302050400         umax     r0, r1, r2
+020306800702         smin     r0, r1, 0
+02030305020605000008 cmpsel   ult, r0, r1, r2, r3, r4
+0203030505060700     cmov     ieq, r0, r1, r2, r3
+0a0322050600         cmp      sgt, cc0, r1, r2
+2a0322050300         cmp      flt, cc1, r1, r2
+af005400020400482000 rcp      r0, r1
+af015400020490400000 rsqrt    r0, r1
+2f025400020490400000 log2     r0, r1
+af025400020490400000 exp2     r0, r1
+2f005400020490400200 floor    r0, r1
+2f00540002048c600600 trunc    r0l, r1l
+27075400020494480300 convert  f_to_s32, r0, r1
+a707540002048c20     convert  u32_to_f, r0, r1, rte
+a707540002048470     convert  s16_to_f, r0, r1l, rtz
+0f055419             push_exec 1
+0f055401             if       cc0, 1
+0f055421             if       cc0.neg, 1
+0f042401             else     cc0, 1
+8f045405             while    cc1, 1
+0f0604010000         pop_exec 1
+8f0554010000         break    cc0, 1
+8f025600             ret      0
+c70454000204022c0000 simd_shuffle_xor r0, r1, 1
+47005400020408201000 quad_shuffle r0l, r1l, r2l
+470554000204022c0000 simd_shuffle_up r0, r1, 1
+1707540002041038a202 icmp_ballot ieq, r0, r1, r2
+97075400020410a888840000 fcmp_ballot flt, r0, r1, r2
+0600                 nop
+0604                 wait     0
+06fc                 wait     012345
+0620060006000600     wait_long 3
+fcfee3941a0c2d1c40c0 mov_imm  cr127, 2508570366, group 6
+d4e2c37c000812154080 mov_imm  u125l, 2091012194, group 4
+5c8c87d41004e8044060 mov_imm  u37, 3567062028, group 3
+44d7f4e6             get_sr   7, $r52h, sr87
+04940001             get_stack 0, 0, r0l, st10l
+8c90790502e80100     get_stack 0, 5, $r24, ^st6216, wait 012
+aced3425             get_stack 1, 5, $r10, st54hl
+673056ebca8b0500f0e8f5522400 device_load 3, i32, _, dr74, 2839, lsl 1, -26705, wait 015, 1, 1, 0
+6700550c20a17c00534860532e00 device_load 1, i32, xyw, r6_r7_r8, dr32, 63810, lsl 6, -25854, wait 4, 1, 1, 0
+6700440012204000204000000800 device_load 0, i8, _, du36, 32832, lsl 3, 2, 0, 0, 0
+670044dc99037d00cf0584110e00 device_load 7, i16, xw, r110l_r110h, du50, 64007, lsl 6, -29664, 0, 0, 1
+673054d1ab6b6100ecc566570600 device_load 7, i8, yz, r104h, du86, 49879, lsl 2, -17610, wait 01, 1, 1, 1
+6710440008000000240102002400 device_load 4, i8, zw, r0l, dr8, 0, lsl 1, 16, wait 0, 0, 0, 0
+6750469e4d3d6800c96dff0a0200 device_load 7, i16, xy, r79l_r79h, du154, 53370, 22523, wait 025, 0, 0, 1
+6700440228002000410800480000 device_load 1, i16, x, r1l, du80, 16384, lsl 4, 16384, 1, 0, 0
+6700440100022000000182088400 device_load 4, i16, _, du0, u2, lsl 1, 17424, 0, 0, 0
+67c057e92ba91d00d2606c0a2200 device_load 3, i32, yw, r116_r117, dr43, 15186, 21347, wait 2345, 0, 1, 0
+6740575ea4e35400fec89f5d0400 device_load 3, i32, w, r47, du72, 43463, lsl 1, -4866, wait 245, 1, 1, 0
+678044cc15bb4200e58c1e5d2800 device_load 3, i8, xzw, r102l_r102h, dr21, 34166, lsl 3, -5900, wait 3, 1, 0, 1
+67a05644d6a01400e56932430a00 device_load 7, i8, xzw, r34l_r34h, du172, 10561, lsl 4, 6547, wait 135, 1, 1, 0
+670044800a830100c48000000c00 device_load 3, i16, zw, r64l_r64h, du20, 774, lsl 5, 4, 0, 0, 0
+67f0461ba2ab6d000d290a142c00 device_load 4, i16, xyz, r13h_r14l_r14h, dr34, 56151, lsl 5, -24495, wait 01235, 0, 0, 0
+6700543004610000240000008000 device_load 0, i8, zw, r24l, du8, u97l, lsl 4, 0, 0, 1, 0
+6700440080000100c600080c0000 device_load 3, i16, yzw, r0l_r0h_r1l, du0, 513, lsl 4, 24640, 0, 0, 0
+6700570140000000000000004200 device_load 0, i16, _, du128, r0l, 0, wait 45, 0, 1, 0
+67404700400004000a8902080000 device_load 4, i16, z, r0l, du128, 2048, lsl 4, 16404, wait 245, 0, 0, 0
+672046e4088433003b8c46190e00 device_load 0, i32, xz, r114_r115, du16, 26376, lsl 6, -13772, wait 15, 0, 0, 1
+670045080a440000880861400000 device_load 2, i16, y, r4l, du20, 136, lsl 4, 776, wait 4, 1, 0, 0
+e700444000c008004400f0000000 device_store 1, i16, zw, r32l_r32h, du0, 4480, lsl 4, 7680, 0, 0
+e700440300010a00000002000000 device_store 0, i16, du0, 5122, lsl 4, 64, 0, 0
+e720441000002000a00201800100 device_store 2, i8, du0, 16384, lsl 2, 32, wait 1, 0, 0
+e700471402014200000001840000 device_store 0, i16, du4, 33794, -32736, wait 45, 0, 0
+e7805569cf0c1000af4046150200 device_store 2, i8, xw, r52h, du158, 8217, lsl 3, -22328, wait 34, 1, 1
+e71046f6f58a3f00656a9e140200 device_store 1, i8, xzw, r123l_r123h, du234, 32533, lsl 3, -27699, wait 05, 1, 0
+e7d046121b403b00815975060900 device_store 6, i16, x, r9l, dr27, 30336, lsl 1, -12629, wait 0235, 0, 0
+e70054a84ff80b006d13d3160b00 device_store 5, i8, xyz, r84l_r84h, dr79, 6128, lsl 5, -9630, 1, 1
+e70045a008820000200000001000 device_store 0, i8, du16, r2l, lsl 4, 0, wait 4, 0, 0
+e7004600110200008240ac000000 device_store 2, i16, yw, r0l_r0h, du34, 4, lsl 4, 5512, wait 5, 0, 0
+e710440100802a00184000000000 device_store 0, i32, y, r0, du0, 21760, lsl 4, 8, wait 0, 0, 0
+e70056004a890a00036810020000 device_store 0, i16, xyw, r0l_r0h_r1l, du148, 5394, lsl 4, 16909, wait 5, 0, 1
+e700540404010300380108800000 device_store 4, i32, y, r2, du8, 1538, 256, 0, 1
+e7f05420a9186600a97115830b00 device_store 6, i8, xy, r16l, dr41, 52273, lsl 6, 25262, wait 0123, 0, 1
+e7804400200440000a4000020000 device_store 0, i16, z, r0l, du64, 32776, lsl 4, 16392, wait 3, 0, 0
+e700542082100000064006001000 device_store 0, i16, yzw, r16l_r16h_r17l, du4, r16h, lsl 4, 200, 0, 1
+e700440082100000902088002300 device_store 2, i32, du4, u16h, lsl 5, 4356, 0, 0
+e7f047aae9641300ccd07a160b00 device_store 3, i16, yz, r85l_r85h, dr105, 9929, lsl 5, -12454, wait 012345, 1, 0
+e7704511983a2b00be0016970a00 device_store 2, i32, w, r8, dr24, 22133, lsl 4, -7488, wait 0124, 1, 0
+e760457a43112100e01b30802200 device_store 7, i8, du134, ^u17.sx, lsl 4, 1539, wait 124, 0, 0
+e760547737572100dbaa56970800 device_store 3, i32, xz, r59_r60, dr55, 17070, -5419, wait 12, 1, 1
+05040c2210000900800010000100 texture_sample 0, 0, x, r0l, ts1, cr20, 1, 0
+8551cc9d90d20900200050000100 texture_sample 6, 4, zw, r56l_r56h, ts84, cr41, 0, 1, wait 4
+0d81cc0010000900000010000100 texture_sample 0, 0, x, r97, ts0, cr1, 0, 0
+25008c3010810900800010000100 texture_sample 4, 0, z, r34l, ts1, cr0, 1, 0, wait 1
+3dee8c35905d0900d00210000100000000000000 texture_sample 2, 7, z, r71, ts187, cr46, 1, 0, wait 2
+9553cc2c302b0900100010000100 texture_sample 1, 2, xy, r57l_r57h, ts52, cr35, 1, 0, wait 5
+f5408cae30a00900800250000100000000000000 texture_sample 5, 0, xyw, r47l_r47h_r48l, ts17, cr48, 1, 1
+05200c0890800900000210000100000000000000 texture_sample 4, 0, y, r0l, ts8, cr0, 0, 0, wait 0
+0d000c0110460900000010000100 texture_sample 2, 1, x, r0h, ts0, cr8, 0, 0, wait 3
+0de90cbd30600900600250000100000000000000 texture_sample 3, 0, _, ts218, cr41, 1, 1
+cdde4c8f90be0900000050000100 texture_sample 5, 7, yz, r57_r58, ts22, cr62, 0, 1, wait 4
+05000c1010810900100050000100 texture_sample 4, 0, yw, r0l_r0h, ts32, cr0, 0, 0, wait 1
+edd00c9890a00900d00010000100 texture_sample 5, 0, w, r29, ts181, cr0, 0, 1, wait 0
+b5014c82b05e0900d00050000100 texture_sample 2, 7, xzw, r27l_r27h_r28l, ts161, cr17, 0, 1, wait 4
+8db58c2530a10900200010000100 texture_sample 5, 0, xw, r81_r82, ts76, cr45, 1, 0, wait 1
+5dd34c32b0360900900010000100 texture_sample 1, 5, xyz, r43_r44_r45, ts53, cr19, 1, 0, wait 4
+45c74c99307a0900600210000100000000000000 texture_sample 3, 6, xyzw, r40_r41_r42_r43, ts208, cr15, 0, 1, wait 3
+cde2cc23105f0900100250000100000000000000 texture_sample 2, 7, xz, r121_r122, ts56, cr26, 1, 0, wait 5
+e50c0c1230010900800050000100 texture_sample 0, 0, yzw, r14l_r14h_r15l, ts3, cr20, 0, 0, wait 1
+35790c1790701701800040000100 texture_load 3, 4, yw, r3l_r3h, ts31, cr57, 0, 0, wait 0
+05194c0e100a1701000200000100000000000000 texture_load 0, 2, y, r16l, ts6, cr49, 0, 0, wait 3
+050c8c8090801701200000000100 texture_load 4, 0, x, r32l, ts66, cr4, 0, 1, wait 0
+3dff0c2390241701a00240000100000000000000 texture_load 1, 1, xz, r7_r8, ts95, cr31, 1, 0, wait 0
+15000c0010a01701000000000100 texture_load 5, 0, x, r1l, ts0, cr0, 0, 0
+bd7acc8a30901701d00240000100000000000000 texture_load 4, 4, xyw, r59h_r60l_r60h, ts191, cr18, 0, 1
+05408c1410021701000000000100 texture_load 0, 0, z, r32l, ts16, cr32, 0, 0, wait 3
+5d2f4c2c90c61701c00240000100000000000000 texture_load 6, 1, yz, r21h_r22l, ts139, cr39, 1, 0, wait 4
+05604cb130e01701700040000100 texture_load 7, 0, yzw, r16l_r16h_r17l, ts248, cr8, 1, 1
+1d60cc0030d41701f00200000100000000000000 texture_load 6, 5, xw, r49h_r50l, ts249, cr0, 0, 0
+2db40c9f106a1701300240000100000000000000 texture_load 3, 2, zw, r5_r6, ts108, cr60, 0, 1, wait 3
+3ddb4cb8302e1701300200000100000000000000 texture_load 1, 3, xyzw, r39_r40_r41_r42, ts118, cr3, 1, 1, wait 3
+1d008c0030001701000040000100 texture_load 0, 0, xzw, r33h_r34l_r34h, ts0, cr0, 0, 0
+65f68c2930881701200000000100 texture_load 4, 2, xy, r76_r77, ts92, cr14, 1, 0
+85918c90b0c41701300000000100 texture_load 6, 1, xyz, r80_r81_r82, ts100, cr1, 0, 1, wait 0
+f5c98cbd100a1701500200000100000000000000 texture_load 0, 2, w, r94, ts178, cr41, 1, 1, wait 3
+fd3fcc9b30531701900240000100000000000000 texture_load 2, 4, _, ts47, cr31, 0, 1, wait 5
+83bf4dbc             bitop_unary mov5, u24l, 191, wait 4
+03800042             bitop_unary zero, st0l, $r0l, group 0, wait 1
+b3ec488a             bitop_unary zero, st27l, 236, group 0, wait 3
+d39b45d6             bitop_unary mov5, st16413l, $r77h, group 0, wait 5
+db89409e             bitop_unary zero, st16413, 9, group 0, wait 3
+0314010a             mov      st0l, u10l, group 0
+bbd3ad13             bitop_unary mov5, st32811, ^$r105, group 0
+03010024             bitop_unary zero, u0l, r0h, wait 0
+f380211d             mov      cr15, 0, group 0
+031a010c             mov      u0l, u13l
+23000008             bitop_unary zero, r2l, u0l
+03742134             mov      cr0, r122l, group 0, wait 0
+9bc20025             bitop_unary zero, u9, $r33, wait 0
+db25c0df             bitop_unary zero, st16445, u146, group 0, wait 5
+03bb652d             bitop_unary mov5, cr16, 59, group 0, wait 0
+6b8b4510             bitop_unary mov5, r22, $r69
+8319a024             bitop_unary zero, cr40, r12h, group 0, wait 0
+ab368d98             bitop_unary mov5, r42, u219, wait 3
+1328051c             bitop_unary mov5, u1l, u148l
+b3400500             bitop_unary mov5, r11l, r32l
+0ba8c9ca             mov      st48, 168, group 0, wait 5
+7bdd8135             mov      u39, $r110, wait 0
+5b060d6d             bitop_unary mov5, u5, u67, wait 2
+3b65a4c1             or       $r35, r50, $r32
+733d03b4             xor      r7l, r30, $r26l
+03100412             or       r0l, r8l, r9l
+4357b31d             xor      $r36l, r43, ^r14
+4bed4bbf             xor      r20, ^$r54, $r31
+03080300             xor      r0l, r4l, r0l
+03000e0480a004000800 bitop    0000, r2176l, u64l, r2l, wait 02
+d309466239743c200810 nor      st12253l, r4, r113h, group 0, wait 013
+03221e04c14300000000 nor      u0l, u209l, u66l, wait 1
+430a070f308004741800 and      st6276l, r5l, r7, group 5, wait 234
+0341061a828800000000 xor      r0l, u32, r13l, wait 2
+03a82600000210000000 bitop    0000, $r512l, $r20l, u0l
+a350062000a110040010 bitop    0000, r8714l, r104l, r16l, group 1, wait 02
+1b1def73044b148c0800 bitop    0011, $r2737, ^r78, u57, group 3, wait 15
+5becc6aa713e2c840010 bitop    1010, st26101, $r54l, 43, group 1, wait 05
+23220e00302008000000 bitop    0000, st258l, ^r17l, r0h, group 0, wait 0
+fbf2a7f920410c341010 and      st45487, $r121l, $r60, group 5, wait 13
+03611707925c1c601000 or       r5056l, u48, ^r67, wait 134
+0321061a020200400000 andn2    r0l, r16, u13l, wait 4
+b3dd0e76a1242c581810 nor      st15755l, 220, r123l, group 6, wait 04
+030406009a8000081000 andn2    r4096l, u2h, r0h, group 2, wait 2
+ab81ff03a87e284c0810 bitop    0011, st44410, 129, u193, group 3, wait 014
+4b75478caec928d40010 or       st9492, u186, $r6l, group 5, wait 1245
+6bef07d4da9810f80800 or       u2630, 111, $r42h, group 6, wait 2345
+03021608000910400010 andn1    r8704l, r65l, ^r4l, wait 4
+038006408c0818080010 andn1    r8960h, 1, r32l, group 2
+4b769fd99d8630ec0000 xnor     r1572, u123h, 217, group 3, wait 2345
+bbdd1f10550d240c1800 orn1     u7307, ^$r110, ^r72h, group 3
+1b87077a0c4004b81010 and      r12417, $r3, r61l, group 6, wait 135
+73309e0436bd20841000 xor      st5223h, ^r88l, ^r66h, group 1, wait 025
+13018f40000010001800 and      r6689l, ^r0, r32l
+03104608252200200000 nor      st16h, r8l, u4l, group 0, wait 03
+2368d7f8861834141810 or       r16114h, u52l, ^$r60l, group 5
+23b47f43b13114581810 xnor     st47826l, 180, ^r33, group 6, wait 04
+7bc7e6b6fd922c580800 nor      st52727, 71, 55, group 6, wait 24
+d3d06e2ac8601c6c1010 bitop    0000, cr13213, 209, r21l, group 3, wait 0134
+03040700666000000000 mov      st16384h, r2l, group 0, wait 01
+fbd5f711e61524481800 bitop    0101, st56575, 84, ^r72, group 2, wait 4
+03040641420020001000 andn2    u5120l, r2l, r32
+533a06716c9f188c1010 andn1    st29509h, r93h, u184, group 3, wait 25
+c374bf15e3c338f81010 orn2     st63276l, u250l, u74, group 6, wait 12345
+8b437f009b12109c0800 orn2     $r2648, u97, u64h, group 7, wait 5
+9b1637625b5d08040000 bitop    1111, cr329, r75h, ^r113h, group 1, wait 1
+2380a7b142bc38ec1010 or       cr14178, $r0l, $r88, group 3, wait 02345
+1bb0474865d428901010 xnor     st30033, $r24l, r100l, group 4, wait 125
+5385af18edaa204c0010 orn1     st58405h, 133, u12l, group 3, wait 024
+4b60cebbf3cb38480810 nand     st28468, u240l, 59, group 2, wait 124
+2b297699f5e60c041010 nor      st61842, u20, 153, group 1, wait 012
+bb2d9e51925a10a81000 xor      r4715, u86, u104, group 2, wait 135
+2bcd465bb7d92cfc0010 nand     st9682, 76, r45, group 7, wait 12345
+63a1de075d4e042c1010 bitop    1010, u12470h, ^$r16, u195, group 3, wait 13
+5b409e532b1514241000 bitop    1100, st4837, ^r96h, ^r105, group 1, wait 3
+0b480600404000200000 bitop    0000, u0, r36l, r0l, wait 13
+db9f5fa7614a1c680010 orn1     st25501, ^$r15, 166, group 2, wait 134
+e37d679543f108980810 orn2     cr10590, r126, $r10, group 6, wait 0125
+fb554788ceba242c0000 or       u1247, u42, 8, group 3, wait 023
+03008604400910000000 andn1    u544l, r64l, r2l
+f3445f7c14b310f41010 and      r12895h, ^r98l, u126h, group 5, wait 02345
+3b6af66f8f5e14b80010 nand     $r8947, u53h, u247, group 6, wait 135
+83e677af8b923c300000 orn2     $r2008l, 103, 174, group 4, wait 23
+83e8d757a10d3c100000 orn1     st1976l, 104, ^r107, group 4
+83998fbbe4a324a80000 and      st17576h, 152, 58, group 2, wait 0235
+03002600429a20500000 xor      cr1088, r0l, u0l, group 4, wait 24
+1bc02631e6143c480000 andn2    st51137, 64, r88, group 2, wait 4
+5b0e760cd35e10500000 nand     cr597, u7l, u198h, group 4, wait 14
+03008680014400000800 nor      r2080l, r0l, $r64l, wait 1
+03010602800500000000 bitop    0000, r0l, u128, r65l
+aba8b7d5bf742c540800 orn2     st36330, 41, ^$r106, group 5, wait 014
+6bf386d4422900c01810 xor      u14374, $r121, $r42l, wait 045
+4bbd5ffc61e1249c0010 xnor     st25748, ^$r94, ^$r62l, group 7, wait 0125
+8b9e5fbb1fc33c6c0000 orn2     r1944, ^$r79h, 187, group 3, wait 1234
+0310460200ab00000000 andn1    r16l, r72l, u1l, wait 02
+132c8ec34bbf0c2c0000 nand     u481l, ^r86h, 66, group 3, wait 023
+e3d1576443370c181010 orn2     u12766l, $r104, u242l, group 6, wait 0
+bb084f56f0e6009c0810 and      st26651, u68l, u171h, group 7, wait 0125
+036597affe4a10840800 or       st18976h, u50, 175, group 1, wait 15
+1b7cd7269eef20e80800 or       r3121, u190h, u211h, group 2, wait 012345
+6be73f6115d6088c0000 xnor     $r326, ^$r51, u240, group 3, wait 125
+3bbfcf7aafc0189c1810 orn2     st15155, 191, r61l, group 7, wait 125
+4be7e6c6efc834ec1800 nand     st57012, 103, $r35l, group 3, wait 12345
+43221764030024200000 orn2     r1156l, r17l, ^r50l, wait 3
+53cf2efc174a14dc0010 nand     $r8837h, ^$r39, 125, group 7, wait 145
+03c44e4db21514e40010 andn2    st8912l, 196, r102, group 1, wait 345
+ab99568e51b11c180000 nor      u986, $r76, ^$r7h, group 6, wait 02
+0b0216102a1800000000 xor      st64, r1h, ^r8l, group 0
+7b94fec3eef918ac1810 xor      st64375, 149, ^$r33, group 3, wait 01235
+0300a624520000000000 andn2    cr32, r0l, r18h, group 0
+73d0cf9e5c86201c0800 and      u3127h, ^$r40h, 31, group 7, wait 2
+fb1e1eb738bf00101810 andn1    st14415, ^r79h, 183, group 4, wait 02
+0b000700440020800000 and      u1024, r0l, r0l, wait 5
+23299609a32d20680810 nand     st11298l, u148, ^r68, group 2, wait 034
+0b005700d11800000000 orn1     u80, u0l, ^r0h
+b382ae48498638ac1800 nor      cr7979, ^$r1h, u164l, group 3, wait 235
+9b8446110a0000400000 andn2    r25, $r2h, r8, wait 4
+43000704010800200000 orn1     r4l, r0l, r2l, wait 3
+538c9e0fc78d30e00000 nand     u1573h, 140, ^r71, wait 2345
+236026758e36005c0800 andn2    $r2114h, u48h, u186, group 7, wait 04
+03000600214900000000 not      st0l, r64l, group 0, wait 1
+fbe3efe4410b28101000 orn1     cr5439, ^$r113, 100, group 4
+ab1e769fe25234400810 andn2    st61146, u15l, 158, group 0, wait 14
+83726e56b0e808b41010 andn1    st45336l, u121l, r43h, group 5, wait 01235
+ab717f1981be387c0800 orn1     $r3930, u120, u204, group 7, wait 0234
+1b7f77c64c201cd00810 and      cr11153, r63, ^$r35l, group 4, wait 045
+03b10680420804000000 xor      u128l, $r24, $r0l
+e36f062ffa140ca41810 andn2    st31182l, u55, r87, group 1, wait 35
+a354ffbbc12724dc0800 xnor     cr3258, u234l, 186, group 7, wait 045
+13402600400820040000 andn1    cr1025, r32l, r0l, group 1
+cb574e41508820541000 andn1    u5148, ^r43, r32, group 5, wait 24
+63010708842020080000 and      r1030h, u0, r4l, group 2, wait 0
+536b4eebe71f10140000 nand     st16981h, u245, 106, group 5
+cb550e49b05a048c0800 andn1    st2252, u106, u36, group 3, wait 15
+03200704098000400000 xnor     r0l, r16h, r2l, wait 24
+f3ef5fd859fe2cfc0800 orn1     u3551l, ^$r55, 217, group 7, wait 012345
+430ccf8a46f924e00000 or       u1268h, ^r70l, $r5l, wait 012345
+dbd46710f9b31cec1000 xnor     st54237, 85, u8h, group 3, wait 02345
+5b1c061ed64b1cec1010 xor      u13189, u142l, u15h, group 3, wait 1345
+83b94e1975760c341010 nor      st29144h, ^$r28, u140, group 5, wait 013
+03000600010800000000 not      r0l, r0l
+8b4fc6a45ed500881010 andn2    u12408, r103, $r82h, group 2, wait 125
+5b57177730c330600810 and      st11781, r107, u123, group 0, wait 1234
+9b55cfcda15400e40000 xnor     st121, u106, $r102, group 1, wait 1345
+63e39fe25d9420940010 xnor     u9318h, ^$r49, ^$r113h, group 5, wait 25
+8bbc1ffb5bd32cdc0000 orn2     u1480, ^$r94h, 251, group 7, wait 1245
+2b779f0ca30714181800 orn2     st6818, u251, u198l, group 6
+bb278774518008581810 xnor     u14635, r19, r58h, group 6, wait 24
+0b002600893900b00010 not      $r8256, u128h, group 4, wait 035
+03000700021020441000 mov      r5184l, r0l, group 1, wait 4
+03080f00428000000000 mov      u0l, ^r4l, wait 2
+0b3006004b8800080010 nand     u8192, r24h, r0l, group 2, wait 2
+03240740410000000800 xnor     u2048l, r18l, r32l
+03000f00060000000000 mov      r0h, ^r0l
+a7f4544900969603     bitrev   cr36, u165h, group 6, wait 0123
+a744561f03c0fa00     bitrev   $r15h, u176, group 3, wait 25
+a704544100221002     bitrev   cr32, u8h, group 0
+a75456030154b406     bitrev   cr1, ^r21l, group 3, wait 025
+a7645574023eef00     bitrev   r58, 159, group 3, wait 124
+a7545558026c3207     bitrev   cr44, ^$r27l, group 5, wait 024
+a754557400787f04     bitrev   u58, ^$r94, group 1, wait 024
+a784540000001003     bitrev   cr0, u0l, group 4, wait 3
+a704540000a05000     bitrev   u0l, u40l
+a7945542008cdf04     bitrev   u33, ^$r99, group 2, wait 034
+a7a4541d035eba03     bitrev   cr14, u151, group 7, wait 13
+a7745724012ae805     bitrev   u146l, r10, group 7, wait 01245
+a7e4547100128406     bitrev   cr56, r4h, group 2, wait 123
+a75454a50092c005     bitrev   u82h, r36h, group 6, wait 02
+a7e455ba006a5501     bitrev   u93, u90h, group 4, wait 1234
+a714564203dc3306     bitrev   cr33, ^$r119l, group 1, wait 05
+a724560803526905     bitrev   $r4l, r84, group 5, wait 15
+27d557eb02283402     popcount cr117, u10l, group 1, wait 02345
+2775544502e60802     popcount cr34, 115, group 0, wait 012
+275556800058cc00     popcount u64, 44, group 2, wait 025
+273555400040e000     popcount u32l, 32, group 3, wait 014
+276555e401cefd01     popcount u242, u115, group 7, wait 124
+27b55424038c9707     popcount cr18, ^$r99l, group 6, wait 013
+27f556ee02bae005     popcount r119l, r46h, group 7, wait 01235
+a70554480020cc05     ffs      u36, r8, group 6
+a7f5575702ea3b02     ffs      cr43, u250, group 1, wait 012345
+a715578d007e4b01     ffs      u70h, 191, group 4, wait 045
+a7c557f102441507     ffs      cr120, ^r81l, group 4, wait 2345
+a705569000005200     ffs      u72l, u128l, wait 5
+a705540002104a00     ffs      r0l, 8
+27c055a901b26566cb350101 bfi      u212h, u182, ^r108h, 153, mask 0xFFFF, group 2, wait 234
+2740575a02baa4a944548201 bfi      r45l, u74h, 93, 105, mask 0xFFFFFF, group 4, wait 245
+279054800000108000810300 bfi      cr64, 16, ^r0l.sx, 4, group 0, wait 03
+270054040084004800155000 bfi      u2l, u4h, u33l, 0, mask 0x1F
+2760563c009edbdbb57b3c00 bfi      u30, r93, u231, ^r123l, mask 0x7, group 7, wait 125
+275054a1030e5248c174e800 bfi      $r80h, ^r20, 7, 20, mask 0x3FFF, group 6, wait 02
+2770552b03e49961e03ed900 bfi      $r21h, ^r6, r121, u51, mask 0x1FFF, group 3, wait 0124
+278054e402e6bf739635a500 bfi      r114, u103, ^$r121h, r119h, mask 0x3FF, group 2, wait 3
+2750570e002a26da1dee4600 bfi      cr7, u221h, 21, ^r68h, mask 0xF, group 7, wait 0245
+271057bb020ea362078bdf00 bfi      cr93, r118l, ^$r67h.sx, ^r84l, mask 0x1FFF, group 1, wait 045
+276054ca02caf8c505eba101 bfi      cr101, 184, ^r50h, u191l, mask 0x3FFFFFF, group 7, wait 12
+276057a702349d30d4c66b00 bfi      cr83, ^r67, r77l.sx, u19, mask 0x3F, group 4, wait 1245
+27305404000889c0c7a4a400 bfi      cr2, u124, 132, r17, mask 0x3FF, group 2, wait 01
+27c0548b02e4ceea8171f800 bfi      r69h, r30, u185l, 179, mask 0x7FFF, group 6, wait 23
+271057f4007cfbf3cf1f4501 bfi      u122l, u255, ^$r95l, ^r127, mask 0xFFFFF, group 1, wait 045
+2780545403f42df70fc2d201 bfi      cr42, 254, 250, u229h, mask 0x1FFFFFFF, group 4, wait 3
+2750568d0198eef308a37c00 bfi      cr70, $r15l, u166l, ^r125h, mask 0x7F, group 2, wait 025
+27a05509027ccf888fef9a00 bfi      cr4, ^$r120, u223l.sx, u25h, mask 0x1FF, group 7, wait 134
+271057a400882ab1bc519201 bfi      u82, 150, u162.sx, 74, mask 0x1FFFFFF, group 4, wait 045
+27105586014cd6fbeaa52301 bfi      cr67, u175, ^$r19.sx, 245, mask 0x3FFFF, group 2, wait 04
+27c057160194e5be44387d01 bfi      u139l, r75h, r101l, $r92, mask 0x7FFFFF, group 3, wait 2345
+2790564f011ecd6854ceca00 bfi      cr39, ^r70h, 143, u25, mask 0xFFF, group 5, wait 035
+27e0567d0252aa7676706101 bfi      r62, 206, $r20, 170, mask 0x3FFFFF, group 6, wait 1235
+2720544e016811565cc7b501 bfi      cr39, u197l, ^r90l, ^$r66, mask 0x7FFFFFF, group 4, wait 1
+27c05651027c44947b31bb00 bfi      r40, $r57l, ^r31.sx, 17, mask 0x7FF, group 2, wait 235
+272056cf0186f3a2d1543401 bfi      u231, u26, 195, r94, mask 0x7FFFF, group 4, wait 15
+27d054fe0364ddd0c07b1900 bfi      $r127l, r13, ^r89l, u27, mask 0x1, group 7, wait 023
+272056b00074a478e0c91c01 bfi      cr88, r7, u29, r20, mask 0x1FFFF, group 5, wait 15
+277055bf032c63bfaec72f00 bfi      cr95, ^$r107, ^$r75.sx, ^$r108l, mask 0x3, group 4, wait 0124
+276054ed033298eb2716ce01 bfi      $r118h, ^r126h, 25, ^r115l, mask 0xFFFFFFF, wait 12
+27f0572500ac047f64565b01 bfi      u18h, ^r71h, r43.sx, u224, mask 0x1FFFFF, group 4, wait 012345
+27d0567600e2c41a0e73f001 bfi      u59l, 195, u56h, u88h, mask 0x7FFFFFFF, group 6, wait 0235
+276055650378d3c94739ee01 bfi      $r50h, r124h, u222l.sx, r58, mask 0x3FFFFFFF, group 3, wait 124
+a71055e0021e8243e8c4ca00 bfeil    cr112, ^$r4, 15, 224, mask 0xFFF, group 4, wait 04
+a7005400000088c240c30200 bfeil    cr0, 24, u0l.sx, u81, group 4
+a73054ce016a88aa8f547200 bfeil    u231l, u250, 53, 162, mask 0x7F, group 4, wait 01
+a7c0544801e21356b3a9e001 bfeil    cr36, 106, u248, 132, mask 0x3FFFFFFF, group 3, wait 23
+a7f0576d01e45984947ea000 bfeil    u182, u72, 242, u139l, mask 0x3FF, group 7, wait 012345
+a7f057960118e548171a5900 bfeil    u203, r116h, r70l, u28h, mask 0x1F, group 1, wait 012345
+a77054510156b4e572157e00 bfeil    u168, ^r46l, u21.sx, $r54, mask 0x7F, wait 012
+a7e05704012cdf609fe7ed01 bfeil    cr2, ^$r118, ^$r75l, ^r27h, mask 0x3FFFFFFF, group 6, wait 12345
+a760545d02d23daf7484d001 bfeil    cr46, u74h, 233, 207, mask 0x1FFFFFFF, group 0, wait 12
+27b15502017e53024fa44301 extr     cr1, u240l, $r95h.sx, 148, mask 0xFFFFF, group 2, wait 0134
+270156280208640000100400 extr     r20l, 0, 4, r12h, wait 5
+27b1576100e86a62003a4d01 extr     u48h, r6l, $r58l, ^r77l, mask 0xFFFFF, group 3, wait 01345
+270154c60190988008a10001 extr     cr99, 16, u36l, 38, mask 0xFFFF, group 2
+279154b900c0c22d76e2d500 extr     cr92, 197, $r48, ^$r56, mask 0x1FFF, group 6, wait 03
+27d156c800ccfcd35b5f7800 extr     u100, ^$r61l, u51l, u127, mask 0x7F, group 5, wait 0235
+27f1543e01d4e73f3aefb201 extr     cr31, u163h, u245.sx, u252h, mask 0x7FFFFFF, group 7, wait 0123
+2731562f01cc9600f0a74500 extr     cr23, u0, ^$r51, ^r18, mask 0xF, group 2, wait 015
+276257ac027e782fd4e5b301 shlhi    cr86, u66, ^r31h.sx, 222, mask 0x7FFFFFF, group 6, wait 1245
+2752545e0158b0eb67a58a01 shlhi    cr47, ^r126h, u22.sx, 236, mask 0xFFFFFF, group 2, wait 02
+27625560020a182b19132e01 shlhi    r48, $r18h, u2h.sx, ^r99l, mask 0x3FFFF, wait 124
+27825514000000d0405c0201 shlhi    u10l, u13l, 0, 0, mask 0xFFFF, group 5, wait 34
+2742565b03fa1272a8c3c800 shlhi    cr45, $r7, u190, u66l, mask 0xFFF, group 4, wait 25
+27e257e100bcd2d63f758501 shlhi    u112, u253l, ^$r47, $r90l, mask 0xFFFFFF, group 6, wait 12345
+27d2573203b6339a71e38901 shlhi    cr25, r25h, ^$r109, u70, mask 0xFFFFFF, group 6, wait 02345
+27125496028e00714679f501 shlhi    r75l, 206, ^r35h, r32, mask 0x7FFFFFFF, group 7, wait 0
+a71254000008008000828500 shrhi    cr0, 16, r2l, ^r0l, mask 0xFF, group 0, wait 0
+a70254180200038904840000 shrhi    cr12, u72h, 128, 64, group 0
+a702544d0010120088840000 shrhi    cr38, u128, 8, 4, group 0
+a762560c036c9b33f47dda00 shrhi    $r6, ^r67, u219.sx, 230, mask 0x1FFF, group 7, wait 125
+a782565303e0fbcd0ee15f01 shrhi    cr41, $r108h, ^$r120l.sx, $r63l, mask 0x1FFFFF, group 6, wait 35
+a7e25563036a6b676e820f01 shrhi    cr49, $r102l, $r90.sx, ^$r109, mask 0xFFFF, group 0, wait 1234
+a732578602540158a45f9b01 shrhi    r67l, ^r69, ^r85.sx, u0l, mask 0x1FFFFFF, group 5, wait 0145
+a7c25564027ee258918bd200 shrhi    cr50, 43, u159h.sx, u28l, mask 0x1FFF, group 1, wait 234
+a712555d01985d2fc4378500 shrhi    u174h, u66, ^r102l, ^$r107, mask 0xFF, group 2, wait 04
+a76257230254d6f4f51b4000 shrhi    r17, 190, u149, u154, mask 0xF, group 1, wait 1245
+a71256e900cc7047561c2f00 shrhi    u116, ^r100l, r51l.sx, $r110, mask 0x3, group 1, wait 05
+a7b1553301c8c9907900 asr      cr25, r114.sx, u25l, group 5, wait 0134
+a7e1547102b0cfacd400 asr      cr56, 216, ^$r25, group 2, wait 123
+a7215600000040100200 asr      u0l, 0, 16, wait 15
+a731542703ae75023500 asr      cr19, r107h, 157, group 3, wait 01
+a7c1566100546272cf00 asr      u48h, u149.sx, r76, group 7, wait 235
+a77157cd03eab5f62600 asr      $r102h, ^r122, u214, group 2, wait 01245
+a7815697003017d2f900 asr      cr75, ^$r76.sx, ^r66h, group 5, wait 35
+a791579b0040130c8300 asr      u77, 160, $r2l, group 1, wait 0345
+a7d1578503703e6fd000 asr      cr66, u156l.sx, $r103, group 0, wait 02345
+a76356a10196ff29f800 asrh     cr80, $r101h.sx, r63, group 4, wait 125
+a7f3541102cebc1bf400 asrh     cr8, r51.sx, r119h, group 2, wait 0123
+a7835587022469725000 asrh     cr67, u73.sx, 154, group 0, wait 34
+a79354430068d18dca00 asrh     u33, 180, ^$r58l, group 4, wait 03
+a743569e00d612886b00 asrh     u79, $r53h.sx, u2l, group 5, wait 25
+a7835600010025000200 asrh     u128l, 128, 9, wait 35
+a7e3559101481cb27100 asrh     cr72, r18.sx, u67, group 1, wait 1234
+a77357a103c86fcac200 asrh     $r80, u242l.sx, ^r77h, wait 01245
+1fc1046721120b6ec50e isub     cr51, 137, ^$r65l.sx, group 4, wait 23, sat, first
+1f01440000200000530a isub     u0l, u8l.sx, 0, group 4, q2
+9ff114400320c40e5f0a iadd     $r32, u8l.sx, u216h.sx, group 5, wait 0123, q1
+9f2147cf21322504cd03 iadd     cr103, r76h.sx, u132h, group 5, wait 145, q2
+1f414555034e71253701 isub     $r42h, ^r83, u174l, group 2, wait 24, q2
+9f815749005ca3e7570f iadd     u36h, ^$r87.sx, ^$r116.sx, group 4, wait 345, sat
+1f1106be0110856f3f0c isub     u223, u68, ^$r112h.sx, group 3, wait 05, sat, first
+9fb15463032c7de25b07 iadd     $r49h, ^r75.sx, r79, group 5, wait 013, sat
+9f41157901e654cc370c iadd     u188, u57h, ^$r10.sx, group 2, wait 24, sat, q1
+1f010401209008808d00 isub     cr0, 72, u1, group 1, first
+9f3154c0238ea404a306 iadd     cr96, u35h.sx, $r20h, group 2, wait 01
+9ff1141021a47227830c iadd     cr8, u169, $r110l.sx, group 0, wait 0123, q1
+9fc1475322a825428100 iadd     cr41, 212, 137, group 0, wait 2345, sat, q2
+1f61040420300834a000 isub     cr2, 24, 2, group 2, wait 12, first
+9f811400000400105908 iadd     du0, 2, 0, group 5, wait 3, q1
+1f4144f822f49d31e60b isub     cr124, ^r125.sx, u51h.sx, group 6, wait 2, q2
+1f810440002000331008 isub     du32, 16, 192, wait 3, first
+9f71179a007e5bb23006 iadd     du77, 191, r75, group 2, wait 01245, q1
+1f01067721d6e1538c0f isub     cr59, dr117.sx, ^r124l.sx, group 1, wait 5, first
+1f010400022000961004 isub     dr0, 16, $r64, first
+9f3154ef024cbb365707 iadd     dr119, ^$r83.sx, ^$dr87, group 4, wait 01
+9f5104b4231cb991a60b iadd     cr90, ^r71l.sx, u55.sx, group 2, wait 02, first
+9f714712019495747502 iadd     du137, 202, du146, group 6, wait 01245, q2
+1f911505002e1513560c isub     du2, u75h, ^r98h.sx, group 4, wait 034, q1
+1f811792001824541509 isub     du73, dr6, du132.sx, wait 345, q1
+1f01047c03ec9c575b05 isub     $dr62, ^dr59, $dr115, group 5, first
+1fa1040620000030a200 isub     cr3, u0, 0, group 2, wait 13, first
+1f114778207604938c0b isub     cr60, r29h.sx, u96.sx, group 1, wait 045, q2
+9f81171a017ee6953604 iadd     du141, u159h, ^$r60, group 2, wait 345, q1
+1fb105ac013a8d525b08 isub     du214, du78, 163, group 5, wait 0134, first
+9f010400004000101600 iadd     du0, u16l, u0l, first
+9fb1442f0372ff36570a iadd     $dr23, u220.sx, du223.sx, group 4, wait 013, q2
+9fd1177b00eaf8343e05 iadd     du61, ^r58, ^$r31l, group 3, wait 02345, q1
+9f2105bf01925dd31e0e iadd     du223, du100.sx, ^r107.sx, group 1, wait 14, first
+9f9107b6204ca0cdc200 iadd     cr91, u19l, 104, lsl 1, group 4, wait 0345, first
+9fe145d522f6d5e3ec0f iadd     cr106, r125.sx, ^r122.sx, lsl 1, group 7, wait 1234, q2
+1f1144ad203208058005 isub     cr86, r12h, $r33l, lsl 4, group 0, wait 0, q2
+1f41441000048400300c isub     u8l, 2, r16h.sx, lsl 4, group 2, wait 2, q2
+9f4107570326b8e4501b iadd     $r43h, r9.sx, 46, lsl 3, group 4, wait 245, first
+1f010410000880021018 isub     u8l, 4, 160, lsl 2, first
+9fa146e6032abbcf1608 iadd     $r115, u202h, u247.sx, lsl 1, wait 135, q2
+1fc1144601b8f4847400 isub     u163l, 92, u158, lsl 4, group 6, wait 23, q1
+9f410404010000291400 iadd     u130, 0, u32l, lsl 4, wait 2, first
+1f010450000000001c0a isub     u40l, 0, u0l.sx, lsl 4, group 1, first
+9f2146a620581449ec0c iadd     cr83, 44, ^r34h.sx, lsl 1, group 7, wait 15, q2
+1f810600000001001a00 isub     u0l, u64l, 0, lsl 4, group 1, wait 35, first
+1f31559e22fa0f2c8203 isub     cr79, ^$r126.sx, 3, lsl 4, group 0, wait 014
+9fe1447201f043057e10 iadd     u185l, u252l, u168l, lsl 2, group 7, wait 123, q2
+1f21058b039c640b1219 isub     $r69, ^r39l, 217, lsl 2, wait 14, first
+1f9145cb00e6d4ca341b isub     u101, r57h.sx, u90.sx, lsl 3, group 2, wait 034, q2
+9fb104cd0076b5417817 iadd     u102h, r93h.sx, r54h, lsl 3, group 7, wait 013, first
+1fe1149701ccfa2f1608 isub     u203, u179, u255l.sx, lsl 4, wait 123, q1
+1f8157cc0018b7ce761e isub     u102, u198l.sx, ^$r86.sx, lsl 3, group 6, wait 345
+9f51451721fe64aeea12 iadd     cr11, u63.sx, 153, lsl 2, group 7, wait 024, q2
+1f5044600200a18000001500 imsub    cr48, 128, 40, 16, group 0, wait 02, q2
+9f0054800000450000600000 imadd    u64l, 128, 17, 0, group 2
+1ff045fe027af42fbe5ac500 imsub    cr127, u30h.sx, 253, u226h.sx, group 3, wait 01234, sat, q2
+1fc005000000000218140100 imsub    cr0, 0, u64l, 0, group 1, wait 234, first
+9f105618003ab9e4e20d6b00 imadd    cr12, r78, ^$r23, ^r46.sx, group 0, wait 05
+9fa044290078dca56ed4b300 imadd    cr20, r30, u187h.sx, $r106l, group 7, wait 13, sat, q2
+1f0006000080a48088300000 imsub    u0l, 64, 41, 16, group 1, wait 5, first
+1f00450a0000005800004300 imsub    cr5, r0l, 0, 11, group 0, wait 4, q2
+9fa017c203d22908ddf26400 imadd    $r97, u116.sx, 10, $r80h.sx, group 7, wait 1345, q1
+9f7057bd03264a5f6baee400 imadd    $dr94, u137.sx, u233l, ^$r53h.sx, group 4, wait 01245, sat
+1f70178601409c56d280ef00 imsub    cr67, r16.sx, $r83, r37l.sx, group 4, wait 01245, sat, q1
+1f0004080020455042000d00 imsub    cr4, 144, r8h, 74, group 0, first
+9f60475e01161440cf5f5100 imadd    cr47, u5, u2.sx, u244.sx, group 3, wait 1245, q2
+1f0004c40300800400200000 imsub    $r98l, 0, 32, 0, first
+1f8044c90220a030c08c6700 imsub    cr100, r8.sx, u20, ^r3l.sx, group 4, wait 3, q2
+9f30456601822092e9e25c00 imadd    du179, u32.sx, r68.sx, 50, group 6, wait 014, q2
+9f5016fa020cfbb719aa4c00 imadd    r125, u195l.sx, $r127l, u155l.sx, group 4, wait 025, q1
+1f00555b0304a461db9a4500 imsub    cr45, u1.sx, 105, u182l.sx, group 5, wait 4
+1f3054bf016c193812259e00 imsub    u223, r91l.sx, ^r3l.sx, 71, wait 01, sat
+1f7014e4033a3c9961eb6800 imsub    $dr114, u14, r39h, ^r25.sx, group 6, wait 012, q1
+9f8044f6017c6a9318bf5e00 imadd    u251, ^$r31l.sx, ^r109l.sx, u137.sx, group 5, wait 3, q2
+1f3055570228f68c22d95300 imsub    cr43, $r10l, 61, u40.sx, group 7, wait 014
+1fc016c301e2a78beeee6c00 imsub    du225, u248.sx, ^r116, ^$r104h.sx, group 6, wait 235, q1
+51000321             ffma     r5l, r0l, r5l, r16
+01ff8678286a         ffma     r32l, $r63, u60l, r53
+c990e688b0dc         ffma     $r60, $r8l, 0.140625, ^$r46
+61570617f0b5         ffma     r6l, r43, u139, ^$r26
+2100064021000214     ffma     r66l, r0l, r96l, u0
+794bdef949584e81     ffma     u55, ^r101, ^$r60, r108.abs, wait 3
+0900568005042800     ffma     st16, r0h, ^$r0l, r2l.bfloat
+69b3be6f391a4630     ffma     cr102, ^$r25, ^r55, u13.abs.neg, wait 0
+f1d5b65e051af2d3     ffma     st49263l, 5.0, u111h, r13l, wait 5
+61e246b7698bda38     ffma     u86l, 9.5, $r27.neg, 0.171875, wait 0
+21e4beec893d864e     ffma     $r34h, -10.0, -14.0, ^r30.abs, wait 1
+29359e77213cee11     ffma     st16482, u218, ^r59, u30
+0100061041088420     ffma     r0h, u0l, r8l, r68l, wait 0
+0183460021209030     ffma     r80l, 0.03125, r0h, u16l, wait 0
+6910062089a00088     ffma     r6, r8l, r16l.neg, ^$r16l.abs, wait 3
+b179465b81e2ee2a     ffma     st16411h, u60, u45.neg, ^$r49, wait 0
+41100e001308000600000000 ffma     r4l, ^r8l, u128l, r4l.neg
+c94a7e2372e6069d1205 ffma     $r604, ^r101l.neg, ^r81l.neg, 11.0, group 1, wait 2
+416cf662c7095af0f6060000 ffma     cr1780, r54h.bfloat.neg, ^r49h, ^r68h, group 1, wait 012, sat
+01040600120020020804 ffma     st256l, r2l, u0l, r0l.neg, group 1
+e16c0e1cfbfff0ded4c40200 ffma     st17102l.bfloat, u118l.bfloat, u142h.abs.neg, -31.0, group 1, wait 1245
+3909f6e8d2cc1a09940e ffma     $r691, r68h, ^$r52h.neg, ^$r102.neg, group 3, sat
+c1aaced443d3003f764a0001 ffma     r1788l.bfloat, ^$r85l.neg, 5.0, $r105h, group 2, wait 04, sat, first
+896bfe973682c40c16a4 ffma     cr696, u117.neg, ^$r75.neg, 0.03125, group 1, wait 35
+41008600c200402000a0 ffma     u36l, r0l, r0l, ^r64l, wait 035
+01a02e10220000042000 ffma     $r1024l, ^$r16l, r72l, u0l
+21ecb661befa8872400a ffma     $r98l.bfloat, 14.5, u112, -26.0, group 2, wait 01, sat
+e95efe7a7bd1ec865ee20000 ffma     st50110h, u111h.neg, u253l, 4.25, group 0, wait 2345, sat
+09c486669254c6f8d4f8 ffma     u736, 2.5, r51l.neg, ^r42.neg, group 6, wait 012345
+f9ea6e9cd2c32e0c0866 ffma     st33055, ^$r53h, $r78l.neg, ^$r97.neg, group 1, wait 34, sat
+795a6ee4ef198008d2d90100 ffma     $r535l, u109l.bfloat.abs.neg, $r50l.bfloat.neg, u204h.bfloat.abs, group 6, wait 45
+4983a9c6             fmul     $r36, ^$r1, $r35l
+016895004400         fmul     u32h, r52l, ^r0l
+29d3958aec73         fmul     st16482, 4.75, -0.15625, wait 2
+59558df68c8c         fmul     r37, u106, $r123l.neg, wait 3
+8908754a4c03         fmul     cr24, r68h, u101l
+11ab5d9860a9         fmul     st16401l, ^$r85, ^$r12l.neg, wait 4
+110005008002         fmul     r1l, u0l, u0l
+e1e26d2b240b         fmul     st32798h, ^$r113l, u21.neg
+a9340dc85891         fmul     u74, ^r90h, $r36h, wait 3
+01501500a9000809     fmul     st256l, u40h, ^r0l.bfloat, group 2
+51925daa8557da63     fmul     r853h.bfloat, -0.28125, -0.8125, wait 134, sat
+11000541c1000800     fmul     u257l, u0l, r32
+4182052f2d761088     fmul     st580h, $r1h, u151, group 2, wait 015
+0101053001002000     fmul     r1024l, r0, r24l
+1138050001160008     fmul     r65l, r28l, u128l, group 2
+0904054209020409     fmul     r128, r2h, u33l.bfloat, group 2
+119bed4d453da2ca     fmul     cr1137, ^$r77l.neg, r102.neg, group 2, wait 045, sat
+796f15da359324e3     fmul     st1223, r119, -6.75, group 0, wait 2345, sat
+11b80593254d1217     fmul     st513h, $r92l.neg, $r73l.neg, group 5, wait 1, sat
+21555544a1720685     fmul     st210l, u42.neg, u98l.bfloat, group 1, wait 015
+d948157fc5dbcefa     fmul     u461, u164l.bfloat.neg, u127.neg, group 6, wait 12345, sat
+1908d5b98570e25f     fmul     r1137h, u4l.bfloat.neg, ^$r28l, group 7, wait 014, sat
+79295d6ab978f427     fmul     st1751l, u84, ^r53h.bfloat.neg, group 1, wait 013, sat
+7998adabc6aea6a702000000 fmul     cr1191, -0.375, 0.8125, group 1, wait 0235, sat
+f149ede5bae72e6b00000000 fmul     st34239l, u228.neg, 10.5, group 2, wait 01234, sat
+09cd55dfaeda1cc201000000 fmul     st976, 3.625, -7.5, group 0, wait 1245, sat
+e14bad441699b69502000000 fmul     $r1774h, ^r101l.neg, r34h.bfloat.abs.neg, group 5, wait 25
+e9603d20068030e603000000 fmul     $r1550, ^r48l.abs, ^r16l.abs, group 1, wait 2345, sat
+010045000207080000000000 fmul     r272l, r64l, u128l
+090205002620400001000000 fmul     st0h, r1l.abs, r0l, group 0, wait 0
+012205024200028700000000 fmul     u0l, r17l.neg, r1l.bfloat, group 1, wait 5, sat
+d977dd4a3a2e721103000000 fmul     st1597l, ^r59.abs.neg, u229h.bfloat.abs.neg, group 4, wait 0
+092805004224440001000000 fmul     u128, r20l.abs, r64l, wait 0
+410005419a01002201000000 fmul     r4l, u128h.abs, r32, wait 3, sat
+f96ea55512634ed300000000 fmul     $r431l, r119l.neg, u42, group 4, wait 0145, sat
+d1bd452302fcb8a303000000 fmul     r1885l, $r30l.abs, r81l.abs.neg, wait 01235, sat
+e1a74cc958d1         fadd     u94l, ^$r83, $r36, wait 5
+410004028810         fadd     r68l, u0h, r1l
+b1bec42dc033         fadd     u123l, 1.875, u22, wait 0
+89115c692801         fadd     st24, ^r72, ^r52
+212004020002         fadd     r2l, r16l, u1l
+c966cc414043         fadd     u60, ^r115l, u32, wait 1
+0946e496b466         fadd     st32816, u35l, 0.359375, wait 2
+01975458a093         fadd     st80l, 0.34375, u108l, wait 3
+59a8f4f7dc2e         fadd     cr53, 0.78125, -23.0, wait 0
+090084000000         fadd     r32, r0l, r0l
+590f5c65d846         fadd     u21, u71, u242, wait 1
+79fcf4623916e862     fadd     st34167l, $r62h.bfloat, u241h, group 0, wait 34, sat
+69289c5fedbd8827     fadd     st16742, u212h.bfloat, ^r111l.neg, group 1, wait 023, sat
+5980bc968ddf3094     fadd     $r1637, -0.015625, -0.34375, group 5, wait 125
+29b4f48c4114e8a4     fadd     cr1394, $r26l.bfloat, ^$r70l, group 1, wait 35
+2973bc15899102f0     fadd     $r98, u249.neg, ^r10, group 4, wait 2345
+49c354e55d549adc     fadd     u852, $r33h.neg, ^$r114, group 7, wait 145
+0100048421014800     fadd     st256l.bfloat, r64l, $r2l, group 0
+89eae4b799b6eaaa     fadd     $r1400l, 13.5, 1.4375, group 2, wait 0235, sat
+110004284180a000     fadd     u1025l, r0l.bfloat, r20l, wait 2
+09b4ec17e657d0e60000 fadd     st49776h, -1.25, u139, group 1, wait 1345, sat
+b1a2d409da8ad47b0200 fadd     u699l.bfloat, 0.59375, u68.abs.neg, group 6, wait 234, sat
+89256cdeba3a80370100 fadd     st32856, u82.abs, 7.75, group 5, wait 03, sat
+01002410260000020200 fadd     st32768h, r0l, r8l.abs, group 0, sat
+01000405020080020000 fadd     r0l, r0l.bfloat, r2, sat
+b9d104d74ea2ee490000 fadd     u1419, $r40h.neg, 5.5, group 2, wait 024
+81c7f4992a6d98d90300 fadd     st33592l, $r99h.abs, ^$r76l.abs.neg, group 6, wait 0145
+a98c44c61adff4560100 fadd     r1754l, $r70h.bfloat.abs, 2.875, group 5, wait 124, sat
+b1752c14cee0d85c0100 fadd     cr779, u122.abs, r10l, group 7, wait 0124
+01c00400220220240000 fadd     st1024l, $r32l, u0l, group 1, wait 3
+a910d4f1868a50020200 fadd     r570h, u8l, -16.0, wait 2, sat
+88f17bc4             hfma     $r24h, ^$r56h, $r24h, ^$r34l
+000246202006         hfma     r16l, r1l, u16l, r3l
+98042e92e8fa         hfma     $r9h, ^r2l.sat, 0.28125, ^$r61l
+509dfec2c97dc8d0     hfma     cr117, -0.453125, ^$r33l, ^r126h.abs, wait 5
+d0bfde4829f60073     hfma     r125l, ^$r95h, u100l, 22.0, wait 2
+301796dab9cc881f     hfma     r99l, u139h.sat, -6.5, -3.5
+38154e1591e8546c     hfma     u19h, ^r10h, r74h.neg.sat, ^$r52l.neg.sat, wait 2
+8800061931200028     hfma     r8h, r0l, r12h.neg, u16l.neg, wait 0
+000016000301009000400200 hfma     r64l, r0l, ^r0l.abs, r0h, wait 24
+000166044301400008000000 hfma     cr272, r0h, r2l, r64h
+c86966a7f3f6c07e36420301 hfma     cr1756, u52h.abs.neg, 0.71875, -22.0, wait 014, sat, first
+002c0600028000020000 hfma     r0l, r22l, u0l, $r0l
+38a076dc3a64586e14a0 hfma     cr659, $r16l.sat, -7.0, u50l.abs.neg, wait 0135
+20c456d80a7f50080442 hfma     u146l, $r34l, ^$r44l.neg.sat, r63h.abs, wait 4, sat
+508cfe837bed802834400301 hfma     $r1717l, -0.1875, ^$r1h.abs.neg, 14.5, wait 04, first
+08130140             hmul     r0h, r9h, r32l
+a8649d6c9899         hmul     r106h, u242l.sat, ^r54l.neg.sat, wait 3
+98856d5dd800         hmul     cr25, -0.078125, r46h.sat
+f8ba951048ac         hmul     u47h, $r29l.sat, ^r72l.neg, wait 4
+000005004083         hmul     u0l, r64l, u0l, wait 3
+e076151199e91ea2     hmul     r910l, u187l.neg.sat, ^r8h.neg.sat, wait 01235, sat
+d085e567c1e614a2     hmul     cr701, 0.078125, u179h, wait 01235, sat
+9097cd98c12d3840     hmul     u1849l, -0.359375, $r76l.neg, wait 04
+08506d8c41a238e2     hmul     cr1808, ^r40l, 0.1875, wait 02345, sat
+0000052001100602     hmul     r192l, r0l.neg, r16l, sat
+20cfe52cdae702e00300 hmul     cr50, 3.875, u150l.abs.sat, wait 012345
+002005080a0200000000 hmul     r0l, r16l.sat, u4l
+00204500120500000000 hmul     r16l, r80l, r64l.sat
+c87cd5a19a740e820000 hmul     r508h, u62l.neg.sat, ^$r80h.sat, wait 015, sat
+08e3fddc0a4f36800000 hmul     $r1712h, ^$r113h.neg.sat, -7.0, wait 15
+20000560528020800100 hmul     u1026l, r0l.abs, r48l.sat, wait 25
+800044001012         hadd     r88l, r0l, u0l.sat
+900de4da8837         hadd     $r121l, u134h.sat, 6.5, wait 0
+00440c00c010         hadd     u64l, u98l, r0l
+30a95c2e808f         hadd     r19l, -0.78125, u215l.neg, wait 3
+b80434bcc870         hadd     cr75, u2l.sat, ^$r30l, wait 2
+40004c27c98a34a2     hadd     u1684l, u64l.sat, u19h.neg, wait 235, sat
+a072340681d53840     hadd     $r1866l, u185l, ^r67l, wait 124
+20025c5c09591802     hadd     r850l, ^r65l.sat, ^r46l.neg, wait 1, sat
+0801040101000202     hadd     r0h, r0h.neg, r0h, sat
+60fc1cdd191e2e62     hadd     r1478l, ^$r62l.neg.sat, -7.25, wait 34, sat
+3097ec6bc95c0ac2     hadd     cr371, -0.359375, r117h.neg, wait 145, sat
+10800402020000000000 hadd     r1l, $r0l, r1l
+502714249a6216420200 hadd     r645l, u19h.neg.sat, u82l.abs.sat, wait 014, sat
+50877c61cab406620000 hadd     cr213, -0.109375, ^r112h, wait 0234, sat
+489db4b302023c200100 hadd     $r1956h, $r14h.abs, -1.1875, wait 3
+38440440c20804400000 hadd     u131h, u34l, r32l.neg, wait 4
+2f0054060000a2000000 rint     u3, u128l.bfloat
+2f8057a301e8ab810000 rint     u209, u250l.abs, group 2, wait 345
+2ff057b50130f1620100 rint     u218h.bfloat, ^r76.neg, group 5, wait 012345
+2f005480000080000000 rint     u64, 0.0
+2f5054c702dee4410100 rint     r99, ^r55h.bfloat.neg, group 3, wait 02
+2fd05632029062480100 rint     cr25, ^$r36l.bfloat.neg, group 1, wait 0235
+2f805786022c82220100 rint     r67l.bfloat, 0.34375, group 4, wait 345
+2f10576903162fea0000 rint     cr52, ^$r69h.abs, group 4, wait 045
+2f005400011001280100 rint     cr0.bfloat, -0.125, group 0
+2f5054ff008a358a0100 rint     cr127, u98.abs.neg, group 4, wait 02
+2fb056b60256aca00100 rint     r91l, u21h.abs.neg, wait 0135
+2fb0541e0154a7a20000 rint     u143l, u213l.bfloat.abs, group 4, wait 013
+2f005606000082000200 floor    u3, 0.0, wait 5
+2f00551c02062f4a0300 floor    cr14, ^$r65h.neg, group 4, wait 4
+2fc0551a0140d6a00300 floor    u141l, 0.5, group 1, wait 234
+2f0054000100c0200200 floor    u128l.bfloat, 0.0, group 1
+2fc054710364288b0300 floor    cr56, u25l.abs.neg, group 6, wait 23
+2fb0569100906a6a0200 floor    cr72.bfloat, ^$r36l, group 5, wait 0135
+2f0055cd03c290610200 floor    $r102h.bfloat, r48, group 2, wait 4
+2fd054340266c1630200 floor    r26l.bfloat, r89h.bfloat, group 7, wait 023
+2f8054d502e8c6a30300 floor    r106h, 20.0, group 7, wait 3
+2fc054d803da638a0300 floor    cr108, u246h.bfloat.abs.neg, group 5, wait 23
+2f5056e0013231290300 floor    cr112.bfloat, u76.neg, group 2, wait 025
+2f005608002880a10400 ceil     u4l.bfloat, 0.3125, group 2, wait 5
+2f30543e00084c290500 ceil     cr31, 0.0625, group 3, wait 01
+2fa054ab01d6b7e00400 ceil     u213h, ^$r117.abs, wait 13
+2f8054000000004a0400 ceil     cr0, r0l.bfloat, group 4, wait 3
+2fd056a70142f4830500 ceil     u211, u16.abs.neg, group 7, wait 0235
+2fc05772016a68e90400 ceil     cr57.bfloat, ^r26h.abs, group 3, wait 2345
+2f00540c008000490400 ceil     cr6, r32l.bfloat, group 2
+2fd05626032ce0830500 ceil     $r19, u11l.bfloat.abs.neg, group 7, wait 0235
+2f6056d80338b3e00500 ceil     $r108l.bfloat, ^$r78.abs.neg, wait 125
+2f0057a40184aaa00500 ceil     u210l.bfloat, u161l.abs.neg, wait 45
+2fa056c502e886610500 ceil     r98h, $r58l.bfloat.neg, group 2, wait 135
+2f90543c0070eee30600 trunc    u30l, ^$r28l.abs, group 7, wait 03
+2f40557802b010ab0600 trunc    cr60.bfloat, 6.0, group 6, wait 24
+2f3054ba036a6b090700 trunc    cr93, u218h.neg, group 3, wait 01
+2f40575903e8a1c10700 trunc    $r44, ^r122l.bfloat.abs.neg, group 2, wait 245
+2f50561602b617680700 trunc    cr11, $r109.neg, group 0, wait 025
+2f50577a01f691620600 trunc    u189l.bfloat, r125, group 4, wait 0245
+2f005400008482030600 trunc    u0, 2.25, group 6
+2f80570b0148b0810600 trunc    u133, u18.abs, group 2, wait 345
+2f5057420228e5030700 trunc    r33, u74l.bfloat.neg, group 7, wait 0245
+2fa0553a02fe83200700 trunc    r29l.bfloat, -31.0, wait 134
+af5054a4001a00884400 rcp      cr82, 0.203125, group 2, wait 02
+af40541f00ba02ec4000 rcp      u15, 7.25, group 3, wait 2
+af0054cb029c12845500 rcp      cr101.bfloat, u167l.abs, group 6
+af005790016a03e0f000 rcp      u200l.bfloat, $r90h.bfloat.abs.neg, group 3, wait 45
+af805580011000421000 rcp      u192l, 0.125, wait 34
+afa05400002000c42000 rcp      u0, r8l, group 2, wait 13
+afb0549f011e1000d400 rcp      cr79.bfloat, u7h.bfloat.abs.neg, group 0, wait 013
+af7056f0021612649100 rcp      r120l.bfloat, u133h.neg, group 5, wait 0125
+aff05574035e11ead000 rcp      $r58l, u87.abs.neg, group 3, wait 01234
+af015528000000080000 rsqrt    cr20, 0.0, group 0, wait 4
+af015540020000480100 rsqrt    cr32, r0l.bfloat.neg, group 0, wait 4
+afc1571e00ce80610000 rsqrt    u15l.bfloat, r51h.bfloat, group 2, wait 2345
+aff155d501bacf830100 rsqrt    u234, -7.25, group 7, wait 01234
+afd156ce001a308b0100 rsqrt    cr103, u6.abs.neg, group 6, wait 0235
+afa1554803acd0e30100 rsqrt    $r36l.bfloat, r43.abs.neg, group 7, wait 134
+afb155b101aa95a00100 rsqrt    u216h, -5.25, wait 0134
+af81573c03ea53a80000 rsqrt    cr30.bfloat, -21.0, group 1, wait 345
+af91556201762fa90100 rsqrt    cr49, u221h.abs.neg, group 2, wait 034
+af2155cb01fca8e30000 rsqrt    u229h.bfloat, ^r63l.abs, group 6, wait 14
+af0154100008a0220000 rsqrt    u8l.bfloat, u2l.bfloat, group 4
+af3157ef03fe95e20000 rsqrt    $r119h, r127.abs, group 4, wait 0145
+2fd1545103465d0a0000 rsqrt_special cr40, -0.59375, group 5, wait 023
+2fe154ac036410280000 rsqrt_special cr86.bfloat, 1.125, group 0, wait 123
+2f015440006091200000 rsqrt_special u32l.bfloat, -1.0
+2fd155430152006b0100 rsqrt_special cr33.bfloat, r20h.bfloat.neg, group 6, wait 0234
+2f71559c03b24cc90100 rsqrt_special cr78, r44h.abs.neg, group 3, wait 0124
+2f815400020080200100 rsqrt_special r0l.bfloat, 0.0, wait 3
+2f1155b101bcc9c20000 rsqrt_special u216, r111l.abs, group 5, wait 04
+2f01548b0000280a0100 rsqrt_special cr69, u0l.neg, group 4
+2f615602037033ea0000 rsqrt_special cr1.bfloat, ^$r92.abs, group 4, wait 125
+2f61549400cecce00100 rsqrt_special u74l, r51h.abs.neg, group 1, wait 12
+2ff1548f0300f4610100 rsqrt_special $r71h, ^r0.neg, group 3, wait 0123
+2f915629024435880100 rsqrt_special cr20, u81.abs.neg, group 0, wait 035
+2f9155bd0274e9410000 rsqrt_special r94, ^r93l, group 3, wait 034
+2f11555f024ca6020000 rsqrt_special r47, u147l.bfloat, group 4, wait 04
+2f83543900e26c0a0000 sinc     cr28, u56h, group 5, wait 3
+2f0355000000a0000100 sinc     u0, u0l.bfloat.neg, wait 4
+2fc35600000000080000 sinc     cr0, 0.0, group 0, wait 235
+2f035402000080000000 sinc     u1, 0.0
+2f23542c030090000000 sinc     $r22, 0.0, wait 1
+2f5357a6022809a90000 sinc     cr83.bfloat, -0.3125, group 2, wait 0245
+2fa3552c013220480000 sinc     cr22, ^r12h.bfloat, group 0, wait 134
+2f735543013831890000 sinc     cr33, u78.abs, group 2, wait 0124
+2ff3578700be486b0100 sinc     cr67.bfloat, r47h.neg, group 7, wait 012345
+2f23553702dae2a00100 sinc     r27h.bfloat, u182h.bfloat.abs.neg, group 1, wait 14
+2fa357570180134a0000 sinc     cr43, $r96, group 4, wait 1345
+2f6356ff0206efe00100 sinc     r127h, ^$r65h.abs.neg, group 1, wait 125
+2f8355df0186eba20100 sinc     u239h.bfloat, u225h.abs.neg, group 5, wait 34
+2fd3546301be87e20100 sinc     u177h, $r111h.bfloat.abs.neg, group 4, wait 023
+2f9254430282e5830000 log2     r33, u96h.bfloat.abs, group 7, wait 03
+2f92552702ceec600000 log2     r19h, ^r51h, group 1, wait 034
+2f1257c701f290630100 log2     u227h.bfloat, r60.neg, group 6, wait 045
+2f125408002488010000 log2     u4, 0.28125, group 2, wait 0
+2f3255b401f603290000 log2     cr90.bfloat, -27.0, group 2, wait 014
+2f7255d7011c27e90100 log2     cr107, ^$r71l.bfloat.abs.neg, group 2, wait 0124
+2f4256050258a9630000 log2     r2h.bfloat, ^r86l, group 6, wait 25
+2f7257b102f4b4a20100 log2     r88h, u61.abs.neg, group 4, wait 01245
+2fc257de00ea6e880000 log2     cr111, u186h.abs, group 1, wait 2345
+2f3254e9008497210100 log2     u116h, -2.25, group 2, wait 01
+af62553c0366286b0100 exp2     cr30.bfloat, ^r25h.neg, group 6, wait 124
+afe257ff02e854c80100 exp2     cr127, r58.abs.neg, group 1, wait 12345
+af82540601ccada10000 exp2     u131l, u115l.abs, group 2, wait 3
+af325547009c192a0100 exp2     cr35.bfloat, -3.75, group 4, wait 014
+af0256e2003887830100 exp2     u113, -0.4375, group 6, wait 5
+af1256f6030cc2600100 exp2     $r123l.bfloat, $r3l.bfloat.neg, group 1, wait 05
+af825602036ceca10000 exp2     $r1l, u27l.abs, group 3, wait 35
+af0254000100a4800000 exp2     u128, u0l.bfloat.abs
+afd25764004e36890000 exp2     cr50, u147.abs, group 2, wait 02345
+afe254e0010eabe00000 exp2     u240l.bfloat, ^$r67h.abs, wait 123
+02e108200000         cmpsel   fgtn, r0l, ^$r48, r16l, ^$r48l, r16l
+020200000100         fmin     r0l, r1l, r0l
+22c202001000         cmpsel   fgtn, r2, $r33l, r0h, $r33, r0
+a249245f4c9d         cmpsel   ugt, cr74, r100, r111.sx, r100h, r111l.sx, group 0, wait 3
+026482040649         cmpsel   sgt, r32, r114l, r2l.sx, r114, r2.neg, wait 1
+820004201800         fmax     r8l, r0h, r16h
+6a2e740a83ae         cmpsel   flt, $r22h, u23l, u197l.neg, u23l, u197l.sx, wait 4
+b266b039c486         cmpsel   ugt, cr43, u51l, u220, u51l, u220l, group 0, wait 3
+0a0010105508         cmpsel   ult, u0h, r0l, ^r8h.sx, r0l, ^r8h.neg
+62651695816e         cmpsel   fltn, r6, u50, -0.3125, u50, 148, wait 2
+f24400000120         fmin     r15l, r34l, r0l, wait 0
+da995c8a0a38         cmpsel   fgt, r93h, ^$r12, ^$r5l.neg, ^$r12h, ^$r5l.sx, wait 0
+02000400004c         cmpsel   fgtn, r0l, r0l, r64l.neg, r0l, r64l.sx, wait 1
+729ff0c9cebe         cmpsel   sgt, cr119, 31, 200, 0.484375, -3.0, group 0, wait 4
+220002200000         cmpsel   fgtn, r2, r0l, r16l, r0, r16
+aa368c8bca2f         cmpsel   fgt, u42h, u219h, 0.15625, u219h, 10, wait 0
+020a0000410a         fmin     u0l, r5l, u0l.neg
+2aa0bc090ad9         cmpsel   fgt, $r98h, ^$r80h, ^r4.neg, ^$r80h, ^r4l.sx, wait 5
+8a0848004800         fmax     u24h, ^r4h, r0l
+0a0580429108         cmpsel   fltn, r32h, u2, r33h.neg, u2l, r33h.neg
+020800000409         cmpsel   ugt, r0l, r68l, r0l.sx, r68l, r0l.neg
+c275dcfdc46b         cmpsel   ugt, u60l, u250, 252, u250l, 252, wait 2
+d221fa00013c         cmpsel   fltn, $r125, ^r16, ^r64l.neg, ^r16, ^r64.neg, wait 0
+b2b1861c54cb         cmpsel   ugt, u43, $r88, u14h.sx, $r88, u14.sx, wait 5
+120802128000         cmpsel   fgtn, r1, u4l, r9l, u4, r9
+028810211000         cmpsel   fgtn, r0l, $r4l, ^r16, $r4l, ^r16h
+02faba3ec27b         cmpsel   fgt, cr96, -26.0, u95l.neg, -26.0, u95.neg, group 0, wait 2
+12f244bcd78f         smin     u17l, 114, 61, wait 3
+828202801420         cmpsel   ugt, r8, $r1l, $r0h, $r1, $r0, wait 0
+721f6c7cd448         cmpsel   ugt, cr23, u79, r62h.sx, u79l, r62h.sx, group 0, wait 1
+92212647c13b         cmpsel   fltn, cr73, u144, u35.neg, u144, u35.sx, group 0, wait 0
+0201101000c6         cmpsel   fgtn, r0l, r0, u200l, r0l, u200l, wait 5
+6a3f4c56d202         cmpsel   fgt, u22h, u95, u43h, u95l, u43h
+021094154420         cmpsel   ugt, u32l, r8l, ^r10, r8l, ^r10l, wait 0
+821900264002         cmpsel   fgtn, u8l, r12, u19l, r12l, u19l
+0200a01000c0         fmax     $r32l, r0l, r8l, wait 5
+020100208002         cmpsel   fgtn, r0l, u0, u16l, u0l, u16l
+1289c6269e16         cmpsel   sgt, r113, 9, u147h, 9, u147
+021004020402         umax     r0l, r8l, u1l
+c24a6ccb163f         smax     $r92l, ^r101l, 75, wait 0
+920f882b826c         cmpsel   fgt, r41l, u71, r85.neg, u71l, r85l.neg, wait 2
+820006810089         cmpsel   fgtn, r8, r64l, $r0.neg, r64, $r0.sx, wait 3
+62044c1cdc18         umax     u86l, u66h, r14h.sx
+020080008000         fmax     r32l, u0l, r0l
+928108658cd5         cmpsel   ugt, r73l, 129, r114, -0.015625, r114l, wait 5
+421004201610         smax     r68l, r8l, r16h
+72cad68a1431         cmpsel   ugt, r119, $r101l, ^$r5h, $r101, ^$r5, wait 0
+7216f68b8218         cmpsel   fgt, $r119, u11l, ^$r5.neg, u11, ^$r5.sx
+92fa3c7d916e         cmpsel   fltn, $r9l, -26.0, u254.neg, 250, u254h.sx, wait 2
+1aecf00d8017         cmpsel   fgtn, $r113h, 14.0, u198, 14.0, u198l
+72bb0efd5997         cmpsel   fltn, u71, ^$r93, 29.0, ^$r93, 125, wait 3
+820012020002         cmpsel   fgtn, r8, r0l, u65l, r0, u65
+faa344d6d58b         umin     u31h, 34, 87, wait 3
+2a74acb2d373         cmpsel   flt, cr98, u250l, 1.1875, u250l, 51, group 0, wait 2
+020120084800         cmpsel   fgtn, cr0, r0, r4l, r0h, r4l, group 0
+1a53b0dc5f7e         cmpsel   slt, cr97, r41, 221, r41h, -7.25, group 0, wait 2
+faf748dc1376         cmpsel   flt, r95h, ^$r59, 7.25, ^$r59l, 7.25, wait 2
+dab240a4917c         fmin     r93h, 1.125, $r82h.neg, wait 2
+f29704fc8dcd         umin     r15l, 23, $r126l.sx, wait 5
+8a000890c802         fmax     u8h, u64h, 0.25
+0220100004c0         umax     r0l, r16l, ^r0l, wait 5
+c2dd5cc44e53         cmpsel   sgt, u92l, ^$r110, 196, ^$r110h, 196, wait 1
+9217ce215e0b         smax     u57, ^r75, u16.sx
+e20a703ec8bc         fmax     cr94, u5h, ^r95l.neg, group 0, wait 4
+022000200500         umin     r0l, r16l, r16l
+eaceecb70163         cmpsel   fltn, $r62h, ^$r103l, 1.375, ^$r103l, 54, wait 2
+22c300850100         cmpsel   fltn, r2l, $r33, $r2, $r33l, $r2l
+0250ca084208         cmpsel   fgt, u48, ^r40l, r4l.neg, ^r40, r4.neg
+12c81a83d3a8         fminsse  u1, -3.0, ^$r1.neg, wait 4
+020122018022         fmax     $r0, u0, u0, wait 0
+3ae8d453c16c         cmpsel   fltn, u51h, 12.0, ^r105.neg, 104, ^r105l.sx, wait 2
+020200001200         fmaxsse  r0l, r1l, r0h
+d20840505bb3         fminsse  u93l, r68h, u40h, wait 4
+a281eaa2dc05         cmpsel   ugt, cr58, 129, $r81h, -0.015625, $r81, group 0
+72626ed106b3         cmpsel   sgt, $r87, ^r113l, 80, ^r113, 80, wait 4
+aa2658491fab         cmpsel   slt, r26h, ^r83h, u100.sx, ^r83h, u100h.neg, wait 4
+021000020290         fmaxsse  r64l, r8l, r1l, wait 3
+b2e942b5117b         fmin     r91, $r116, 1.3125, wait 2
+b268e20f4ac4         cmpsel   fgt, cr59, r52h, r71, r52, r71, group 0, wait 5
+62bd0e1595ae         umin     r6, 188, u138.sx, wait 4
+a2be5671d61b         smax     u90, 62, u120.sx
+4a9930f6dbba         fminsse  cr68, 0.390625, -23.0, group 0, wait 4
+1a4aa00e8a76         fmaxsse  $r97h, u37h, u135l, wait 2
+426e101c1e32         smax     r68l, r55h, u78h, wait 0
+4230004c0082         fmax     r4l, r24l, u38l, wait 3
+1278d6814c05         cmpsel   ugt, u49, r124h, ^$r64, r124, ^$r64
+b2fa84b19716         smin     r107l, 122, 49
+6a8a781a03b4         fminsse  $r86h, ^$r5l, ^r77l, wait 4
+c2ce46f84314         cmpsel   flt, u92, $r39l, $r124l, $r39, $r124
+324098565a2e         fmaxsse  u35l, ^r32h, u235h.neg, wait 0
+4afcf00d5486         cmpsel   ugt, cr52, $r62l, u198, $r62l, u198h, group 0, wait 3
+520f2a571da3         umin     $r5, ^r71, u43, wait 4
+d2583433da05         cmpsel   fgt, cr13, u172h, ^r89, u172h, ^r89h, group 0
+42279e200f11         cmpsel   slt, r100, ^r83, ^r16l, ^r83, ^r16
+1256c2f04533         cmpsel   ult, u113, r107l, 112, r107, 16.0, wait 0
+3260741bdca5         cmpsel   ugt, cr19, u176h, ^r77, u176h, ^r77h, group 0, wait 4
+9a71c407074b         cmpsel   slt, r57h, r120, u3.sx, r120l, u3l.sx, wait 1
+b260bc619da6         cmpsel   ult, $r43l, u112h, u240, u112h, u240h, wait 4
+521184619c4b         cmpsel   ugt, r37l, u136, u48.sx, u136h, u48h.sx, wait 1
+ea98fc448207         cmpsel   fgt, $r62h, -0.375, u226l, 152, u226l
+2afe84825a77         cmpsel   fgt, u98h, $r127h, 0.046875, $r127h, 3, wait 2
+321f368b1d65         umin     $r3, r79, ^$r69, wait 2
+72b9fed70ad3         cmpsel   fgt, $r119, ^$r92, -5.5, ^$r92, 214, wait 5
+0a20a0000300         fminsse  $r32h, r16l, r0l
+020362df9521         umin     $r16, u129, $r47, wait 0
+0a0004008808         cmpsel   fgtn, r0h, u0h, r0l.neg, u0h, r0l.sx
+a20412a08490         cmpsel   ugt, r74, u2l, ^$r16l, u2, ^$r16, wait 3
+8ab44cee4217         cmpsel   fgt, u88h, ^$r90l, 15.0, ^$r90l, 110
+d2af68c44739         cmpsel   slt, cr93, ^$r87, $r34l.sx, ^$r87l, $r34l.neg, group 0, wait 0
+2a973cf3d926         cmpsel   fltn, cr2, -0.359375, -19.0, 151, 243, group 0, wait 0
+82b88ea5c2ca         cmpsel   fgt, u40, -1.5, 0.625, 184, 36, wait 5
+42daee9f1f68         cmpsel   slt, $r52, ^$r45h, $r15.sx, ^$r45, $r15.sx, wait 2
+92aeb4f6d5cb         umin     cr41, 46, 247, group 0, wait 5
+4adf380c98a9         fmax     $r4h, -7.75, ^r6h.neg, wait 4
+22aa0e2f9bd9         cmpsel   flt, r66, -0.84375, r23.neg, 171, r23.sx, wait 5
+d2aefef4d840         cmpsel   fgtn, cr61, -0.96875, ^$r58h, 175, ^$r58, group 0, wait 1
+12fb5cce8415         umax     r81l, 250, ^$r103l
+f26f6e54c929         cmpsel   fltn, cr31, u247, r42l.neg, u247, r42.sx, group 0, wait 0
+ba72a00a590c         fmin     cr43, r57h, r69h.neg, group 0
+e26040669188         fmin     r30l, u48l, r51h.neg, wait 3
+120818400502         umin     r1l, ^r4l, u96l
+b24bea0847df         cmpsel   slt, cr123, ^r101, u132l.sx, ^r101, u132.neg, group 0, wait 5
+62a1fedd871d         smin     $r118, 160, ^$r110.sx
+020024090002         cmpsel   fgtn, $r0l, r0l, u4, r0l, u4l
+9a2294594643         cmpsel   sgt, u41h, r81l, u108, r81l, u108l, wait 1
+027e42268c56         cmpsel   ugt, r80, u63h, u147l, u63, u147, wait 1
+f2d50063c622         cmpsel   sgt, u15l, 84, u49, 5.0, u49l, wait 0
+429a386e0774         smin     $r68l, ^$r13l, ^r119l, wait 2
+52cda6154c3f         umax     cr101, $r102, u138.sx, group 0, wait 0
+22783894ce33         cmpsel   sgt, cr66, u252h, 148, u252h, -0.3125, group 0, wait 0
+12113a98cf38         cmpsel   slt, cr65, u72, ^$r12l.sx, u72, ^$r12.neg, group 0, wait 0
+92c1b2638f68         cmpsel   slt, $r41, 65, ^r49.sx, 2.125, ^r49.neg, wait 2
+aac5a038d237         fmaxsse  cr106, 2.5, u156h, group 0, wait 0
+8a74902ed4d8         cmpsel   ugt, u104h, u58l, ^r23h.sx, u58l, ^r23h.neg, wait 5
+4288669c9b77         cmpsel   flt, $r84, 0.140625, 0.453125, 9, 29, wait 2
+cab4f889d773         cmpsel   slt, cr124, 180, 137, -1.25, -0.140625, group 0, wait 2
+a2f17c19d327         cmpsel   flt, cr26, -16.0, u204, 240, u204h, group 0, wait 0
+821022c2889a         cmpsel   fgtn, $r72, u8h, 2.25, u8, 2.25, wait 3
+92937a255bc2         fminsse  cr25, ^$r9, u82, group 0, wait 5
+ba70a4850cd7         umax     $r107h, r120h, 4, wait 5
+02800a000002         cmpsel   fgtn, r0, ^$r0l, u0l, ^$r0, u0
+421f26461a4e         cmpsel   fgt, $r4, r15, u163h.neg, r15, u163.sx, wait 1
+b27516f15d1b         umin     u75, r122, 241
+f29fb2231e11         smax     $r111, $r79, ^r17
+822f8a99c42f         cmpsel   ugt, u40, u215, 24, u215, 0.375, wait 0
+92a9f0cac595         cmpsel   ult, cr121, 40, ^$r101l, 0.75, ^$r101l, group 0, wait 3
+b22990ab96a1         cmpsel   sgt, r43l, u148, ^$r21, u148l, ^$r21h, wait 4
+1a51f8f5c12a         cmpsel   fltn, cr49, u104, -20.0, u104l, -20.0, group 0, wait 0
+d207dea902b5         fmaxsse  r125, ^r67, ^$r84, wait 4
+f2be6222591f         cmpsel   fltn, cr95, $r95h, u145h.neg, $r95, u145.neg, group 0
+321156b78c4c         umax     r19, u8, ^$r91.sx, wait 1
+d2510e8e8236         cmpsel   fgt, r77, u104, 0.21875, u104, 14, wait 0
+7287d8b982a6         fmaxsse  r55l, -0.09375, -1.5, wait 4
+322532601747         cmpsel   slt, $r3, r82, u240h, r82, u240, wait 1
+2217d0389cc2         cmpsel   ugt, r50l, u11, u92h, u11h, u92h, wait 5
+da744c9ecd86         umin     u29h, u122h, 30, wait 3
+b2530ae55937         fmin     u75, ^r105, 10.5, wait 0
+52171eeb9710         smin     r69, u75, ^$r53
+7a241035999b         cmpsel   fltn, r71h, u146h, u90.neg, u146h, u90h.neg, wait 3
+82dcac6c5e2e         smax     cr40, ^$r46h, u182h.sx, group 0, wait 0
+021100280c02         cmpsel   ugt, r0l, r8, u20l, r8h, u20l
+3aba4004d6c7         cmpsel   sgt, u19h, 58, u130h, 1.625, u130h, wait 5
+626712185936         cmpsel   fltn, u70, r51, u204h, r51, u204, wait 0
+b21a08b40f66         cmpsel   slt, r11l, ^r13h, 52, ^r13h, 1.25, wait 2
+8a300c4ad3b7         fminsse  u72h, u216l, u165h, wait 4
+3233369f4750         smin     cr67, r25, ^$r15, group 0, wait 1
+82b84af4ce06         cmpsel   sgt, u24, 185, 116, -1.5625, 20.0
+f219ba2301c6         fmin     $r47, ^r12, u209, wait 5
+028102010b01         fminsse  r0, $r64, r0
+028402010183         cmpsel   fltn, r0, $r66l, u0, $r66, u0, wait 3
+726fe62786b9         smax     $r119, u183, r19.sx, wait 4
+d2904c048800         cmpsel   fgtn, r29l, -0.265625, r2l, 145, r2l
+027a561983c7         cmpsel   flt, r16, u189l, u204, u189, u204, wait 5
+324e0e7ddd87         cmpsel   ult, u3, u231h, u190, u231, u190, wait 3
+7a6a5002df57         smin     u87h, u181h, u193h, wait 1
+a235124d9f87         smin     r10, u154, u230, wait 3
+028406450a10         cmpsel   fgt, r64, $r2h, r34, $r2, r34
+32b86eb906da         cmpsel   sgt, $r83, ^$r28l, 56, ^$r28, 56, wait 5
+22f42abf5897         cmpsel   fgtn, cr66, ^$r122h, 1.9375, ^$r122, 1.9375, group 0, wait 3
+92ea3e004faa         cmpsel   slt, cr9, ^$r53h, u64l.sx, ^$r53, u64.sx, group 0, wait 4
+4aa7fc6d134f         cmpsel   flt, $r52h, ^$r83, u246.neg, ^$r83l, u246h.sx, wait 1
+829dfe15d0b3         cmpsel   fgtn, cr120, -0.4375, u74, 156, u74, group 0, wait 4
+2a88d8604637         smax     u114h, ^$r68l, u240l, wait 0
+423dda5b4fc4         smin     u52, ^r30, ^r109, wait 5
+520b083d9a36         cmpsel   fgt, r69l, u69, u158, u69h, u158h, wait 0
+826d4ae6d31a         fminsse  u88, u118, 11.5
+c243cee1ca30         fmaxsse  u124, u97, $r48, wait 0
+0a809820c400         cmpsel   ugt, u32h, 128, ^r16l, -0.0, ^r16l
+9a6cf87cdea7         smax     cr57, u246h, u254h, group 0, wait 4
+02e3aafb0c67         cmpsel   ugt, $r32, ^$r113, 122, ^$r113, 26.0, wait 2
+221106014080         fmax     u2, r8, r0, wait 3
+629012054080         cmpsel   fgtn, u6, $r8l, ^r2, $r8, ^r2, wait 3
+72ae6e598a14         cmpsel   fgt, $r87, -0.96875, r108, 175, r108
+d25f5e15d40c         umax     u29, u111, ^r74.sx
+e2e08c24d297         cmpsel   fgt, u110l, -8.0, u146h, 224, u146h, wait 3
+1217b6e5d9a4         fmin     cr33, u11, ^$r114, group 0, wait 4
+62c4b02287d6         cmpsel   slt, $r102l, 68, u209l, 2.5, u209l, wait 5
+52da1687d141         cmpsel   fltn, u5, 6.5, ^$r3, 90, ^$r3, wait 1
+e21fe261824e         fmaxsse  $r62, u15, u176.neg, wait 1
+e2da2a35d5d2         cmpsel   ult, cr78, 218, u26, -6.5, u26, group 0, wait 5
+f2aad6571c6b         cmpsel   ugt, r63, $r85h, u107.sx, $r85, u107.sx, wait 2
+526a757a78fdd219     cmov     !fgt, cr85, u181l, ^r61h.neg, 125, group 0
+0200038040a40200     cmov     !fgt, r0, r0l, $r0l, $r82
+0240810004014000     cmov     fne, u32l, r32l, r0l, r0h
+e202fb1a291d8243     cmov     fgt, $r62, u193l, u77l, u14.abs, wait 1
+e2f235ae41d09903     cmov     fltn, $r14l, 19.0, -0.96875, $r104l
+8a7d856dd1c8495a     cmov     fltn, u104h, r62, u54.neg, ^$r100l.sx, wait 1
+2252054090040001     cmov     !fgtn, r2l, r105l, r32l, ^r2l.sx
+8201030080825010     cmov     !fgtn, u72, r0, r0h, ^$r1
+52cde948ac4a8c9d     cmov     12, $r117l, 205, r100l.sx, u101l.abs, wait 3
+72b65915dd574d9f     cmov     29, u87l, ^$r91h, u202.sx, ^r107h.abs.neg, wait 3
+1acf1d8315fdc33b     cmov     fle, u65h, -3.75, -0.03125, $r62h.sx, wait 0
+2244450000000400     cmov     ule, r18l, r34l, r0l, r0l
+02fa718b41b11f47     cmov     slt, $r16l, $r125h, 139, $r88h, wait 1
+3a93c98f2529cc88     cmov     28, u51h, 147, $r7.sx, u20h, wait 3
+72f0df801866d10e     cmov     !fltn, u55, -16.0, -0.015625, r51.sx
+3ab109c3015a48c0     cmov     fgtn, u3h, ^$r24, $r33, r45l, wait 5
+022a919228924024     cmov     !fgtn, u32l, r21l, ^$r73l, 0.28125, wait 0
+dad1c5429565c171     cmov     25, u125h, 4.0, r33l, ^r50h.sx, wait 2
+a2935758c910935b     cmov     flt, r90, 0.28125, u108h.neg, ^r72, wait 1
+e2b1cf8ca4d81115     cmov     9, r126, ^$r88, $r70h, 216
+1282410410188302     cmov     !flt, r17l, 0.03125, u2l, r12l.neg
+5299df43ac445a5e     cmov     !fge, u117, ^$r12, u225.neg, u98, wait 1
+ea112155a4c7d992     cmov     9, cr78, u8, u42, -2.875, group 0, wait 3
+0a0001000000c414     cmov     ule, u64h, u0l, r64l, r0l
+0ae77dfd7c9e8735     cmov     ine, $r80h, 230, ^$r126, 30, wait 0
+a27041d4f97d4505     cmov     ult, u26l, r120l, $r106l, u254h.abs.neg
+8204010801400400     cmov     ugt, r8l, r2l, r4l, r32l
+7208036390375f14     cmov     sge, u71, r4h, r113, ^r27.neg
+0210050915000020     cmov     feq, r0l, r8l, r4, r0l.sx, wait 0
+8243137aed8f4a29     cmov     fge, u8, r97, ^r61l.neg, -0.234375, wait 0
+c2c7754e7cce4d25     cmov     13, cr28, $r99, ^r103l, 78, group 0, wait 0
+82ec2919255c96c5     cmov     test, $r8l, 236, r76, u46l, wait 5
+3ad615363cb59e3b     cmov     testz, r67h, 87, u91h.sx, 53, wait 0
+028005002050040b     cmov     ule, r0l, $r64l, u0l.sx, u40l
+0a77b5db5d04c561     cmov     29, cr32, u187, ^$r45, r66l.sx, group 0, wait 2
+82d23705219d4e06     cmov     sgt, cr8, $r41h, u194, 29, group 0
+b298078028c11d63     cmov     uge, r11, $r76h, 1, 65, wait 2
+820c4d0080810600     cmov     sle, r24l, ^r6l, r0l, ^$r0h
+4a9d895834e2c38e     cmov     !fle, u36h, -0.4375, u172l.neg, 9.0, wait 3
+62d9731036760004b0ad cmpsel   feq, $r22, $r44, ^r72l, u59.neg, -0.90625
+5ae055b31aeacd2c387e cmpsel   ult, u21h, 97, ^$r89.sx, $r53l.sx, u63l.sx, wait 0
+02010150220001000080 cmpsel   fltn, r0l, r0, r40l, u0l, $r0l
+02000112062008090042 cmpsel   feq, r0l, r64h, r9l.neg, r16l, r33l
+02024110060101000004 cmpsel   9, r16l, r1l, r8l, r0h, r2l
+22843f5f5a2d8ba3a2a7 cmpsel   flt, $r2, -0.078125, u111, r86.sx, 167, wait 4
+020001801204d0000000 cmpsel   fgtn, u0l, u0l, $r0h, r2l.neg, r0l
+2a5859e7fad313b8f803 cmpsel   flt, r82h, ^r44l, ^$r51.neg, -4.75, u193h.abs.neg, wait 4
+220003020a0440040810 cmpsel   fgtn, u2, r0l, r65l, r2.abs, r8.abs
+6a62b115f6c7c53bca47 cmpsel   13, cr102, u177l.sx, u74.sx, -2.875, ^r99h.abs, group 0, wait 0
+02001502022501000201 cmpsel   fltn, r0l, r0l.neg, ^r1l, r18h, r0h
+f293d5f602f304977801 cmpsel   ugt, r127l, $r73, 246, $r57h, u128h.sx, wait 3
+9ab191045a090c49d075 cmpsel   ugt, r41h, $r88, ^r2l.sx, r68h.abs.neg, ^r122h.neg, wait 1
+92123d71622b4fa99a02 cmpsel   slt, cr9, ^r73h.sx, ^r56.sx, u149h, ^r1l.sx, group 0, wait 4
+a2400bbdc23fd5a5787e cmpsel   ult, u10, u224l, $r94, ^r95, u191.abs.neg, wait 4
+0200011282410200a200 cmpsel   fgt, r0l, r0l.neg, r9l, ^r32h, u64l
+32b6435ee23686b7a2a8 cmpsel   sgt, r83, 54, u175l, u219, -0.75, wait 4
+22680104020000020844 cmpsel   fgtn, r2l, r52l, u2l, r0l, r34l.abs
+a2f8db99fa7040a3c8d1 cmpsel   fgtn, u58, ^$r124l, -0.375, u248.abs.neg, ^$r104.abs, wait 4
+52004ffaa6858765a25b cmpsel   ieq, r21, u192l.sx, $r125l, 133, u109, wait 2
+42c81311b6d146112072 cmpsel   test, u68, $r100l, ^r8, -4.25, u57
+42fcc5789e1552379228 cmpsel   fge, u116l, $r126l.neg, u188h, ^r10h.sx, ^r20l.sx, wait 0
+8263c9a2fec083bc22c2 cmpsel   fle, r120l, u113.neg, $r81l.neg, -2.0, 2.25, wait 4
+7a41112e1a8b9f6c0074 cmpsel   slt, r7h, u32, ^r87h.sx, $r5h.abs.neg, r58l, wait 2
+52141f3bbe995ed85835 cmpsel   test, u69, ^r10h, ^r29.sx, 153, r90.sx, wait 5
+d282f7c2664488939a28 cmpsel   feq, $r125, 0.046875, -2.25, u162, ^r20.sx, wait 3
+c28245880610840a2040 cmpsel   12, r28l, 2, 8, r8l, u32l
+d24b45cbd7b718f6508facec0100 cmpsel   feq, r1501l, r37h.abs, 3.375, ^$r91h.sx, $r71h.sx, group 3, wait 012345
+d24bc5807b4e57cc0aa43cd00100 cmpsel   slt, u1981l, r37.sx, $r64h.sx, u167l.sx, $r18l, group 4, wait 1245
+2200038083400040101808000000 cmpsel   fgtn, r258, r0l, $r0l, ^r32, r12.neg, wait 1
+020051048b000840208000000000 cmpsel   fgtn, r16l, r0h, ^r2l, ^r0l.abs, 0.0, wait 1
+0200030207201010028088000000 cmpsel   feq, r320, r0l.bfloat.neg, r1h, r16, $r0
+4200010083410103100a08000000 cmpsel   fltn, r260l, r64l, u0l, ^r32h, r5l.neg
+4acf81e3fbe0020b002bbc000200 cmpsel   fgt, r1956h, $r103l, 9.0, -8.0, r21h
+bae8795287410bf32a12905d0300 cmpsel   fle, $r603h, ^$r116h.bfloat.abs.neg, u105l.bfloat.abs, ^r32h, u9l.abs, group 7, wait 0124
+aa3cc53c6b67c227e0bcb0410200 cmpsel   fgt, u1594h, u158l.bfloat, u158l.bfloat.abs, u179h, 188, wait 04
+ba9f41749be21c91204ba0f90300 cmpsel   ugt, r1115h, $r79h, r58h, ^$r49l.abs.neg, u37h, group 6, wait 2345
+a2f7c387776f9b9b9a2988c00100 cmpsel   fle, r378, 23.0, 0.109375, u183.neg, ^r20.abs.neg, wait 245
+42537168d319df8e628d8c2d0200 cmpsel   slt, cr404, u41.sx, u244h.sx, ^r76h.neg, 0.203125, group 3, wait 23
+aa25d1dcbfaa147a90db20910100 cmpsel   12, r1146h, r18, 221, -0.8125, ^$r45h.neg, group 4, wait 015
+02010900130c8242000204400000 cmpsel   fgt, r128l, u64, u0l, r6l.neg, r1l, wait 14
+5ae77d5c1736ddd1ea869cfc0000 cmpsel   13, cr981, 231, ^r46h, r27l.sx, 134, group 7, wait 12345
+129787a53b6a9fb1e2a1a4400100 cmpsel   slt, r1249, 23, $r18, u53.sx, 161, wait 024
+828c45143ba6cdba7a5eb0e50100 cmpsel   ult, u1624l, 13, u10l.sx, 38, u175l.sx, group 1, wait 02345
+a20b014403024a00509400400000 cmpsel   fgt, u10l, r5, r34l, r1l, $r74l.neg, wait 4
+0240030017064048001010800000 cmpsel   feq, u512, r32l, r0l.neg, r3.neg, r8, wait 15
+0204010063100200000800000000 cmpsel   fgt, r0l, r2l, r0l, u136l, r4l
+e2ef6febcfce97b38adea4250000 cmpsel   ieq, $r1246, 238, 107, ^$r103, ^$r47, group 1, wait 023
+7248df3fef3dd07c72689c190300 cmpsel   feq, u1015, u100l.bfloat.abs.neg, ^r95h.abs.neg, u222, u180.sx, group 6, wait 01
+daa5a9234fe71fa2a8b1bc0d0300 cmpsel   ieq, $r1965h, ^$r18h, u17, $r115h.abs, -1.0625, group 3, wait 02
+ca326d3d87af535622498c540100 cmpsel   fle, cr476, ^r25l.bfloat.abs.neg, u158, ^$r23h, u36h, group 5, wait 14
+0208410303800001184c04000000 cmpsel   fgtn, r144l, r68l, r1, $r0l, r38l.abs.neg
+02000100c3019c80002008600100 cmpsel   ugt, r256l, u0h, r0h, ^r64h, r16l, wait 234
+1206dbbfc33a9898b22e04e10000 cmpsel   fgtn, r241, u67h.neg, ^$r31h.neg, ^r93, u87.neg, wait 2345
+0a2602008020         cmpsel   !fgtn, cc0, u19l, r0l, wait 0
+daac3a841ace         cmp      !fgt, cc_always, ^$r22h, -0.078125, wait 5
+4a921a6e0887         cmpsel   !fgtn, cc2, ^$r73h, u247l, wait 3
+2a1002001106         cmpsel   !fltn, cc1, r8l, u128h
+3af022951800         cmp      !fgtn, cc1, $r56h, $r10
+fad03a0b9444         cmp      ule, cc_never, 208, ^r69, wait 1
+0a080a101400         cmpsel   ule, cc0, ^r4l, r8h
+aade32f01104         cmp      fltn, cc5, $r47l, ^$r120h
+7ad6220390a9         cmp      !fgtn, cc3, 5.5, r1.neg, wait 4
+3ac63a45072c         cmp      sge, cc1, ^$r35l, ^r98.sx, wait 0
+8a003a6894a6         cmp      ugt, cc4, u64l, u244h, wait 4
+1a0002100800         cmpsel   fgtn, cc0, r0h, r8l
+0a1022400004         cmp      fgtn, cc0, r8l, r96l
+8a751a7312c8         cmpsel   !fgt, cc4, ^r58, ^r57.neg, wait 5
+4a4032200600         cmp      sgt, cc2, r32l, ^r16l
+ea732ab99886         cmp      fgtn, cc_never, u121, 1.5625, wait 3
+baa80a3c928f         cmpsel   fgt, cc5, -0.75, u158h.neg, wait 3
+2ac60a5a0ec6         cmpsel   sle, cc1, ^$r35h, u173l, wait 5
+1a0012008402         cmpsel   ugt, cc0, u0l, u64l
+da9c120d9faa         cmpsel   slt, cc_always, 29, u70.sx, wait 4
+7a4202511f20         cmpsel   slt, cc3, r33h, r40, wait 0
+7a2f12e4898c         cmpsel   fltn, cc3, u23, ^$r114l.neg, wait 3
+4a8802c00500         cmpsel   uge, cc2, $r4l, $r32l
+2a002a4602a0         cmp      fgt, cc1, ^r0l, r35l, wait 4
+9aba02429622         cmpsel   sgt, cc4, 58, u33h, wait 0
+ca611aec9c05         cmpsel   ule, cc_always, u240, ^$r118h
+8a8d02cf0e82         cmpsel   sle, cc4, $r6, 78, wait 3
+0a463a669b25         cmp      flt, cc0, u227h, ^r115h, wait 0
+aa6212999744         cmpsel   sge, cc5, u49l, ^$r76, wait 1
+fac43ad90e49         cmp      sle, cc_never, ^$r98h, ^$r44.sx, wait 1
+6acd22b38748         cmp      slt, cc3, 76, $r25.sx, wait 1
+da3d0a9682aa         cmpsel   fgt, cc_always, u94, 0.34375, wait 4
+dab13a1f9cca         cmp      ule, cc_always, 177, u79.sx, wait 5
+6a31227c8e40         cmp      sgt, cc3, u24, r62l, wait 1
+9a0902000d00         cmpsel   ult, cc4, r4, r0l
+0aac32211567         cmp      ult, cc0, $r86l, u208, wait 2
+8af322030887         cmp      fgtn, cc4, $r121, u129, wait 3
+1a6332dd8406         cmp      ule, cc0, u49, 220
+1a1022541803         cmp      !fgtn, cc0, r72h, u42h
+ba1d225f13a3         cmp      !flt, cc5, r78, u47, wait 4
+3a85029f8b2c         cmpsel   flt, cc1, 0.078125, $r79.neg, wait 0
+da903aba150b         cmp      uge, cc_always, ^$r72l, 187
+4ae01a2c8b08         cmpsel   !flt, cc2, -8.5, ^r22l.neg
+da0e32a1816a         cmp      !fltn, cc_always, u7l, -0.5, wait 2
+3a0002410807         cmpsel   fgtn, cc1, r64h, u160
+ba3d1303a6d78caa5075 cmpsel   12, cc5, u30, u65.sx, 215, r122h.sx, wait 4
+eae023c9ae8c01aada01 cmp      9, cc_never, $r48l.neg, 3.0, 140, ^r64h.sx, wait 4
+0a000b80a25000000061 cmpsel   !fgtn, cc0, ^r0l, $r0l, u104l, r48h
+0a000b104a9010002000 cmpsel   !fgtn, cc0, ^r0l, r8h, $r72l, u0l
+6a0a33a4d2f90a220839 cmp      fgt, cc3, r5h, -0.625, ^$r124h.sx, r28h, wait 0
+fa0c332b9a64880ae2d4 cmp      !fgtn, cc_never, u6h.neg, u85.neg, ^r50l.sx, 212
+0a823340062c18000000 cmp      feq, cc0, $r1h, ^r32h, r22l
+0a810300024010028030 cmpsel   !fgtn, cc0, $r0, u0h, r32l, ^r24l
+0aac0310024080010020 cmpsel   !fgtn, cc0, 0.875, r8l, r32l, r16l
+caa80bb3e67f080878b9 cmpsel   fne, cc_always, ^$r20h, $r25.neg, u255h, 57
+9a5a035626d29d2e6855 cmpsel   13, cc4, u45h, u171h.sx, 82, u170h, wait 0
+4ae23b197a69178c0aa7 cmp      slt, cc2, ^$r49l.sx, ^r76.sx, u180h.sx, $r19h, wait 3
+caa73b888aba1943c03c cmp      fltn, cc_always, ^$r83, -0.140625, ^$r29l, ^r94l, wait 1
+0a7a33b216cf95476a9a cmp      13, cc0, u189l.sx, 179, $r39h.sx, 26, wait 1
+9a713bd1865c9ace4ac3 cmp      !fge, cc4, u120.neg, -4.25, ^r46l, $r97h, wait 5
+ba6a2bb33a3119459a76 cmp      !fltn, cc5, ^r117h.neg, $r89, u24h.sx, ^r59l.sx, wait 1
+3aa93bf3d22b87c1185c cmp      sge, cc1, 168, ^$r57, ^r85h.sx, r46l.sx, wait 5
+0a880300020404000002 cmpsel   ule, cc0, $r4l, r0l, r2l, r1l
+9aac0321a28e9c252add cmpsel   ugt, cc4, 45, r80, 142, 93, wait 0
+2ae52356b6b817630018 cmp      ieq, cc1, $r114, u43h, 184, r12l, wait 2
+5a9903d6166092aa9878 cmpsel   fge, cc2, 0.375, 5.75, r48l.sx, ^r60l.sx, wait 4
+4abf334d6296050f7011 cmp      ult, cc2, $r95, u230.sx, 22, u136h.sx
+0a000301021082010802 cmpsel   !fgt, cc0, u128l, r0, r8l, r1l
+dac72342f2088da5226d cmp      uge, cc_always, 71, r97l, u196l.sx, u54h, wait 4
+4a261bc7be3e172330c6 cmpsel   ine, cc2, ^r83l, 199, u95l.sx, 70, wait 0
+0a002300060000000010 cmp      feq, cc0, r0l, r0l, r8l
+0a303300024412020003 cmp      fgt, cc0, r24l, u64h, r34l, r1h
+ca3b33fa960c8da0f2f1 cmp      13, cc_always, u29.sx, ^$r61l, ^r6l.sx, 241, wait 4
+0a010300020004216000 cmpsel   ule, cc0, r64, r0l, r0l, u128l, wait 0
+8a0103470a0010a20000 cmpsel   !fgtn, cc4, r0, u35, r0l, r0l, wait 4
+4a9a23dcc2a79925e017 cmp      fltn, cc2, 0.421875, $r110h, ^$r83h, u203h, wait 0
+4a011300c20280000090 cmpsel   !fgtn, cc2, u0, ^r0l, ^r65l, $r8l
+1a11031003021500000400000000 cmpsel   ult, cc0, r8, r8h, r1l, r2l
+4a5f033083cb17e920e280400100 cmpsel   sge, cc2, r111l, r24h.sx, ^$r37h, 98, wait 0124
+0a82030803000000121500000000 cmpsel   !fgtn, cc0, $r1l.neg, r4l, r0l, r10h.sx
+ca1c332bfba71dc428f400200100 cmp      ult, cc_always, r14h, ^r85, 167, 116, wait 123
+ba9a13e85b92814f58b880800200 cmpsel   fltn, cc5, 0.40625, -12.0, $r73l.sx, $r92l.sx, wait 15
+8a20238403008800000800410000 cmp      fgtn, cc4, u16h, $r2l.bfloat, r4l, wait 4
+0a000b0467008100001100a00000 cmpsel   !9, cc0, u64l, r2l, u128l, r8h, wait 35
+ea623bd76fea874a880600000100 cmp      ieq, cc_never, u113l, 214, 106, ^r3l, wait 1
+5ad3130e731e0107c83280610200 cmpsel   fltn, cc2, $r105l, u199l.bfloat.abs, u143l.sx, ^r89l, wait 34
+3a980b6abba00ac3f89c80a10000 cmpsel   fgt, cc1, ^$r76h.bfloat, u53l.bfloat, 160, 156, wait 1235
+8ac5030883008400000800000000 cmpsel   ule, cc4, 68, r4l, ^r0l, r4l
+bab623c1c3038787409d00e10000 cmp      sge, cc5, 54, 64, ^r65h, $r78h, wait 2345
+3ae82b01d7669a05aa4980010200 cmp      !fge, cc1, -12.5, r64h.abs, ^r115l.sx, u100h
+ba7f0bfd3f97004ac2c300c10300 cmpsel   feq, cc5, ^r63.abs.neg, 28.0, 23, ^$r97h, wait 145
+8a0023040f008400000000000000 cmp      12, cc4, u0l, r2l
+2a2433066f89850eea2200600200 cmp      13, cc1, u18l.sx, u195l.sx, 9, u209l, wait 34
+2a9f2ba23f51156220c200010300 cmp      13, cc1, ^$r15, 35, u40h.sx, 66, wait 01
+2afd23da13c20903d04980e00100 cmp      fltn, cc1, $r126h.abs, 6.5, $r33l.sx, ^r100h.sx, wait 345
+ca6013a5a752114da2c180c10300 cmpsel   !9, cc_always, r112l.bfloat.abs.neg, ^$r82h.abs.neg, u105l, 193, wait 145
+0a22030103090000200100400000 cmpsel   !fgtn, cc0, r17l, r0, r4h, u0h, wait 4
+2a062322174c0343e28500e10000 cmp      fle, cc1, r67l.neg, u17l.bfloat, r38l.sx, 133, wait 1345
+3a3323086f3e9d6e2ac400800200 cmp      !13, cc1, u25.sx, u132h.sx, u159l, 68, wait 015
+da172b377bfd8e4fe8f480a10200 cmp      sle, cc_always, u203, u155.sx, 125, 244, wait 135
+9a821bc7db7b152b989400200100 cmpsel   ult, cc4, ^$r65l, 199, ^r125h.sx, ^$r10l.sx, wait 03
+cac60b5f2b3e0c66805400810000 cmpsel   ule, cc_always, ^$r35h, u175, u31l, ^r42l, wait 015
+6a221377f32610ab7a5b00010000 cmpsel   !fgtn, cc3, r81l.neg, u123.neg, u211l.sx, u173h.sx, wait 02
+ca00139003908c81000900010200 cmpsel   ule, cc_always, u128h, ^$r8l, $r8l, r4h, wait 2
+9a9e0b11b31d17442a5a80200100 cmpsel   slt, cc4, ^$r15l.sx, r72, u78h.sx, u45l, wait 13
+2a61030303008080004400800000 cmpsel   !fgtn, cc1, u48, r1, r0l, r34l, wait 25
+0ad40b3c7f058d8b701c00a10000 cmpsel   !13, cc0, 213, u30l.sx, u130h.sx, u142l.sx, wait 235
+fa472b6e2f1c09c538ed00210300 cmp      !9, cc_never, ^r99.abs, r119l.bfloat.abs, u14l, 109, wait 123
+da29030027cf9422804180c00100 cmpsel   12, cc_always, u20, u0h, 79, ^r32h, wait 045
+fa65337d7708834e686d80e00300 cmp      !fle, cc_never, u50.abs, u254.abs.neg, u132l.sx, u182h, wait 1345
+3a3d2b29e3a48b8db0e500a00000 cmp      !flt, cc1, u222, r84.neg, 164, 229, wait 235
+0f055415             if       cc5, 1
+0f05542a             if       cc2.neg, 2
+0f05540e             if       cc3, 2
+0f055434             if       cc5.neg, 0
+0f055409             if       cc2, 1
+0f055410             if       cc4, 0
+0f05543c             if       cc_never.neg, 0
+0f05541c             if       cc_never, 0
+0f055430             if       cc4.neg, 0
+0f055426             if       cc1.neg, 2
+0f05542e             if       cc3.neg, 2
+0f042418             else     cc_always, 0
+0f042439             else     cc_always.neg, 1
+0f015402a0c900000100 jmp_exec_none 1099524841474
+0f0154058e141b949600 jmp_exec_none 0x96941b148e04
+0f0054247e23bedfd100 jmp_exec_any -50716078801372
+0f00543f8e5f8cdbd200 jmp_exec_any 0xd2db8c5f8e3e
+8f005424000008808d00 call     -125893947162588, 0
+8fe05487ca38dcdfb400 call     0xb4dfdc38ca86, 14
+2767541003d04cfd0300 convert  f_to_s16_7, cr8, r52l.abs.neg, group 3, wait 12
+27f757510242a0330300 convert  f_to_u16, r40h, u16h.bfloat.abs.neg, group 6, wait 012345
+27a7569e007685c80200 convert  f_to_s16, u79, r93h.bfloat, wait 135
+277755ad00a815140300 convert  f_to_u16, cr86, -5.0, group 0, wait 0124
+27075482000481000200 convert  f_to_u32, u65l, -0.03125
+27875400001080400200 convert  f_to_s8, u0l, 0.125, wait 3
+2747546f01dc2a840300 convert  f_to_u8_6, cr55, u183l, group 0, wait 2
+27075400020080800200 convert  f_to_u8, r0l, 0.0
+27a756a2028033a70200 convert  f_to_u8, cr81, u224.neg, group 6, wait 135
+a747568201b0a870     convert  s32_to_f, u193l, ^r44, rtz, wait 25
+a7d757e902b2f900     convert  u32_to_f_1, r116h, u108, rte, group 1, wait 02345
+a79754c00234f442     convert  s8_to_f, r96, u13l, rte, group 5, wait 03
+a76755be02de3a69     convert  s32_to_f_1, cr95, ^$r55, rte, group 2, wait 124
+a707540000028400     convert  u16_to_f, u0, 1, rte
+a7d754c10012f312     convert  u8_to_f, u96h, u196h, rtz, group 5, wait 023
+172456040000004a     unpack   r16unorm, r2l, r0l, wait 15
+178456c1002c127a     unpack   r8snorm_7, r96h, ^$r11l, wait 35
+17c4553c001a076a     unpack   r8unorm, r30, $r70h, wait 234
+170456940104080a     unpack   r8unorm_0, $r74l, r1l_r1h, wait 5
+17b454a6005e09aa     unpack   rg16snorm, r83l_r83h, r87l_r87h, wait 013
+17e457fb00bc18da     unpack   rg8unorm_srgb_linear, r125l_r125h, ^r47l_r47h, wait 12345
+1754558f01b608ea     unpack   rg8unorm, $r71l_r71h, r45l_r45h, wait 024
+1744540000000c8a     unpack   rg8unorm_linear_srgb, r0_r1, r0l_r0h, wait 2
+170454020040000a     unpack   r8unorm_0, r1l, r16l
+17045406000000ca     unpack   rg16unorm, r3l_r3h, r0l
+17a45761000c11ba     unpack   rg8snorm, r48l_r48h, ^r67l, wait 1345
+170454040140005a     unpack   r8unorm_srgb_5, $r2l, r16l
+170454000008002a     unpack   r16snorm, r0l, r2l
+170456000024051a     unpack   r8unorm_srgb, r0, r73l, wait 5
+1774568100561c9a     unpack   rg8unorm_srgb, r64_r65, ^r21l_r21h, wait 0125
+17b454a5017a02fa     unpack   rg8snorm_7, $r82l_r82h, $r30h, wait 013
+170454840040023a     unpack   r8snorm, r66l, $r16l
+2726567e00d65108     unpack   rgb10a2_unorm_to_half, u126l_u126h_u127l_u127h, ^$r107l, wait 15
+2706560400805208     unpack   rgb10a2_unorm_to_float, u4_u5_u6_u7, ^r64l, wait 5
+2726560401005008     unpack   rgb10a2_unorm_to_half, r4l_r4h_r5l_r5h, ^r0l, wait 15
+27c6578701fc4b08     unpack   rgb10a2_unorm_to_float, $r7_r8_r9_r10, $r126, wait 2345
+27c6565d01685e08     unpack   rg11b10f_to_float, r93_r94_r95, ^r52, wait 235
+276657750018400c     unpack   rgb9e5_to_half, u117l_u117h_u118l, r12l, wait 1245
+2706540001204008     unpack   rgb10a2_unorm_to_half, r0l_r0h_r1l_r1h, r16l
+2706541000004408     unpack   rgb9e5_to_float, u16_u17_u18, r0l
+270654000100440c     unpack   rgb9e5_to_half_6, r0l_r0h_r1l, r0l
+2766576600b8530c     unpack   rg11b10f_to_half, u102l_u102h_u103l, ^$r92l, wait 1245
+278654f900dc570c     unpack   rg11b10f_to_half_7, u249l_u249h_u250l, ^$r110l, wait 3
+975455a500dc1af18454 pack     r16snorm, u82h, u183.abs, 2.75, wait 024
+97245408000080000424 pack     r8unorm_srgb, u4l, 0.0, 0.5, wait 1
+97045480000010000440 pack     r16snorm, u64l, 0.0, 0.0625
+97045400020004000500 pack     r8unorm_0, r0l, 0.0, u0h.bfloat
+9764554d03f2d9c5c478 pack     rg8snorm, $r38h, ^r124h.bfloat.abs, 22.0, wait 124
+971456c8002236138512 pack     rg8unorm_linear_srgb, u100l, 0.265625, ^r102h.bfloat.neg, wait 05
+9784551d02141405457f pack     rg8snorm, r14h, r5l.bfloat.neg, ^$r34h.bfloat.abs.neg, wait 34
+9704540000c400000400 pack     r8unorm_0, u0l, 9.0
+973456db007e69ce04da pack     rg8unorm, u109h, u95h, $r77.neg, wait 015
+97c4572c00d2683105b5 pack     r8unorm_srgb_5, u22l, 12.5, u45l.abs.neg, wait 2345
+97045400004000010490 pack     r16unorm, u0l, 0.5, 2.0
+971455510344539044f1 pack     r8snorm_7, $r40h, ^$r81.neg, 0.3125, wait 04
+97045400010840080409 pack     rg8unorm_linear_srgb, u128l, 0.0625, 0.25
+971454c601e6aea40400 pack     r8unorm_0, u227l, u185h.bfloat, 0.84375, wait 0
+978455a5014a69afc449 pack     rg16snorm, u210l_u210h, ^r82h.abs.neg, -6.5, wait 34
+971455bd0386c414051b pack     rg8unorm_linear_srgb, $r94h, 2.375, ^$r24h.bfloat.neg, wait 04
+97845646001088120426 pack     rg8unorm_srgb, u35l, 0.125, r81l.bfloat.abs, wait 35
+97a455a9022c18b6c516 pack     rg8unorm_linear_srgb, r84h, ^r11.abs, ^$r67l.abs.neg, wait 134
+970456000300048c0462 pack     rg8snorm, $r0l, u0l, $r0h.bfloat, wait 5
+97f457350190e1ac44d8 pack     rg8unorm, u154h, ^r100l, 1.5, wait 012345
+971454000188008004c1 pack     r8unorm, u128l, u34l.bfloat.neg, wait 0
+97f454c10246c80545ad pack     rg8unorm_srgb_linear, r96h, r17h.bfloat.neg, u185l.bfloat.abs, wait 0123
+9764555d0276d8444521 pack     r8unorm_srgb, r46h, r29h.bfloat.neg, u155, wait 124
+975457a200fad21b85eb pack     rg8snorm_7, u81l, 29.0, ^r122l.bfloat, wait 0245
+9774577f0254ff808457 pack     rg16snorm, r63l_r63h, u213l.bfloat.abs.neg, r31h.bfloat.abs.neg, wait 01245
+97b4561000e0aa11842c pack     rg8unorm_srgb, u8l, 16.0, 13.0, wait 0135
+978457ee0386659485ed pack     rg8snorm_7, $r119l, u97.abs.neg, u140h.bfloat.abs, wait 345
+977455a5034c1ec7855b pack     rg16snorm, $r82l_r82h, u147l.bfloat.abs.neg, ^$r99.neg, wait 0124
+97145400002298100488 pack     rg16unorm, u0l_u0h, 0.265625, 0.6875, wait 0
+979457b8021c5184c4b3 pack     rg8unorm_srgb_linear, r92l, ^r71l.bfloat.abs.neg, $r10l.bfloat.neg, wait 0345
+9784550401f6691a8593 pack     rg16unorm, u130l_u130h, -27.0, ^r77l.bfloat.neg, wait 34
+97f454ce03dcc84845c2 pack     rg8unorm, $r103l, r55l, ^r25, wait 0123
+97a45604028e91cf4483 pack     rg16unorm, r2l_r2h, ^r99h.neg, $r114, wait 135
+9794567c025058b4449a pack     rg16unorm, r62l_r62h, ^r20, $r11l.neg, wait 035
+9794561b02de3bc345ba pack     rg8unorm_srgb_linear, r13h, ^$r119h.bfloat, ^r103.neg, wait 035
+97045420000408200560 pack     r8snorm, u16l, 0.03125, u1l
+975456ef013a5017452e pack     rg8unorm_srgb, u247h, r14, ^$r106l.bfloat.abs, wait 025
+97e45446022071ac45f6 pack     rg8snorm_7, r35l, ^r72l, ^$r14l.abs.neg, wait 123
+a706540200020040404000090208 pack     rg11b10f, u1l, 0.015625, 0.0, u4l.bfloat, 0.0625
+a7e6552003ee72c8dd56b488cd0c pack     rg11b10f, $r16l, $r59h.abs, ^r14l.bfloat.abs, -1.5625, 14.5, wait 1234
+a7b6577303408d9d32d582081f01 pack     rgb9e5, $r57h, -0.5, ^$r49.abs.neg, 4.75, $r41h.bfloat, wait 01345
+a726557801a8b485e0ae660ad11f pack     rg11b10f_3, u188, u42.abs, 14.5, 0.25, ^r119.abs.neg, wait 14
+a706544000040800005080090000 pack     rgb9e5, u32l, 0.03125, u1l.bfloat, u0l.bfloat
+a706540500000881040200080810 pack     rgb10a2_unorm, u2h, 0.0, 2.25, -0.25, 0.5
+a756559401d2d228bb61258bcb1b pack     rg11b10f_3, u202, $r52h.abs.neg, 1.25, u178h.abs.neg, ^r13.abs, wait 024
+a706540000040000000312082000 pack     rgb9e5, u0l, 0.03125, 0.0, r0l.bfloat, 1.0
+a7e65602025e5283eb8f38086a16 pack     rgb10a2_unorm, r1l, 0.96875, -5.0, $r56.abs, -30.0, wait 1235
+a7a657ae025ebc97811564091e1f pack     rg11b10f_3, r87l, u23h.bfloat.neg, $r119h.bfloat.abs.neg, u25l, $r44.abs.neg, wait 1345
+a78657ad00fa50d52c75950b1508 pack     rg11b10f, u86, 29.0, ^$r42l.neg, u205l, u169l, wait 345
+a736558402e6d2b618b084891015 pack     rgb10a2_unorm, r66, $r57, u218l.bfloat.neg, u139l, $r0h.bfloat.neg, wait 014
+a7065518020040400a04000a1100 pack     rgb9e5, r12l, 0.0, 0.25, 3.0, u32l.bfloat, wait 4
+a74654840028f993aa52160ba319 pack     rg11b10f_3, u66l, -0.3125, -30.0, ^$r41l.neg, ^$r21l, wait 2
+a72657ba038264c1f7f2a20a3a0d pack     rg11b10f, $r93, 2.125, u44.abs.neg, r124l.bfloat, ^$r23.neg, wait 145
+a73656b902120e004e6da28b8708 pack     rg11b10f, r92, $r4h.abs.neg, ^r1, u224l.bfloat.neg, u106, wait 015
+a7b6548d0398d2f30f06c888e00b pack     rg11b10f, $r70h, ^$r38l.bfloat, u122l.bfloat, $r127.abs.neg, r48l.bfloat.abs, wait 013
+a706543003daf72693ea89094603 pack     rgb9e5, $r24, -14.5, ^$r94h, u50.abs, r84h.bfloat.abs
+a7d657c603c029d50654460a2b0e pack     rg11b10f, $r99l, u112l.abs.neg, 3.25, r109l, u160l.bfloat.abs.neg, wait 02345
+a7165400004020000021a1080000 pack     rgb9e5, u0, 0.5, u4l, 0.0, 0.25, wait 0
+a706540800048000001020090018 pack     rg11b10f_3, u4l, 0.03125, 0.5, u0l.bfloat
+172756220364bb703810 icmp_ballot 8, cr17, ^$r89, 46, group 4, wait 15
+1757553902a8eec73001 icmp_ballot 0, cr28, ^$r42l, u253h.sx, group 0, wait 024
+17375729006609012612 icmp_ballot ine, u20h, r89h, 66, group 2, wait 0145
+177756e601b03da6f90f icmp_ballot 7, cr115, r108l.sx, ^$r71.sx, group 5, wait 0125
+1707540001004200c200 icmp_ballot 0, u128l, 0, r8l
+17d75795031ef623830b icmp_ballot ugt, $r74h, 15, r126.sx, group 1, wait 02345
+170757b6023683993804 icmp_ballot sgt, cr91, $r77, u48l, group 4, wait 45
+1787543d03800be67507 icmp_ballot slt, cr30, ^$r96l.sx, u193.sx, group 3, wait 3
+1777576400a238c7b019 icmp_ballot 12, cr50, ^r40h, ^$r103l.sx, group 0, wait 01245
+17c7572003cac43f751e icmp_ballot 15, cr16, r50.sx, 241, group 3, wait 2345
+173757d4036229df501c icmp_ballot uge, cr106, u88.sx, u229l, group 0, wait 0145
+17a7570100c08f4cdc08 icmp_ballot 4, cr0, u240l.sx, $r17h, group 6, wait 1345
+178755ef03183039231b icmp_ballot ule, $r119, r6, 76, group 1, wait 34
+17e756a001fcc358a70f icmp_ballot 7, u208, ^$r127, r24l.sx, group 3, wait 1235
+1757550c036cb0d41417 icmp_ballot sge, cr6, u27, u150l.sx, group 2, wait 024
+17c7575c016c2df78b15 icmp_ballot sle, u174l, u91, ^$r101.sx, group 5, wait 2345
+1787575c01be1f342a0d icmp_ballot ult, u174l, $r111, 7, group 4, wait 345
+17b2562000d63e930612 icmp_quad_ballot ine, u16l, 107, u103h, group 2, wait 0135
+178257990310dd9c8314 icmp_quad_ballot sle, $r76, 136, ^$r27h, group 1, wait 345
+17725732026c4b627d1e icmp_quad_ballot 15, cr25, ^$r91l.sx, 146, group 7, wait 01245
+1792558e01a40b79ef15 icmp_quad_ballot sle, u199, ^$r105.sx, r33.sx, group 7, wait 034
+17225408012001000210 icmp_quad_ballot 8, u132l, 144, 0, wait 1
+17a2571a023e32bcb80d icmp_quad_ballot ult, cr13, $r15, ^$r6.sx, group 4, wait 1345
+176255c7035adb70af02 icmp_quad_ballot ieq, $r99h, ^$r86, r27, group 7, wait 124
+17025458000281402200 icmp_quad_ballot 0, u44l, ^r64h, 32
+178257630100c67c1c0f icmp_quad_ballot 7, cr49, u128, 49, group 6, wait 345
+1732540600f63e1d741c icmp_quad_ballot uge, cr3, $r61.sx, 79, group 2, wait 01
+1702548e017e2bb1351e icmp_quad_ballot 15, cr71, $r95, u37, group 3
+17025600000058001008 icmp_quad_ballot 4, cr0, 0, 22, group 0, wait 5
+171257fc03947df0820b icmp_quad_ballot ugt, $r126l, u101, ^r15.sx, wait 045
+17925701008000400200 icmp_quad_ballot 0, u0h, u32l, 0, wait 0345
+172256e702d6bef4fc17 icmp_quad_ballot sge, cr115, ^$r53.sx, ^$r23.sx, group 6, wait 15
+17f2577e00c8edb6ef04 icmp_quad_ballot sgt, u63l, r114.sx, ^$r93, group 7, wait 012345
+174254c203e07ba9421a icmp_quad_ballot ule, $r97, 240, u47, wait 2
+17f254b301984cfe8619 icmp_quad_ballot 12, u217, u38, ^$r73.sx, group 2, wait 0123
+173256090354fe0c6206 icmp_quad_ballot slt, $r4, $r21l.sx, 63, wait 015
+971754b00002ff5b98de0000 fcmp_ballot 6, u88, $r64h.neg, r127h.abs.neg, group 2, wait 0
+97d7577e02ce45988bcd0100 fcmp_ballot 14, r63, ^r115h.abs, ^r8.abs, wait 02345
+9707561c00800c400a820000 fcmp_ballot flt, u14l, 2.0, u1h, wait 5
+97c755140080fa4776a20100 fcmp_ballot 13, cr10, 2.0, u255l, group 7, wait 234
+97a7549203fcda0a1e7b0000 fcmp_ballot fle, $r73, 30.0, u91l.bfloat.abs.neg, group 3, wait 13
+97c7573401eec25988080000 fcmp_ballot feq, u154, $r59h, 16.0, wait 2345
+97575540009eda5de21b0100 fcmp_ballot fne, cr32, $r39h.abs.neg, u187l.abs.neg, group 4, wait 024
+9777555d0392f16b8cb70000 fcmp_ballot 5, $r46, r100.abs.neg, r126l.neg, group 1, wait 0124
+97d7577502da4a1e66bc0000 fcmp_ballot 5, cr58, 14.5, ^$r73l.bfloat.abs.neg, group 5, wait 02345
+97e757a303b46508f3c30100 fcmp_ballot 14, cr81, ^r109l.bfloat.abs.neg, u12h.bfloat, group 6, wait 12345
+97f755a601567aabacea0000 fcmp_ballot 7, u211, $r21.neg, -7.5, group 5, wait 01234
+97e7557001fc11cd38500000 fcmp_ballot fgt, u184, -30.0, 2.5, group 6, wait 1234
+970756d301523b5651160100 fcmp_ballot fne, cr105, u212h.neg, $r71l.neg, group 2, wait 5
+9707559b0062a7a13afa0100 fcmp_ballot 15, u77h, -1.0625, u52.abs.neg, group 6, wait 4
+976757e4022e3f048c690100 fcmp_ballot !fle, r114l, $r75h.bfloat.abs, 0.234375, group 1, wait 1245
+97e7543100b6464609330000 fcmp_ballot fge, u24h, u173h.bfloat.abs.neg, -0.265625, wait 123
+97175581030246489d8b0100 fcmp_ballot !flt, $r64, ^$r0h.bfloat.abs.neg, 0.265625, group 3, wait 04
+97b7544603ec0eab50370100 fcmp_ballot !fge, cr35, 22.0, r97.neg, group 2, wait 013
+97a757ca01f2002d19380000 fcmp_ballot fge, u229, u60, 2.0, group 2, wait 1345
+9717562a030c092962590100 fcmp_ballot !fgt, cr21, -0.09375, u33l.bfloat.abs.neg, group 4, wait 05
+972354040048008040820000 fcmp_quad_ballot flt, cr2, 0.625, 0.0, group 0, wait 1
+97b3559f039816d4f4910000 fcmp_quad_ballot flt, cr79, $r38l.abs, 0.078125, group 7, wait 0134
+9703564802e61dd729cb0100 fcmp_quad_ballot 14, r36l, u121h.abs.neg, -2.875, group 4, wait 5
+973355f801bc2c9cf2550100 fcmp_quad_ballot !fgt, cr124, r47l.abs, ^$r5.neg, group 6, wait 014
+9703545000200480b8820000 fcmp_quad_ballot flt, u40l, r8l.bfloat.neg, 0.015625, group 6
+970357e500c2165240570000 fcmp_quad_ballot fgt, cr114, 8.5, r66h.neg, group 0, wait 45
+9773571b001c148f2fee0000 fcmp_quad_ballot 7, u13, u7l.bfloat.neg, ^$r98.abs, group 5, wait 01245
+97b355f701b088698f2a0000 fcmp_quad_ballot fge, u251, ^r44.neg, u49l.abs, group 1, wait 0134
+970354200000002088400000 fcmp_quad_ballot fgt, u16l, r0, 0.0
+974357270294c564f0650100 fcmp_quad_ballot !fle, cr19, r101.abs, $r24h, group 6, wait 245
+97035400018000200c040000 fcmp_quad_ballot feq, u128l, 2.0, r0l.bfloat, group 1
+97d354e70230d7a29f640000 fcmp_quad_ballot fle, r115h, ^$r76, ^r90, group 3, wait 023
+9753549f01c4d39ff6780100 fcmp_quad_ballot !fle, cr79, $r113l, u250.abs.neg, group 7, wait 02
+9763550303a6c66bbfd40000 fcmp_quad_ballot 6, $r1, ^$r41, ^r120h.neg, group 7, wait 124
+972356bc021432c840a20100 fcmp_quad_ballot 13, cr94, 0.15625, 0.1875, group 0, wait 15
+97b3565801b68f2d9d0b0100 fcmp_quad_ballot fne, u172, ^$r109.abs.neg, 9.5, group 3, wait 0135
+978355200104e49960390100 fcmp_quad_ballot !fge, cr16, 0.03125, 25.0, group 4, wait 34
+976354e100068a3654a80000 fcmp_quad_ballot 5, cr112, 0.046875, -0.5625, group 3, wait 12
+97835480022080000a080000 fcmp_quad_ballot feq, r64l, 0.25, u16l.bfloat.abs, wait 3
+9773558903ea4791bfef0100 fcmp_quad_ballot 15, $r68h, ^$r122h.abs.neg, ^r40.abs, group 7, wait 0124
+977354570196072339980100 fcmp_quad_ballot !flt, u171h, u229, -2.125, group 6, wait 012
+47245401002400050100 simd_shuffle cr0, r9l, 128, group 0, wait 1
+476454d400488cd31100 simd_shuffle cr106, r18l, $r99l, group 7, wait 12
+47845400001000240000 simd_shuffle u0, r4l, 0, wait 3
+4754571a03f0da311200 simd_shuffle $r13l, $r60l, r118h, group 1, wait 0245
+47045480010008280400 simd_shuffle u192l, ^r0, 4
+4744550003bae9f51a00 simd_shuffle $r0, $r110h, ^r122l, group 7, wait 24
+47145420000600220800 simd_shuffle u16l, r1h, u128l, wait 0
+47f0541803a2137c1a00 quad_shuffle $r12, $r104, ^r4h, group 3, wait 0123
+4720550f034a30560700 quad_shuffle cr7, ^$r18h, 24, group 3, wait 14
+471056240038962f1800 quad_shuffle u18, r14, ^$r101h, wait 05
+4780563200f2e3b00200 quad_shuffle u25l, $r124h, 113, group 5, wait 35
+4730554e01ee86c40900 quad_shuffle cr39, r59h, u33h, group 6, wait 014
+c70454000080e2201000 simd_shuffle_xor u0l, r32l, r56h
+c714578e00e6e0131b00 simd_shuffle_xor cr71, $r57h, ^$r120l, group 1, wait 045
+c77454f00368ec691200 simd_shuffle_xor $r120l, $r26, r123l, group 2, wait 012
+c724573f010c4dfc1400 simd_shuffle_xor u159, ^r67, r19l, group 7, wait 145
+c7c4564600acfc050d00 simd_shuffle_xor cr35, ^r43l, u127l, group 0, wait 235
+c78055d40284ffcd0500 quad_shuffle_xor cr106, ^r97, 255, group 6, wait 34
+c7d056de03ee17ba0400 quad_shuffle_xor $r111l, ^r123, 11, group 5, wait 0235
+c7805400008408000900 quad_shuffle_xor cr0, r33l, u2l, group 0, wait 3
+c720552901f651281400 quad_shuffle_xor u148h, ^r125, r20l, wait 14
+c7005420000621000500 quad_shuffle_xor cr16, ^r65h, 16, group 0
+c790549901ba9bb51600 quad_shuffle_xor u204, ^$r110h, r102h, group 5, wait 03
+c7005641033033661200 quad_shuffle_xor $r32, $r76l, $r12h, group 2, wait 5
+4705570000001c000100 simd_shuffle_up cr0, r0l, 14, group 0, wait 45
+473557d601fe7b000d00 simd_shuffle_up cr107, ^r127h, u30h, group 0, wait 0145
+4775565001f69cb80200 simd_shuffle_up u168l, $r61, 78, group 5, wait 0125
+47455474035e40361c00 simd_shuffle_up $r58, ^r23h, ^$r16l, group 1, wait 2
+47d557b8019c86e60800 simd_shuffle_up u220, r39l, u161h, group 6, wait 02345
+4705567503b0e0290a00 simd_shuffle_up $r58h, $r44, u120l, wait 5
+47e155b60166deb71400 quad_shuffle_up u219, ^r25h, $r119h, group 5, wait 1234
+4721546b004266910500 quad_shuffle_up cr53, ^r16h, 179, group 5, wait 1
+474154400200006a0c00 quad_shuffle_up r32l, ^r0, u128l, group 2, wait 2
+47015400000c18220000 quad_shuffle_up u0l, r3l, 12
+470155090200d4651a00 quad_shuffle_up r4, $r0l, ^r117l, group 2, wait 4
+c7b55465029092ab1a00 simd_shuffle_down r50h, $r36, ^$r100h, group 4, wait 013
+c7d5555601c2a4321c00 simd_shuffle_down u171l, ^r48h, ^$r41l, group 1, wait 0234
+c7d55549031acda70c00 simd_shuffle_down $r36, ^r70h, u243l, group 4, wait 0234
+c79554ef01d835201400 simd_shuffle_down u247h, ^r118l, r13l, wait 03
+c765561000fcbb080b00 simd_shuffle_down cr8, $r127, u46h, group 0, wait 125
+c7055481001222000100 simd_shuffle_down cr64, r4h, 17, group 0
+c76555dc00668d260400 simd_shuffle_down u110, ^r89h, 70, wait 124
+c7a15700010001080500 quad_shuffle_down cr0, ^r64, 0, group 0, wait 1345
+c751558f02b04f2c1800 quad_shuffle_down r71, r108, ^r19h, wait 024
+c7215400008022200000 quad_shuffle_down u0l, r32l, 17, wait 1
+c74156ab00a639870d00 quad_shuffle_down cr85, ^r105h, u206l, group 4, wait 25
+c7015410001000000100 quad_shuffle_down cr8, r4l, 0, group 0
+c7d156c8014aa13d0a00 quad_shuffle_down u228, $r82, u104l, group 1, wait 0235
+c75155b40274706a1400 quad_shuffle_down r90l, ^r29, $r28l, group 2, wait 024
+478654140088102014420100 simd_shuffle_and_fill_up u10, ^r34l, r4l, 8, rawmod 5, wait 3
+4706560a0000080480800000 simd_shuffle_and_fill_up cr5, r0l, r0h, 4, group 0, wait 5
+47e656390370b87834d70400 simd_shuffle_and_fill_up $r28, ^$r28l, $r15l, ^r46l, mod 4, group 2, wait 1235
+475656e203147d97a0260600 simd_shuffle_and_fill_up cr113, ^r69, ^r18, ^$r95l, mod 16, group 2, wait 025
+470654800000000182000000 simd_shuffle_and_fill_up cr64, r0l, r64l, 128, mod 16, group 0
+470654450102411411070300 simd_shuffle_and_fill_up u162h, ^$r64, r34, u16l, mod 8
+47a6565400f69f553ab00700 simd_shuffle_and_fill_up u42l, r125, ^$r74, r103h, rawmod 6, group 3, wait 135
+4746549800380fe9e8e20100 simd_shuffle_and_fill_up cr76, ^r78l, ^r29l, 135, rawmod 7, group 7, wait 2
+470655ba0338322550640500 simd_shuffle_and_fill_up $r93l, r14l, ^r4h, ^r76h, rawmod 5, group 4, wait 4
+476654d201eac6abe7570200 simd_shuffle_and_fill_up cr105, ^$r58, $r117, u241h, mod 2, group 6, wait 12
+c7d6564e0242c86e55730400 simd_shuffle_and_fill_down r39, ^$r16h, ^$r45h, $r50l, mod 2, group 4, wait 0235
+c7c65400020000a811060400 simd_shuffle_and_fill_down r0l, ^r0l, r53l, ^r0l, mod 16, wait 23
+c76655b20350800ca8b70700 simd_shuffle_and_fill_down cr89, ^$r20, ^$r1, ^r32l, rawmod 6, group 3, wait 124
+c74654140020020080000000 simd_shuffle_and_fill_down cr10, r8l, r0l, 1, mod 16, group 0, wait 2
+c736552100dccba23e130700 simd_shuffle_and_fill_down u16, ^$r119, $r84, $r50h, mod 8, group 3, wait 014
+c70655400358d537adb40300 simd_shuffle_and_fill_down cr32, r86, ^$r38, u245l, rawmod 6, group 3, wait 4
+c726541100748cca10930500 simd_shuffle_and_fill_down u8h, ^$r29l, $r25l, $r35l, rawmod 6, wait 1
+c72655db0122f48d1f950000 simd_shuffle_and_fill_down u237, $r8h, $r113h, u125l, group 1, wait 14
+c70654100004902880400000 simd_shuffle_and_fill_down cr8, r1l, r5l, 72, mod 2, group 0
