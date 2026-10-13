@@ -42,6 +42,17 @@ main(int argc, const char **argv)
       return 1;
    }
 
+   /* An optional second argument selects the ISA: agx2 (default) or agx3 */
+   signed (*disassemble_instr)(BITSET_WORD *, FILE *, unsigned, bool) =
+      agx2_disassemble_instr;
+
+   if (argc >= 3 && !strcmp(argv[2], "agx3")) {
+      disassemble_instr = agx3_disassemble_instr;
+   } else if (argc >= 3 && strcmp(argv[2], "agx2")) {
+      fprintf(stderr, "Unknown ISA %s\n", argv[2]);
+      return 1;
+   }
+
    FILE *fp = fopen(argv[1], "r");
 
    if (fp == NULL) {
@@ -80,7 +91,7 @@ main(int argc, const char **argv)
          ++cursor;
 
       FILE *outputp = open_memstream(&output, &sz);
-      signed ret = agx2_disassemble_instr((void *)code, outputp, 0, false);
+      signed ret = disassemble_instr((void *)code, outputp, 0, false);
       unsigned instr_len = abs(ret);
       fclose(outputp);
 
