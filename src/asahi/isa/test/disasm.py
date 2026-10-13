@@ -54,7 +54,7 @@ def operand(desc, length):
     base = desc.get('base')
     kind = desc.get('kind')
     cache = desc.get('cache', False)
-    discard = desc.get('discard', False)
+    discard = desc.get('discard', False) or desc.get('lu', False)
 
     hint = desc.get('hint')
     if hint is not None:
@@ -100,7 +100,7 @@ def map_op(v, kind, raw, ins, length):
         if (v & c.exact.mask) == c.exact.value:
             desc = {}
             if c.kind is not None:
-                length = c.kind.bits.size()
+                length = c.kind.bits.size() + c.kind.shift
                 desc['kind'] = c.kind.name
                 desc['base'] = c.kind.bits.extract(v) << c.kind.shift
                 if c.kind.kind == 'signed':
@@ -113,6 +113,9 @@ def map_op(v, kind, raw, ins, length):
                 desc[prop] = int(c.properties[prop])
 
             return operand(desc, length)
+
+    # No case matched: an invalid encoding
+    return f'XXX{v:#x}'
 
 def disasm(raw_in):
     length, instr, raw = match_instr(raw_in)
