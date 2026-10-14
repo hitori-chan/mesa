@@ -1453,6 +1453,7 @@ agx_compile_nir(struct agx_device *dev, nir_shader *nir,
       .promote_constants = true,
       .no_stop = !terminal,
       .secondary = secondary,
+      .vs_prolog = stage == MESA_SHADER_VERTEX && !secondary,
    };
 
    if (nir->info.stage == MESA_SHADER_FRAGMENT) {
