@@ -1995,17 +1995,17 @@
   -->
   <encoding name="stack_src">
     <case>
+      <exact bit="0 18">10</exact>
+      <immediate name="stack" bit="1:16" shift="1"/>
+      <modifier name="lu" bit="17"/>
+      <property name="size32"/>
+    </case>
+    <case>
       <exact bit="0 18">11</exact>
       <immediate name="stack" bit="1:16" shift="1"/>
       <modifier name="lu" bit="17"/>
       <property name="size32"/>
       <property name="hl"/>
-    </case>
-    <case>
-      <exact bit="18">1</exact>
-      <immediate name="stack" bit="1:16" shift="1"/>
-      <modifier name="lu" bit="17"/>
-      <property name="size32"/>
     </case>
     <case>
       <exact bit="18">0</exact>
