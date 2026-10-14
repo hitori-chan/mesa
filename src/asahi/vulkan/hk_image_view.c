@@ -363,11 +363,10 @@ pack_texture(struct hk_image_view *view, unsigned view_plane,
 }
 
 /*
- * G15's PBE descriptor (cmdbuf.xml's "PBE G15"). Only what Apple's encoder
- * and noopwafel's demo15 settle is packed: uncompressed images without
- * multisampling, linear (the one the hardware ran: a 2D RGBA8 target) or
- * twiddled, one layer for linear. The rest fails here rather than reaching
- * the hardware as a G13 descriptor.
+ * G15's PBE descriptor (cmdbuf.xml's "PBE G15"). What Apple's encoder and
+ * noopwafel's demo15 settle is packed: uncompressed images, linear (the one
+ * the hardware ran: a 2D RGBA8 target) or twiddled, one layer for linear.
+ * The rest is a guess (a warning says so).
  *
  * The address is the plane's VA as it is, 44 bits of it (G13's descriptor
  * has 36 and a level; demo15 sets "level 1" for the 1 TiB bit of its
@@ -404,19 +403,25 @@ pack_pbe_g15(struct hk_device *dev, struct hk_image_view *view,
                         ? image->vk.extent.depth
                         : view->vk.layer_count;
 
-   if (layout->compressed || view->vk.image->samples > 1 ||
-       view->vk.view_type == VK_IMAGE_VIEW_TYPE_3D ||
-       view_denominator(view).x > 1 ||
-       (layout->tiling == AIL_TILING_LINEAR && layers > 1)) {
+   bool msaa = view->vk.image->samples > 1;
+
+   /* What Apple's encoder does for these is not decoded: the descriptor is
+    * packed as for a plain image, and a render to one fails in the
+    * end-of-tile program's packer */
+   static bool warned;
+   if (!warned && (layout->compressed || msaa ||
+                   view->vk.view_type == VK_IMAGE_VIEW_TYPE_3D ||
+                   view_denominator(view).x > 1 ||
+                   (layout->tiling == AIL_TILING_LINEAR && layers > 1))) {
+      warned = true;
       fprintf(stderr,
-              "G15: PBE of a compressed, multisampled, 3D, block-compressed "
-              "or linear layered image is not supported yet\n");
-      assert(0);
+              "G15: the PBE of a compressed, multisampled, 3D, "
+              "block-compressed or linear layered image is a guess\n");
    }
 
    agx_pack(out, PBE_G15, cfg) {
       cfg.dimension =
-         translate_image_view_type(view->vk.view_type, false, layers > 1, usage);
+         translate_image_view_type(view->vk.view_type, msaa, layers > 1, usage);
       cfg.layout = agx_translate_layout(layout->tiling);
       cfg.channels = ail_pixel_format[p_format].channels;
       cfg.type = ail_pixel_format[p_format].type;
@@ -438,6 +443,9 @@ pack_pbe_g15(struct hk_device *dev, struct hk_image_view *view,
       cfg.width = layout->width_px;
       cfg.height = layout->height_px;
       cfg.mipmapped = image->vk.mip_levels > 1;
+
+      if (msaa)
+         cfg.samples = agx_translate_sample_count(view->vk.image->samples);
 
       if (layout->tiling == AIL_TILING_LINEAR) {
          /* In 16-byte units, minus 1 (demo15's 0xF for a 256 B stride; the
