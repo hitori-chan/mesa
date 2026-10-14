@@ -666,9 +666,39 @@ agx_emit_load_vary(agx_builder *b, agx_index dest, nir_intrinsic_instr *instr)
    /* For perspective interpolation, we project (multiply by 1/W) */
    if (perspective) {
       agx_index J = agx_get_cf(b->shader, VARYING_SLOT_POS, 3);
-      agx_iterproj_to(b, dest, I, J, sample_index, components, interp);
+
+      if (b->shader->key->dev.gpu_generation >= 15) {
+         /* G15 has no projected iteration. Apple's compiler iterates W's
+          * coefficients with the perspective flag, takes the reciprocal,
+          * iterates the varying and multiplies each channel (the colour
+          * shader of noopwafel's demo15, from a macOS capture).
+          */
+         agx_index w = agx_temp(b->shader, AGX_SIZE_32);
+         agx_iter_to(b, w, J, sample_index, 1, interp, true);
+         agx_index rcp_w = agx_rcp(b, w);
+
+         agx_index vec = agx_vec_temp(b->shader, AGX_SIZE_32, components);
+         agx_iter_to(b, vec, I, sample_index, components, interp, false);
+         agx_emit_cached_split(b, vec, components);
+
+         agx_index chans[4];
+         for (unsigned c = 0; c < components; ++c) {
+            agx_index t = agx_fmul(b, agx_emit_extract(b, vec, c), rcp_w);
+
+            if (dest.size == AGX_SIZE_16) {
+               chans[c] = agx_temp(b->shader, AGX_SIZE_16);
+               agx_fmov_to(b, chans[c], t);
+            } else {
+               chans[c] = t;
+            }
+         }
+
+         agx_emit_collect_to(b, dest, components, chans);
+      } else {
+         agx_iterproj_to(b, dest, I, J, sample_index, components, interp);
+      }
    } else {
-      agx_iter_to(b, dest, I, sample_index, components, interp);
+      agx_iter_to(b, dest, I, sample_index, components, interp, false);
    }
 
    agx_emit_cached_split(b, dest, components);
@@ -1488,13 +1518,18 @@ agx_emit_intrinsic(agx_builder *b, nir_intrinsic_instr *instr)
    case nir_intrinsic_load_frag_coord_z: {
       agx_index cf = agx_get_cf(b->shader, VARYING_SLOT_POS, 2);
 
-      return agx_iter_to(b, dst, cf, agx_zero(), 1, AGX_INTERPOLATION_CENTER);
+      return agx_iter_to(b, dst, cf, agx_zero(), 1, AGX_INTERPOLATION_CENTER,
+                         false);
    }
 
    case nir_intrinsic_load_frag_coord_w: {
       agx_index cf = agx_get_cf(b->shader, VARYING_SLOT_POS, 3);
 
-      return agx_iter_to(b, dst, cf, agx_zero(), 1, AGX_INTERPOLATION_CENTER);
+      /* On G15 the iteration of W's coefficients has a flag (not verified for
+       * this use: Apple's compiler sets it for the W it takes the reciprocal
+       * of) */
+      return agx_iter_to(b, dst, cf, agx_zero(), 1, AGX_INTERPOLATION_CENTER,
+                         b->shader->key->dev.gpu_generation >= 15);
    }
 
    case nir_intrinsic_sample_mask_agx: {
