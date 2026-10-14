@@ -11,6 +11,7 @@
 #include "agx_compile.h"
 #include "agx_compiler.h"
 #include "agx_device.h"
+#include "agx_esl.h"
 #include "agx_helpers.h"
 #include "agx_linker.h"
 #include "agx_nir_lower_vbo.h"
@@ -265,6 +266,37 @@ is_attachment_stored(const VkRenderingAttachmentInfo *att)
           att->resolveMode != VK_RESOLVE_MODE_NONE;
 }
 
+/* G15: the background or end-of-tile program's entry program (agx_esl.h)
+ * for its USC words; 0 when G15 cannot build it yet */
+static uint64_t
+hk_bg_eot_esl(struct hk_cmd_buffer *cmd, const uint8_t *usc,
+              struct agx_bg_eot_shader *shader, enum agx_esl_stage stage)
+{
+   struct hk_device *dev = hk_cmd_buffer_device(cmd);
+   uint8_t *map = agx_bo_map(shader->bo);
+   struct agx_esl_code code = {
+      .va = shader->ptr,
+      .cpu = map + (shader->ptr - shader->bo->va->addr),
+      .size = shader->info.binary_size,
+      .main_size = shader->info.main_size,
+   };
+
+   struct util_dynarray esl;
+   util_dynarray_init(&esl, NULL);
+
+   uint64_t va = 0;
+   if (agx_esl_from_usc(&esl, usc, dev->dev.shader_base, &code, stage)) {
+      struct agx_ptr t = hk_pool_usc_alloc(cmd, esl.size, 64);
+      if (t.cpu) {
+         memcpy(t.cpu, esl.data, esl.size);
+         va = t.gpu;
+      }
+   }
+
+   util_dynarray_fini(&esl);
+   return va;
+}
+
 static struct hk_bg_eot
 hk_build_bg_eot(struct hk_cmd_buffer *cmd, const VkRenderingInfo *info,
                 bool store, bool partial_render, bool incomplete_render_area)
@@ -454,6 +486,12 @@ hk_build_bg_eot(struct hk_cmd_buffer *cmd, const VkRenderingInfo *info,
    }
 
    struct hk_bg_eot ret = {.usc = t.gpu};
+
+   /* G15 runs an entry program; usc is its VA */
+   if (dev->dev.params.gpu_generation >= 15) {
+      ret.usc = hk_bg_eot_esl(cmd, t.cpu, shader,
+                              store ? AGX_ESL_END_OF_TILE : AGX_ESL_BACKGROUND);
+   }
 
    agx_pack(&ret.counts, COUNTS, cfg) {
       cfg.uniform_register_count = shader->info.push_count;
@@ -2133,7 +2171,8 @@ hk_flush_vp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
    if (!T.cpu)
       return;
 
-   struct agx_ppp_update ppp = agx_new_ppp_update(T, size, &present);
+   struct agx_ppp_update ppp = agx_new_ppp_update(
+      agx_vdm_ptr(&hk_cmd_buffer_device(cmd)->dev, T), size, &present);
 
    agx_ppp_push(&ppp, DEPTH_BIAS_SCISSOR, cfg) {
       cfg.scissor = index;
@@ -2373,9 +2412,14 @@ hk_flush_ppp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
    /* Calculate the update size. If it equals the header, there is nothing to
     * update so early-exit.
     */
+   struct hk_device *dev = hk_cmd_buffer_device(cmd);
+   bool g15 = dev->dev.params.gpu_generation >= 15;
    size_t size = agx_ppp_update_size(&dirty);
    if (size == AGX_PPP_HEADER_LENGTH)
       return;
+
+   if (g15 && dirty.fragment_shader)
+      size += AGX_G15_PIPELINE_LENGTH;
 
    /* Otherwise, allocate enough space for the update and push it. */
    assert(size > AGX_PPP_HEADER_LENGTH);
@@ -2384,7 +2428,8 @@ hk_flush_ppp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
    if (!T.cpu)
       return;
 
-   struct agx_ppp_update ppp = agx_new_ppp_update(T, size, &dirty);
+   struct agx_ppp_update ppp =
+      agx_new_ppp_update(agx_vdm_ptr(&dev->dev, T), size, &dirty);
 
    if (dirty.fragment_control) {
       agx_ppp_push(&ppp, FRAGMENT_CONTROL, cfg) {
@@ -2537,12 +2582,20 @@ hk_flush_ppp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
 
       agx_ppp_push_packed(&ppp, &linked_fs->fs_counts, FRAGMENT_SHADER_WORD_0);
 
+      uint32_t pipeline = hk_upload_usc_words(cmd, fs, linked_fs);
       agx_ppp_push(&ppp, FRAGMENT_SHADER_WORD_1, cfg) {
-         cfg.pipeline = hk_upload_usc_words(cmd, fs, linked_fs);
+         cfg.pipeline = g15 ? 0 : pipeline;
       }
 
       agx_ppp_push(&ppp, FRAGMENT_SHADER_WORD_2, cfg) {
          cfg.cf_bindings = gfx->varyings;
+      }
+
+      /* G15: the entry program's VA follows word 2 */
+      if (g15) {
+         agx_ppp_validate(&ppp, AGX_G15_PIPELINE_LENGTH);
+         agx_g15_pipeline(ppp.head, dev->dev.shader_base + pipeline);
+         ppp.head += AGX_G15_PIPELINE_LENGTH;
       }
 
       agx_ppp_push(&ppp, FRAGMENT_SHADER_WORD_3, cfg)
@@ -3135,8 +3188,16 @@ hk_flush_dynamic_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
       struct hk_linked_shader *linked_hw_vs =
          (hw_vs == sw_vs) ? linked_vs : hw_vs->only_linked;
 
-      agx_push(out, VDM_STATE_VERTEX_SHADER_WORD_1, cfg) {
-         cfg.pipeline = hk_upload_usc_words(cmd, hw_vs, linked_hw_vs);
+      uint32_t pipeline = hk_upload_usc_words(cmd, hw_vs, linked_hw_vs);
+
+      /* G15: word 1 is the entry program's VA, 8 bytes */
+      if (dev->dev.params.gpu_generation >= 15) {
+         agx_g15_pipeline(out, dev->dev.shader_base + pipeline);
+         out += AGX_G15_PIPELINE_LENGTH;
+      } else {
+         agx_push(out, VDM_STATE_VERTEX_SHADER_WORD_1, cfg) {
+            cfg.pipeline = pipeline;
+         }
       }
 
       agx_push_packed(out, hw_vs->info.uvs.vdm, VDM_STATE_VERTEX_OUTPUTS);

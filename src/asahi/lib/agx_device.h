@@ -120,6 +120,13 @@ struct agx_device {
    uint64_t shader_base;
    struct util_vma_heap main_heap;
    struct util_vma_heap usc_heap;
+
+   /* G15: a PBE's address is relative to 1 TiB, so images get an alias in
+    * [1 TiB, 2 TiB). User memory stays below 512 GiB, where the VDM's 40-bit
+    * form (VA - 64 GiB) and the 40-bit descriptor fields reach it.
+    */
+   struct util_vma_heap image_heap;
+   bool has_image_heap;
    uint64_t guard_size;
 
    /* To emulate sparse-resident buffers, we map buffers in both the bottom half
@@ -222,6 +229,53 @@ agx_has_soft_fault(struct agx_device *dev)
 {
    return (dev->params.features & DRM_ASAHI_FEATURE_SOFT_FAULTS) &&
           !(dev->debug & AGX_DBG_NOSOFT);
+}
+
+/* G15: the 40-bit form the VDM reads its stream's pointers in (PPP updates,
+ * stream links): VA - 64 GiB
+ */
+static inline uint64_t
+agx_vdm_va(const struct agx_device *dev, uint64_t addr)
+{
+   if (!dev->has_image_heap)
+      return addr;
+
+   assert(addr >= (64ull << 30) && addr < (576ull << 30));
+   return addr - (64ull << 30);
+}
+
+static inline struct agx_ptr
+agx_vdm_ptr(const struct agx_device *dev, struct agx_ptr ptr)
+{
+   ptr.gpu = agx_vdm_va(dev, ptr.gpu);
+   return ptr;
+}
+
+/* G15: the address an image descriptor holds, relative to 1 TiB (a PBE's,
+ * boot #158; a texture's is assumed to match, not verified)
+ */
+static inline uint64_t
+agx_image_desc_va(const struct agx_device *dev, uint64_t addr)
+{
+   if (!dev->has_image_heap)
+      return addr;
+
+   assert(addr >= (1ull << 40) && addr < (2ull << 40));
+   return addr - (1ull << 40);
+}
+
+/* G15: a pipeline (entry program) pointer as the CDM's launch and the VDM's
+ * vertex and fragment shader dwords hold it: VA bits [47:38] at bit 22 of the
+ * first word, VA bits [37:6] in the second
+ */
+#define AGX_G15_PIPELINE_LENGTH 8
+
+static inline void
+agx_g15_pipeline(void *out, uint64_t va)
+{
+   assert((va & 63) == 0);
+   uint32_t w[2] = {((va >> 38) & BITFIELD_MASK(10)) << 22, (uint32_t)(va >> 6)};
+   memcpy(out, w, sizeof(w));
 }
 
 static uint32_t

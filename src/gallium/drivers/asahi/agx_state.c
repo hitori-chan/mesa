@@ -982,7 +982,8 @@ agx_upload_viewport_scissor(struct agx_pool *pool, struct agx_batch *batch,
    size_t size = agx_ppp_update_size(&present);
    struct agx_ptr T =
       agx_pool_alloc_aligned(&batch->pool, size, AGX_PPP_HEADER_ALIGN);
-   struct agx_ppp_update ppp = agx_new_ppp_update(T, size, &present);
+   struct agx_ppp_update ppp = agx_new_ppp_update(
+      agx_vdm_ptr(agx_device(batch->ctx->base.screen), T), size, &present);
 
    agx_ppp_push(&ppp, DEPTH_BIAS_SCISSOR, cfg) {
       cfg.scissor = index;
@@ -3324,7 +3325,8 @@ agx_batch_init_state(struct agx_batch *batch)
    size_t size = agx_ppp_update_size(&present);
    struct agx_ptr T =
       agx_pool_alloc_aligned(&batch->pool, size, AGX_PPP_HEADER_ALIGN);
-   struct agx_ppp_update ppp = agx_new_ppp_update(T, size, &present);
+   struct agx_ppp_update ppp = agx_new_ppp_update(
+      agx_vdm_ptr(agx_device(batch->ctx->base.screen), T), size, &present);
 
    /* clang-format off */
    agx_ppp_push(&ppp, W_CLAMP, cfg) cfg.w_clamp = 1e-10;
@@ -3560,7 +3562,8 @@ agx_encode_state(struct agx_batch *batch, uint8_t *out)
    size_t size = agx_ppp_update_size(&dirty);
    struct agx_ptr T =
       agx_pool_alloc_aligned(&batch->pool, size, AGX_PPP_HEADER_ALIGN);
-   struct agx_ppp_update ppp = agx_new_ppp_update(T, size, &dirty);
+   struct agx_ppp_update ppp = agx_new_ppp_update(
+      agx_vdm_ptr(agx_device(batch->ctx->base.screen), T), size, &dirty);
 
    if (dirty.fragment_control) {
       agx_ppp_push(&ppp, FRAGMENT_CONTROL, cfg) {
@@ -3815,7 +3818,10 @@ agx_ensure_cmdbuf_has_space(struct agx_batch *batch, struct agx_encoder *enc,
    struct agx_ptr T = agx_pool_alloc_aligned(&batch->pool, size, 256);
 
    /* Jump from the old command buffer to the new command buffer */
-   agx_cs_jump((uint32_t *)enc->current, T.gpu, vdm);
+   agx_cs_jump((uint32_t *)enc->current,
+               vdm ? agx_vdm_va(agx_device(batch->ctx->base.screen), T.gpu)
+                   : T.gpu,
+               vdm);
 
    /* Swap out the command buffer */
    enc->current = T.cpu;

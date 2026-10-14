@@ -88,6 +88,33 @@ esl_spectpr(struct util_dynarray *out, unsigned stack_bytes)
    esl_u16(out, 0);
 }
 
+/* The render stages' entry programs as demo15 ends them (the fields are not
+ * decoded): specLM with the imageblock present, for a 32x32-pixel tile of one
+ * 4 B sample */
+static void
+esl_speclm_imageblock(struct util_dynarray *out)
+{
+   esl_u64(out, 0x0000004B432A0077ull);
+}
+
+/* The vertex entry's 0x77-family instruction after ldshdr, every field set
+ * (its tree is in neither libLLVM_32023 nor AGXMetalG15X_M1) */
+static void
+esl_vertex_config(struct util_dynarray *out)
+{
+   esl_u64(out, 0xFFFFFFFFFFFFFEF7ull);
+   esl_u16(out, 0xFFFF);
+}
+
+/* pixrel: the fragment entry releases its pixels (mask 0x2F3) */
+static void
+esl_pixrel(struct util_dynarray *out)
+{
+   static const uint8_t pixrel[] = {0x07, 0x02, 0x54, 0xF3, 0x02, 0x00};
+   memcpy(util_dynarray_grow_bytes(out, 1, sizeof(pixrel)), pixrel,
+          sizeof(pixrel));
+}
+
 /* Inline the preamble (Apple's constant-calculation program) up to its
  * stop. It runs after ldshdr, as Metal's branch to it does. */
 static bool
@@ -117,7 +144,8 @@ esl_preamble(struct util_dynarray *out, const struct agx_esl_code *code,
 
 bool
 agx_esl_from_usc(struct util_dynarray *out, const uint8_t *usc,
-                 uint64_t shader_base, const struct agx_esl_code *code)
+                 uint64_t shader_base, const struct agx_esl_code *code,
+                 enum agx_esl_stage stage)
 {
    uint64_t main_va = 0, preamble_va = 0;
    unsigned shared_bytes = 0;
@@ -191,9 +219,35 @@ agx_esl_from_usc(struct util_dynarray *out, const uint8_t *usc,
    if (preamble_va && !last && !esl_preamble(out, code, preamble_va))
       goto no_preamble;
 
-   esl_speclm(out, shared_bytes);
-   esl_ldshdr(out, main_va, code ? code->main_size : 0);
-   esl_spectpr(out, code ? code->stack_size : 0);
+   switch (stage) {
+   case AGX_ESL_COMPUTE:
+      esl_speclm(out, shared_bytes);
+      esl_ldshdr(out, main_va, code ? code->main_size : 0);
+      esl_spectpr(out, code ? code->stack_size : 0);
+      break;
+
+   case AGX_ESL_VERTEX:
+      esl_ldshdr(out, main_va, code ? code->main_size : 0);
+      esl_vertex_config(out);
+      break;
+
+   case AGX_ESL_FRAGMENT:
+      esl_speclm_imageblock(out);
+      esl_ldshdr(out, main_va, code ? code->main_size : 0);
+      esl_pixrel(out);
+      break;
+
+   case AGX_ESL_BACKGROUND:
+      esl_speclm_imageblock(out);
+      esl_ldshdr(out, main_va, code ? code->main_size : 0);
+      break;
+
+   case AGX_ESL_END_OF_TILE:
+      esl_speclm_imageblock(out);
+      esl_ldshdr(out, main_va, code ? code->main_size : 0);
+      esl_spectpr(out, 16);
+      break;
+   }
 
    if (preamble_va && last && !esl_preamble(out, code, preamble_va))
       goto no_preamble;
