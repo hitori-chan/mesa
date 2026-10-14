@@ -2259,6 +2259,17 @@
   </encoding>
 
   <!--
+   A 32-bit stack register destination (device_atomic's result): 0:15 the
+   register in 32-bit units (Apple's 16-bit unit number halved)
+  -->
+  <encoding name="stackdst">
+    <case>
+      <immediate name="stack" bit="0:15" shift="1"/>
+      <property name="size32"/>
+    </case>
+  </encoding>
+
+  <!--
    atomicdev's base: 0:6 the 64-bit register (or uniform), 7 register,
    8 an unknown flag, 9 lu
   -->
@@ -4006,12 +4017,31 @@
   </ins>
 
   <!--
-   device_atomic (atomicdev), 32-bit, without a result: the result goes
-   to the stack registers only (g at 73:75 = the group + 1, the stack
-   register at 24:39), not modelled here. Bit 70 set is the 64-bit form.
+   device_atomic (atomicdev), 32-bit, without a result. Bit 70 set is the
+   64-bit form.
   -->
   <ins name="device_atomic" display="device_atomic" length="14">
     <exact bit="0:10 70 73:75 96">0000000101100111</exact>
+    <src kind="atomreg" bit="47:53 78"/>
+    <src kind="atombase" bit="40:46 104 76 77"/>
+    <src kind="atomidx" bit="54:69 79 105 106"/>
+    <modifier name="op" bit="97:100" kind="atomic_op"/>
+    <modifier name="shift" bit="101:103" kind="memshift"/>
+    <immediate name="offset" bit="80:95" kind="signed"/>
+    <immediate name="c" bit="71:72"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <!--
+   device_atomic with a result (Apple's trees 555660-555665): the old value
+   goes to a stack register only, delivered in load group g - 1 (g 1-6;
+   0 is the form above). Read it with get_stack.
+  -->
+  <ins name="device_atomic_ret" display="device_atomic" length="14">
+    <exact bit="0:10 70 96">0000101100111</exact>
+    <immediate name="g" bit="73:75"/>
+    <dest kind="stackdst" bit="24:39"/>
     <src kind="atomreg" bit="47:53 78"/>
     <src kind="atombase" bit="40:46 104 76 77"/>
     <src kind="atomidx" bit="54:69 79 105 106"/>
