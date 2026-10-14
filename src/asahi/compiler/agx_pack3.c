@@ -157,11 +157,49 @@ a3_case(const struct a3 *a, unsigned op, enum a3_kind kind, unsigned size,
    return fallback;
 }
 
+/* The value bits of operand op that share instruction bits with an operand
+ * already set, and those operands' values for them */
+static uint64_t
+a3_shared(const struct a3 *a, unsigned op, uint64_t *val)
+{
+   const struct agx3_pack_spec *s = a->spec;
+   uint64_t mask = 0;
+
+   *val = 0;
+   for (unsigned f = s->op_start[op]; f < s->op_start[op + 1]; f++) {
+      const struct agx3_field *fo = &s->fields[f];
+
+      u_foreach_bit(j, a->set) {
+         if (j == op)
+            continue;
+
+         for (unsigned g = s->op_start[j]; g < s->op_start[j + 1]; g++) {
+            const struct agx3_field *fj = &s->fields[g];
+
+            for (unsigned b = 0; b < fo->size; b++) {
+               unsigned bit = fo->start + b;
+               if (bit < fj->start || bit >= fj->start + fj->size)
+                  continue;
+
+               uint64_t vb = BITFIELD64_BIT(fo->vpos + b);
+               mask |= vb;
+               if ((a->ops[j] >> (fj->vpos + bit - fj->start)) & 1)
+                  *val |= vb;
+            }
+         }
+      }
+   }
+
+   return mask;
+}
+
 /* The carry bits are outside the disassembler's model, but some of them
  * keep an earlier case from matching (a register destination whose carry
- * bit is clear reads as a cr register). Choose them so that the
- * disassembler's first match is c: the template's bits if they do, else
- * the smallest subset of the case's carry mask that does. */
+ * bit is clear reads as a cr register), and some are bits another operand
+ * owns (cmpsel's selected values carry the destination's size bit). Choose
+ * them so that the disassembler's first match is c: the bits operands set
+ * earlier hold, then the template's bits if they match, else the smallest
+ * subset of the free carry bits that does. */
 static uint64_t
 a3_fix_carry(const struct a3 *a, unsigned op, const struct agx3_case *c,
              uint64_t v)
@@ -169,16 +207,19 @@ a3_fix_carry(const struct a3 *a, unsigned op, const struct agx3_case *c,
    const struct agx3_pack_spec *s = a->spec;
    const struct agx3_case *cases = s->cases + s->case_start[op];
    unsigned n = s->ncases[op];
-   uint64_t base = v & ~c->carry_mask;
    uint64_t pad = s->op_pad ? s->op_pad[op] : 0;
+   uint64_t shared_val, shared = a3_shared(a, op, &shared_val);
+   uint64_t fixed = c->carry_mask & shared;
+   uint64_t free = c->carry_mask & ~shared;
+   uint64_t base = (v & ~c->carry_mask) | (shared_val & fixed);
 
    /* The disassembler reads the constant bits of the operand too */
-   uint64_t t = base | (a->tmpl[op] & c->carry_mask);
+   uint64_t t = base | (a->tmpl[op] & free);
    if (agx3_case_match(cases, n, t | pad) == c)
       return t;
 
    unsigned bits[64], nbits = 0;
-   u_foreach_bit64(b, c->carry_mask)
+   u_foreach_bit64(b, free)
       bits[nbits++] = b;
    assert(nbits <= 12);
 
@@ -304,7 +345,8 @@ a3_imm(struct a3 *a, unsigned op, uint32_t value, bool fl)
 }
 
 /* A source of an ALU instruction: a register, a uniform or an 8-bit
- * immediate. For integer sources the IR's abs is sign extension. */
+ * immediate. Float sources carry abs and neg; integer sources pick the
+ * integer cases (which offer sx). */
 static uint64_t
 a3_src(struct a3 *a, unsigned op, agx_index idx, bool integer)
 {
@@ -312,13 +354,27 @@ a3_src(struct a3 *a, unsigned op, agx_index idx, bool integer)
       return a3_imm(a, op, idx.value, !integer);
 
    uint32_t mods = 0;
-   if (idx.abs)
-      mods |= BITFIELD_BIT(integer ? A3_SX : A3_ABS);
+   if (idx.abs && !integer)
+      mods |= BITFIELD_BIT(A3_ABS);
    if (idx.neg)
       mods |= BITFIELD_BIT(A3_NEG);
 
    return a3_reg(a, op, idx, mods, BITFIELD_BIT(integer ? A3_SX : A3_NEG),
                  0);
+}
+
+/* An extended integer source (iadd, imad, a memory index): the IR's abs is
+ * G13's zero extension, so a source narrower than 64 bits without it is
+ * sign-extended (sx) */
+static uint64_t
+a3_ext_src(struct a3 *a, unsigned op, agx_index idx)
+{
+   if (idx.type == AGX_INDEX_IMMEDIATE)
+      return a3_imm(a, op, idx.value, false);
+
+   bool sx = !idx.abs && idx.size != AGX_SIZE_64;
+   return a3_reg(a, op, idx, sx ? BITFIELD_BIT(A3_SX) : 0,
+                 BITFIELD_BIT(A3_SX), 0);
 }
 
 /* A t/v consistency modifier (dst_vt): its first bit is the complement of
@@ -514,10 +570,7 @@ a3_membase(struct a3 *a, unsigned op, agx_index base)
 static uint64_t
 a3_memidx(struct a3 *a, unsigned op, agx_index idx)
 {
-   if (idx.type == AGX_INDEX_IMMEDIATE)
-      return a3_imm(a, op, idx.value, false);
-
-   return a3_reg(a, op, idx, idx.abs ? BITFIELD_BIT(A3_SX) : 0, 0, 0);
+   return a3_ext_src(a, op, idx);
 }
 
 /* The memory index shift in bytes (G15's shift and offset are in bytes,
@@ -558,6 +611,9 @@ a3_memshift(const struct a3 *a, unsigned bytes)
 #define T_FADD      "01000400020000000000"         /* fadd (10 B) */
 #define T_FFMA      "01000600020000000000"         /* ffma (10 B) */
 #define T_ZERO10    "00000000000000000000"
+#define T_ICMP_BAL  "1707540002041038a202"         /* icmp_ballot ieq */
+#define T_FCMP_BAL  "97075400020410a888840000"     /* fcmp_ballot flt */
+#define T_SHUFFLE   "c70454000204022c0000"         /* simd_shuffle_xor */
 #define T_IF        "0f055401"                     /* if cc0, 1 */
 #define T_ELSE      "0f042401"                     /* else cc0, 1 */
 #define T_WHILE     "8f045405"                     /* while cc1, 1 */
@@ -611,7 +667,7 @@ struct a3_alu {
    const char *tmpl;
    uint8_t srcs[4];
    int8_t vt, wt, sat;
-   bool integer;
+   bool integer, ext;
 };
 
 static void
@@ -623,8 +679,11 @@ a3_alu(struct a3 *a, const agx_instr *I, const struct a3_alu *d,
    a3_begin(a, I, d->instr, d->tmpl);
    a3_set(a, 0, a3_reg(a, 0, I->dest[0], 0, 0, 0));
 
-   for (unsigned i = 0; i < nsrcs; i++)
-      a3_set(a, d->srcs[i], a3_src(a, d->srcs[i], srcs[i], d->integer));
+   for (unsigned i = 0; i < nsrcs; i++) {
+      a3_set(a, d->srcs[i],
+             d->ext ? a3_ext_src(a, d->srcs[i], srcs[i])
+                    : a3_src(a, d->srcs[i], srcs[i], d->integer));
+   }
 
    if (d->sat >= 0)
       a3_set(a, d->sat, I->saturate);
@@ -639,14 +698,14 @@ a3_alu(struct a3 *a, const agx_instr *I, const struct a3_alu *d,
    a3_emit(a, emission);
 }
 
-static const struct a3_alu a3_imadd = {AGX3_IMADD, T_IMADD, {2, 3, 4}, 1, -1, 7, true};
-static const struct a3_alu a3_imsub = {AGX3_IMSUB, T_IMADD, {2, 3, 4}, 1, -1, 7, true};
-static const struct a3_alu a3_iadd = {AGX3_IADD, T_IADD, {3, 4}, 1, 2, 7, true};
-static const struct a3_alu a3_isub = {AGX3_ISUB, T_IADD, {3, 4}, 1, 2, 7, true};
-static const struct a3_alu a3_iadd64 = {AGX3_IADD64, T_IADD64, {3, 4}, 1, 2, -1, true};
-static const struct a3_alu a3_isub64 = {AGX3_ISUB64, T_IADD64, {3, 4}, 1, 2, -1, true};
-static const struct a3_alu a3_iadd_sh = {AGX3_IADD_SHIFT, T_IADD_SH, {3, 4}, 1, 2, -1, true};
-static const struct a3_alu a3_isub_sh = {AGX3_ISUB_SHIFT, T_IADD_SH, {3, 4}, 1, 2, -1, true};
+static const struct a3_alu a3_imadd = {AGX3_IMADD, T_IMADD, {2, 3, 4}, 1, -1, 7, true, true};
+static const struct a3_alu a3_imsub = {AGX3_IMSUB, T_IMADD, {2, 3, 4}, 1, -1, 7, true, true};
+static const struct a3_alu a3_iadd = {AGX3_IADD, T_IADD, {3, 4}, 1, 2, 7, true, true};
+static const struct a3_alu a3_isub = {AGX3_ISUB, T_IADD, {3, 4}, 1, 2, 7, true, true};
+static const struct a3_alu a3_iadd64 = {AGX3_IADD64, T_IADD64, {3, 4}, 1, 2, -1, true, true};
+static const struct a3_alu a3_isub64 = {AGX3_ISUB64, T_IADD64, {3, 4}, 1, 2, -1, true, true};
+static const struct a3_alu a3_iadd_sh = {AGX3_IADD_SHIFT, T_IADD_SH, {3, 4}, 1, 2, -1, true, true};
+static const struct a3_alu a3_isub_sh = {AGX3_ISUB_SHIFT, T_IADD_SH, {3, 4}, 1, 2, -1, true, true};
 static const struct a3_alu a3_bfi = {AGX3_BFI, T_BFI, {2, 3, 4}, 1, -1, -1, true};
 static const struct a3_alu a3_bfeil = {AGX3_BFEIL, T_BFEIL, {2, 3, 4}, 1, -1, -1, true};
 static const struct a3_alu a3_extr = {AGX3_EXTR, T_BFEIL, {2, 3, 4}, 1, -1, -1, true};
@@ -768,8 +827,8 @@ a3_iadd_op(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
       const struct a3_alu *d = sub ? &a3_isub_sh : &a3_iadd_sh;
       a3_begin(a, I, d->instr, d->tmpl);
       a3_set(a, 0, a3_reg(a, 0, I->dest[0], 0, 0, 0));
-      a3_set(a, 3, a3_src(a, 3, srcs[0], true));
-      a3_set(a, 4, a3_src(a, 4, srcs[1], true));
+      a3_set(a, 3, a3_ext_src(a, 3, srcs[0]));
+      a3_set(a, 4, a3_ext_src(a, 4, srcs[1]));
       a3_set(a, IADD_SHIFT, I->shift & 3);
       a3_vt(a, 1);
       a3_vt(a, 2);
@@ -888,6 +947,59 @@ a3_uniform_store(struct a3 *a, const agx_instr *I,
    }
 }
 
+
+/* icmp_ballot/fcmp_ballot (and the quad forms): cc, dest, t/v, A, B. The
+ * inverted conditions are the condition + 8. G15 has no NaN-aware ballot
+ * compare (G13's LTN and GTN). */
+static void
+a3_ballot(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
+{
+   static const int8_t icc[] = {
+      [AGX_ICOND_UEQ] = 1, [AGX_ICOND_ULT] = 6, [AGX_ICOND_UGT] = 5,
+      [AGX_ICOND_SEQ] = 1, [AGX_ICOND_SLT] = 3, [AGX_ICOND_SGT] = 2,
+   };
+   static const int8_t fcc[] = {
+      [AGX_FCOND_EQ] = 0,   [AGX_FCOND_LT] = 4,   [AGX_FCOND_GT] = 2,
+      [AGX_FCOND_LTN] = -1, [AGX_FCOND_GE] = 1,   [AGX_FCOND_LE] = 3,
+      [AGX_FCOND_GTN] = -1,
+   };
+   bool fl = I->op == AGX_OPCODE_FCMP_BALLOT ||
+             I->op == AGX_OPCODE_FCMP_QUAD_BALLOT;
+   bool quad = I->op == AGX_OPCODE_ICMP_QUAD_BALLOT ||
+               I->op == AGX_OPCODE_FCMP_QUAD_BALLOT;
+   int cc = fl ? fcc[I->fcond] : icc[I->icond];
+
+   if (cc < 0)
+      a3_fail(a, "ballot condition not supported");
+
+   a3_begin(a, I,
+            fl ? (quad ? AGX3_FCMP_QUAD_BALLOT : AGX3_FCMP_BALLOT)
+               : (quad ? AGX3_ICMP_QUAD_BALLOT : AGX3_ICMP_BALLOT),
+            fl ? T_FCMP_BAL : T_ICMP_BAL);
+   a3_set(a, 0, cc + (I->invert_cond ? 8 : 0));
+   a3_set(a, 1, a3_reg(a, 1, I->dest[0], 0, 0, 0));
+   a3_set(a, 3, a3_src(a, 3, I->src[0], !fl));
+   a3_set(a, 4, a3_src(a, 4, I->src[1], !fl));
+   a3_vt(a, 2);
+   a3_emit(a, emission);
+}
+
+/* The shuffles: dest, t/v, the value, the lane (index, mask or delta) */
+static enum agx3_instr
+a3_shuffle(enum agx_opcode op)
+{
+   switch (op) {
+   case AGX_OPCODE_SHUFFLE: return AGX3_SIMD_SHUFFLE;
+   case AGX_OPCODE_SHUFFLE_XOR: return AGX3_SIMD_SHUFFLE_XOR;
+   case AGX_OPCODE_SHUFFLE_UP: return AGX3_SIMD_SHUFFLE_UP;
+   case AGX_OPCODE_SHUFFLE_DOWN: return AGX3_SIMD_SHUFFLE_DOWN;
+   case AGX_OPCODE_QUAD_SHUFFLE: return AGX3_QUAD_SHUFFLE;
+   case AGX_OPCODE_QUAD_SHUFFLE_XOR: return AGX3_QUAD_SHUFFLE_XOR;
+   case AGX_OPCODE_QUAD_SHUFFLE_UP: return AGX3_QUAD_SHUFFLE_UP;
+   case AGX_OPCODE_QUAD_SHUFFLE_DOWN: return AGX3_QUAD_SHUFFLE_DOWN;
+   default: return AGX3_NUM_INSTRS;
+   }
+}
 
 /* Control flow. G15 has no nesting counter in r0l: the exec stack
  * instructions (if, else, while, break; push_exec, pop_exec) take a
@@ -1044,6 +1156,8 @@ agx3_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
       return;
 
    case AGX_OPCODE_GET_SR:
+   case AGX_OPCODE_GET_SR_COVERAGE:
+   case AGX_OPCODE_GET_SR_BARRIER:
       /* G15 delivers the value in wait group g (Apple's code waits on it
        * at the first use); the IR expects G13's synchronous get_sr. */
       a3_begin(&a, I, AGX3_GET_SR, T_GET_SR);
@@ -1164,6 +1278,32 @@ agx3_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
    case AGX_OPCODE_UNIFORM_STORE:
       a3_uniform_store(&a, I, emission);
       return;
+
+   case AGX_OPCODE_ICMP_BALLOT:
+   case AGX_OPCODE_ICMP_QUAD_BALLOT:
+   case AGX_OPCODE_FCMP_BALLOT:
+   case AGX_OPCODE_FCMP_QUAD_BALLOT:
+      a3_ballot(&a, I, emission);
+      return;
+
+   case AGX_OPCODE_SHUFFLE:
+   case AGX_OPCODE_SHUFFLE_XOR:
+   case AGX_OPCODE_SHUFFLE_UP:
+   case AGX_OPCODE_SHUFFLE_DOWN:
+   case AGX_OPCODE_QUAD_SHUFFLE:
+   case AGX_OPCODE_QUAD_SHUFFLE_XOR:
+   case AGX_OPCODE_QUAD_SHUFFLE_UP:
+   case AGX_OPCODE_QUAD_SHUFFLE_DOWN: {
+      /* The lane operand is a 16-bit register or an immediate: a 32-bit
+       * lane is read through its low half */
+      agx_index srcs[2] = {I->src[0], I->src[1]};
+      if (srcs[1].type != AGX_INDEX_IMMEDIATE)
+         srcs[1].size = AGX_SIZE_16;
+
+      struct a3_alu d = {a3_shuffle(I->op), T_SHUFFLE, {2, 3}, VT, -1, -1, true};
+      a3_alu(&a, I, &d, srcs, emission);
+      return;
+   }
 
    case AGX_OPCODE_IF_ICMP:
    case AGX_OPCODE_IF_FCMP:
