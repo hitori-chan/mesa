@@ -662,13 +662,21 @@ hk_CmdBeginRendering(VkCommandBuffer commandBuffer,
 
    render->cr.bg.main = hk_build_bg_eot(cmd, pRenderingInfo, false, false,
                                         incomplete_render_area);
-   render->cr.bg.partial =
-      hk_build_bg_eot(cmd, pRenderingInfo, false, true, incomplete_render_area);
-
    render->cr.eot.main =
       hk_build_bg_eot(cmd, pRenderingInfo, true, false, incomplete_render_area);
-   render->cr.eot.partial =
-      hk_build_bg_eot(cmd, pRenderingInfo, true, true, incomplete_render_area);
+
+   if (hk_cmd_buffer_device(cmd)->dev.params.gpu_generation >= 15) {
+      /* G15's kernel has no partial renders yet and its compiler no texture
+       * loads: the partial programs (which load the tilebuffer back from
+       * memory) stay unbuilt */
+      render->cr.bg.partial = render->cr.bg.main;
+      render->cr.eot.partial = render->cr.eot.main;
+   } else {
+      render->cr.bg.partial = hk_build_bg_eot(cmd, pRenderingInfo, false, true,
+                                              incomplete_render_area);
+      render->cr.eot.partial = hk_build_bg_eot(cmd, pRenderingInfo, true, true,
+                                               incomplete_render_area);
+   }
 
    render->cr.isp_bgobjvals = 0x300;
 
