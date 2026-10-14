@@ -1042,7 +1042,10 @@ void agx_opt_register_cache(agx_context *ctx);
 void agx_opt_break_if(agx_context *ctx);
 void agx_opt_jmp_none(agx_context *ctx);
 void agx_pack_binary(agx_context *ctx, struct util_dynarray *emission);
-void agx3_pack_instr(struct util_dynarray *emission, const agx_instr *I);
+void agx3_pack_instr(struct util_dynarray *emission,
+                     struct util_dynarray *fixups, const agx_instr *I);
+void agx3_fixup_branches(struct util_dynarray *emission,
+                         struct util_dynarray *fixups);
 
 #ifndef NDEBUG
 void agx_validate(agx_context *ctx, const char *after_str);
