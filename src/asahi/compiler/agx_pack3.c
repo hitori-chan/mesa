@@ -411,14 +411,16 @@ a3_memidx(struct a3 *a, unsigned op, agx_index idx)
 }
 
 /* The memory index shift in bytes (G15's shift and offset are in bytes,
- * G13's in elements) to the memshift enumeration */
+ * G13's in elements) to the field: 1 = none, 2-4 = lsl 1-3, and 0 = lsl 4
+ * (Apple's encoding; boot #143: the 5 applegpu names lsl 4 read the
+ * unscaled index). 5-7 are not used. */
 static unsigned
 a3_memshift(const struct a3 *a, unsigned bytes)
 {
-   if (bytes > 6)
+   if (bytes > 4)
       a3_fail(a, "memory index shift out of range");
 
-   return bytes == 0 ? 1 : bytes + 1;
+   return bytes == 4 ? 0 : bytes + 1;
 }
 
 /* Templates (little-endian bytes) */
