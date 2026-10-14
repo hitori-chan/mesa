@@ -35,6 +35,9 @@ struct agx_linked_shader {
     */
    uint16_t pix_wait_mask;
 
+   /* Size in bytes of the linked program (G15's entry program wants it) */
+   unsigned main_size;
+
    /* Coefficient register bindings */
    struct agx_varyings_fs cf;
 
