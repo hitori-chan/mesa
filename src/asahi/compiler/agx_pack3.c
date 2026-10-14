@@ -622,6 +622,14 @@ a3_memshift(const struct a3 *a, unsigned bytes)
 #define T_JMP       "0f015402a0c900000100"         /* jmp_exec_none */
 #define T_ZERO12    "000000000000000000000000"
 
+/* libLLVM 32023's encoder (GPUCompiler.framework, macOS 26A434) with the
+ * operands below: wait none, the hint bits at their defaults */
+#define T_LDTG      "6702540200000000440000400000" /* threadgroup_load r1, x */
+#define T_STTG      "e702540200000000440000100000" /* threadgroup_store */
+#define T_ATG       "670354010002000002000004"     /* threadgroup_atomic add */
+#define T_ADEV      "6701540000048182000000008003" /* device_atomic add */
+#define T_BARRIER   "070454610300"                 /* threadgroup_barrier */
+
 /* Operand positions (AGX3.xml order) */
 enum {
    MOV_IMM_DST = 0,
@@ -657,6 +665,26 @@ enum {
    CONVERT_VT = 2,
    CONVERT_SRC = 3,
    CONVERT_RND = 4,
+   STTG_REG = 2,
+   STTG_BASE = 3,
+   STTG_INDEX = 4,
+   STTG_SHIFT = 5,
+   STTG_OFFSET = 6,
+   ATG_G = 0,
+   ATG_DST = 1,
+   ATG_DATA = 2,
+   ATG_BASE = 3,
+   ATG_INDEX = 4,
+   ATG_OP = 5,
+   ATG_SHIFT = 6,
+   ATG_OFFSET = 7,
+   ADEV_DATA = 0,
+   ADEV_BASE = 1,
+   ADEV_INDEX = 2,
+   ADEV_OP = 3,
+   ADEV_SHIFT = 4,
+   ADEV_OFFSET = 5,
+   BARRIER_FLAGS = 0,
 };
 
 /* An ALU instruction: the destination, the sources in IR order at the
@@ -901,6 +929,184 @@ a3_mem(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
    a3_set(a, MEM_SHIFT,
           a3_memshift(a, I->shift + a3_format_shift(I->format)));
    a3_set(a, MEM_OFFSET, 0);
+   a3_emit(a, emission);
+}
+
+/* The IR's local_load and local_atomic are synchronous; G15's ldtg and
+ * atomictg deliver in a load group. They use group 2 (the scoreboard
+ * assigns 0 and 1) and wait for it. */
+#define A3_SYNC_G 2
+
+static void
+a3_wait(struct a3 *a, const agx_instr *I, unsigned g,
+        struct util_dynarray *emission)
+{
+   a3_begin(a, I, AGX3_WAIT, T_WAIT);
+   a3_set(a, WAIT_MASK, BITFIELD_BIT(g));
+   a3_emit(a, emission);
+}
+
+/* A threadgroup memory base or index: a 16-bit register or uniform, or an
+ * immediate (the IR's zero) */
+static uint64_t
+a3_tgsrc(struct a3 *a, unsigned op, agx_index idx)
+{
+   if (idx.type == AGX_INDEX_IMMEDIATE)
+      return a3_imm(a, op, idx.value, false);
+
+   if (idx.size != AGX_SIZE_16)
+      a3_fail(a, "threadgroup address is not 16-bit");
+
+   return a3_reg(a, op, idx, 0, 0, 0);
+}
+
+/* local_load/local_store (ldtg/sttg): the IR's base is a byte address in a
+ * 16-bit register (or zero) and its index zero; the index is scaled by the
+ * format as on device memory. */
+static void
+a3_local_mem(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
+{
+   bool store = I->op == AGX_OPCODE_LOCAL_STORE;
+   agx_index reg = store ? I->src[0] : I->dest[0];
+   agx_index base = I->src[store ? 1 : 0];
+   agx_index index = I->src[store ? 2 : 1];
+   unsigned type = a3_mem_type(a, I->format);
+   unsigned r = store ? STTG_REG : MEM_REG;
+
+   a3_begin(a, I, store ? AGX3_THREADGROUP_STORE : AGX3_THREADGROUP_LOAD,
+            store ? T_STTG : T_LDTG);
+   if (!store)
+      a3_set(a, MEM_G, A3_SYNC_G);
+   a3_set(a, r, a3_memreg(a, r, reg, type, a3_mem_mask[I->mask]));
+   a3_set(a, r + 1, a3_tgsrc(a, r + 1, base));
+   a3_set(a, r + 2, a3_tgsrc(a, r + 2, index));
+   a3_set(a, r + 3, a3_memshift(a, a3_format_shift(I->format)));
+   a3_set(a, r + 4, 0);
+   a3_emit(a, emission);
+
+   if (!store)
+      a3_wait(a, I, A3_SYNC_G, emission);
+}
+
+/* The IR's atomic operations (G13's numbering, which Apple's compiler also
+ * uses: the low 4 bits of its memory flags operand) to the hardware's code,
+ * Apple's table */
+static unsigned
+a3_atomic_op(const struct a3 *a, enum agx_atomic_opc op)
+{
+   static const uint8_t hw[] = {
+      [AGX_ATOMIC_OPC_ADD] = 0,   [AGX_ATOMIC_OPC_SUB] = 11,
+      [AGX_ATOMIC_OPC_XCHG] = 14, [AGX_ATOMIC_OPC_CMPXCHG] = 2,
+      [AGX_ATOMIC_OPC_UMIN] = 13, [AGX_ATOMIC_OPC_IMIN] = 5,
+      [AGX_ATOMIC_OPC_UMAX] = 12, [AGX_ATOMIC_OPC_IMAX] = 4,
+      [AGX_ATOMIC_OPC_AND] = 1,   [AGX_ATOMIC_OPC_OR] = 6,
+      [AGX_ATOMIC_OPC_XOR] = 15,
+   };
+
+   if (op >= ARRAY_SIZE(hw))
+      a3_fail(a, "atomic operation not mapped");
+
+   return hw[op];
+}
+
+/* An atomic's data: a 32-bit register; cmpxchg's is a vector of two (the
+ * new value, then the compared one, as on G13) in consecutive registers,
+ * encoded by the first */
+static uint64_t
+a3_atomic_data(struct a3 *a, unsigned op, agx_index value)
+{
+   if (value.size != AGX_SIZE_32)
+      a3_fail(a, "64-bit atomics not supported");
+
+   return a3_reg(a, op, value, 0, 0, 0);
+}
+
+/* local_atomic (atomictg): the result in a load group (its field is the
+ * group + 1, 0 for none), the base a byte address */
+static void
+a3_local_atomic(struct a3 *a, const agx_instr *I,
+                struct util_dynarray *emission)
+{
+   bool result = !agx_is_null(I->dest[0]);
+
+   a3_begin(a, I, AGX3_THREADGROUP_ATOMIC, T_ATG);
+   a3_set(a, ATG_G, result ? A3_SYNC_G + 1 : 0);
+   a3_set(a, ATG_DST,
+          result ? a3_reg(a, ATG_DST, I->dest[0], 0, 0, 0) : 0);
+   a3_set(a, ATG_DATA, a3_atomic_data(a, ATG_DATA, I->src[0]));
+   a3_set(a, ATG_BASE, a3_tgsrc(a, ATG_BASE, I->src[1]));
+   a3_set(a, ATG_INDEX, a3_tgsrc(a, ATG_INDEX, I->src[2]));
+   a3_set(a, ATG_OP, a3_atomic_op(a, I->atomic_opc));
+   a3_set(a, ATG_SHIFT, a3_memshift(a, 2));
+   a3_set(a, ATG_OFFSET, 0);
+   a3_emit(a, emission);
+
+   if (result)
+      a3_wait(a, I, A3_SYNC_G, emission);
+}
+
+/* atomic (atomicdev): G15 returns a device atomic's result only to the
+ * stack registers (then get_stack), which need the entry program's stack
+ * (specTPR): not supported yet. The index counts 32-bit elements. */
+static void
+a3_atomic(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
+{
+   if (!agx_is_null(I->dest[0]))
+      a3_fail(a, "device atomic result (stack registers) not supported");
+
+   a3_begin(a, I, AGX3_DEVICE_ATOMIC, T_ADEV);
+   a3_set(a, ADEV_DATA, a3_atomic_data(a, ADEV_DATA, I->src[0]));
+   a3_set(a, ADEV_BASE, a3_membase(a, ADEV_BASE, I->src[1]));
+   a3_set(a, ADEV_INDEX, a3_memidx(a, ADEV_INDEX, I->src[2]));
+   a3_set(a, ADEV_OP, a3_atomic_op(a, I->atomic_opc));
+   a3_set(a, ADEV_SHIFT, a3_memshift(a, 2));
+   a3_set(a, ADEV_OFFSET, 0);
+   a3_emit(a, emission);
+}
+
+/* Barriers: G15 has one barrier instruction whose flags (AGX3.xml) say
+ * what it orders, as Apple's compiler sets them (sub_251C56ED8: Metal's
+ * memory flags, ordering and scope). The IR's G13 sequences map to:
+ * threadgroup_barrier = threadgroup_barrier(mem_threadgroup); the memory
+ * barrier = a device memory acq_rel fence at threadgroup scope, the first
+ * of the device-scope sequence (unknown_barrier_1) the same at device
+ * scope, the rest of it nothing; image barriers 1 and 3 a texture release
+ * and acquire, 2 and 4 nothing. Not verified on the hardware. */
+static void
+a3_barrier(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
+{
+   unsigned flags;
+
+   switch (I->op) {
+   case AGX_OPCODE_THREADGROUP_BARRIER:
+      flags = 0x361;
+      break;
+   case AGX_OPCODE_MEMORY_BARRIER:
+      flags = 0x284;
+      break;
+   case AGX_OPCODE_UNKNOWN_BARRIER_1:
+      flags = 0x684;
+      break;
+   case AGX_OPCODE_IMAGE_BARRIER_1:
+      flags = 0x250;
+      break;
+   case AGX_OPCODE_IMAGE_BARRIER_3:
+      flags = 0x2d0;
+      break;
+   case AGX_OPCODE_MEMORY_BARRIER_2:
+   case AGX_OPCODE_MEMORY_BARRIER_3:
+   case AGX_OPCODE_UNKNOWN_BARRIER_2:
+   case AGX_OPCODE_DEVICE_BARRIER_1:
+   case AGX_OPCODE_DEVICE_BARRIER_2:
+   case AGX_OPCODE_IMAGE_BARRIER_2:
+   case AGX_OPCODE_IMAGE_BARRIER_4:
+      return;
+   default:
+      a3_fail(a, "barrier not mapped");
+   }
+
+   a3_begin(a, I, AGX3_BARRIER, T_BARRIER);
+   a3_set(a, BARRIER_FLAGS, flags);
    a3_emit(a, emission);
 }
 
@@ -1281,6 +1487,35 @@ agx3_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
 
    case AGX_OPCODE_UNIFORM_STORE:
       a3_uniform_store(&a, I, emission);
+      return;
+
+   case AGX_OPCODE_LOCAL_LOAD:
+   case AGX_OPCODE_LOCAL_STORE:
+      a3_local_mem(&a, I, emission);
+      return;
+
+   case AGX_OPCODE_LOCAL_ATOMIC:
+      a3_local_atomic(&a, I, emission);
+      return;
+
+   case AGX_OPCODE_ATOMIC:
+      a3_atomic(&a, I, emission);
+      return;
+
+   case AGX_OPCODE_THREADGROUP_BARRIER:
+   case AGX_OPCODE_MEMORY_BARRIER:
+   case AGX_OPCODE_MEMORY_BARRIER_2:
+   case AGX_OPCODE_MEMORY_BARRIER_3:
+   case AGX_OPCODE_UNKNOWN_BARRIER_1:
+   case AGX_OPCODE_UNKNOWN_BARRIER_2:
+   case AGX_OPCODE_DEVICE_BARRIER_1:
+   case AGX_OPCODE_DEVICE_BARRIER_2:
+   case AGX_OPCODE_IMAGE_BARRIER_1:
+   case AGX_OPCODE_IMAGE_BARRIER_2:
+   case AGX_OPCODE_IMAGE_BARRIER_3:
+   case AGX_OPCODE_IMAGE_BARRIER_4:
+   case AGX_OPCODE_FLUSH_MEMORY_TO_TEXTURE:
+      a3_barrier(&a, I, emission);
       return;
 
    case AGX_OPCODE_ICMP_BALLOT:
