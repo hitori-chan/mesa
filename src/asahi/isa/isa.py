@@ -199,6 +199,7 @@ class EncodingCase:
         self.modifiers = []
         self.kind = None
         self.properties = {}
+        self.carry = 0
 
         for ch in el:
             if ch.tag in ["exact", "zero"]:
@@ -210,11 +211,18 @@ class EncodingCase:
                 self.modifiers.append(Modifier(ch, ch.attrib['name']))
             elif ch.tag == "property":
                 self.properties[ch.attrib['name']] = ch.text or '1'
+            elif ch.tag == "carry":
+                # Bits the encoder may set that the disassembler does not
+                # model: desc-dependent flags or don't-cares, proven by the
+                # applegpu-checked corpus. The packer owns them (carry_mask);
+                # the disassembler ignores them.
+                self.carry = Bits(ch.attrib['bit']).mask()
 
     def union(self, other):
         self.exact.union(other.exact)
         self.modifiers = other.modifiers + self.modifiers
         self.properties.update(other.properties)
+        self.carry |= other.carry
 
         assert(self.kind is None or other.kind is None)
         self.kind = self.kind or other.kind
