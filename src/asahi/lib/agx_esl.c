@@ -5,6 +5,7 @@
 
 #include "agx_esl.h"
 #include <stdio.h>
+#include "util/u_debug.h"
 #include "compiler/agx_compile.h"
 #include "agx_pack.h"
 
@@ -179,15 +180,25 @@ agx_esl_from_usc(struct util_dynarray *out, const uint8_t *usc,
    if (!main_va)
       return false;
 
+   /* The preamble runs before the tail, as G13's preshader runs before the
+    * shader (AGX_G15_PREAMBLE_LAST=1: after it, where Metal branches to its
+    * constant-calculation program). */
+   bool last = debug_get_bool_option("AGX_G15_PREAMBLE_LAST", false);
+
+   if (preamble_va && !last && !esl_preamble(out, code, preamble_va))
+      goto no_preamble;
+
    esl_speclm(out, shared_bytes);
    esl_ldshdr(out, main_va, code ? code->main_size : 0);
    esl_spectpr(out);
 
-   if (preamble_va && !esl_preamble(out, code, preamble_va)) {
-      fprintf(stderr, "G15: the preamble is not in the shader's code\n");
-      return false;
-   }
+   if (preamble_va && last && !esl_preamble(out, code, preamble_va))
+      goto no_preamble;
 
    agx3_emit_stop(out);
    return true;
+
+no_preamble:
+   fprintf(stderr, "G15: the preamble is not in the shader's code\n");
+   return false;
 }
