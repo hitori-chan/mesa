@@ -185,10 +185,10 @@ c70454000204022c0000 simd_shuffle_xor r0, r1, 1
 fcfee3941a0c2d1c40c0 mov_imm  cr127, 2508570366, group 6
 d4e2c37c000812154080 mov_imm  u125l, 2091012194, group 4
 5c8c87d41004e8044060 mov_imm  u37, 3567062028, group 3
-44d7f4e6             get_sr   7, $r52h, sr87
+44d7d4e6             get_sr   7, r52h, sr87
 04940001             get_stack 0, 0, r0l, st10l
-8c90790502e80100     get_stack 0, 5, $r24, ^st6216, wait 012
-aced3425             get_stack 1, 5, $r10, st54hl
+8c90590502e82100     get_stack 0, 5, $r24, ^st6216, wait 012
+aced1425             get_stack 1, 5, r10, st54hl
 673056ebca8b0500f0e8f5522400 device_load 3, i32, _, dr74, 2839, lsl 1, -26705, wait 015, 1, 1, 0
 6700550c20a17c00534860532e00 device_load 1, i32, xyw, r6_r7_r8, dr32, 63810, lsl 6, -25854, wait 4, 1, 1, 0
 6700440012204000204000000800 device_load 0, i8, _, du36, 32832, lsl 3, 2, 0, 0, 0
