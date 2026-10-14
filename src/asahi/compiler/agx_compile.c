@@ -713,12 +713,19 @@ agx_wait_pixel_mask(agx_builder *b, uint32_t mask)
       return;
    }
 
+   /* G15: Apple's fragment shaders wait on fence 0x200 before they access the
+    * tilebuffer (demo15's: 0x200, then 0xC), and release it with the others
+    */
+   if (b->shader->key->dev.gpu_generation >= 15 && (mask & 0xC))
+      mask |= 0x200;
+
    /* No need to wait twice on a fence */
    mask &= ~b->shader->already_pixel_waited;
    if (mask == 0) {
       return;
    }
 
+   b->shader->out->pix_wait_mask |= mask;
    agx_wait_pix(b, mask);
 
    /* Only mark the fence as waited if we're not in control flow. Eventually we

@@ -1431,27 +1431,45 @@ a3_tile(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
       a3_wait(a, I, A3_SYNC_G, emission);
 }
 
-/* wait_pix/signal_pix (pixwait/pixrel), G13's masks. G13 releases at the
- * end of the shader; demo15's fragment shader signals what it waited for
- * (0x20C) and its entry program the rest (0x2F3): G15's compiler must
- * emit the signal. The wait flags follow demo15 (f0 with 0x200, f1 with
- * 0xC); what they mean is not known. */
+/* wait_pix/signal_pix (pixwait/pixrel), G13's masks. G13 releases its fences
+ * at the end of the shader; demo15's fragment shader signals what it waited
+ * for (0x20C) and its entry program the rest (0x2F3): G15's linked program
+ * ends with a signal_pix of what it waited for (agx_fast_link), and its entry
+ * program releases the others. demo15 waits for 0x200 and 0xC with two
+ * instructions, each with its own flag (bit 34 for 0x200, bit 35 for 0xC);
+ * what they mean is not known. Other fences are waited for without a flag
+ * (a guess). */
+static void
+a3_pixwait(struct a3 *a, const agx_instr *I, unsigned mask, bool f0, bool f1,
+           struct util_dynarray *emission)
+{
+   a3_begin(a, I, AGX3_WAIT_PIX, T_WAIT_PIX);
+   a3_set(a, PIX_MASK, mask);
+   a3_set(a, WAIT_PIX_F0, f0);
+   a3_set(a, WAIT_PIX_F1, f1);
+   a3_emit(a, emission);
+}
+
 static void
 a3_pix(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
 {
-   bool wait = I->op == AGX_OPCODE_WAIT_PIX;
    unsigned mask = I->writeout;
 
    if (mask >> 10)
       a3_fail(a, "pixel mask out of range");
 
-   a3_begin(a, I, wait ? AGX3_WAIT_PIX : AGX3_SIGNAL_PIX,
-            wait ? T_WAIT_PIX : T_SIG_PIX);
-   a3_set(a, PIX_MASK, mask);
-   if (wait) {
-      a3_set(a, WAIT_PIX_F0, !!(mask & 0x200));
-      a3_set(a, WAIT_PIX_F1, !!(mask & 0xc));
+   if (I->op == AGX_OPCODE_WAIT_PIX) {
+      if (mask & 0x200)
+         a3_pixwait(a, I, 0x200, true, false, emission);
+      if (mask & 0xC)
+         a3_pixwait(a, I, mask & 0xC, false, true, emission);
+      if (mask & ~0x20C)
+         a3_pixwait(a, I, mask & ~0x20C, false, false, emission);
+      return;
    }
+
+   a3_begin(a, I, AGX3_SIGNAL_PIX, T_SIG_PIX);
+   a3_set(a, PIX_MASK, mask);
    a3_emit(a, emission);
 }
 
@@ -2153,6 +2171,13 @@ void
 agx3_emit_stop(struct util_dynarray *out)
 {
    agx_instr I = {.op = AGX_OPCODE_STOP};
+   agx3_pack_instr(out, NULL, &I);
+}
+
+void
+agx3_emit_signal_pix(struct util_dynarray *out, unsigned mask)
+{
+   agx_instr I = {.op = AGX_OPCODE_SIGNAL_PIX, .writeout = mask};
    agx3_pack_instr(out, NULL, &I);
 }
 

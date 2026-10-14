@@ -106,13 +106,22 @@ esl_vertex_config(struct util_dynarray *out)
    esl_u16(out, 0xFFFF);
 }
 
-/* pixrel: the fragment entry releases its pixels (mask 0x2F3) */
+/* G15's pixel fences: demo15's fragment shader waits on 0x200 and then 0xC
+ * and signals both at its end, and its entry program releases 0x2F3. Every
+ * fence is released once, the shader's by the shader, the others by the entry
+ * program, except 0x200, which both release: the universe is 0x2FF (a guess
+ * from that one pair; fence 0x100 is in neither). */
+#define ESL_PIX_ALL    0x2FF
+#define ESL_PIX_BOTH   0x200
+
+/* pixrel: the fragment entry releases the fences its program does not wait on */
 static void
-esl_pixrel(struct util_dynarray *out)
+esl_pixrel(struct util_dynarray *out, unsigned waited)
 {
-   static const uint8_t pixrel[] = {0x07, 0x02, 0x54, 0xF3, 0x02, 0x00};
-   memcpy(util_dynarray_grow_bytes(out, 1, sizeof(pixrel)), pixrel,
-          sizeof(pixrel));
+   unsigned mask = ESL_PIX_ALL & ~(waited & ~ESL_PIX_BOTH);
+
+   if (mask)
+      agx3_emit_signal_pix(out, mask);
 }
 
 /* Inline the preamble (Apple's constant-calculation program) up to its
@@ -234,7 +243,7 @@ agx_esl_from_usc(struct util_dynarray *out, const uint8_t *usc,
    case AGX_ESL_FRAGMENT:
       esl_speclm_imageblock(out);
       esl_ldshdr(out, main_va, code ? code->main_size : 0);
-      esl_pixrel(out);
+      esl_pixrel(out, code ? code->pix_wait_mask : 0);
       break;
 
    case AGX_ESL_BACKGROUND:
