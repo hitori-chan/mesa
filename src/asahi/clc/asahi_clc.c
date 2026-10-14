@@ -22,6 +22,7 @@
 #include <string.h>
 #include <unistd.h>
 #include "util/macros.h"
+#include "util/u_debug.h"
 #include <sys/mman.h>
 
 const char *targets[] = {"g13g", "g13x"};
@@ -355,6 +356,10 @@ main(int argc, char **argv)
                key.dev.needs_g13x_coherency =
                   u_tristate_make(!strcmp(*target, "g13x"));
             }
+
+            /* ASAHI_CLC_GEN=15: compile for G15 instead (with AGX3_SURVEY=1,
+             * a survey of what the G15 packer lacks) */
+            key.dev.gpu_generation = debug_get_num_option("ASAHI_CLC_GEN", 0);
 
             nir_shader *clone = nir_shader_clone(NULL, s);
             agx_compile_shader_nir(clone, &key, &compiled);
