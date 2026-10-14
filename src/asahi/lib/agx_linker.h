@@ -30,6 +30,11 @@ struct agx_linked_shader {
    /* Whether the program is a no-op and can be skipped. */
    bool no_op;
 
+   /* G15: the pixel fences the program waits on (it signals them at its end;
+    * its entry program releases the others)
+    */
+   uint16_t pix_wait_mask;
+
    /* Coefficient register bindings */
    struct agx_varyings_fs cf;
 
