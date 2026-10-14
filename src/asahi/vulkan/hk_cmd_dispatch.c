@@ -48,8 +48,37 @@ hk_cdm_cache_flush(struct hk_device *dev, struct hk_cs *cs)
    assert(cs->current + AGX_CDM_BARRIER_LENGTH < cs->end &&
           "caller must ensure space");
 
-   cs->current = agx_cdm_barrier(cs->current, dev->dev.chip);
+   if (dev->dev.params.gpu_generation >= 15) {
+      uint32_t *out = cs->current;
+      *(out++) = 0x60000160; /* G15C: Metal's barrier after a launch */
+      cs->current = out;
+   } else
+      cs->current = agx_cdm_barrier(cs->current, dev->dev.chip);
+
    cs->stats.flushes++;
+}
+
+/* G15: the direct launch block (spec: metal-compute.md); the launch
+ * points at the entry program, a full VA */
+static uint32_t *
+hk_cdm_launch_g15(struct hk_device *dev, uint32_t *out, struct agx_grid grid,
+                  struct agx_workgroup wg, uint32_t usc)
+{
+   uint64_t va = dev->dev.shader_base + usc;
+   bool multi = grid.count[1] > 1 || grid.count[2] > 1;
+
+   assert((va & 63) == 0);
+   *(out++) = multi ? BITFIELD_BIT(19) : 0;
+   *(out++) = ((va >> 38) & BITFIELD_MASK(10)) << 22;
+   *(out++) = va >> 6;
+   *(out++) = 0x40000001;
+   *(out++) = grid.count[0];
+   *(out++) = grid.count[1];
+   *(out++) = grid.count[2];
+   *(out++) = wg.x & BITFIELD_MASK(11);
+   *(out++) = wg.y & BITFIELD_MASK(11);
+   *(out++) = wg.z & BITFIELD_MASK(11);
+   return out;
 }
 
 void
@@ -61,8 +90,19 @@ hk_dispatch_with_usc_launch(struct hk_device *dev, struct hk_cs *cs,
    hk_ensure_cs_has_space(cs->cmd, cs, 0x2000 /* TODO */);
    cs->stats.cmds++;
 
-   cs->current =
-      agx_cdm_launch(cs->current, dev->dev.chip, grid, wg, launch, usc);
+   if (dev->dev.params.gpu_generation >= 15) {
+      if (!usc || agx_is_indirect(grid)) {
+         fprintf(stderr, "G15: dispatch skipped (%s)\n",
+                 usc ? "indirect dispatch not supported yet"
+                     : "no entry program");
+         return;
+      }
+
+      cs->current = hk_cdm_launch_g15(dev, cs->current, grid, wg, usc);
+   } else {
+      cs->current =
+         agx_cdm_launch(cs->current, dev->dev.chip, grid, wg, launch, usc);
+   }
 
    hk_cdm_cache_flush(dev, cs);
 }

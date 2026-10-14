@@ -3509,14 +3509,20 @@ agx_compile_function_nir(nir_shader *nir, nir_function_impl *impl,
 
    if (dump_shaders || selftest) {
       FILE *fp = selftest ? fopen("/dev/null", "w") : stdout;
+      bool g15 = key->dev.gpu_generation >= 15;
       bool errors =
-         agx2_disassemble(binary->data + offset, binary->size - offset, fp);
+         g15 ? agx3_disassemble(binary->data + offset, binary->size - offset, fp)
+             : agx2_disassemble(binary->data + offset, binary->size - offset,
+                                fp);
 
       if (errors) {
          /* In a self-test, disassemble again to get something the user can look
           * at to figure out what went wrong.
           */
-         if (selftest) {
+         if (selftest && g15) {
+            agx3_disassemble(binary->data + offset, binary->size - offset,
+                             stderr);
+         } else if (selftest) {
             agx2_disassemble(binary->data + offset, binary->size - offset,
                              stderr);
          }
