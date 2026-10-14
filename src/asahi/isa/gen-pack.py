@@ -66,6 +66,7 @@ B = MAX_BITS // 8
 # XML, for the case-table reference
 kind_names = []
 mod_names = []
+enc_order = list(isa.encodings)
 
 
 def kind_name(n):
@@ -78,6 +79,63 @@ def mod_name(n):
     if n not in mod_names:
         mod_names.append(n)
     return mod_names.index(n)
+
+
+def enc_index(n):
+    return enc_order.index(n)
+
+
+# The case's selection key (skey): how the compiler picks the case for
+# the operand it has. Packed: bits 0:1 the size (0 = 16, 1 = 32,
+# 2 = 64), bit 2 the bfloat property, bits 3:8 the kind name index
+# (0x3f = none), bits 9:24 a mask over the modifiers the case offers.
+# The kind name, the size and the bfloat property are the operand's
+# register class; the offered modifiers say which flags the case can
+# carry (e.g. sx makes the integer cases, abs/neg the float ones).
+# When two cases of an encoding share a key (the pack formats, the
+# count/size exact bits, ...), the encoding is not struct-key-unique and
+# the selector also matches the case's exact pattern.
+SKEY_KIND_NONE = 0x3f
+SKEY_KIND_SHIFT = 3
+SKEY_BFLOAT = 1 << 2
+SKEY_SIZE32 = 1
+SKEY_SIZE64 = 2
+
+
+def case_key(c):
+    size = 0
+    if 'size32' in c.properties:
+        size = SKEY_SIZE32
+    elif 'size64' in c.properties:
+        size = SKEY_SIZE64
+    kind = kind_name(c.kind.name) if c.kind is not None else SKEY_KIND_NONE
+    modmask = 0
+    for m in c.modifiers:
+        modmask |= 1 << mod_name(m.name)
+    skey = size | (('bfloat' in c.properties) and SKEY_BFLOAT or 0) \
+        | (kind << SKEY_KIND_SHIFT) | (modmask << 9)
+    return skey
+
+
+# Per encoding: the structural key is enough, or the selector must also
+# match the exact pattern. Asserted along the way: the (key, exact)
+# pair is unique in every encoding, so the selector is never ambiguous
+# and the disassembler's first-match order is total.
+enc_struct_key = {}
+for k, enc in isa.encodings.items():
+    seen = set()
+    keys = set()
+    for c in enc.cases:
+        skey = case_key(c)
+        keys.add(skey)
+        pair = (skey, c.exact.value, c.exact.mask)
+        assert pair not in seen, (k, c)
+        seen.add(pair)
+    enc_struct_key[k] = len(keys) == len(enc.cases)
+for k, ok in enc_struct_key.items():
+    if not ok:
+        print(f'# note: {k} needs the exact pattern to select (the '
+              f'structural key is ambiguous)', file=sys.stderr)
 
 
 def case_layout(c):
@@ -170,6 +228,12 @@ struct agx3_case {{
    uint8_t kind;
    struct agx3_case_field f[AGX3_MAX_CASE_FIELDS];
    uint8_t mod[AGX3_MAX_CASE_FIELDS];
+
+   /* The selection key: size (bits 0:1), bfloat (bit 2), the kind name
+    * index (bits 3:8, {SKEY_KIND_NONE:#x} = none), and a mask over the
+    * modifiers the case offers (bits 9:24, agx3_mod_names). See
+    * agx3_case_select. */
+   uint32_t skey; /* the selection key (agx3_case_select) */
 }};
 
 struct agx3_pack_spec {{
@@ -190,10 +254,12 @@ struct agx3_pack_spec {{
 
    /* The operand cases: operand i's start in the flat case array and
     * its count (0 for an operand without an encoding, e.g. modifiers
-    * and immediates). */
+    * and immediates). op_enc[i] is the encoding's index in
+    * agx3_enc_names ({SKEY_KIND_NONE:#x} when the operand has no cases). */
    const struct agx3_case *cases;
    const uint16_t *case_start;
    const uint8_t *ncases;
+   const uint8_t *op_enc;
 
    uint64_t exact[{W}];
    uint64_t value[{W}];
@@ -207,6 +273,19 @@ static const char *const agx3_kind_names[] = {{
 static const char *const agx3_mod_names[] = {{
 {", ".join(f'"{n}"' for n in mod_names)}
 }};
+
+static const char *const agx3_enc_names[] = {{
+{", ".join(f'"{n}"' for n in enc_order)}
+}};
+
+/* 1: the case's structural key (skey) selects it on its own; 0: the
+ * selector must also match the exact pattern (the key alone is
+ * ambiguous in this encoding). */
+static const uint8_t agx3_enc_struct_key[] = {{
+{", ".join(str(int(enc_struct_key[n])) for n in enc_order)}
+}};
+
+enum {{ AGX3_NUM_ENCODINGS = {len(enc_order)} }};
 
 /* Deposit one value-space field of a case */
 static inline uint64_t
@@ -245,6 +324,29 @@ agx3_case_match(const struct agx3_case *cases, unsigned n, uint64_t value)
    for (unsigned i = 0; i < n; i++)
       if ((value & cases[i].exact_mask) == cases[i].exact)
          return &cases[i];
+
+   return NULL;
+}}
+
+/* The case for an operand the compiler wants to encode: its register
+ * class (the kind, the size, bfloat) and the flags it carries (a mask
+ * over agx3_mod_names). For an encoding whose structural key is
+ * ambiguous (agx3_enc_struct_key[enc] == 0), the exact pattern
+ * disambiguates: pass the case's exact value and mask (0/0 is
+ * accepted only when the key is unique). Exactly one case matches, or
+ * NULL if the operand is not expressible. */
+static inline const struct agx3_case *
+agx3_case_select(unsigned enc, const struct agx3_case *cases, unsigned n,
+                 uint32_t skey, uint64_t exact, uint64_t exact_mask)
+{{
+   for (unsigned i = 0; i < n; i++) {{
+      if (cases[i].skey != skey)
+         continue;
+      if (agx3_enc_struct_key[enc])
+         return &cases[i];
+      if (cases[i].exact == exact && cases[i].exact_mask == exact_mask)
+         return &cases[i];
+   }}
 
    return NULL;
 }}
@@ -347,10 +449,12 @@ for k, instr in isa.instrs.items():
     cases = []
     case_start = [0]
     ncases = []
+    op_enc = []
     for cat, op in ops:
         if cat not in ('src', 'dest') or op.kind not in isa.encodings:
             ncases.append(0)
             case_start.append(len(cases))
+            op_enc.append(SKEY_KIND_NONE)
             continue
         for c in isa.encodings[op.kind].cases:
             layout = case_layout(c)
@@ -367,9 +471,13 @@ for k, instr in isa.instrs.items():
                 f'{len(layout)}, {nkind}, '
                 f'{kind_name(c.kind.name) if has_kind else 0}, '
                 f'{{ {", ".join(cf)} }}, '
-                f'{{ {", ".join(mod)} }}, }},')
+                f'{{ {", ".join(mod)} }}, '
+                f'{case_key(c):#x} }},')
         case_start.append(len(cases))
         ncases.append(len(isa.encodings[op.kind].cases))
+        op_enc.append(enc_index(op.kind))
+
+    assert len(op_enc) == len(ops), (k, len(op_enc), len(ops))
 
     if fields:
         decls.append(
@@ -385,6 +493,9 @@ for k, instr in isa.instrs.items():
     decls.append(
         f'static const uint8_t {name}_ncases[] = '
         f'{{{", ".join(str(x) for x in ncases)}}};\n')
+    decls.append(
+        f'static const uint8_t {name}_op_enc[] = '
+        f'{{{", ".join(str(x) for x in op_enc)}}};\n')
     decls.append(
         f'static const uint16_t {name}_case_start[] = '
         f'{{{", ".join(str(x) for x in case_start)}}};\n')
@@ -411,6 +522,7 @@ for k, instr in isa.instrs.items():
            else '      .cases = NULL,\n')
         + f'      .case_start = {name}_case_start,\n'
         + f'      .ncases = {name}_ncases,\n'
+        + f'      .op_enc = {name}_op_enc,\n'
         + f'      .exact = {chunk(instr.exact.mask)},\n'
         + f'      .value = {chunk(instr.exact.value)},\n'
         + f'      .mask = {chunk(instr.mask())},\n'
