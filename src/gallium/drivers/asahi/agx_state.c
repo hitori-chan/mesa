@@ -1131,6 +1131,76 @@ target_is_array(enum pipe_texture_target target)
    }
 }
 
+/*
+ * G15's PBE descriptor (cmdbuf.xml's "PBE G15"; Honeykrisp's pack_pbe_g15).
+ * Only what Apple's encoder and demo15 settle is packed: uncompressed images
+ * without multisampling, 2D, linear with one layer or twiddled. The rest fails
+ * here rather than reaching the hardware as a G13 descriptor.
+ */
+static void
+agx_pack_pbe_g15(struct agx_pbe_packed *out, struct agx_resource *tex,
+                 const struct pipe_image_view *view,
+                 enum pipe_texture_target target, unsigned level,
+                 unsigned layer)
+{
+   const struct util_format_description *desc =
+      util_format_description(view->format);
+   bool is_buffer = (tex->base.target == PIPE_BUFFER);
+   unsigned layers = is_buffer ? 1 : view->u.tex.last_layer - layer + 1;
+
+   if (is_buffer || tex->layout.compressed ||
+       util_res_sample_count(&tex->base) > 1 || target == PIPE_TEXTURE_3D ||
+       (tex->layout.tiling == AIL_TILING_LINEAR && layers > 1)) {
+      fprintf(stderr, "G15: PBE of a buffer, compressed, multisampled, 3D or "
+                      "linear layered image is not supported yet\n");
+      assert(0);
+   }
+
+   agx_pack(out, PBE_G15, cfg) {
+      cfg.dimension =
+         agx_translate_tex_dim(target, util_res_sample_count(&tex->base));
+      cfg.layout = agx_translate_layout(tex->layout.tiling);
+      cfg.channels = ail_pixel_format[view->format].channels;
+      cfg.type = ail_pixel_format[view->format].type;
+
+      assert(desc->nr_channels >= 1 && desc->nr_channels <= 4);
+
+      for (unsigned i = 0; i < desc->nr_channels; ++i) {
+         if (desc->swizzle[i] == 0)
+            cfg.swizzle_r = i;
+         else if (desc->swizzle[i] == 1)
+            cfg.swizzle_g = i;
+         else if (desc->swizzle[i] == 2)
+            cfg.swizzle_b = i;
+         else if (desc->swizzle[i] == 3)
+            cfg.swizzle_a = i;
+      }
+
+      cfg.buffer = agx_pbe_addr(tex, agx_map_texture_gpu(tex, layer));
+      cfg.width = view->resource->width0;
+      cfg.height = view->resource->height0;
+      cfg.mipmapped = tex->mipmapped;
+
+      if (tex->layout.tiling == AIL_TILING_LINEAR) {
+         /* In 16-byte units, minus 1 (demo15's 0xF for a 256 B stride) */
+         assert((ail_get_linear_stride_B(&tex->layout, level) & 15) == 0);
+         cfg.stride = (ail_get_linear_stride_B(&tex->layout, level) >> 4) - 1;
+         assert(tex->base.last_level == 0);
+      } else {
+         cfg.layers = layers;
+         cfg.page_aligned_layers = tex->layout.page_aligned_layers;
+
+         /* The level and the count of levels go in the extended word; Apple
+          * sets it when either is not the default (not verified) */
+         if (level != 0 || tex->base.last_level > 0) {
+            cfg.extended = true;
+            cfg.level = level;
+            cfg.levels = tex->base.last_level + 1;
+         }
+      }
+   }
+}
+
 static void
 agx_batch_upload_pbe(struct agx_batch *batch, struct agx_pbe_packed *out,
                      struct pipe_image_view *view, bool block_access,
@@ -1158,6 +1228,11 @@ agx_batch_upload_pbe(struct agx_batch *batch, struct agx_pbe_packed *out,
 
    unsigned level = is_buffer ? 0 : view->u.tex.level;
    unsigned layer = is_buffer ? 0 : view->u.tex.first_layer;
+
+   if (agx_device(batch->ctx->base.screen)->params.gpu_generation >= 15) {
+      agx_pack_pbe_g15(out, tex, view, target, level, layer);
+      return;
+   }
 
    agx_pack(out, PBE, cfg) {
       cfg.dimension =
@@ -3181,6 +3256,7 @@ struct asahi_bg_eot
 agx_build_bg_eot(struct agx_batch *batch, bool store, bool partial_render)
 {
    struct agx_context *ctx = batch->ctx;
+   struct agx_device *dev = agx_device(ctx->base.screen);
 
    /* Construct the key */
    struct agx_bg_eot_key key = {.tib = batch->tilebuffer_layout};
@@ -3277,13 +3353,33 @@ agx_build_bg_eot(struct agx_batch *batch, bool store, bool partial_render)
          agx_batch_upload_pbe(batch, pbe.cpu, &view, true, true, false,
                               no_compress);
 
-         agx_usc_pack(&b, TEXTURE, cfg) {
-            cfg.start = rt;
-            cfg.count = 1;
-            cfg.buffer = pbe.gpu;
-         }
+         if (dev->params.gpu_generation >= 15) {
+            /* G15's block write takes the descriptor's address in a 64-bit
+             * uniform per render target (the entry program loads it from
+             * memory: demo15's end-of-tile data holds a pointer to the
+             * descriptor). There are no texture state registers. Apple's
+             * descriptors are 32 bytes: the hardware may read the fourth word
+             * of one, so the padding is zero.
+             */
+            uint64_t words[4] = {0};
+            memcpy(words, pbe.cpu, AGX_PBE_LENGTH);
 
-         nr_tex = rt + 1;
+            uint64_t desc_va =
+               agx_pool_upload_aligned(&batch->pool, words, sizeof(words), 8);
+            uint64_t ptr = agx_pool_upload_aligned(&batch->pool, &desc_va,
+                                                   sizeof(desc_va), 8);
+
+            agx_usc_uniform(&b, 4 * rt, 4, ptr);
+            uniforms = MAX2(uniforms, 4 * rt + 4);
+         } else {
+            agx_usc_pack(&b, TEXTURE, cfg) {
+               cfg.start = rt;
+               cfg.count = 1;
+               cfg.buffer = pbe.gpu;
+            }
+
+            nr_tex = rt + 1;
+         }
       }
    }
 
@@ -3338,7 +3434,6 @@ agx_build_bg_eot(struct agx_batch *batch, bool store, bool partial_render)
 
    /* Get the shader */
    key.reserved_preamble = uniforms;
-   struct agx_device *dev = agx_device(ctx->base.screen);
    struct agx_bg_eot_shader *shader = agx_get_bg_eot_shader(&ctx->bg_eot, &key);
    agx_batch_add_bo(batch, shader->bo);
    assert(shader->info.rodata.size_16 == 0);
