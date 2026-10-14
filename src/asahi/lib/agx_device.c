@@ -635,8 +635,13 @@ agx_open_device(void *memctx, struct agx_device *dev)
    /* ...so when we cut user size in half to emulate sparse buffers... */
    user_size /= 2;
 
-   /* ...or maybe in quarters if necessary to disambiguate */
-   if (user_size == user_start) {
+   /* ...or maybe in quarters if necessary to disambiguate. With user_start
+    * a power of two, the window [user_start, user_start + user_size) must
+    * fit on one side of the sparse bit, so user_size must be a strictly
+    * smaller power of two. On G15 (a 4 TiB user VA space) the rounded size
+    * is larger than user_start and has to be cut further.
+    */
+   while (user_size >= user_start) {
       user_size /= 2;
    }
 
