@@ -883,9 +883,68 @@ agx_tex_dim(enum glsl_sampler_dim dim, bool array)
    }
 }
 
+/*
+ * G15's end-of-tile block write (imgwblk) takes the image's descriptor by
+ * address and explicit coordinates. The coordinates are the tile's first
+ * pixel, the tile's position in the grid times its size, which the hardware
+ * gives the program as the threadgroup's position and its dispatch size, as
+ * in demo15's end-of-tile program. The descriptors' addresses are 64-bit
+ * uniforms, one per render target (the IR's index), that the entry program
+ * loads; the offset is the render target's offset in the tilebuffer.
+ *
+ * Only the single-sample, non-layered 2D form with implicit coordinates and
+ * a constant render target is built. What imgwblk's layer and sample operands
+ * hold is not known: the other forms keep G13's operands, which the packer
+ * rejects.
+ */
+static bool
+agx_block_image_store_g15_supported(const nir_intrinsic_instr *instr)
+{
+   return instr->intrinsic == nir_intrinsic_image_store_block_agx &&
+          nir_src_is_const(instr->src[0]) &&
+          nir_intrinsic_image_dim(instr) == GLSL_SAMPLER_DIM_2D &&
+          !nir_intrinsic_image_array(instr) &&
+          !nir_intrinsic_explicit_coord(instr);
+}
+
+static agx_instr *
+agx_emit_block_image_store_g15(agx_builder *b, nir_intrinsic_instr *instr)
+{
+   unsigned rt = nir_src_as_uint(instr->src[0]);
+   agx_index offset = agx_src_index(&instr->src[1]);
+
+   if (nir_src_is_const(instr->src[1]) &&
+       nir_src_as_uint(instr->src[1]) < BITFIELD_BIT(16))
+      offset = agx_immediate(nir_src_as_uint(instr->src[1]));
+
+   agx_index x = agx_temp(b->shader, AGX_SIZE_32);
+   agx_index y = agx_temp(b->shader, AGX_SIZE_32);
+   agx_index w = agx_temp(b->shader, AGX_SIZE_32);
+   agx_index h = agx_temp(b->shader, AGX_SIZE_32);
+
+   agx_mov_to(b, w,
+              agx_get_sr(b, 16, AGX_SR_DISPATCH_THREADS_PER_THREADGROUP_X));
+   agx_mov_to(b, h,
+              agx_get_sr(b, 16, AGX_SR_DISPATCH_THREADS_PER_THREADGROUP_Y));
+   agx_imad_to(b, x, agx_get_sr(b, 32, AGX_SR_THREADGROUP_POSITION_IN_GRID_X),
+               w, agx_zero(), 0);
+   agx_imad_to(b, y, agx_get_sr(b, 32, AGX_SR_THREADGROUP_POSITION_IN_GRID_Y),
+               h, agx_zero(), 0);
+
+   agx_index coords = agx_vec2(b, x, y);
+
+   return agx_block_image_store(
+      b, agx_uniform(4 * rt, AGX_SIZE_64), agx_immediate(rt), offset, coords,
+      agx_format_for_pipe(nir_intrinsic_format(instr)), AGX_DIM_2D, true);
+}
+
 static agx_instr *
 agx_emit_block_image_store(agx_builder *b, nir_intrinsic_instr *instr)
 {
+   if (b->shader->key->dev.gpu_generation >= 15 &&
+       agx_block_image_store_g15_supported(instr))
+      return agx_emit_block_image_store_g15(b, instr);
+
    agx_index offset = agx_src_index(&instr->src[1]);
    agx_index coords = agx_src_index(&instr->src[2]);
    enum agx_format format = agx_format_for_pipe(nir_intrinsic_format(instr));
