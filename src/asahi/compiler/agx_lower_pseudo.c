@@ -109,12 +109,19 @@ lower(agx_builder *b, agx_instr *I)
    case AGX_OPCODE_BEGIN_CF:
       return agx_mov_imm_to(b, agx_register(0, AGX_SIZE_16), 0);
 
+   /* G15 has break on a condition code: agx_pack3.c packs these */
    case AGX_OPCODE_BREAK:
+      if (b->shader->key->dev.gpu_generation >= 15)
+         return NULL;
+
       agx_mov_imm_to(b, agx_register(0, AGX_SIZE_16), I->nest);
       return agx_pop_exec(b, 0);
 
    case AGX_OPCODE_BREAK_IF_ICMP:
    case AGX_OPCODE_BREAK_IF_FCMP: {
+      if (b->shader->key->dev.gpu_generation >= 15)
+         return NULL;
+
       if (I->nest == 1)
          return while_for_break_if(b, I);
       else
