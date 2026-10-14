@@ -79,7 +79,7 @@ def operand(desc, length):
         return None
     elif kind in ['cf', 'ts', 'ss', 'cr']:
         assert(count == 1)
-        return f'{kind}{base}' + suffixes
+        return hint + f'{kind}{base}' + suffixes
     elif kind == 'fimm':
         return str(decode_float_immediate(base)) + suffixes
     elif kind in ['imm', 'signed']:
