@@ -666,15 +666,16 @@ hk_reserve_scratch(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
 /* G15: the entry program for a USC word list (agx_esl.h) */
 static uint32_t
 hk_upload_esl(struct hk_cmd_buffer *cmd, struct hk_shader *s,
-              const uint8_t *usc)
+              struct hk_linked_shader *linked, const uint8_t *usc)
 {
    struct hk_device *dev = hk_cmd_buffer_device(cmd);
    struct agx_esl_code code = {
       .va = s->bo ? s->bo->va->addr : 0,
       .cpu = s->b.binary,
       .size = s->b.info.binary_size,
-      .main_size = s->b.info.main_size,
+      .main_size = linked->b.bo ? linked->b.bo->size : s->b.info.main_size,
       .stack_size = s->b.info.stack_size,
+      .pix_wait_mask = linked->b.pix_wait_mask,
    };
 
    struct util_dynarray esl;
@@ -790,7 +791,7 @@ hk_upload_usc_words(struct hk_cmd_buffer *cmd, struct hk_shader *s,
    agx_usc_push_blob(&b, linked->usc.data, linked->usc.size);
 
    if (dev->dev.params.gpu_generation >= 15)
-      return hk_upload_esl(cmd, s, t.cpu);
+      return hk_upload_esl(cmd, s, linked, t.cpu);
 
    return agx_usc_addr(&dev->dev, t.gpu);
 }

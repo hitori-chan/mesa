@@ -101,6 +101,13 @@ struct agx_shader_info {
    /* Size in bytes of the main sahder */
    unsigned main_size;
 
+   /* G15: the pixel fences (wait_pix masks) the shader waits on. A fragment
+    * program signals them at its end, and its entry program releases all the
+    * others (demo15's fragment shader waits 0x20C and signals it, its entry
+    * program releases 0x2F3).
+    */
+   uint16_t pix_wait_mask;
+
    /* Does the shader have a preamble? If so, it is at offset preamble_offset.
     * The main shader is at offset main_offset. The preamble is executed first.
     */
@@ -213,6 +220,7 @@ void agx3_emit_wait(struct util_dynarray *out, unsigned slot);
 void agx3_emit_uniform_store(struct util_dynarray *out, unsigned uniform,
                              unsigned src);
 void agx3_emit_stop(struct util_dynarray *out);
+void agx3_emit_signal_pix(struct util_dynarray *out, unsigned mask);
 unsigned agx3_instr_length(const uint8_t *code);
 
 struct agx_shader_part {
