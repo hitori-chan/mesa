@@ -2094,7 +2094,12 @@ agx3_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
       return;
 
    case AGX_OPCODE_SAMPLE_MASK:
-      a3_fail(&a, "sample_mask (G15's cmsk operands are not known)");
+      /* Apple's encoder has no instruction that writes the sample mask: cmsk
+       * (10 B) has a destination and three sources, and the tile accesses
+       * take a sample mask operand of their own (demo15 passes 1). How
+       * discard and gl_SampleMask work on G15 is not known. */
+      a3_fail(&a, "sample_mask (discard and gl_SampleMask: G15 has no sample "
+                  "mask write, cmsk's meaning is not known)");
 
    case AGX_OPCODE_BLOCK_IMAGE_STORE:
       a3_block_image_store(&a, I, emission);
