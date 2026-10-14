@@ -95,6 +95,9 @@ struct agx_shader_info {
    /* Scratch memory allocation in bytes for main/preamble respectively */
    unsigned scratch_size, preamble_scratch_size;
 
+   /* G15: the stack registers in bytes per thread (specTPR) */
+   unsigned stack_size;
+
    /* Size in bytes of the main sahder */
    unsigned main_size;
 
