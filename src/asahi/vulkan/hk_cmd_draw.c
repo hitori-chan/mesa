@@ -2386,6 +2386,8 @@ hk_flush_ppp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
    struct hk_shader *hw_vs = hk_bound_hw_vs(gfx);
    struct hk_shader *fs = hk_only_variant(gfx->shaders[MESA_SHADER_FRAGMENT]);
 
+   bool g15 = hk_cmd_buffer_device(cmd)->dev.params.gpu_generation >= 15;
+
    bool hw_vs_dirty = IS_SHADER_DIRTY(VERTEX) || IS_SHADER_DIRTY(TESS_EVAL) ||
                       IS_SHADER_DIRTY(GEOMETRY);
    bool fs_dirty = IS_SHADER_DIRTY(FRAGMENT);
@@ -2440,17 +2442,33 @@ hk_flush_ppp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
 
    dirty.fragment_shader &= !linked_fs->b.no_op;
 
+   /* G15 has no fragment control bits: the face bits also select the
+    * fragment control words, in G13's element order, and the varying counts
+    * are one 8-byte element (see agx_state.c).
+    */
+   bool fc = dirty.fragment_control, fc2 = dirty.fragment_control_2;
+   if (g15) {
+      dirty.fragment_front_face |= fc;
+      dirty.fragment_front_face_2 |= fc2;
+      fc = dirty.fragment_front_face;
+      fc2 = dirty.fragment_front_face_2;
+      dirty.fragment_control = dirty.fragment_control_2 = false;
+      dirty.varying_counts_16 = false;
+   }
+
    /* Calculate the update size. If it equals the header, there is nothing to
     * update so early-exit.
     */
    struct hk_device *dev = hk_cmd_buffer_device(cmd);
-   bool g15 = dev->dev.params.gpu_generation >= 15;
    size_t size = agx_ppp_update_size(&dirty);
    if (size == AGX_PPP_HEADER_LENGTH)
       return;
 
-   if (g15 && dirty.fragment_shader)
-      size += AGX_G15_PIPELINE_LENGTH;
+   if (g15) {
+      size += AGX_FRAGMENT_CONTROL_LENGTH * (fc + fc2);
+      size += dirty.varying_counts_32 ? AGX_VARYING_COUNTS_LENGTH : 0;
+      size += dirty.fragment_shader ? AGX_G15_PIPELINE_LENGTH : 0;
+   }
 
    /* Otherwise, allocate enough space for the update and push it. */
    assert(size > AGX_PPP_HEADER_LENGTH);
@@ -2462,7 +2480,7 @@ hk_flush_ppp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
    struct agx_ppp_update ppp =
       agx_new_ppp_update(agx_vdm_ptr(&dev->dev, T), size, &dirty);
 
-   if (dirty.fragment_control) {
+   if (fc) {
       agx_ppp_push(&ppp, FRAGMENT_CONTROL, cfg) {
          cfg.visibility_mode = gfx->occlusion.mode;
          cfg.stencil_test_enable = hk_stencil_test_enabled(cmd);
@@ -2484,17 +2502,18 @@ hk_flush_ppp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
       }
    }
 
-   if (dirty.fragment_control_2) {
-      /* Annoying, rasterizer_discard seems to be ignored (sometimes?) in the
-       * main fragment control word and has to be combined into the secondary
-       * word for reliable behaviour.
-       */
-      agx_ppp_push_merged(&ppp, FRAGMENT_CONTROL, cfg,
-                          linked_fs->b.fragment_control) {
-
-         cfg.tag_write_disable = hk_rast_discard(cmd);
-      }
+   /* Annoying, rasterizer_discard seems to be ignored (sometimes?) in the
+    * main fragment control word and has to be combined into the secondary
+    * word for reliable behaviour.
+    */
+#define PUSH_FRAGMENT_CONTROL_2()                                              \
+   agx_ppp_push_merged(&ppp, FRAGMENT_CONTROL, cfg,                            \
+                       linked_fs->b.fragment_control) {                        \
+      cfg.tag_write_disable = hk_rast_discard(cmd);                            \
    }
+
+   if (fc2)
+      PUSH_FRAGMENT_CONTROL_2();
 
    struct agx_fragment_face_packed fragment_face = {};
    struct agx_fragment_face_2_packed fragment_face_2 = {};
@@ -2518,6 +2537,8 @@ hk_flush_ppp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
          cfg.stencil_reference = dyn->ds.stencil.front.reference;
       }
    }
+
+#undef PUSH_FRAGMENT_CONTROL_2
 
    if (dirty.fragment_front_face_2) {
       agx_pack(&fragment_face_2, FRAGMENT_FACE_2, cfg) {
@@ -2559,8 +2580,9 @@ hk_flush_ppp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
                                 &linked_fs->b.osel);
    }
 
-   assert(dirty.varying_counts_32 == dirty.varying_counts_16);
+   assert(g15 || dirty.varying_counts_32 == dirty.varying_counts_16);
 
+   /* G15: the 16-bit counts are the second word of the counts 32 element */
    if (dirty.varying_counts_32) {
       agx_ppp_push_packed(&ppp, &gfx->linked_varyings.counts_32,
                           VARYING_COUNTS);
@@ -2611,15 +2633,31 @@ hk_flush_ppp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
       /* TODO: Do less often? */
       hk_reserve_scratch(cmd, cs, fs);
 
-      agx_ppp_push_packed(&ppp, &linked_fs->fs_counts, FRAGMENT_SHADER_WORD_0);
-
       uint32_t pipeline = hk_upload_usc_words(cmd, fs, linked_fs);
-      agx_ppp_push(&ppp, FRAGMENT_SHADER_WORD_1, cfg) {
-         cfg.pipeline = g15 ? 0 : pipeline;
-      }
 
-      agx_ppp_push(&ppp, FRAGMENT_SHADER_WORD_2, cfg) {
-         cfg.cf_bindings = gfx->varyings;
+      if (g15) {
+         /* G15: word 0 bits 15:0 and word 1 hold the CF binding table's full
+          * VA (see agx_state.c) */
+         uint64_t cf = dev->dev.shader_base + gfx->varyings;
+         uint32_t w[3] = {
+            ((cf >> 32) & 0xffff) | (linked_fs->b.cf.nr_bindings << 16),
+            cf & ~3u,
+            gfx->varyings,
+         };
+         agx_ppp_validate(&ppp, sizeof(w));
+         memcpy(ppp.head, w, sizeof(w));
+         ppp.head += sizeof(w);
+      } else {
+         agx_ppp_push_packed(&ppp, &linked_fs->fs_counts,
+                             FRAGMENT_SHADER_WORD_0);
+
+         agx_ppp_push(&ppp, FRAGMENT_SHADER_WORD_1, cfg) {
+            cfg.pipeline = pipeline;
+         }
+
+         agx_ppp_push(&ppp, FRAGMENT_SHADER_WORD_2, cfg) {
+            cfg.cf_bindings = gfx->varyings;
+         }
       }
 
       /* G15: the entry program's VA follows word 2 */
