@@ -1206,8 +1206,9 @@ agx_fixup_branch(struct util_dynarray *emission, struct agx_branch_fixup fix)
 void
 agx_pack_binary(agx_context *ctx, struct util_dynarray *emission)
 {
-   struct util_dynarray fixups;
+   struct util_dynarray fixups, fixups3;
    util_dynarray_init(&fixups, ctx);
+   util_dynarray_init(&fixups3, ctx);
 
    agx_foreach_block(ctx, block) {
       /* Relative to the start of the binary, the block begins at the current
@@ -1218,7 +1219,7 @@ agx_pack_binary(agx_context *ctx, struct util_dynarray *emission)
          block->last_offset = emission->size;
 
          if (ctx->key->dev.gpu_generation >= 15)
-            agx3_pack_instr(emission, ins);
+            agx3_pack_instr(emission, &fixups3, ins);
          else
             agx_pack_instr(emission, &fixups, ins,
                            ctx->key->dev.needs_g13x_coherency);
@@ -1228,7 +1229,10 @@ agx_pack_binary(agx_context *ctx, struct util_dynarray *emission)
    util_dynarray_foreach(&fixups, struct agx_branch_fixup, fixup)
       agx_fixup_branch(emission, *fixup);
 
+   agx3_fixup_branches(emission, &fixups3);
+
    util_dynarray_fini(&fixups);
+   util_dynarray_fini(&fixups3);
 
    /* Dougall calls the instruction in this footer "trap". Match the blob. */
    if (ctx->key->dev.gpu_generation < 15 &&
