@@ -1565,3 +1565,9 @@ e72654080a080712daff020c tile_store i16, xy, r4l_r4h, ^r10, ^r3h, 16, -3, 5, wai
 d71454000003         zs_emit  ^cr0, 0, z, wait 0
 d70454022007         zs_emit  ^cr1, 1, zs
 d70454040000         zs_emit  cr2, 0, s
+6701540000048182000000008003 device_atomic r2, dr4, r5, add, lsl 3, 0, 0
+6701540000048182000600008003 device_atomic 3, st0, r2, dr4, r5, add, lsl 3, 0, 0
+6701540300834101000200000400 device_atomic 1, st3, r3, du6, 5, cmpxchg, lsl 4, 0, 0
+670154f401820085006c00008205 device_atomic 6, st500, ^r1, ^dr2, u10, and, lsl 3, 0, 0
+0c800843             get_stack 2, 2, r0, ^st0
+0c80094300800000     get_stack 2, 2, r0, ^st0, wait 2
