@@ -1471,7 +1471,7 @@ agx_compile_nir(struct agx_device *dev, nir_shader *nir,
    } else if (!secondary) {
       NIR_PASS(_, nir, agx_nir_lower_sysvals, stage, true);
       NIR_PASS(_, nir, agx_nir_layout_uniforms, compiled,
-               &key.reserved_preamble);
+               &key.reserved_preamble, dev->params.gpu_generation >= 15);
    }
 
    if (nir->info.stage == MESA_SHADER_FRAGMENT) {
