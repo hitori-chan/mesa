@@ -210,6 +210,7 @@ agx_fast_link(struct agx_linked_shader *linked, struct agx_device *dev,
 
    assert(offset == size);
    util_dynarray_fini(&trailer);
+   linked->main_size = size;
 
    agx_pack(&linked->shader, USC_SHADER, cfg) {
       cfg.code = agx_usc_addr(dev, linked->bo->va->addr);
