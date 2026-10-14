@@ -674,6 +674,7 @@ hk_upload_esl(struct hk_cmd_buffer *cmd, struct hk_shader *s,
       .cpu = s->b.binary,
       .size = s->b.info.binary_size,
       .main_size = s->b.info.main_size,
+      .stack_size = s->b.info.stack_size,
    };
 
    struct util_dynarray esl;
