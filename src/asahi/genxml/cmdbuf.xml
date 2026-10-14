@@ -280,6 +280,46 @@
     <field name="Buffer offset (sw)" size="32" start="128" type="uint"/>
   </struct>
 
+  <!--
+   G15's PBE descriptor, from Apple's PBEStateEncoderGen9<kAGXRevG15> (the
+   Metal driver builds a 32-byte one per render target; the fourth word is
+   only read for multisampled and compressed images). Word 0 is G13's. The
+   address takes 44 bits of VA >> 4 (G13's 36 bits and level are two
+   fields), the linear stride is a count of 16-byte units, and the mip
+   levels move to the extended word. Verified against noopwafel's demo15
+   descriptor (linear 2D RGBA8, whose "level 1" is address bit 40) on the
+   hardware; the rest is from the encoder only.
+  -->
+  <struct name="PBE G15" size="24">
+    <field name="Dimension" size="4" start="0" type="Texture dimension"/>
+    <field name="Layout" size="2" start="4" type="Layout"/>
+    <field name="Channels" size="7" start="6" type="Channels"/>
+    <field name="Type" size="3" start="13" type="Texture Type"/>
+    <field name="Swizzle R" size="2" start="16" type="Channel"/>
+    <field name="Swizzle G" size="2" start="18" type="Channel"/>
+    <field name="Swizzle B" size="2" start="20" type="Channel"/>
+    <field name="Swizzle A" size="2" start="22" type="Channel"/>
+    <field name="Width" size="14" start="24" type="uint" modifier="minus(1)"/>
+    <field name="Height" size="14" start="38" type="uint" modifier="minus(1)"/>
+    <field name="Samples" size="1" start="56" type="Sample Count"/>
+    <field name="Mipmapped" size="1" start="58" type="bool"/>
+    <field name="Compressed" size="1" start="59" type="bool"/>
+    <field name="Mode" size="2" start="60" type="Image Mode"/>
+    <field name="Buffer" size="44" start="64" type="address" modifier="shr(4)"/>
+
+    <!-- Linear: the row stride in 16-byte units, minus 1 -->
+    <field name="Stride" size="16" start="108" type="uint"/>
+
+    <!-- Twiddled: the layers, minus 1 -->
+    <field name="Layers" size="16" start="108" type="uint" modifier="minus(1)"/>
+    <field name="Page-aligned layers" size="1" start="124" type="bool"/>
+
+    <!-- Read the next word (set with several mip levels) -->
+    <field name="Extended" size="1" start="127" type="bool"/>
+    <field name="Level" size="4" start="172" type="uint"/>
+    <field name="Levels" size="4" start="176" type="uint" modifier="minus(1)"/>
+  </struct>
+
   <struct name="Texture" size="24">
     <field name="Dimension" size="4" start="0" type="Texture dimension"/>
     <field name="Layout" size="2" start="4" type="Layout"/>
