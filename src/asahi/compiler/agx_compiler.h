@@ -1046,6 +1046,7 @@ void agx3_pack_instr(struct util_dynarray *emission,
                      struct util_dynarray *fixups, const agx_instr *I);
 void agx3_fixup_branches(struct util_dynarray *emission,
                          struct util_dynarray *fixups);
+unsigned agx3_stack_size(const agx_instr *I);
 
 #ifndef NDEBUG
 void agx_validate(agx_context *ctx, const char *after_str);

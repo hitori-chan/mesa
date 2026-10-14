@@ -1218,9 +1218,11 @@ agx_pack_binary(agx_context *ctx, struct util_dynarray *emission)
       agx_foreach_instr_in_block(block, ins) {
          block->last_offset = emission->size;
 
-         if (ctx->key->dev.gpu_generation >= 15)
+         if (ctx->key->dev.gpu_generation >= 15) {
             agx3_pack_instr(emission, &fixups3, ins);
-         else
+            ctx->out->stack_size =
+               MAX2(ctx->out->stack_size, agx3_stack_size(ins));
+         } else
             agx_pack_instr(emission, &fixups, ins,
                            ctx->key->dev.needs_g13x_coherency);
       }
