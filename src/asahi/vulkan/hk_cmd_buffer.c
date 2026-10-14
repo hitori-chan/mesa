@@ -802,6 +802,15 @@ hk_dispatch_precomp(struct hk_cmd_buffer *cmd, struct agx_grid grid,
                     void *data, size_t data_size)
 {
    struct hk_device *dev = hk_cmd_buffer_device(cmd);
+
+   /* libagx's kernels are G13 code with G13 USC words: no G15 entry program
+    * runs them. Launching the words as one makes the GPU fault. */
+   if (dev->dev.params.gpu_generation >= 15) {
+      fprintf(stderr, "G15: libagx kernel %u is not built for G15, skipped\n",
+              idx);
+      return;
+   }
+
    struct agx_precompiled_shader *prog = agx_get_precompiled(&dev->bg_eot, idx);
 
    struct hk_cs **target = (barrier & AGX_POSTGFX)  ? &cmd->current_cs.post_gfx
