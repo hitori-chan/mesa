@@ -1001,11 +1001,15 @@ a3_shuffle(enum agx_opcode op)
    }
 }
 
-/* Control flow. G15 has no nesting counter in r0l: the exec stack
- * instructions (if, else, while, break; push_exec, pop_exec) take a
- * condition code cc0-cc5 that a cmp sets (TODO: not verified on hardware).
- * The IR's compare-and-branch instructions are a cmp to CF_CC and the
- * instruction on it. */
+/* Control flow. G15 keeps the exec mask stack in hardware, not in r0l
+ * (boot #145: r0l = 1 + pop_exec 0 masks nothing). The stack instructions
+ * (if, else, while, break; push_exec = if cc_always, pop_exec) take a
+ * condition code cc0-cc5 that a cmp sets, and otherwise behave as G13's:
+ * if, else cc_always, nested ifs, pop_exec 2, while and break (also from
+ * inside an if) all match G13's model on the hardware (#145). else cc
+ * re-enables only the threads whose cc is true. Jumps count from the jump
+ * instruction's start. The IR's compare-and-branch instructions are a cmp
+ * to CF_CC and the instruction on it. */
 #define CF_CC          0
 #define CC_ALWAYS      6
 #define CMP_CC         0
@@ -1114,7 +1118,7 @@ a3_jmp(struct a3 *a, const agx_instr *I, enum agx3_instr instr,
 }
 
 /* The branch operand: bit 0 clear (relative), the offset in halfwords from
- * the jump instruction in bits 1:47; at instruction bits 24:71 */
+ * the jump instruction's start in bits 1:47; at instruction bits 24:71 */
 void
 agx3_fixup_branches(struct util_dynarray *emission,
                     struct util_dynarray *fixups)
