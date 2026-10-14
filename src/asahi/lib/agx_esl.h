@@ -26,6 +26,10 @@ struct agx_esl_code {
    uint32_t size;
    uint32_t main_size;
    uint32_t stack_size;
+
+   /* A fragment program's pixel fences: it waits on these and signals them at
+    * its end; its entry program releases the others */
+   uint16_t pix_wait_mask;
 };
 
 /* The program the entry program runs: each stage ends its entry program in
