@@ -94,6 +94,9 @@ agx_bo_free(struct agx_device *dev, struct agx_bo *bo)
     */
    agx_va_free(dev, bo->va, false);
 
+   /* The alias in the image heap is reused by the next BO, so unbind it */
+   agx_va_free(dev, bo->image_va, true);
+
    if (bo->prime_fd != -1)
       close(bo->prime_fd);
 
