@@ -194,7 +194,7 @@ hk_pool_alloc_internal(struct hk_cmd_buffer *cmd, uint32_t size,
    if (size > HK_CMD_BO_SIZE) {
       uint32_t flags = usc ? AGX_BO_LOW_VA : 0;
       struct agx_bo *bo =
-         agx_bo_create(&dev->dev, size, flags, 0, "Large pool allocation");
+         agx_bo_create(&dev->dev, size, 0, flags, "Large pool allocation");
 
       util_dynarray_append(&cmd->large_bos, bo);
       return (struct agx_ptr){
@@ -680,8 +680,16 @@ hk_upload_esl(struct hk_cmd_buffer *cmd, struct hk_shader *s,
    struct util_dynarray esl;
    util_dynarray_init(&esl, NULL);
 
+   /* The hardware stage: geometry and tessellation run as compute kernels
+    * and a hardware vertex shader (TODO: their kernels' entry programs) */
+   enum agx_esl_stage stage = s->info.stage == MESA_SHADER_FRAGMENT
+                                 ? AGX_ESL_FRAGMENT
+                              : mesa_shader_stage_is_compute(s->info.stage)
+                                 ? AGX_ESL_COMPUTE
+                                 : AGX_ESL_VERTEX;
+
    uint32_t addr = 0;
-   if (agx_esl_from_usc(&esl, usc, dev->dev.shader_base, &code)) {
+   if (agx_esl_from_usc(&esl, usc, dev->dev.shader_base, &code, stage)) {
       struct agx_ptr t = hk_pool_usc_alloc(cmd, esl.size, 64);
       if (t.cpu) {
          memcpy(t.cpu, esl.data, esl.size);
@@ -851,7 +859,8 @@ hk_cs_init_graphics(struct hk_cmd_buffer *cmd, struct hk_cs *cs)
    if (!T.cpu)
       return;
 
-   struct agx_ppp_update ppp = agx_new_ppp_update(T, size, &present);
+   struct agx_ppp_update ppp = agx_new_ppp_update(
+      agx_vdm_ptr(&hk_cmd_buffer_device(cmd)->dev, T), size, &present);
 
    /* clang-format off */
    agx_ppp_push(&ppp, W_CLAMP, cfg) cfg.w_clamp = 1e-10;
@@ -900,7 +909,9 @@ hk_ensure_cs_has_space(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
    struct agx_ptr T = hk_pool_alloc(cmd, size, 256);
 
    /* Jump from the old control stream to the new control stream */
-   agx_cs_jump(cs->current, T.gpu, vdm);
+   agx_cs_jump(cs->current,
+               vdm ? agx_vdm_va(&hk_cmd_buffer_device(cmd)->dev, T.gpu) : T.gpu,
+               vdm);
 
    /* Swap out the control stream */
    cs->current = T.cpu;

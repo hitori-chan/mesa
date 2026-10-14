@@ -28,8 +28,19 @@ struct agx_esl_code {
    uint32_t stack_size;
 };
 
+/* The program the entry program runs: each stage ends its entry program in
+ * its own way (noopwafel's demo15 for the render stages) */
+enum agx_esl_stage {
+   AGX_ESL_COMPUTE,
+   AGX_ESL_VERTEX,
+   AGX_ESL_FRAGMENT,
+   AGX_ESL_BACKGROUND,
+   AGX_ESL_END_OF_TILE,
+};
+
 /* Append the entry program for the USC words at usc (code offsets are
  * relative to shader_base) to out. Returns false for a word G15 does not
  * support yet. */
 bool agx_esl_from_usc(struct util_dynarray *out, const uint8_t *usc,
-                      uint64_t shader_base, const struct agx_esl_code *code);
+                      uint64_t shader_base, const struct agx_esl_code *code,
+                      enum agx_esl_stage stage);
