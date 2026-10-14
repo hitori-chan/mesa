@@ -279,6 +279,13 @@ struct agx_fs_shader_key {
 
    /* Base coefficient register. 0 for API shaders but nonzero for FS prolog */
    uint8_t cf_base;
+
+   /* The tilebuffer's sample count, or 0 if the shader does not know it (a
+    * main fragment shader is compiled before the render pass is). G15 takes
+    * the sample mask of a tile access literally: all samples is
+    * (1 << nr_samples) - 1, not G13's 0xFF.
+    */
+   uint8_t nr_samples;
 };
 
 struct agx_device_key {
