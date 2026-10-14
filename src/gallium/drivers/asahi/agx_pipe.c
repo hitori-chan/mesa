@@ -1220,9 +1220,9 @@ build_timestamp_offset(struct agx_batch *batch, unsigned offset)
 
 static void
 agx_cmdbuf(struct agx_device *dev, struct drm_asahi_cmd_render *c,
-           struct agx_pool *pool, struct agx_batch *batch,
-           struct pipe_framebuffer_state *framebuffer, uint64_t encoder_ptr,
-           uint64_t scissor_ptr, uint64_t depth_bias_ptr,
+           struct drm_asahi_cmd_render_g15 *g15, struct agx_pool *pool,
+           struct agx_batch *batch, struct pipe_framebuffer_state *framebuffer,
+           uint64_t encoder_ptr, uint64_t scissor_ptr, uint64_t depth_bias_ptr,
            uint64_t visibility_result_ptr, struct asahi_bg_eot pipeline_clear,
            struct asahi_bg_eot pipeline_load,
            struct asahi_bg_eot pipeline_store, bool clear_pipeline_textures,
@@ -1375,6 +1375,22 @@ agx_cmdbuf(struct agx_device *dev, struct drm_asahi_cmd_render *c,
    c->eot.usc = pipeline_store.usc | 4;
    c->partial_bg.usc = pipeline_load.usc | 4;
    c->partial_eot.usc = pipeline_store.usc | 4;
+
+   /* G15 takes each program as the binding word and the entry program's VA,
+    * and ignores the fields above. The binding words are demo15's (the
+    * background's 0xFFFF800000000040, the end of tile's 0); their meaning is
+    * not traced.
+    */
+   if (g15) {
+      const uint64_t bg_binding = 0xFFFF800000000040ull;
+
+      *g15 = (struct drm_asahi_cmd_render_g15){
+         .bg = {bg_binding, pipeline_clear.usc},
+         .eot = {0, pipeline_store.usc},
+         .partial_bg = {bg_binding, pipeline_load.usc},
+         .partial_eot = {0, pipeline_store.usc},
+      };
+   }
 
    agx_tilebuffer_set_drm_cmd(c, tib);
 
@@ -1546,7 +1562,8 @@ agx_flush_compute(struct agx_context *ctx, struct agx_batch *batch,
 
 static void
 agx_flush_render(struct agx_context *ctx, struct agx_batch *batch,
-                 struct drm_asahi_cmd_render *cmdbuf)
+                 struct drm_asahi_cmd_render *cmdbuf,
+                 struct drm_asahi_cmd_render_g15 *cmdbuf_g15)
 {
    struct agx_device *dev = agx_device(ctx->base.screen);
 
@@ -1564,8 +1581,12 @@ agx_flush_render(struct agx_context *ctx, struct agx_batch *batch,
    struct asahi_bg_eot pipeline_background =
       agx_build_bg_eot(batch, false, false);
 
+   /* G15's kernel has no partial renders yet and its compiler no texture
+    * loads: the partial programs (which load the tilebuffer back from memory)
+    * stay unbuilt
+    */
    struct asahi_bg_eot pipeline_background_partial =
-      agx_build_bg_eot(batch, false, true);
+      cmdbuf_g15 ? pipeline_background : agx_build_bg_eot(batch, false, true);
 
    struct asahi_bg_eot pipeline_store = agx_build_bg_eot(batch, true, false);
 
@@ -1596,11 +1617,12 @@ agx_flush_render(struct agx_context *ctx, struct agx_batch *batch,
     */
    agx_batch_add_bo(batch, batch->vdm.bo);
 
-   agx_cmdbuf(
-      dev, cmdbuf, &batch->pool, batch, &batch->key, batch->vdm.bo->va->addr,
-      scissor, zbias, agx_get_occlusion_heap(batch), pipeline_background,
-      pipeline_background_partial, pipeline_store, clear_pipeline_textures,
-      batch->clear_depth, batch->clear_stencil, &batch->tilebuffer_layout);
+   agx_cmdbuf(dev, cmdbuf, cmdbuf_g15, &batch->pool, batch, &batch->key,
+              batch->vdm.bo->va->addr, scissor, zbias,
+              agx_get_occlusion_heap(batch), pipeline_background,
+              pipeline_background_partial, pipeline_store,
+              clear_pipeline_textures, batch->clear_depth, batch->clear_stencil,
+              &batch->tilebuffer_layout);
 }
 
 void
@@ -1610,8 +1632,10 @@ agx_flush_batch(struct agx_context *ctx, struct agx_batch *batch)
    assert(!agx_batch_is_submitted(batch));
 
    struct drm_asahi_cmd_render render;
+   struct drm_asahi_cmd_render_g15 render_g15;
    struct drm_asahi_cmd_compute compute;
    bool has_vdm = false, has_cdm = false;
+   bool g15 = agx_device(ctx->base.screen)->params.gpu_generation >= 15;
 
    if (batch->cdm.bo) {
       agx_flush_compute(ctx, batch, &compute);
@@ -1619,7 +1643,7 @@ agx_flush_batch(struct agx_context *ctx, struct agx_batch *batch)
    }
 
    if (batch->vdm.bo && (batch->clear || batch->initialized)) {
-      agx_flush_render(ctx, batch, &render);
+      agx_flush_render(ctx, batch, &render, g15 ? &render_g15 : NULL);
       has_vdm = true;
    }
 
@@ -1629,7 +1653,8 @@ agx_flush_batch(struct agx_context *ctx, struct agx_batch *batch)
    }
 
    agx_batch_submit(ctx, batch, has_cdm ? &compute : NULL,
-                    has_vdm ? &render : NULL);
+                    has_vdm ? &render : NULL,
+                    has_vdm && g15 ? &render_g15 : NULL);
 }
 
 static void
