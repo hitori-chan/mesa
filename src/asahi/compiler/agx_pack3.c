@@ -23,6 +23,7 @@
 #include "agx_compiler.h"
 #include "agx3_pack.h"
 
+/* agx3_kind_names' order */
 enum a3_kind {
    A3_STACK,
    A3_CR,
@@ -30,6 +31,8 @@ enum a3_kind {
    A3_REG,
    A3_IMM,
    A3_FIMM,
+   A3_TS,
+   A3_CF,
 };
 
 enum a3_mod {
@@ -344,6 +347,35 @@ a3_imm(struct a3 *a, unsigned op, uint32_t value, bool fl)
    return v;
 }
 
+/* An operand of a kind without registers (a coordinate register, a
+ * coefficient register): value is the number the disassembler shows,
+ * mods the flags to set */
+static uint64_t
+a3_kind_value(struct a3 *a, unsigned op, enum a3_kind kind, uint32_t value,
+              uint32_t mods)
+{
+   const struct agx3_case *c = a3_case(a, op, kind, 0, mods, 0);
+   uint64_t modvals[AGX3_MAX_CASE_FIELDS] = {0};
+
+   if (!c)
+      a3_fail(a, "no case for an operand");
+
+   unsigned bits = 0;
+   for (unsigned f = 0; f < c->nkind; f++)
+      bits += c->f[f].size;
+   if (value >> bits)
+      a3_fail(a, "operand out of range");
+
+   for (unsigned f = c->nkind; f < c->nfields; f++)
+      modvals[f - c->nkind] = (mods >> c->mod[f]) & 1;
+
+   uint64_t v = a3_fix_carry(a, op, c, agx3_case_value(c, value, modvals, 0));
+   if (v == UINT64_MAX)
+      a3_fail(a, "no carry bits select the operand's case");
+
+   return v;
+}
+
 /* A source of an ALU instruction: a register, a uniform or an 8-bit
  * immediate. Float sources carry abs and neg; integer sources pick the
  * integer cases (which offer sx). */
@@ -486,6 +518,14 @@ a3_sr(const struct a3 *a, enum agx_sr sr)
    case AGX_SR_THREAD_POSITION_IN_GRID_Y:
    case AGX_SR_THREAD_POSITION_IN_GRID_Z:
       return 32 + (sr - AGX_SR_THREAD_POSITION_IN_GRID_X);
+   /* Apple's names (libLLVM's register table) PVQUAD and PVSIMD are the
+    * active thread indices above; TVQUAD and TVSIMD read as the totals */
+   case AGX_SR_TOTAL_ACTIVE_THREADS_IN_QUAD:
+      return 22;
+   case AGX_SR_TOTAL_ACTIVE_THREADS_IN_SUBGROUP:
+      return 23;
+   case AGX_SR_BACKFACING:
+      return 69;
    default:
       a3_fail(a, "special register not mapped");
    }
@@ -629,6 +669,14 @@ a3_memshift(const struct a3 *a, unsigned bytes)
 #define T_ATG       "670354010002000002000004"     /* threadgroup_atomic add */
 #define T_ADEV      "6701540000048182000000008003" /* device_atomic add */
 #define T_BARRIER   "070454610300"                 /* threadgroup_barrier */
+#define T_ST_VAR    "5706540000404800"             /* st_var ^cr0, 0, 0 */
+#define T_ST_TILE   "e70654000000012e00000000"     /* tile_store i32 */
+#define T_LD_TILE   "670654000000012e01000000"     /* tile_load 2, i32 */
+#define T_WAIT_PIX  "8702540c0800"                 /* wait_pix 12, f1 */
+#define T_SIG_PIX   "0702540c0000"                 /* signal_pix 12 */
+#define T_LDCF      "1f0354000002"                 /* ldcf 2, r0, 0 */
+#define T_ITER      "2f055400020000021000"         /* iter r0, cf0, center */
+#define T_ZS_EMIT   "d70454000003"                 /* zs_emit ^cr0, 0, z */
 
 /* Operand positions (AGX3.xml order) */
 enum {
@@ -685,6 +733,27 @@ enum {
    ADEV_SHIFT = 4,
    ADEV_OFFSET = 5,
    BARRIER_FLAGS = 0,
+   ST_VAR_CR = 0,
+   ST_VAR_SLOT = 1,
+   ST_VAR_G = 2,
+   ST_VAR_WAIT = 3,
+   ST_TILE_REG = 2,
+   LD_TILE_G = 0,
+   LD_TILE_REG = 3,
+   PIX_MASK = 0,
+   WAIT_PIX_F0 = 1,
+   WAIT_PIX_F1 = 2,
+   LDCF_G = 0,
+   LDCF_DST = 1,
+   LDCF_CF = 2,
+   ITER_DST = 0,
+   ITER_CF = 1,
+   ITER_MODE = 2,
+   ITER_PERSP = 3,
+   ZS_CR = 0,
+   ZS_G = 1,
+   ZS_MODE = 2,
+   ZS_WAIT = 3,
 };
 
 /* An ALU instruction: the destination, the sources in IR order at the
@@ -1153,6 +1222,241 @@ a3_uniform_store(struct a3 *a, const agx_instr *I,
    }
 }
 
+/*
+ * Fragment and vertex I/O, from libLLVM 32023's encoder. demo15 runs
+ * st_var from a cr, tile_store, wait_pix and signal_pix on the hardware;
+ * the rest is not verified there.
+ */
+
+/* A 16-bit source in the 11-bit form (src9): a 16-bit register, a uniform
+ * or an 8-bit immediate */
+static uint64_t
+a3_src9(struct a3 *a, unsigned op, agx_index idx)
+{
+   if (idx.type == AGX_INDEX_IMMEDIATE)
+      return a3_imm(a, op, idx.value, false);
+
+   idx.size = AGX_SIZE_16;
+   return a3_reg(a, op, idx, 0, 0, 0);
+}
+
+/* A register to coordinate register cr (as the disassembler numbers it),
+ * in group 0: the 4-byte mov reaches a cr below 64 in group 0 only and has
+ * one size bit for both operands; the 10-byte one takes a 16-bit value */
+static void
+a3_mov_cr(struct a3 *a, const agx_instr *I, unsigned cr, agx_index value,
+          struct util_dynarray *emission)
+{
+   if (value.type != AGX_INDEX_REGISTER)
+      a3_fail(a, "coordinate register value is not a register");
+
+   value.abs = value.neg = false;
+
+   for (unsigned len = 4;; len = 10) {
+      uint8_t out[AGX3_MAX_BYTES];
+
+      a3_begin(a, I, len == 4 ? AGX3_MOV : AGX3_MOV10,
+               len == 4 ? T_MOV : T_ZERO10);
+      a3_set(a, MOV_DST, a3_kind_value(a, MOV_DST, A3_CR, cr, 0));
+      a3_set(a, MOV_SRC,
+             a3_reg(a, MOV_SRC, value, 0, BITFIELD_BIT(A3_SX), 0));
+
+      if (len == 10 || a3_check(a, out))
+         break;
+   }
+
+   a3_emit(a, emission);
+}
+
+/* st_vary: G15 stores a varying from a coordinate register that an ALU
+ * instruction wrote in a group (uvsw; demo15's transform writes cr0-cr3
+ * in groups 0-3 and each st_var waits for its group). The value goes
+ * through cr (slot mod 8) in group 0; st_var waits for group 0 and frees
+ * the cr. The slot counts 32-bit words, as G13's. G15 has no last flag:
+ * the IR's is dropped. */
+static void
+a3_st_vary(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
+{
+   agx_index slot = I->src[0];
+   agx_index value = I->src[1];
+   unsigned cr = slot.type == AGX_INDEX_IMMEDIATE ? (slot.value & 7) : 0;
+
+   if (value.size != AGX_SIZE_32)
+      a3_fail(a, "st_vary of a value that is not 32-bit");
+
+   a3_mov_cr(a, I, cr, value, emission);
+
+   a3_begin(a, I, AGX3_ST_VAR, T_ST_VAR);
+   a3_set(a, ST_VAR_CR,
+          a3_kind_value(a, ST_VAR_CR, A3_CR, cr, BITFIELD_BIT(A3_LU)));
+   a3_set(a, ST_VAR_SLOT, a3_src9(a, ST_VAR_SLOT, slot));
+   a3_set(a, ST_VAR_G, 0);
+   a3_set(a, ST_VAR_WAIT, BITFIELD_BIT(0));
+   a3_emit(a, emission);
+}
+
+/* The tile formats G15 can move: its tile instructions have no format
+ * (demo15 converts with fltnorm before tile_store) and pack 8-bit data
+ * two per 16-bit register, where G13 has one per register */
+static unsigned
+a3_tile_type(const struct a3 *a, const agx_instr *I)
+{
+   switch (I->format) {
+   case AGX_FORMAT_I8:
+      if (util_bitcount(I->mask) > 1)
+         a3_fail(a, "8-bit tile vector (G15 packs the bytes)");
+      return 2;
+   case AGX_FORMAT_I16:
+   case AGX_FORMAT_F16:
+      return 0;
+   case AGX_FORMAT_I32:
+      return 1;
+   default:
+      a3_fail(a, "tile format conversion (G15's tile data is raw)");
+   }
+}
+
+/* ld_tile/st_tile (lldcol/lstcol): the sample mask and the pixel offset go
+ * to the two 16-bit sources demo15 sets to 1 and 0 (the mapping and the
+ * offset's unit are guesses); the load is synchronous in the IR. */
+static void
+a3_tile(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
+{
+   bool load = I->op == AGX_OPCODE_LD_TILE;
+   agx_index reg = load ? I->dest[0] : I->src[0];
+   agx_index samples = I->src[load ? 0 : 1];
+   agx_index coords = I->src[load ? 1 : 2];
+   unsigned r = load ? LD_TILE_REG : ST_TILE_REG;
+   unsigned type = a3_tile_type(a, I);
+
+   a3_begin(a, I, load ? AGX3_TILE_LOAD : AGX3_TILE_STORE,
+            load ? T_LD_TILE : T_ST_TILE);
+   if (load)
+      a3_set(a, LD_TILE_G, A3_SYNC_G);
+   a3_set(a, r, a3_memreg(a, r, reg, type, a3_mem_mask[I->mask]));
+   a3_set(a, r + 1,
+          I->explicit_coords ? a3_reg(a, r + 1, coords, 0, 0, 0) : 0);
+   a3_set(a, r + 2, a3_src9(a, r + 2, samples));
+   a3_set(a, r + 3, a3_imm(a, r + 3, I->pixel_offset, false));
+   a3_emit(a, emission);
+
+   if (load)
+      a3_wait(a, I, A3_SYNC_G, emission);
+}
+
+/* wait_pix/signal_pix (pixwait/pixrel), G13's masks. G13 releases at the
+ * end of the shader; demo15's fragment shader signals what it waited for
+ * (0x20C) and its entry program the rest (0x2F3): G15's compiler must
+ * emit the signal. The wait flags follow demo15 (f0 with 0x200, f1 with
+ * 0xC); what they mean is not known. */
+static void
+a3_pix(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
+{
+   bool wait = I->op == AGX_OPCODE_WAIT_PIX;
+   unsigned mask = I->writeout;
+
+   if (mask >> 10)
+      a3_fail(a, "pixel mask out of range");
+
+   a3_begin(a, I, wait ? AGX3_WAIT_PIX : AGX3_SIGNAL_PIX,
+            wait ? T_WAIT_PIX : T_SIG_PIX);
+   a3_set(a, PIX_MASK, mask);
+   if (wait) {
+      a3_set(a, WAIT_PIX_F0, !!(mask & 0x200));
+      a3_set(a, WAIT_PIX_F1, !!(mask & 0xc));
+   }
+   a3_emit(a, emission);
+}
+
+/* ldcf (ldcfr): a coefficient register's A, B and C, as G13's ldcf of one
+ * channel, in a load group the IR's synchronous ldcf waits for */
+static void
+a3_ldcf(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
+{
+   if (I->channels != 1)
+      a3_fail(a, "ldcf of more than one channel");
+
+   a3_begin(a, I, AGX3_LDCF, T_LDCF);
+   a3_set(a, LDCF_G, A3_SYNC_G);
+   a3_set(a, LDCF_DST, a3_reg(a, LDCF_DST, I->dest[0], 0, 0, 0));
+   a3_set(a, LDCF_CF, a3_src9(a, LDCF_CF, I->src[0]));
+   a3_emit(a, emission);
+
+   a3_wait(a, I, A3_SYNC_G, emission);
+}
+
+/* iter/iterproj (f32interp): one instruction per channel, coefficient
+ * registers cf, cf + 1, ...; synchronous. iterproj sets persp, Apple's
+ * projected interpolation (a guess), which takes no W coefficient
+ * register: the IR's is dropped. Centroid and a dynamic sample need
+ * itrcoords into a register first. */
+static void
+a3_iter(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
+{
+   bool proj = I->op == AGX_OPCODE_ITERPROJ;
+   agx_index cf = I->src[0];
+   agx_index sample = I->src[proj ? 2 : 1];
+   agx_index dest = I->dest[0];
+   unsigned mode = 0;
+
+   if (cf.type != AGX_INDEX_IMMEDIATE)
+      a3_fail(a, "iter with a coefficient register in a GPR");
+
+   switch (I->interpolation) {
+   case AGX_INTERPOLATION_CENTER:
+      break;
+   case AGX_INTERPOLATION_SAMPLE:
+      if (sample.type != AGX_INDEX_IMMEDIATE || sample.value > 3)
+         a3_fail(a, "iter at a dynamic sample (G15: itrcoords)");
+      mode = 4 | sample.value;
+      break;
+   default:
+      a3_fail(a, "iter at the centroid (G15: itrcoords)");
+   }
+
+   for (unsigned i = 0; i < I->channels; i++) {
+      agx_index d = dest;
+      d.value += i * (dest.size == AGX_SIZE_32 ? 2 : 1);
+
+      a3_begin(a, I, AGX3_ITER, T_ITER);
+      a3_set(a, ITER_DST, a3_reg(a, ITER_DST, d, 0, 0, 0));
+      a3_set(a, ITER_CF, a3_kind_value(a, ITER_CF, A3_CF, cf.value + i, 0));
+      a3_set(a, ITER_MODE, mode);
+      a3_set(a, ITER_PERSP, proj);
+      a3_emit(a, emission);
+   }
+}
+
+/* zs_emit (depthf): from cr0 (and cr1), written in group 0. G15's has no
+ * sample mask: only all samples. The cr layout is a guess: depth in cr0,
+ * with depth the stencil in cr1 (the IR widens it to 32 bits), else the
+ * 16-bit stencil in cr0's low half. */
+static void
+a3_zs_emit(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
+{
+   static const uint8_t mode[] = {[1] = 1, [2] = 0, [3] = 3};
+   agx_index samples = I->src[0];
+   agx_index zs = I->src[1];
+
+   if (I->zs < 1 || I->zs > 3)
+      a3_fail(a, "zs_emit of nothing");
+   if (samples.type != AGX_INDEX_IMMEDIATE || samples.value != 0xff)
+      a3_fail(a, "zs_emit with a sample mask (G15 has none)");
+
+   a3_mov_cr(a, I, 0, zs, emission);
+   if (I->zs == 3) {
+      agx_index s = zs;
+      s.value += 2;
+      a3_mov_cr(a, I, 1, s, emission);
+   }
+
+   a3_begin(a, I, AGX3_ZS_EMIT, T_ZS_EMIT);
+   a3_set(a, ZS_CR, a3_kind_value(a, ZS_CR, A3_CR, 0, BITFIELD_BIT(A3_LU)));
+   a3_set(a, ZS_G, 0);
+   a3_set(a, ZS_MODE, mode[I->zs]);
+   a3_set(a, ZS_WAIT, BITFIELD_BIT(0));
+   a3_emit(a, emission);
+}
 
 /* icmp_ballot/fcmp_ballot (and the quad forms): cc, dest, t/v, A, B. The
  * inverted conditions are the condition + 8. G15 has no NaN-aware ballot
@@ -1351,6 +1655,8 @@ agx3_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
    static bool once;
    if (!once) {
       once = true;
+      assert(!strcmp(agx3_kind_names[A3_CR], "cr"));
+      assert(!strcmp(agx3_kind_names[A3_CF], "cf"));
       a3_survey_on = debug_get_bool_option("AGX3_SURVEY", false);
       a3_debug = debug_get_bool_option("AGX3_DEBUG", false);
       if (a3_survey_on)
@@ -1589,9 +1895,50 @@ agx3_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
       a3_emit(&a, emission);
       return;
 
+   case AGX_OPCODE_ST_VARY:
+      a3_st_vary(&a, I, emission);
+      return;
+
+   case AGX_OPCODE_NO_VARYINGS:
+      /* G15's st_var has no last flag to replace (not verified) */
+      return;
+
+   case AGX_OPCODE_LD_TILE:
+   case AGX_OPCODE_ST_TILE:
+      a3_tile(&a, I, emission);
+      return;
+
+   case AGX_OPCODE_WAIT_PIX:
+   case AGX_OPCODE_SIGNAL_PIX:
+      a3_pix(&a, I, emission);
+      return;
+
+   case AGX_OPCODE_LDCF:
+      a3_ldcf(&a, I, emission);
+      return;
+
+   case AGX_OPCODE_ITER:
+   case AGX_OPCODE_ITERPROJ:
+      a3_iter(&a, I, emission);
+      return;
+
+   case AGX_OPCODE_ZS_EMIT:
+      a3_zs_emit(&a, I, emission);
+      return;
+
+   case AGX_OPCODE_SAMPLE_MASK:
+      a3_fail(&a, "sample_mask (G15's cmsk operands are not known)");
+
+   case AGX_OPCODE_BLOCK_IMAGE_STORE:
+      a3_fail(&a, "block_image_store (G15's imgwblk takes a PBE address)");
+
    case AGX_OPCODE_STOP:
       a3_begin(&a, I, AGX3_STOP, T_STOP);
       a3_emit(&a, emission);
+      return;
+
+   case AGX_OPCODE_EXPORT:
+      /* A zero-byte pseudo-op, as on G13 */
       return;
 
    default:
