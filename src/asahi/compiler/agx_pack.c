@@ -1216,8 +1216,12 @@ agx_pack_binary(agx_context *ctx, struct util_dynarray *emission)
 
       agx_foreach_instr_in_block(block, ins) {
          block->last_offset = emission->size;
-         agx_pack_instr(emission, &fixups, ins,
-                        ctx->key->dev.needs_g13x_coherency);
+
+         if (ctx->key->dev.gpu_generation >= 15)
+            agx3_pack_instr(emission, ins);
+         else
+            agx_pack_instr(emission, &fixups, ins,
+                           ctx->key->dev.needs_g13x_coherency);
       }
    }
 
@@ -1227,7 +1231,8 @@ agx_pack_binary(agx_context *ctx, struct util_dynarray *emission)
    util_dynarray_fini(&fixups);
 
    /* Dougall calls the instruction in this footer "trap". Match the blob. */
-   if (!ctx->key->no_stop || ctx->is_preamble) {
+   if (ctx->key->dev.gpu_generation < 15 &&
+       (!ctx->key->no_stop || ctx->is_preamble)) {
       for (unsigned i = 0; i < 8; ++i) {
          uint16_t trap = agx_opcodes_info[AGX_OPCODE_TRAP].encoding.exact;
          util_dynarray_append(emission, trap);
