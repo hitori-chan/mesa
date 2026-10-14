@@ -467,6 +467,11 @@ agx_select_best_modifier(const struct agx_resource *pres)
       return DRM_FORMAT_MOD_LINEAR;
    }
 
+   /* Debug: the layout the G15 hardware has run (ASAHI_MESA_DEBUG=linear) */
+   if (agx_linear_allowed(pres) &&
+       (agx_device(pres->base.screen)->debug & AGX_DBG_LINEAR))
+      return DRM_FORMAT_MOD_LINEAR;
+
    if (agx_twiddled_allowed(pres)) {
       if (agx_compression_allowed(pres))
          return DRM_FORMAT_MOD_APPLE_GPU_TILED_COMPRESSED;
