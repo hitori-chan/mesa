@@ -544,6 +544,13 @@ a3_sr(const struct a3 *a, enum agx_sr sr)
       return 23;
    case AGX_SR_BACKFACING:
       return 69;
+   /* demo15's vertex shader reads sr93 (VERTEXID in libLLVM's register
+    * table) for its vertex; the instance ID is sr88 (INSTID, not verified
+    * on the hardware). Whether sr93 includes the base vertex is not known. */
+   case AGX_SR_VERTEX_ID:
+      return 93;
+   case AGX_SR_INSTANCE_ID:
+      return 88;
    default:
       a3_fail(a, "special register not mapped");
    }

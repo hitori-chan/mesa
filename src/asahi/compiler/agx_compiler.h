@@ -534,6 +534,11 @@ typedef struct {
     */
    agx_index preloaded[AGX_NUM_REGS];
 
+   /* G15: the vertex and instance IDs read from their special registers, or
+    * NULL
+    */
+   agx_index vertex_id_sr, instance_id_sr;
+
    /* Beginning of our stack allocation used for spilling, below that is
     * NIR-level scratch.
     */

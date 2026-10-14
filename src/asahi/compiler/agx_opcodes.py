@@ -145,6 +145,11 @@ SR = enum("sr", {
    144: 'helper_op',
    146: 'helper_arg_l',
    147: 'helper_arg_h',
+
+   # G15 only (the numbers are not hardware encodings): its vertex and
+   # instance IDs are special registers, where G13 preloads r5 and r6
+   256: 'vertex_id',
+   257: 'instance_id',
 })
 
 ATOMIC_OPC = enum("atomic_opc", {
