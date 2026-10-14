@@ -81,6 +81,14 @@ agx_lower_uniform_sources(agx_context *ctx)
       agx_builder b = agx_init_builder(ctx, agx_before_instr(I));
 
       agx_foreach_src(I, s) {
+         /* G15's block write takes its descriptor's address in a uniform
+          * pair (its 7-bit field reaches the low half only) */
+         if (I->op == AGX_OPCODE_BLOCK_IMAGE_STORE && s == 0 &&
+             ctx->key->dev.gpu_generation >= 15 &&
+             I->src[s].type == AGX_INDEX_UNIFORM &&
+             I->src[s].size == AGX_SIZE_64 && I->src[s].value < 256)
+            continue;
+
          if (I->src[s].type == AGX_INDEX_UNIFORM &&
              !agx_instr_accepts_uniform(I->op, s, I->src[s].value,
                                         I->src[s].size)) {
