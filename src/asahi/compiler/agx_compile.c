@@ -107,15 +107,49 @@ agx_vertex_id_zero_base(agx_builder *b)
                              AGX_SIZE_32);
 }
 
+/* G15 programs read a value the hardware gives them in a special register once,
+ * at the start of the shader */
+static agx_index
+agx_cached_sr(agx_context *ctx, agx_index *cache, enum agx_sr sr)
+{
+   if (agx_is_null(*cache)) {
+      agx_builder b =
+         agx_init_builder(ctx, agx_before_block(agx_start_block(ctx)));
+      *cache = agx_get_sr(&b, 32, sr);
+   }
+
+   return *cache;
+}
+
+/* The vertex and instance IDs: G13 preloads them (r5 and r6), G15's vertex
+ * shaders read special registers (as demo15's does). A software vertex shader
+ * (compute) keeps the preloaded ABI. */
+static bool
+agx_ids_in_sr(const agx_builder *b)
+{
+   return b->shader->key->dev.gpu_generation >= 15 &&
+          b->shader->stage == MESA_SHADER_VERTEX;
+}
+
 static agx_index
 agx_vertex_id(agx_builder *b)
 {
+   if (agx_ids_in_sr(b)) {
+      return agx_cached_sr(b->shader, &b->shader->vertex_id_sr,
+                           AGX_SR_VERTEX_ID);
+   }
+
    return agx_cached_preload(b->shader, AGX_ABI_VIN_VERTEX_ID, AGX_SIZE_32);
 }
 
 static agx_index
 agx_instance_id(agx_builder *b)
 {
+   if (agx_ids_in_sr(b)) {
+      return agx_cached_sr(b->shader, &b->shader->instance_id_sr,
+                           AGX_SR_INSTANCE_ID);
+   }
+
    return agx_cached_preload(b->shader, AGX_ABI_VIN_INSTANCE_ID, AGX_SIZE_32);
 }
 
