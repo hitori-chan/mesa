@@ -200,6 +200,18 @@ agx_compact_kernel_info(struct agx_shader_info *info)
    };
 }
 
+/* G15 (AGX3) building blocks for the entry program, from the compiler's
+ * G15 packer (agx_pack3.c). Registers and uniforms are 32-bit indices. */
+struct util_dynarray;
+void agx3_emit_mov_imm(struct util_dynarray *out, unsigned reg, uint32_t imm);
+void agx3_emit_load(struct util_dynarray *out, unsigned slot, unsigned dst,
+                    unsigned base, unsigned index16, unsigned count);
+void agx3_emit_wait(struct util_dynarray *out, unsigned slot);
+void agx3_emit_uniform_store(struct util_dynarray *out, unsigned uniform,
+                             unsigned src);
+void agx3_emit_stop(struct util_dynarray *out);
+unsigned agx3_instr_length(const uint8_t *code);
+
 struct agx_shader_part {
    struct agx_shader_info info;
    void *binary;
