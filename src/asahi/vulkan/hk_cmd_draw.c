@@ -1822,7 +1822,7 @@ hk_flush_shaders(struct hk_cmd_buffer *cmd)
 static struct agx_shader_part *
 hk_get_prolog_epilog_locked(struct hk_device *dev, struct hk_internal_key *key,
                             hk_internal_builder_t builder, bool preprocess_nir,
-                            bool stop, unsigned cf_base)
+                            bool stop, unsigned cf_base, unsigned nr_samples)
 {
    /* Try to get the cached shader */
    struct hash_entry *ent = _mesa_hash_table_search(dev->prolog_epilog.ht, key);
@@ -1844,6 +1844,7 @@ hk_get_prolog_epilog_locked(struct hk_device *dev, struct hk_internal_key *key,
    /* We always use dynamic sample shading in the GL driver. Indicate that. */
    if (b.shader->info.stage == MESA_SHADER_FRAGMENT) {
       backend_key.fs.cf_base = cf_base;
+      backend_key.fs.nr_samples = nr_samples;
 
       if (b.shader->info.fs.uses_sample_shading)
          backend_key.fs.inside_sample_loop = true;
@@ -1870,7 +1871,7 @@ hk_get_prolog_epilog_locked(struct hk_device *dev, struct hk_internal_key *key,
 static struct agx_shader_part *
 hk_get_prolog_epilog(struct hk_device *dev, void *data, size_t data_size,
                      hk_internal_builder_t builder, bool preprocess_nir,
-                     bool stop, unsigned cf_base)
+                     bool stop, unsigned cf_base, unsigned nr_samples)
 {
    /* Build the meta shader key */
    size_t total_key_size = sizeof(struct hk_internal_key) + data_size;
@@ -1885,7 +1886,7 @@ hk_get_prolog_epilog(struct hk_device *dev, void *data, size_t data_size,
    simple_mtx_lock(&dev->prolog_epilog.lock);
 
    struct agx_shader_part *part = hk_get_prolog_epilog_locked(
-      dev, key, builder, preprocess_nir, stop, cf_base);
+      dev, key, builder, preprocess_nir, stop, cf_base, nr_samples);
 
    simple_mtx_unlock(&dev->prolog_epilog.lock);
    return part;
@@ -1897,7 +1898,7 @@ hk_get_fast_linked_locked_vs(struct hk_device *dev, struct hk_shader *shader,
 {
    struct agx_shader_part *prolog =
       hk_get_prolog_epilog(dev, &key->prolog, sizeof(key->prolog),
-                           agx_nir_vs_prolog, false, false, 0);
+                           agx_nir_vs_prolog, false, false, 0, 0);
 
    struct hk_linked_shader *linked =
       hk_fast_link(dev, false, shader, prolog, NULL, 0);
@@ -1949,7 +1950,7 @@ hk_get_fast_linked_locked_fs(struct hk_device *dev, struct hk_shader *shader,
    if (needs_prolog) {
       prolog = hk_get_prolog_epilog(dev, &key->prolog, sizeof(key->prolog),
                                     build_fs_prolog, false, false,
-                                    key->prolog.cf_base);
+                                    key->prolog.cf_base, 0);
    }
 
    /* If sample shading is used, don't stop at the epilog, there's a
@@ -1959,7 +1960,8 @@ hk_get_fast_linked_locked_fs(struct hk_device *dev, struct hk_shader *shader,
 
    struct agx_shader_part *epilog =
       hk_get_prolog_epilog(dev, &key->epilog, sizeof(key->epilog),
-                           agx_nir_fs_epilog, true, epilog_stop, 0);
+                           agx_nir_fs_epilog, true, epilog_stop, 0,
+                           key->epilog.nr_samples);
 
    struct hk_linked_shader *linked =
       hk_fast_link(dev, true, shader, prolog, epilog, key->nr_samples_shaded);

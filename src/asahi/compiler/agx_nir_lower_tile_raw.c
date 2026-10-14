@@ -364,9 +364,49 @@ lower_intr(nir_builder *b, nir_intrinsic_instr *intr, void *data)
    return progress;
 }
 
-bool
-agx_nir_lower_tile_raw(nir_shader *shader)
+/*
+ * The sample mask operand of a tile access. G13's compiler passes all samples
+ * as 0xFF and the hardware clamps it to the sample count; G15 takes the mask
+ * literally (demo15 passes 1 for its one-sample target) and with 0xFF writes
+ * the tile's other sample planes, past the end of a one-sample imageblock into
+ * the neighbouring tiles' memory (the lab: a 64x64 clear wrote half of the
+ * pixels).
+ */
+static bool
+clamp_sample_mask(nir_builder *b, nir_intrinsic_instr *intr, void *data)
 {
-   return nir_shader_intrinsics_pass(shader, lower_intr,
-                                     nir_metadata_control_flow, NULL);
+   unsigned nr_samples = *(unsigned *)data;
+   unsigned src;
+
+   if (intr->intrinsic == nir_intrinsic_store_local_pixel_agx)
+      src = 1;
+   else if (intr->intrinsic == nir_intrinsic_load_local_pixel_agx)
+      src = 0;
+   else
+      return false;
+
+   if (!nir_src_is_const(intr->src[src]) ||
+       nir_src_as_uint(intr->src[src]) != 0xFF)
+      return false;
+
+   b->cursor = nir_before_instr(&intr->instr);
+   nir_src_rewrite(&intr->src[src],
+                   nir_imm_intN_t(b, BITFIELD_MASK(nr_samples),
+                                  intr->src[src].ssa->bit_size));
+   return true;
+}
+
+bool
+agx_nir_lower_tile_raw(nir_shader *shader, unsigned nr_samples)
+{
+   bool progress = nir_shader_intrinsics_pass(shader, lower_intr,
+                                              nir_metadata_control_flow, NULL);
+
+   /* An unknown count (0) keeps the mask */
+   if (nr_samples) {
+      progress |= nir_shader_intrinsics_pass(
+         shader, clamp_sample_mask, nir_metadata_control_flow, &nr_samples);
+   }
+
+   return progress;
 }
