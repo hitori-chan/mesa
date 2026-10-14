@@ -77,11 +77,14 @@ esl_ldshdr(struct util_dynarray *out, uint64_t va, unsigned size)
    esl_u16(out, ((va >> 47) & 1) | (size_class[MIN2(size >> 7, 3)] << 1));
 }
 
-/* specTPR: no spill, no stack (TODO: the spill and stack sizes) */
+/* specTPR: no spill (TODO); the stack (41:31) in 8 B units */
 static void
-esl_spectpr(struct util_dynarray *out)
+esl_spectpr(struct util_dynarray *out, unsigned stack_bytes)
 {
-   esl_u64(out, 0x2A00F7);
+   unsigned units = DIV_ROUND_UP(stack_bytes, 8);
+   assert(units < (1 << 11));
+
+   esl_u64(out, 0x2A00F7 | ((uint64_t)units << 31));
    esl_u16(out, 0);
 }
 
@@ -190,7 +193,7 @@ agx_esl_from_usc(struct util_dynarray *out, const uint8_t *usc,
 
    esl_speclm(out, shared_bytes);
    esl_ldshdr(out, main_va, code ? code->main_size : 0);
-   esl_spectpr(out);
+   esl_spectpr(out, code ? code->stack_size : 0);
 
    if (preamble_va && last && !esl_preamble(out, code, preamble_va))
       goto no_preamble;
