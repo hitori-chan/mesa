@@ -105,6 +105,7 @@ SPARSE = immediate("sparse", "bool")
 QUERY_LOD = immediate("query_lod", "bool")
 COHERENT = immediate("coherent", "bool")
 SCOREBOARD = immediate("scoreboard")
+PERSPECTIVE = immediate("perspective", "bool")
 ICOND = immediate("icond", "enum agx_icond")
 FCOND = immediate("fcond", "enum agx_fcond")
 NEST = immediate("nest")
@@ -373,8 +374,10 @@ op("bitop", (0x7E, 6, _), srcs = 2, imms = [TRUTH_TABLE])
 op("intl", (0x3E, 6, _), srcs = 2, imms = [])
 op("convert", (0x3E | L, 6, _), srcs = 2, imms = [ROUND]) 
 
-# Sources are the coeffient register and the sample index (if applicable)
-op("iter", (0x21, 8, _), srcs = 2, imms = [CHANNELS, INTERPOLATION])
+# Sources are the coeffient register and the sample index (if applicable).
+# perspective is G15's flag on the iteration of W's coefficients, which its
+# compiler follows with a reciprocal (G13 has iterproj instead).
+op("iter", (0x21, 8, _), srcs = 2, imms = [CHANNELS, INTERPOLATION, PERSPECTIVE])
 
 # Sources are the coeffient register for the varying, the coefficient register
 # for W, and the sample index (if applicable)
