@@ -2382,6 +2382,8 @@ hk_flush_ppp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
    struct hk_shader *hw_vs = hk_bound_hw_vs(gfx);
    struct hk_shader *fs = hk_only_variant(gfx->shaders[MESA_SHADER_FRAGMENT]);
 
+   bool g15 = hk_cmd_buffer_device(cmd)->dev.params.gpu_generation >= 15;
+
    bool hw_vs_dirty = IS_SHADER_DIRTY(VERTEX) || IS_SHADER_DIRTY(TESS_EVAL) ||
                       IS_SHADER_DIRTY(GEOMETRY);
    bool fs_dirty = IS_SHADER_DIRTY(FRAGMENT);
@@ -2434,13 +2436,17 @@ hk_flush_ppp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
       .viewport_count = 1, /* irrelevant */
    };
 
+   /* G15: the varying counts elements hang the TA or suppress the draw (boots
+    * #189-#198); see agx_state.c */
+   if (g15)
+      dirty.varying_counts_32 = dirty.varying_counts_16 = false;
+
    dirty.fragment_shader &= !linked_fs->b.no_op;
 
    /* Calculate the update size. If it equals the header, there is nothing to
     * update so early-exit.
     */
    struct hk_device *dev = hk_cmd_buffer_device(cmd);
-   bool g15 = dev->dev.params.gpu_generation >= 15;
    size_t size = agx_ppp_update_size(&dirty);
    if (size == AGX_PPP_HEADER_LENGTH)
       return;
@@ -2557,7 +2563,7 @@ hk_flush_ppp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
 
    assert(dirty.varying_counts_32 == dirty.varying_counts_16);
 
-   if (dirty.varying_counts_32) {
+   if (dirty.varying_counts_32 && !g15) {
       agx_ppp_push_packed(&ppp, &gfx->linked_varyings.counts_32,
                           VARYING_COUNTS);
 

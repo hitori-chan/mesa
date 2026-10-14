@@ -3803,6 +3803,12 @@ agx_encode_state(struct agx_batch *batch, uint8_t *out)
    };
 
    bool g15 = dev->params.gpu_generation >= 15;
+
+   /* G15: the PPP's varying counts elements hang the TA or suppress the draw
+    * (boots #189-#198); the counts are not needed for a draw without varyings
+    * and where they go for one with is not known yet */
+   if (g15)
+      dirty.varying_counts_32 = dirty.varying_counts_16 = false;
    size_t size = agx_ppp_update_size(&dirty);
 
    if (g15 && dirty.fragment_shader)
@@ -3885,17 +3891,19 @@ agx_encode_state(struct agx_batch *batch, uint8_t *out)
       agx_ppp_push_packed(&ppp, ctx->zs->back_stencil.opaque, FRAGMENT_STENCIL);
 
    assert(dirty.varying_counts_32 == dirty.varying_counts_16);
-   assert(dirty.varying_counts_32 == dirty.output_select);
+   assert(g15 || dirty.varying_counts_32 == dirty.output_select);
 
    if (dirty.output_select) {
       agx_ppp_push_merged_blobs(&ppp, AGX_OUTPUT_SELECT_LENGTH, &vs->uvs.osel,
                                 &ctx->linked.fs->osel);
 
-      agx_ppp_push_packed(&ppp, &batch->linked_varyings.counts_32,
-                          VARYING_COUNTS);
+      if (!g15) {
+         agx_ppp_push_packed(&ppp, &batch->linked_varyings.counts_32,
+                             VARYING_COUNTS);
 
-      agx_ppp_push_packed(&ppp, &batch->linked_varyings.counts_16,
-                          VARYING_COUNTS);
+         agx_ppp_push_packed(&ppp, &batch->linked_varyings.counts_16,
+                             VARYING_COUNTS);
+      }
    }
 
    if (dirty.cull) {
