@@ -38,6 +38,20 @@ libagx3_disasm = static_library(
   build_by_default : false,
 )
 
+# The AGX3 encoder tables, for the compiler's G15 packer
+agx3_pack_h = custom_target(
+  input : ['gen-pack.py', 'AGX3.xml'],
+  output : 'agx3_pack.h',
+  command : [prog_python, '@INPUT@'],
+  capture : true,
+  depend_files : files('isa.py'),
+)
+
+idep_agx3_pack_h = declare_dependency(
+  sources : [agx3_pack_h],
+  include_directories : include_directories('.'),
+)
+
 if with_tests
   agx_disasm_test = executable(
     'agx_disasm_test',
