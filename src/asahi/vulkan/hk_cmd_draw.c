@@ -431,13 +431,30 @@ hk_build_bg_eot(struct hk_cmd_buffer *cmd, const VkRenderingInfo *info,
                                                 ? &iview->planes[0].layered_eot
                                                 : &iview->planes[0].eot;
 
-         agx_usc_pack(&b, TEXTURE, cfg) {
-            cfg.start = rt;
-            cfg.count = 1;
-            cfg.buffer = hk_pool_upload(cmd, desc, sizeof(*desc), 8);
-         }
+         if (dev->dev.params.gpu_generation >= 15) {
+            /* G15's block write takes the descriptor's address in a 64-bit
+             * uniform per render target (the entry program loads it from
+             * memory: demo15's end-of-tile data holds a pointer to the
+             * descriptor). There are no texture state registers. */
+            uint64_t words[4] = {0};
+            memcpy(words, desc, sizeof(*desc));
 
-         nr_tex = rt + 1;
+            /* Apple's descriptors are 32 bytes: the hardware may read the
+             * fourth word of one, so the padding is zero */
+            uint64_t desc_va = hk_pool_upload(cmd, words, sizeof(words), 8);
+            uint64_t ptr = hk_pool_upload(cmd, &desc_va, sizeof(desc_va), 8);
+
+            agx_usc_uniform(&b, 4 * rt, 4, ptr);
+            uniforms = MAX2(uniforms, 4 * rt + 4);
+         } else {
+            agx_usc_pack(&b, TEXTURE, cfg) {
+               cfg.start = rt;
+               cfg.count = 1;
+               cfg.buffer = hk_pool_upload(cmd, desc, sizeof(*desc), 8);
+            }
+
+            nr_tex = rt + 1;
+         }
       }
    }
 

@@ -230,6 +230,11 @@ hk_can_compress(const struct agx_device *dev, VkFormat format, unsigned plane,
    if (dev->debug & AGX_DBG_NOCOMPRESS)
       return false;
 
+   /* G15's compressed images (the PBE's and texture's acceleration buffer
+    * words) are not understood yet */
+   if (dev->params.gpu_generation >= 15)
+      return false;
+
    /* TODO: Handle compression with sparse. This should be doable but it's a bit
     * subtle. Correctness first.
     */

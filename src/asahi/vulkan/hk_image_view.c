@@ -362,10 +362,113 @@ pack_texture(struct hk_image_view *view, unsigned view_plane,
    }
 }
 
+/*
+ * G15's PBE descriptor (cmdbuf.xml's "PBE G15"). Only what Apple's encoder
+ * and noopwafel's demo15 settle is packed: uncompressed images without
+ * multisampling, linear (the one the hardware ran: a 2D RGBA8 target) or
+ * twiddled, one layer for linear. The rest fails here rather than reaching
+ * the hardware as a G13 descriptor.
+ *
+ * The address is the plane's VA as it is, 44 bits of it (G13's descriptor
+ * has 36 and a level; demo15 sets "level 1" for the 1 TiB bit of its
+ * target's address). The image heap's alias addresses are above 1 TiB, so
+ * they are not relative to it.
+ */
+static void
+pack_pbe_g15(struct hk_device *dev, struct hk_image_view *view,
+             unsigned view_plane, enum hk_desc_usage usage,
+             struct agx_pbe_packed *out)
+{
+   struct hk_image *image = container_of(view->vk.image, struct hk_image, vk);
+   const uint8_t image_plane = view->planes[view_plane].image_plane;
+   struct ail_layout *layout = &image->planes[image_plane].layout;
+   uint64_t base_addr = hk_image_base_address(image, image_plane);
+
+   unsigned level = view->vk.base_mip_level;
+   unsigned layer = view->vk.base_array_layer;
+
+   enum pipe_format p_format = format_for_plane(view, view_plane);
+   const struct util_format_description *desc =
+      util_format_description(p_format);
+
+   bool eot =
+      usage == HK_DESC_USAGE_BG_EOT || usage == HK_DESC_USAGE_LAYERED_BG_EOT;
+
+   /* The tilebuffer is already in sRGB space if needed. Do not convert for
+    * end-of-tile descriptors.
+    */
+   if (eot)
+      p_format = util_format_linear(p_format);
+
+   unsigned layers = view->vk.view_type == VK_IMAGE_VIEW_TYPE_3D
+                        ? image->vk.extent.depth
+                        : view->vk.layer_count;
+
+   if (layout->compressed || view->vk.image->samples > 1 ||
+       view->vk.view_type == VK_IMAGE_VIEW_TYPE_3D ||
+       view_denominator(view).x > 1 ||
+       (layout->tiling == AIL_TILING_LINEAR && layers > 1)) {
+      fprintf(stderr,
+              "G15: PBE of a compressed, multisampled, 3D, block-compressed "
+              "or linear layered image is not supported yet\n");
+      assert(0);
+   }
+
+   agx_pack(out, PBE_G15, cfg) {
+      cfg.dimension =
+         translate_image_view_type(view->vk.view_type, false, layers > 1, usage);
+      cfg.layout = agx_translate_layout(layout->tiling);
+      cfg.channels = ail_pixel_format[p_format].channels;
+      cfg.type = ail_pixel_format[p_format].type;
+
+      assert(desc->nr_channels >= 1 && desc->nr_channels <= 4);
+
+      for (unsigned i = 0; i < desc->nr_channels; ++i) {
+         if (desc->swizzle[i] == 0)
+            cfg.swizzle_r = i;
+         else if (desc->swizzle[i] == 1)
+            cfg.swizzle_g = i;
+         else if (desc->swizzle[i] == 2)
+            cfg.swizzle_b = i;
+         else if (desc->swizzle[i] == 3)
+            cfg.swizzle_a = i;
+      }
+
+      cfg.buffer = base_addr + ail_get_layer_offset_B(layout, layer);
+      cfg.width = layout->width_px;
+      cfg.height = layout->height_px;
+      cfg.mipmapped = image->vk.mip_levels > 1;
+
+      if (layout->tiling == AIL_TILING_LINEAR) {
+         /* In 16-byte units, minus 1 (demo15's 0xF for a 256 B stride; the
+          * rows' pitch is a multiple of 16 B) */
+         assert((ail_get_linear_stride_B(layout, level) & 15) == 0);
+         cfg.stride = (ail_get_linear_stride_B(layout, level) >> 4) - 1;
+         assert(image->vk.mip_levels == 1);
+      } else {
+         cfg.layers = layers;
+         cfg.page_aligned_layers = layout->page_aligned_layers;
+
+         /* The level and the count of levels go in the extended word; Apple
+          * sets it when either is not the default (not verified) */
+         if (level != 0 || image->vk.mip_levels > 1) {
+            cfg.extended = true;
+            cfg.level = level;
+            cfg.levels = image->vk.mip_levels;
+         }
+      }
+   }
+}
+
 static void
 pack_pbe(struct hk_device *dev, struct hk_image_view *view, unsigned view_plane,
          enum hk_desc_usage usage, struct agx_pbe_packed *out)
 {
+   if (dev->dev.params.gpu_generation >= 15) {
+      pack_pbe_g15(dev, view, view_plane, usage, out);
+      return;
+   }
+
    struct hk_image *image = container_of(view->vk.image, struct hk_image, vk);
    const uint8_t image_plane = view->planes[view_plane].image_plane;
    struct ail_layout *layout = &image->planes[image_plane].layout;
