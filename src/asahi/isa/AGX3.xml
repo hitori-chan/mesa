@@ -2443,6 +2443,105 @@
     </case>
   </encoding>
 
+  <!--
+   The block image write's operands (pack_imgwir, imgwblk), from the same
+   encoder's trees.
+
+   pack_imgwir's second 16-bit source (instruction bits 50:58, 69, 72, 80):
+   0:7 the register or the 8-bit immediate, 8 the uniform's ninth bit (for
+   a register: cache), 9 lu (a register), 10 uniform, 11 register
+  -->
+  <encoding name="imgsrc_b">
+    <case>
+      <exact bit="10:11">10</exact>
+      <immediate name="reg" bit="0:7"/>
+      <modifier name="cache" bit="8"/>
+      <modifier name="lu" bit="9"/>
+    </case>
+    <case>
+      <exact bit="9:11">010</exact>
+      <immediate name="uniform" bit="0:8"/>
+    </case>
+    <case>
+      <exact bit="8:11">0000</exact>
+      <immediate name="imm" bit="0:7"/>
+    </case>
+  </encoding>
+
+  <!--
+   pack_imgwir's third source (instruction bits 59:67, 73, 81, 70): 16 or
+   32 bits. 0:7 the register or the 8-bit immediate, 8 the uniform's ninth
+   bit (for a register: cache), 9 uniform (for a register: lu), 10
+   register, 11 32-bit
+  -->
+  <encoding name="imgsrc_c">
+    <case>
+      <exact bit="10:11">11</exact>
+      <immediate name="reg" bit="1:7" shift="1"/>
+      <modifier name="cache" bit="8"/>
+      <modifier name="lu" bit="9"/>
+      <property name="size32"/>
+      <carry bit="0"/>
+    </case>
+    <case>
+      <exact bit="10:11">01</exact>
+      <immediate name="reg" bit="0:7"/>
+      <modifier name="cache" bit="8"/>
+      <modifier name="lu" bit="9"/>
+    </case>
+    <case>
+      <exact bit="9:11">101</exact>
+      <immediate name="uniform" bit="1:8" shift="1"/>
+      <property name="size32"/>
+      <carry bit="0"/>
+    </case>
+    <case>
+      <exact bit="9:11">001</exact>
+      <immediate name="uniform" bit="0:8"/>
+    </case>
+    <case>
+      <exact bit="8:10">000</exact>
+      <immediate name="imm" bit="0:7"/>
+      <carry bit="11"/>
+    </case>
+  </encoding>
+
+  <!--
+   imgwblk's offset (instruction bits 44:59, 82, 83): 0:15 a 16-bit
+   immediate (16:17 clear); a uniform (17 set; 0:8 the uniform, 9 32-bit);
+   a register (16 set; 0:7 the register, 8 cache, 9 32-bit, 11 lu)
+  -->
+  <encoding name="imgoff">
+    <case>
+      <exact bit="16:17">00</exact>
+      <immediate name="imm" bit="0:15"/>
+    </case>
+    <case>
+      <exact bit="9:17">100000001</exact>
+      <immediate name="uniform" bit="1:8" shift="1"/>
+      <property name="size32"/>
+      <carry bit="0"/>
+    </case>
+    <case>
+      <exact bit="9:17">100000000</exact>
+      <immediate name="uniform" bit="0:8"/>
+    </case>
+    <case>
+      <exact bit="9:10 12:17">01000001</exact>
+      <immediate name="reg" bit="1:7" shift="1"/>
+      <modifier name="cache" bit="8"/>
+      <modifier name="lu" bit="11"/>
+      <property name="size32"/>
+      <carry bit="0"/>
+    </case>
+    <case>
+      <exact bit="9:10 12:17">01000000</exact>
+      <immediate name="reg" bit="0:7"/>
+      <modifier name="cache" bit="8"/>
+      <modifier name="lu" bit="11"/>
+    </case>
+  </encoding>
+
   <!-- mov_imm, 7-bit immediate -->
   <ins name="mov_imm7" display="mov_imm" length="2">
     <exact bit="0:2 15">0100</exact>
@@ -2967,6 +3066,57 @@
     <src kind="crsrc" bit="24:36 40"/>
     <immediate name="g" bit="37:39"/>
     <modifier name="zs" bit="41:42" kind="zs_write"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <!--
+   pack_imgwir: writes a 32-bit coordinate register, the third of the three
+   imgwblk takes as its coordinates (cr, cr + 1, cr + 2: x, y and this one).
+   The sources (a and b 16-bit, c 32 or 16) are probably the layer, the
+   sample and a base; their meaning is not known. demo15's, for a 2D image,
+   are zero (a is a uniform its entry program sets to 0). layout is Apple's
+   description of the fields it packs, modelled as the encoder's mode (bits
+   82:83: 0 8-bit and 7-bit fields at 0 or 16 and 8 or 24, picked by bits 84
+   and 85; 1 6 and 6 bits at 12 and 22; 2 4 and 10 bits at 0 and 12) and
+   those two bits. demo15's is mode 0 at 16 and 24. Only a coordinate
+   register destination (g its group) and the modes with a b source are
+   modelled.
+  -->
+  <ins name="pack_imgwir" display="pack_imgwir" length="12">
+    <exact bit="0:10 38:40 68 75 78 86:95">000000000010100010110010111</exact>
+    <dest kind="crsrc" bit="24:36 37"/>
+    <immediate name="g" bit="74 76:77"/>
+    <src kind="src9" bit="41:49 71 79"/>
+    <src kind="imgsrc_b" bit="50:58 69 72 80"/>
+    <src kind="imgsrc_c" bit="59:67 73 81 70"/>
+    <immediate name="layout" bit="82:85"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <!--
+   block_image_store (imgwblk): writes a tile's imageblock, as the tilebuffer
+   holds it, to the image a PBE descriptor describes. The coordinates are
+   three coordinate registers from cr: x and y of the tile's first pixel,
+   then pack_imgwir's. The descriptor's address is in a 64-bit uniform or
+   register pair; the offset is the render target's offset in the tilebuffer
+   (a guess: demo15's is 0). g is the group of the coordinate registers'
+   producers (codes 0-3, then 5 and 6 for groups 4 and 5). flags is what
+   Apple's flags operand makes of the image type (dimension, array, lod,
+   multisampling and explicit coordinates are in it, not decoded): demo15's
+   2D form is 0x1d6a. pcache and plu are the pointer's cache and last-use
+   flags when it is a register.
+  -->
+  <ins name="block_image_store" display="block_image_store" length="12">
+    <exact bit="0:10 84:95">00000000000000001010111</exact>
+    <src kind="crsrc" bit="24:36 63"/>
+    <immediate name="g" bit="60:62"/>
+    <src kind="membase" bit="37:43 81"/>
+    <src kind="imgoff" bit="44:59 82 83"/>
+    <immediate name="flags" bit="66:80"/>
+    <modifier name="pcache" bit="64" display="pcache"/>
+    <modifier name="plu" bit="65" display="plu"/>
     <modifier name="wait" bit="12:17" kind="wait"/>
     <modifier name="unk" bit="18 20 22" kind="expect3"/>
   </ins>
