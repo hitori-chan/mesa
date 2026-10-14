@@ -1005,6 +1005,29 @@
   </enum>
 
   <!--
+   iter's implicit coordinates (f32interp bits 48:49 51): the pixel centre
+   or a sample (bit 2 set, bits 0:1 the sample index)
+  -->
+  <enum kind="iter_mode" name="Interpolation location">
+    <value value="0">center</value>
+    <value value="4">sample 0</value>
+    <value value="5">sample 1</value>
+    <value value="6">sample 2</value>
+    <value value="7">sample 3</value>
+  </enum>
+
+  <!--
+   What zs_emit (depthf) writes: Apple's depthf handler sets bit 0 for
+   depth and bit 1 for stencil only with depth; its G13 path writes G13's
+   zs code (1 depth, 2 stencil, 3 both) for the same instructions
+  -->
+  <enum kind="zs_write" name="Depth/stencil written">
+    <value value="0">s</value>
+    <value value="1">z</value>
+    <value value="3">zs</value>
+  </enum>
+
+  <!--
    Destination of the variable-length ALU instructions (VariableDstDesc), 20 bits:
     0 l, 1:4 reg, 5:6 x, 7 h, 8:11 j, 12:13 y, 14 z (register: bits 0:14),
     15 s (32-bit), 16 c (cache; coordinate if uniform; stack bit 16),
@@ -2294,6 +2317,121 @@
     </case>
   </encoding>
 
+  <!--
+   The fragment and vertex I/O operands below are from the same encoder's
+   trees (uvsw, lstcol, lldcol, ldcfr, f32interp, depthf).
+
+   A 16-bit source in 11 bits (tile_load/tile_store's sample mask and
+   offset, ldcf's coefficient register): 0:7 the register or the 8-bit
+   immediate, 8 the uniform's ninth bit (for a register: cache), 9 uniform
+   (for a register: lu), 10 register
+  -->
+  <encoding name="src9">
+    <case>
+      <exact bit="10">1</exact>
+      <immediate name="reg" bit="0:7"/>
+      <modifier name="cache" bit="8"/>
+      <modifier name="lu" bit="9"/>
+    </case>
+    <case>
+      <exact bit="9:10">01</exact>
+      <immediate name="uniform" bit="0:8"/>
+    </case>
+    <case>
+      <exact bit="8:10">000</exact>
+      <immediate name="imm" bit="0:7"/>
+    </case>
+  </encoding>
+
+  <!--
+   st_var's slot (uvsw), 16-bit: 0:7 the register or the 8-bit immediate,
+   8 the uniform's ninth bit (for a register: lu), 9 not a register,
+   10 uniform (for a register: cache), 11 register
+  -->
+  <encoding name="uvslot">
+    <case>
+      <exact bit="9 11">10</exact>
+      <immediate name="reg" bit="0:7"/>
+      <modifier name="lu" bit="8"/>
+      <modifier name="cache" bit="10"/>
+    </case>
+    <case>
+      <exact bit="9:11">011</exact>
+      <immediate name="uniform" bit="0:8"/>
+    </case>
+    <case>
+      <exact bit="8:11">0010</exact>
+      <immediate name="imm" bit="0:7"/>
+    </case>
+  </encoding>
+
+  <!--
+   A coordinate register source (uvsw, depthf): 0:12 the register in
+   16-bit units, shown as the 32-bit cr an ALU destination names; 13 lu
+  -->
+  <encoding name="crsrc">
+    <case>
+      <immediate name="cr" bit="1:12"/>
+      <modifier name="lu" bit="13"/>
+      <carry bit="0"/>
+    </case>
+  </encoding>
+
+  <!--
+   tile_load/tile_store's coordinates: implicit (the pixel's), or a 32-bit
+   register (1:7) holding x and y in its halves; 8 cache, 9 lu, 10 register
+  -->
+  <encoding name="tilecoord">
+    <case>
+      <exact bit="10">1</exact>
+      <immediate name="reg" bit="1:7" shift="1"/>
+      <modifier name="cache" bit="8"/>
+      <modifier name="lu" bit="9"/>
+      <property name="size32"/>
+    </case>
+    <case>
+      <exact bit="8:10">000</exact>
+    </case>
+  </encoding>
+
+  <!--
+   iter's synchronous destination (f32interp): 0:7 the 16-bit register
+   (0:8 the uniform), 8 cache (the uniform's ninth bit), 9 register,
+   10 16-bit, 11 set with 10 (Apple's 16-bit operand size; its size 4
+   clears it)
+  -->
+  <encoding name="idst">
+    <case>
+      <exact bit="9:11">001</exact>
+      <immediate name="reg" bit="1:7" shift="1"/>
+      <modifier name="cache" bit="8"/>
+      <property name="size32"/>
+      <carry bit="0"/>
+    </case>
+    <case>
+      <exact bit="9:11">111</exact>
+      <immediate name="reg" bit="0:7"/>
+      <modifier name="cache" bit="8"/>
+    </case>
+    <case>
+      <exact bit="9:11">000</exact>
+      <immediate name="uniform" bit="1:8" shift="1"/>
+      <property name="size32"/>
+      <carry bit="0"/>
+    </case>
+    <case>
+      <exact bit="9:11">110</exact>
+      <immediate name="uniform" bit="0:8"/>
+    </case>
+  </encoding>
+
+  <!-- A coefficient register, 7 bits (f32interp) -->
+  <encoding name="cfimm">
+    <case>
+      <immediate name="cf" bit="0:6"/>
+    </case>
+  </encoding>
+
   <!-- mov_imm, 7-bit immediate -->
   <ins name="mov_imm7" display="mov_imm" length="2">
     <exact bit="0:2 15">0100</exact>
@@ -2687,6 +2825,137 @@
     <src kind="fsrc" bit="41 42:48 49 69 62 60 =0 70 =0 =0 =0"/>
     <src kind="fsrc" bit="50 51:57 58 71 63 61 =0 =0 =0 =0 =0"/>
     <modifier name="group" bit="64 66:67 65" kind="fgroup"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <!--
+   Fragment and vertex I/O, from libLLVM 32023's encoder (uvsw 8 B, lstcol
+   and lldcol 12 B, pixwait, pixrel, ldcfr and depthf 6 B, f32interp
+   10 B). noopwafel's demo15 shaders use st_var, tile_store, wait_pix and
+   signal_pix; the rest is not verified on the hardware. ldcf sits before
+   iadd, whose exact bits leave bit 9 open.
+
+   st_var (uvsw): a 32-bit coordinate register to a varying slot (32-bit
+   units, as G13's st_vary). The value comes through a cr written by an
+   ALU instruction in group g; demo15 waits for that group here. Bits
+   53:54 are Apple's constant. G15 has no "last" flag.
+  -->
+  <ins name="st_var" display="st_var" length="8">
+    <exact bit="0:10 53:54">1011001010111</exact>
+    <src kind="crsrc" bit="24:36 51"/>
+    <src kind="uvslot" bit="37:45 46 47 52"/>
+    <immediate name="g" bit="48:50"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <!--
+   tile_store (lstcol): the register's raw bits to the tilebuffer, with no
+   format field (G13's st_tile converts; demo15 packs with fltnorm first).
+   The coordinates are the pixel's or a register's. The two 16-bit sources
+   are, by demo15's values (1 and 0), the sample mask and the tilebuffer
+   offset (not verified); a and b are signed 11-bit fields of unknown use
+   (0 in demo15); bit 63 is the register's lu.
+  -->
+  <ins name="tile_store" display="tile_store" length="12">
+    <exact bit="0:10">11011100111</exact>
+    <modifier name="type" bit="61:62" kind="device_store_type"/>
+    <modifier name="mask" bit="57:60" kind="device_store_mask"/>
+    <src kind="memreg" bit="24 25:31 61:62 57:60"/>
+    <src kind="tilecoord" bit="=0 32:38 64 65 90"/>
+    <src kind="src9" bit="48:56 67 91"/>
+    <src kind="src9" bit="39:47 66 92"/>
+    <immediate name="a" bit="68:78" kind="signed"/>
+    <immediate name="b" bit="79:89" kind="signed"/>
+    <modifier name="lu" bit="63"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <!-- tile_load (lldcol): tile_store's operands, the result in group g -->
+  <ins name="tile_load" display="tile_load" length="12">
+    <exact bit="0:10">11001100111</exact>
+    <immediate name="g" bit="63:65"/>
+    <modifier name="type" bit="61:62" kind="device_load_type"/>
+    <modifier name="mask" bit="57:60" kind="device_load_mask"/>
+    <dest kind="memreg" bit="24 25:31 61:62 57:60"/>
+    <src kind="tilecoord" bit="=0 32:38 66 67 92"/>
+    <src kind="src9" bit="48:56 69 93"/>
+    <src kind="src9" bit="39:47 68 94"/>
+    <immediate name="a" bit="70:80" kind="signed"/>
+    <immediate name="b" bit="81:91" kind="signed"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <!--
+   wait_pix (pixwait) and signal_pix (pixrel): 10-bit pixel masks. demo15's
+   fragment shader waits 0x200 with f0, then 0xC with f1, stores the tile
+   and signals 0x20C; its fragment entry signals 0x2F3. f0 and f1 are bits
+   0 and 1 of Apple's flags operand (meaning unknown).
+  -->
+  <ins name="wait_pix" display="wait_pix" length="6">
+    <exact bit="0:10">01010000111</exact>
+    <immediate name="mask" bit="24:33"/>
+    <modifier name="f0" bit="34"/>
+    <modifier name="f1" bit="35"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <ins name="signal_pix" display="signal_pix" length="6">
+    <exact bit="0:10">01000000111</exact>
+    <immediate name="mask" bit="24:33"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <!--
+   ldcf (ldcfr): a coefficient register's three 32-bit values (G13's ldcf
+   of one channel) to three consecutive registers, in group g. Apple's
+   component mask operand must be 7.
+  -->
+  <ins name="ldcf" display="ldcf" length="6">
+    <exact bit="0:10">01100011111</exact>
+    <immediate name="g" bit="40:42"/>
+    <dest kind="atomreg" bit="24:30 =0"/>
+    <src kind="src9" bit="31:39 43 44"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <!--
+   iter (f32interp), the synchronous form: one component, interpolated
+   from coefficient register cf at the pixel centre or a sample, to a 16
+   or 32-bit register (no group, no wait). persp is Apple's operand that
+   its handler sets for 9 of the instruction's 27 opcodes, read as the
+   projected interpolation of llvm.agx3.interp.proj.* (a guess): no second
+   coefficient register (G13's iterproj has W's). Not modelled: the
+   asynchronous form (to a cr or the stack, in a group), the coefficient
+   register in GPRs and explicit coordinates (centroid takes itrcoords
+   first); bits 60 and 62 stay 0 (Apple's G15 path).
+  -->
+  <ins name="iter" display="iter" length="10">
+    <exact bit="0:10 57 65 68">10110100101111</exact>
+    <dest kind="idst" bit="24:31 32 33 63 55"/>
+    <src kind="cfimm" bit="41:47"/>
+    <modifier name="mode" bit="48:49 51" kind="iter_mode"/>
+    <modifier name="persp" bit="50"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <!--
+   zs_emit (depthf): depth and/or stencil from a coordinate register (g
+   its group). No sample mask: G13's zs_emit has one. The layout of depth
+   and stencil in the cr is not known.
+  -->
+  <ins name="zs_emit" display="zs_emit" length="6">
+    <exact bit="0:10">10011010111</exact>
+    <src kind="crsrc" bit="24:36 40"/>
+    <immediate name="g" bit="37:39"/>
+    <modifier name="zs" bit="41:42" kind="zs_write"/>
     <modifier name="wait" bit="12:17" kind="wait"/>
     <modifier name="unk" bit="18 20 22" kind="expect3"/>
   </ins>
