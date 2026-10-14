@@ -716,7 +716,10 @@ hk_cmd_buffer_end_graphics(struct hk_cmd_buffer *cmd)
 {
    struct hk_cs *cs = cmd->current_cs.gfx;
 
-   if (cs && cs->stats.cmds == 0) {
+   /* The replacement is a libagx kernel, which has no G15 build yet: G15 keeps
+    * the empty pass and clears through its background program */
+   if (cs && cs->stats.cmds == 0 &&
+       hk_cmd_buffer_device(cmd)->dev.params.gpu_generation < 15) {
       hk_optimize_empty_vdm(cmd);
    } else if (cs) {
       /* Scissor and depth bias arrays are staged to dynamic arrays on the
