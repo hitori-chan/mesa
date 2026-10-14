@@ -6,7 +6,9 @@
 #include "agx_linker.h"
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include "util/ralloc.h"
+#include "util/u_dynarray.h"
 #include "agx_abi.h"
 #include "agx_compile.h"
 #include "agx_device.h"
@@ -89,6 +91,12 @@ agx_fast_link(struct agx_linked_shader *linked, struct agx_device *dev,
    unsigned nr_gprs = 0, scratch_size = 0;
    bool reads_tib = false, writes_sample_mask = false,
         disable_tri_merging = false, tag_write_disable = true;
+   bool g15 = dev->params.gpu_generation >= 15;
+
+   if (g15 && nr_samples_shaded) {
+      fprintf(stderr, "G15: the sample shading loop is G13 code\n");
+      assert(0);
+   }
 
    if (nr_samples_shaded) {
       size += sizeof(sample_loop_header);
@@ -107,6 +115,7 @@ agx_fast_link(struct agx_linked_shader *linked, struct agx_device *dev,
          continue;
 
       size += part->info.main_size;
+      linked->pix_wait_mask |= part->info.pix_wait_mask;
 
       nr_gprs = MAX2(nr_gprs, part->info.nr_gprs);
       scratch_size = MAX2(scratch_size, part->info.scratch_size);
@@ -119,6 +128,17 @@ agx_fast_link(struct agx_linked_shader *linked, struct agx_device *dev,
    }
 
    assert(size > 0 && "must stop");
+
+   /* G15: the program releases the fences it waited on at its end, before
+    * the last part's stop (agx3_emit_stop's 4 bytes)
+    */
+   struct util_dynarray trailer;
+   util_dynarray_init(&trailer, NULL);
+   if (g15 && linked->pix_wait_mask) {
+      agx3_emit_signal_pix(&trailer, linked->pix_wait_mask);
+      agx3_emit_stop(&trailer);
+      size = size - 4 + trailer.size;
+   }
 
    linked->bo = agx_bo_create(dev, size, 0, AGX_BO_EXEC | AGX_BO_LOW_VA,
                               "Linked executable");
@@ -150,6 +170,15 @@ agx_fast_link(struct agx_linked_shader *linked, struct agx_device *dev,
       size_t sz = part->info.main_size;
       memcpy(linked_map + offset, part->binary + part->info.main_offset, sz);
       offset += sz;
+
+      /* The last part ends the program: replace its stop (G15's, 4 bytes) */
+      if (trailer.size && (i == ARRAY_SIZE(parts) - 1 ||
+                           !parts[i + 1])) {
+         assert(!memcmp(linked_map + offset - 4, "\x0e\0\0\0", 4));
+         offset -= 4;
+         memcpy(linked_map + offset, trailer.data, trailer.size);
+         offset += trailer.size;
+      }
    }
 
    if (nr_samples_shaded > 1) {
@@ -180,6 +209,7 @@ agx_fast_link(struct agx_linked_shader *linked, struct agx_device *dev,
    }
 
    assert(offset == size);
+   util_dynarray_fini(&trailer);
 
    agx_pack(&linked->shader, USC_SHADER, cfg) {
       cfg.code = agx_usc_addr(dev, linked->bo->va->addr);
