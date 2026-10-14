@@ -12,6 +12,7 @@
 #include "agx_linker.h"
 #include "agx_tilebuffer.h"
 #include "agx_usc.h"
+#include "agx_esl.h"
 #include "hk_buffer.h"
 #include "hk_cmd_pool.h"
 #include "hk_descriptor_set.h"
@@ -662,6 +663,35 @@ hk_reserve_scratch(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
    }
 }
 
+/* G15: the entry program for a USC word list (agx_esl.h) */
+static uint32_t
+hk_upload_esl(struct hk_cmd_buffer *cmd, struct hk_shader *s,
+              const uint8_t *usc)
+{
+   struct hk_device *dev = hk_cmd_buffer_device(cmd);
+   struct agx_esl_code code = {
+      .va = s->bo ? s->bo->va->addr : 0,
+      .cpu = s->b.binary,
+      .size = s->b.info.binary_size,
+      .main_size = s->b.info.main_size,
+   };
+
+   struct util_dynarray esl;
+   util_dynarray_init(&esl, NULL);
+
+   uint32_t addr = 0;
+   if (agx_esl_from_usc(&esl, usc, dev->dev.shader_base, &code)) {
+      struct agx_ptr t = hk_pool_usc_alloc(cmd, esl.size, 64);
+      if (t.cpu) {
+         memcpy(t.cpu, esl.data, esl.size);
+         addr = agx_usc_addr(&dev->dev, t.gpu);
+      }
+   }
+
+   util_dynarray_fini(&esl);
+   return addr;
+}
+
 uint32_t
 hk_upload_usc_words(struct hk_cmd_buffer *cmd, struct hk_shader *s,
                     struct hk_linked_shader *linked)
@@ -749,6 +779,10 @@ hk_upload_usc_words(struct hk_cmd_buffer *cmd, struct hk_shader *s,
    agx_usc_uniform(&b, root_unif, 4 * (1 + s->info.set_count), root_ptr);
 
    agx_usc_push_blob(&b, linked->usc.data, linked->usc.size);
+
+   if (dev->dev.params.gpu_generation >= 15)
+      return hk_upload_esl(cmd, s, t.cpu);
+
    return agx_usc_addr(&dev->dev, t.gpu);
 }
 

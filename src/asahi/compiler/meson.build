@@ -25,6 +25,7 @@ libasahi_agx_files = files(
   'agx_lower_spill.c',
   'agx_lower_uniform_sources.c',
   'agx_pack.c',
+  'agx_pack3.c',
   'agx_performance.c',
   'agx_print.c',
   'agx_pressure_schedule.c',
@@ -92,8 +93,8 @@ idep_agx_builder_h = declare_dependency(
 libasahi_compiler = static_library(
   'asahi_compiler',
   [libasahi_agx_files, agx_opcodes_c, agx_nir_algebraic_c],
-  dependencies: [idep_nir, idep_agx_opcodes_h, idep_agx_builder_h, idep_mesautil, idep_libagx],
-  link_with : [libagx2_disasm],
+  dependencies: [idep_nir, idep_agx_opcodes_h, idep_agx_builder_h, idep_mesautil, idep_libagx, idep_agx3_pack_h],
+  link_with : [libagx2_disasm, libagx3_disasm],
   c_args : [no_override_init_args, '-Wno-c2x-extensions'],
   gnu_symbol_visibility : 'hidden',
   build_by_default : false,
