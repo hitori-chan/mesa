@@ -376,6 +376,24 @@ a3_kind_value(struct a3 *a, unsigned op, enum a3_kind kind, uint32_t value,
    return v;
 }
 
+/* A 32-bit stack register, stN (N in 32-bit units; Apple numbers them in
+ * 16-bit units) */
+static uint64_t
+a3_stack(struct a3 *a, unsigned op, unsigned index, uint32_t mods)
+{
+   const struct agx3_case *c =
+      a3_case(a, op, A3_STACK, a3_size(AGX_SIZE_32), mods, 0);
+   if (!c)
+      a3_fail(a, "no case for a stack register");
+
+   struct agx3_reg r = {.index = index, .mods = mods};
+   uint64_t v = a3_fix_carry(a, op, c, agx3_reg_value(c, &r));
+   if (v == UINT64_MAX)
+      a3_fail(a, "no carry bits select the operand's case");
+
+   return v;
+}
+
 /* A source of an ALU instruction: a register, a uniform or an 8-bit
  * immediate. Float sources carry abs and neg; integer sources pick the
  * integer cases (which offer sx). */
@@ -668,6 +686,8 @@ a3_memshift(const struct a3 *a, unsigned bytes)
 #define T_STTG      "e702540200000000440000100000" /* threadgroup_store */
 #define T_ATG       "670354010002000002000004"     /* threadgroup_atomic add */
 #define T_ADEV      "6701540000048182000000008003" /* device_atomic add */
+#define T_ADEV_RET  "6701540000048182000600008003" /* ... 3, st0, add */
+#define T_GET_STACK "0c80094300800000"             /* get_stack 2, 2, r0, ^st0 */
 #define T_BARRIER   "070454610300"                 /* threadgroup_barrier */
 #define T_ST_VAR    "5706540000404800"             /* st_var ^cr0, 0, 0 */
 #define T_ST_TILE   "e70654000000012e00000000"     /* tile_store i32 */
@@ -732,6 +752,13 @@ enum {
    ADEV_OP = 3,
    ADEV_SHIFT = 4,
    ADEV_OFFSET = 5,
+   ADEV_RET_G = 0,
+   ADEV_RET_DST = 1,
+   GET_STACK_G = 0,
+   GET_STACK_Q = 1,
+   GET_STACK_DST = 2,
+   GET_STACK_SRC = 3,
+   GET_STACK_WAIT = 4,
    BARRIER_FLAGS = 0,
    ST_VAR_CR = 0,
    ST_VAR_SLOT = 1,
@@ -1114,23 +1141,61 @@ a3_local_atomic(struct a3 *a, const agx_instr *I,
       a3_wait(a, I, A3_SYNC_G, emission);
 }
 
-/* atomic (atomicdev): G15 returns a device atomic's result only to the
- * stack registers (then get_stack), which need the entry program's stack
- * (specTPR): not supported yet. The index counts 32-bit elements. */
+/* atomic (atomicdev). The index counts 32-bit elements. G15 returns a
+ * device atomic's result only to a stack register: the result goes to st0
+ * in group 2 (the result form's operands are the other form's after g and
+ * the destination), get_stack waits for it and copies it to the
+ * destination in group 2 (its source tagged with the atomic's group, as
+ * Apple's compiler tags a pending source: q), then a wait. The entry
+ * program allocates the stack (agx3_stack_size). */
+#define A3_ATOMIC_STACK 0
+
 static void
 a3_atomic(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
 {
-   if (!agx_is_null(I->dest[0]))
-      a3_fail(a, "device atomic result (stack registers) not supported");
+   bool result = !agx_is_null(I->dest[0]);
+   unsigned o = result ? 2 : 0;
 
-   a3_begin(a, I, AGX3_DEVICE_ATOMIC, T_ADEV);
-   a3_set(a, ADEV_DATA, a3_atomic_data(a, ADEV_DATA, I->src[0]));
-   a3_set(a, ADEV_BASE, a3_membase(a, ADEV_BASE, I->src[1]));
-   a3_set(a, ADEV_INDEX, a3_memidx(a, ADEV_INDEX, I->src[2]));
-   a3_set(a, ADEV_OP, a3_atomic_op(a, I->atomic_opc));
-   a3_set(a, ADEV_SHIFT, a3_memshift(a, 2));
-   a3_set(a, ADEV_OFFSET, 0);
+   if (result) {
+      a3_begin(a, I, AGX3_DEVICE_ATOMIC_RET, T_ADEV_RET);
+      a3_set(a, ADEV_RET_G, A3_SYNC_G + 1);
+      a3_set(a, ADEV_RET_DST, a3_stack(a, ADEV_RET_DST, A3_ATOMIC_STACK, 0));
+   } else {
+      a3_begin(a, I, AGX3_DEVICE_ATOMIC, T_ADEV);
+   }
+
+   a3_set(a, o + ADEV_DATA, a3_atomic_data(a, o + ADEV_DATA, I->src[0]));
+   a3_set(a, o + ADEV_BASE, a3_membase(a, o + ADEV_BASE, I->src[1]));
+   a3_set(a, o + ADEV_INDEX, a3_memidx(a, o + ADEV_INDEX, I->src[2]));
+   a3_set(a, o + ADEV_OP, a3_atomic_op(a, I->atomic_opc));
+   a3_set(a, o + ADEV_SHIFT, a3_memshift(a, 2));
+   a3_set(a, o + ADEV_OFFSET, 0);
    a3_emit(a, emission);
+
+   if (!result)
+      return;
+
+   a3_begin(a, I, AGX3_GET_STACK, T_GET_STACK);
+   a3_set(a, GET_STACK_G, A3_SYNC_G);
+   a3_set(a, GET_STACK_Q, A3_SYNC_G);
+   a3_set(a, GET_STACK_DST, a3_reg(a, GET_STACK_DST, I->dest[0], 0, 0, 0));
+   a3_set(a, GET_STACK_SRC, a3_stack(a, GET_STACK_SRC, A3_ATOMIC_STACK,
+                                     BITFIELD_BIT(A3_LU)));
+   a3_set(a, GET_STACK_WAIT, BITFIELD_BIT(A3_SYNC_G));
+   a3_emit(a, emission);
+
+   a3_wait(a, I, A3_SYNC_G, emission);
+}
+
+/* The stack registers (bytes per thread) the packing of I uses, for the
+ * entry program to allocate (specTPR) */
+unsigned
+agx3_stack_size(const agx_instr *I)
+{
+   if (I->op == AGX_OPCODE_ATOMIC && !agx_is_null(I->dest[0]))
+      return 4 * (A3_ATOMIC_STACK + 1);
+
+   return 0;
 }
 
 /* Barriers: G15 has one barrier instruction whose flags (AGX3.xml) say
