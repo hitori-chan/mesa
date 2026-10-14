@@ -1110,6 +1110,33 @@ struct drm_asahi_cmd_render {
 };
 
 /**
+ * struct drm_asahi_cmd_render_g15 - G15 additions to a render command
+ *
+ * On G15 (M3) a DRM_ASAHI_CMD_RENDER command is a struct
+ * drm_asahi_cmd_render followed by this struct; the command header's size
+ * covers both. The bg/eot fields of struct drm_asahi_cmd_render are
+ * ignored there: G15 takes each program as two 64-bit words.
+ *
+ * VAs in the job's VM: the VDM control stream must be in [64 GiB, 576 GiB)
+ * and the pointers inside it (PPP updates) are written as VA - 64 GiB, the
+ * render targets a PBE writes are relative to 1 TiB, and the VM's kernel
+ * range must reach into [64 GiB, 576 GiB) (the parameter buffer's blocks).
+ */
+struct drm_asahi_cmd_render_g15 {
+	/** @bg: Background program: the binding word, the entry program's VA */
+	__u64 bg[2];
+
+	/** @eot: End-of-tile program: the binding word, the entry program's VA */
+	__u64 eot[2];
+
+	/** @partial_bg: Background program for partial renders (unused yet) */
+	__u64 partial_bg[2];
+
+	/** @partial_eot: End-of-tile program for partial renders (unused yet) */
+	__u64 partial_eot[2];
+};
+
+/**
  * struct drm_asahi_cmd_compute - Command to submit compute
  *
  * This command submits a control stream consisting of compute dispatches. There
