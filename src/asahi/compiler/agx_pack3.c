@@ -17,7 +17,9 @@
  * whose register class matches and which offers the flags to set.
  */
 
+#include <setjmp.h>
 #include "util/bitscan.h"
+#include "util/u_debug.h"
 #include "agx_compiler.h"
 #include "agx3_pack.h"
 
@@ -48,6 +50,10 @@ struct a3 {
    unsigned length;
    uint64_t ops[A3_MAX_OPS];
    uint64_t tmpl[A3_MAX_OPS];
+
+   /* The values set, checked against the packed instruction */
+   uint64_t want[A3_MAX_OPS];
+   uint32_t set;
 };
 
 static unsigned
@@ -70,6 +76,7 @@ a3_begin(struct a3 *a, const agx_instr *I, enum agx3_instr instr,
    a->I = I;
    a->spec = agx3_spec(instr);
    a->length = n;
+   a->set = 0;
    assert(a->spec->nops <= A3_MAX_OPS);
    agx3_unpack(in, a->spec, n, a->ops);
    memcpy(a->tmpl, a->ops, sizeof(a->ops));
@@ -106,6 +113,8 @@ a3_set(struct a3 *a, unsigned op, uint64_t v)
    }
 
    a->ops[op] = v;
+   a->want[op] = v;
+   a->set |= BITFIELD_BIT(op);
 }
 
 static uint32_t
@@ -161,9 +170,11 @@ a3_fix_carry(const struct a3 *a, unsigned op, const struct agx3_case *c,
    const struct agx3_case *cases = s->cases + s->case_start[op];
    unsigned n = s->ncases[op];
    uint64_t base = v & ~c->carry_mask;
+   uint64_t pad = s->op_pad ? s->op_pad[op] : 0;
 
+   /* The disassembler reads the constant bits of the operand too */
    uint64_t t = base | (a->tmpl[op] & c->carry_mask);
-   if (agx3_case_match(cases, n, t) == c)
+   if (agx3_case_match(cases, n, t | pad) == c)
       return t;
 
    unsigned bits[64], nbits = 0;
@@ -180,7 +191,7 @@ a3_fix_carry(const struct a3 *a, unsigned op, const struct agx3_case *c,
          u_foreach_bit(i, m)
             carry |= BITFIELD64_BIT(bits[i]);
 
-         if (agx3_case_match(cases, n, base | carry) == c)
+         if (agx3_case_match(cases, n, base | carry | pad) == c)
             return base | carry;
       }
    }
@@ -194,9 +205,39 @@ a3_size(enum agx_size size)
    return size == AGX_SIZE_16 ? 0 : size == AGX_SIZE_32 ? 1 : 2;
 }
 
+/* AGX3_SURVEY=1: count what the packer cannot pack, by message and opcode,
+ * print the table at exit and keep going (the instruction is dropped) */
+static jmp_buf a3_survey_jmp;
+static bool a3_survey_on, a3_debug;
+static unsigned a3_survey_count[AGX_NUM_OPCODES][8];
+static const char *a3_survey_what[8];
+
+static void
+a3_survey_print(void)
+{
+   for (unsigned op = 0; op < AGX_NUM_OPCODES; op++) {
+      for (unsigned w = 0; w < ARRAY_SIZE(a3_survey_what); w++) {
+         if (a3_survey_count[op][w])
+            fprintf(stderr, "AGX3 survey: %6u %-24s %s\n",
+                    a3_survey_count[op][w], agx_opcodes_info[op].name,
+                    a3_survey_what[w]);
+      }
+   }
+}
+
 static void NORETURN
 a3_fail(const struct a3 *a, const char *what)
 {
+   if (a3_survey_on) {
+      unsigned w = 0;
+      while (w < ARRAY_SIZE(a3_survey_what) - 1 && a3_survey_what[w] &&
+             strcmp(a3_survey_what[w], what))
+         w++;
+      a3_survey_what[w] = what;
+      a3_survey_count[a->I->op][w]++;
+      longjmp(a3_survey_jmp, 1);
+   }
+
    fprintf(stderr, "AGX3: %s: ", what);
    agx_print_instr(a->I, stderr);
    UNREACHABLE("AGX3 packing failed");
@@ -235,13 +276,17 @@ a3_reg(struct a3 *a, unsigned op, agx_index idx, uint32_t mods,
    return v;
 }
 
-/* An immediate operand of a register encoding */
+/* An immediate operand of a register encoding: an integer, or for a float
+ * operand the 8-bit float immediate (the case's first of the kind, falling
+ * back to the other kind for operands that have only one) */
 static uint64_t
-a3_imm(struct a3 *a, unsigned op, uint32_t value)
+a3_imm(struct a3 *a, unsigned op, uint32_t value, bool fl)
 {
-   const struct agx3_case *c = a3_case(a, op, A3_IMM, 0, 0, 0);
+   const struct agx3_case *c = a3_case(a, op, fl ? A3_FIMM : A3_IMM, 0, 0, 0);
    uint64_t modvals[AGX3_MAX_CASE_FIELDS] = {0};
 
+   if (!c)
+      c = a3_case(a, op, fl ? A3_IMM : A3_FIMM, 0, 0, 0);
    if (!c)
       a3_fail(a, "no immediate case");
 
@@ -264,7 +309,7 @@ static uint64_t
 a3_src(struct a3 *a, unsigned op, agx_index idx, bool integer)
 {
    if (idx.type == AGX_INDEX_IMMEDIATE)
-      return a3_imm(a, op, idx.value);
+      return a3_imm(a, op, idx.value, !integer);
 
    uint32_t mods = 0;
    if (idx.abs)
@@ -276,11 +321,76 @@ a3_src(struct a3 *a, unsigned op, agx_index idx, bool integer)
                  0);
 }
 
+/* A t/v consistency modifier (dst_vt): its first bit is the complement of
+ * its second; the destination holds both as carry bits (and the group the
+ * second). Set the first from the second as packed so far, in every
+ * operand that holds it. */
+static void
+a3_vt(struct a3 *a, unsigned op)
+{
+   const struct agx3_pack_spec *s = a->spec;
+   uint8_t out[AGX3_MAX_BYTES] = {0};
+   const struct agx3_field *t = &s->fields[s->op_start[op]];
+   const struct agx3_field *v = t + 1;
+
+   assert(s->op_start[op + 1] - s->op_start[op] == 2);
+   assert(t->size == 1 && v->size == 1);
+   a->ops[op] = 0;
+   agx3_pack(out, s, a->length, a->ops);
+
+   bool vbit = (out[v->start / 8] >> (v->start % 8)) & 1;
+   a->ops[op] = vbit ? 2 : 1;
+
+   for (unsigned j = 0; j < s->nops; j++) {
+      for (unsigned f = s->op_start[j]; f < s->op_start[j + 1]; f++) {
+         const struct agx3_field *g = &s->fields[f];
+         if (j == op || t->start < g->start || t->start >= g->start + g->size)
+            continue;
+
+         uint64_t bit = BITFIELD64_BIT(g->vpos + t->start - g->start);
+         a->ops[j] = vbit ? a->ops[j] & ~bit : a->ops[j] | bit;
+         a->want[j] = vbit ? a->want[j] & ~bit : a->want[j] | bit;
+      }
+   }
+}
+
+/* Pack the instruction into out and check it. Operands share instruction
+ * bits: an operand set later can change one set earlier, and an operand
+ * value can have bits the encoding cannot hold (a register too high for a
+ * short form, a modifier it lacks). The instruction must read back as set. */
+static bool
+a3_check(const struct a3 *a, uint8_t *out)
+{
+   uint64_t back[A3_MAX_OPS];
+
+   memset(out, 0, AGX3_MAX_BYTES);
+   agx3_pack(out, a->spec, a->length, a->ops);
+   agx3_unpack(out, a->spec, a->length, back);
+
+   u_foreach_bit(op, a->set) {
+      uint64_t pad = a->spec->op_pad ? a->spec->op_pad[op] : 0;
+
+      if (back[op] != (a->want[op] | pad)) {
+         if (a3_debug)
+            fprintf(stderr, "AGX3: %s operand %u: set 0x%" PRIx64
+                    ", reads 0x%" PRIx64 "\n",
+                    a->spec->name, op, a->want[op], back[op]);
+         return false;
+      }
+   }
+
+   return agx3_instr_length(out) == a->length;
+}
+
 static void
 a3_emit(struct a3 *a, struct util_dynarray *emission)
 {
-   agx3_pack(util_dynarray_grow_bytes(emission, 1, a->length), a->spec,
-             a->length, a->ops);
+   uint8_t out[AGX3_MAX_BYTES];
+
+   if (!a3_check(a, out))
+      a3_fail(a, "the operands do not fit the encoding");
+
+   memcpy(util_dynarray_grow_bytes(emission, 1, a->length), out, a->length);
 }
 
 /* G13 special registers to G15 (AGX3.xml's sr names) */
@@ -405,7 +515,7 @@ static uint64_t
 a3_memidx(struct a3 *a, unsigned op, agx_index idx)
 {
    if (idx.type == AGX_INDEX_IMMEDIATE)
-      return a3_imm(a, op, idx.value);
+      return a3_imm(a, op, idx.value, false);
 
    return a3_reg(a, op, idx, idx.abs ? BITFIELD_BIT(A3_SX) : 0, 0, 0);
 }
@@ -433,6 +543,28 @@ a3_memshift(const struct a3 *a, unsigned bytes)
 #define T_STORE     "e7005400020000001100009008" "00"
 #define T_WAIT      "0604"                         /* wait 0 */
 #define T_STOP      "0e000000"
+#define T_BITOP     "0b030605000800000000"         /* andn1 r0, r1, r2 */
+#define T_CMPSEL    "02030305020605000008"         /* cmpsel ult, r0..r4 */
+#define T_CMPSEL14  T_CMPSEL "00000000"
+#define T_IMADD     "9f00540002041030d0212a00"     /* imadd r0, r1, r2, r3 */
+#define T_IADD64    "9f015400020820501105"         /* iadd dr0, dr2, dr4 */
+#define T_IADD_SH   "9f0154000200f8c81004"         /* iadd r0, 0, r0, lsl 1 */
+#define T_BFEIL     "a70054000200001090100800"     /* bfeil r0, r1, 0, 0 */
+#define T_ASR       "a7015400020408182200"         /* asr r0, r1, r2 */
+#define T_IUNOP     "2705540002044c04"             /* popcount r0, r1 */
+#define T_F2I       "27075400020494480300"         /* convert f_to_s32 */
+#define T_I2F       "a707540002048c20"             /* convert u32_to_f */
+#define T_FUNOP     "2f005400020490400200"         /* floor r0, r1 */
+#define T_FADD      "01000400020000000000"         /* fadd (10 B) */
+#define T_FFMA      "01000600020000000000"         /* ffma (10 B) */
+#define T_ZERO10    "00000000000000000000"
+#define T_IF        "0f055401"                     /* if cc0, 1 */
+#define T_ELSE      "0f042401"                     /* else cc0, 1 */
+#define T_WHILE     "8f045405"                     /* while cc1, 1 */
+#define T_BREAK     "8f0554010000"                 /* break cc0, 1 */
+#define T_POP_EXEC  "0f0604010000"                 /* pop_exec 1 */
+#define T_JMP       "0f015402a0c900000100"         /* jmp_exec_none */
+#define T_ZERO12    "000000000000000000000000"
 
 /* Operand positions (AGX3.xml order) */
 enum {
@@ -459,7 +591,229 @@ enum {
    MEM_SHIFT = 6,
    MEM_OFFSET = 7,
    WAIT_MASK = 0,
+   BITOP_TT = 0,
+   CMPSEL_CC = 0,
+   VT = 1,
+   IADD_WT = 2,
+   IADD_SHIFT = 5,
+   CONVERT_MODE = 0,
+   CONVERT_DST = 1,
+   CONVERT_VT = 2,
+   CONVERT_SRC = 3,
+   CONVERT_RND = 4,
 };
+
+/* An ALU instruction: the destination, the sources in IR order at the
+ * operand positions srcs, the t/v modifiers and the saturate flag (-1 for
+ * none) */
+struct a3_alu {
+   enum agx3_instr instr;
+   const char *tmpl;
+   uint8_t srcs[4];
+   int8_t vt, wt, sat;
+   bool integer;
+};
+
+static void
+a3_alu(struct a3 *a, const agx_instr *I, const struct a3_alu *d,
+       const agx_index *srcs, struct util_dynarray *emission)
+{
+   unsigned nsrcs = agx_opcodes_info[I->op].nr_srcs;
+
+   a3_begin(a, I, d->instr, d->tmpl);
+   a3_set(a, 0, a3_reg(a, 0, I->dest[0], 0, 0, 0));
+
+   for (unsigned i = 0; i < nsrcs; i++)
+      a3_set(a, d->srcs[i], a3_src(a, d->srcs[i], srcs[i], d->integer));
+
+   if (d->sat >= 0)
+      a3_set(a, d->sat, I->saturate);
+   else if (I->saturate)
+      a3_fail(a, "saturate not supported");
+
+   if (d->vt >= 0)
+      a3_vt(a, d->vt);
+   if (d->wt >= 0)
+      a3_vt(a, d->wt);
+
+   a3_emit(a, emission);
+}
+
+static const struct a3_alu a3_imadd = {AGX3_IMADD, T_IMADD, {2, 3, 4}, 1, -1, 7, true};
+static const struct a3_alu a3_imsub = {AGX3_IMSUB, T_IMADD, {2, 3, 4}, 1, -1, 7, true};
+static const struct a3_alu a3_iadd = {AGX3_IADD, T_IADD, {3, 4}, 1, 2, 7, true};
+static const struct a3_alu a3_isub = {AGX3_ISUB, T_IADD, {3, 4}, 1, 2, 7, true};
+static const struct a3_alu a3_iadd64 = {AGX3_IADD64, T_IADD64, {3, 4}, 1, 2, -1, true};
+static const struct a3_alu a3_isub64 = {AGX3_ISUB64, T_IADD64, {3, 4}, 1, 2, -1, true};
+static const struct a3_alu a3_iadd_sh = {AGX3_IADD_SHIFT, T_IADD_SH, {3, 4}, 1, 2, -1, true};
+static const struct a3_alu a3_isub_sh = {AGX3_ISUB_SHIFT, T_IADD_SH, {3, 4}, 1, 2, -1, true};
+static const struct a3_alu a3_bfi = {AGX3_BFI, T_BFI, {2, 3, 4}, 1, -1, -1, true};
+static const struct a3_alu a3_bfeil = {AGX3_BFEIL, T_BFEIL, {2, 3, 4}, 1, -1, -1, true};
+static const struct a3_alu a3_extr = {AGX3_EXTR, T_BFEIL, {2, 3, 4}, 1, -1, -1, true};
+static const struct a3_alu a3_asr = {AGX3_ASR, T_ASR, {2, 3}, 1, -1, -1, true};
+static const struct a3_alu a3_bitrev = {AGX3_BITREV, T_IUNOP, {2}, 1, -1, -1, true};
+static const struct a3_alu a3_popcount = {AGX3_POPCOUNT, T_IUNOP, {2}, 1, -1, -1, true};
+static const struct a3_alu a3_ffs = {AGX3_FFS, T_IUNOP, {2}, 1, -1, -1, true};
+static const struct a3_alu a3_fadd = {AGX3_FADD10, T_FADD, {1, 2}, -1, -1, 5, false};
+static const struct a3_alu a3_fmul = {AGX3_FMUL12, T_ZERO12, {1, 2}, -1, -1, 5, false};
+static const struct a3_alu a3_ffma = {AGX3_FFMA10, T_FFMA, {1, 2, 3}, -1, -1, 6, false};
+static const struct a3_alu a3_hadd = {AGX3_HADD10, T_ZERO10, {1, 2}, -1, -1, 4, false};
+static const struct a3_alu a3_hmul = {AGX3_HMUL10, T_ZERO10, {1, 2}, -1, -1, 4, false};
+static const struct a3_alu a3_hfma = {AGX3_HFMA10, T_FFMA, {1, 2, 3}, -1, -1, 5, false};
+
+/* The float unary operations: dest, t/v, source */
+static enum agx3_instr
+a3_funop(enum agx_opcode op)
+{
+   switch (op) {
+   case AGX_OPCODE_FLOOR: return AGX3_FLOOR;
+   case AGX_OPCODE_CEIL: return AGX3_CEIL;
+   case AGX_OPCODE_TRUNC: return AGX3_TRUNC;
+   case AGX_OPCODE_ROUNDEVEN: return AGX3_RINT;
+   case AGX_OPCODE_RCP: return AGX3_RCP;
+   case AGX_OPCODE_RSQRT: return AGX3_RSQRT;
+   case AGX_OPCODE_SRSQRT: return AGX3_RSQRT_SPECIAL;
+   case AGX_OPCODE_LOG2: return AGX3_LOG2;
+   case AGX_OPCODE_EXP2: return AGX3_EXP2;
+   default: return AGX3_NUM_INSTRS;
+   }
+}
+
+/* bitop: the truth table bit (a | b << 1) is the IR's. Tables that read
+ * only b misbehave (applegpu: 0011 acts as and, 1100 hangs): those read
+ * a with the sources swapped. */
+static void
+a3_bitop(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
+{
+   unsigned tt = I->truth_table & 0xf;
+   agx_index x = I->src[0], y = I->src[1];
+
+   if (tt == 0xc || tt == 0x3) {
+      tt = (tt & 0x9) | ((tt & 2) << 1) | ((tt & 4) >> 1);
+      x = I->src[1];
+      y = I->src[0];
+   }
+
+   a3_begin(a, I, AGX3_BITOP10, T_BITOP);
+   a3_set(a, BITOP_TT, tt);
+   a3_set(a, 1, a3_reg(a, 1, I->dest[0], 0, 0, 0));
+   a3_set(a, 2, a3_src(a, 2, x, true));
+   a3_set(a, 3, a3_src(a, 3, y, true));
+   a3_emit(a, emission);
+}
+
+/* icmpsel/fcmpsel: D = A cc B ? X : Y. The selected values are moved as
+ * integers unless they carry float modifiers. */
+static void
+a3_cmpsel(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
+{
+   static const uint8_t icc[] = {
+      [AGX_ICOND_UEQ] = 15, [AGX_ICOND_ULT] = 5, [AGX_ICOND_UGT] = 4,
+      [AGX_ICOND_SEQ] = 15, [AGX_ICOND_SLT] = 7, [AGX_ICOND_SGT] = 6,
+   };
+   static const uint8_t fcc[] = {
+      [AGX_FCOND_EQ] = 8, [AGX_FCOND_LT] = 3,  [AGX_FCOND_GT] = 2,
+      [AGX_FCOND_LTN] = 1, [AGX_FCOND_GE] = 10, [AGX_FCOND_LE] = 11,
+      [AGX_FCOND_GTN] = 0,
+   };
+   bool integer = I->op == AGX_OPCODE_ICMPSEL;
+   unsigned cc = integer ? icc[I->icond] : fcc[I->fcond];
+   bool sel_int = true;
+
+   for (unsigned i = 2; i < 4; i++)
+      sel_int &= !I->src[i].abs && !I->src[i].neg;
+
+   /* The 10-byte form lacks abs on the compared values and the high
+    * destination bits; the 14-byte form has them */
+   for (unsigned len = 10;; len = 14) {
+      uint8_t out[AGX3_MAX_BYTES];
+
+      a3_begin(a, I, len == 10 ? AGX3_CMPSEL10 : AGX3_CMPSEL14,
+               len == 10 ? T_CMPSEL : T_CMPSEL14);
+      a3_set(a, CMPSEL_CC, cc);
+      a3_set(a, 1, a3_reg(a, 1, I->dest[0], 0, 0, 0));
+      a3_set(a, 2, a3_src(a, 2, I->src[0], integer));
+      a3_set(a, 3, a3_src(a, 3, I->src[1], integer));
+      a3_set(a, 4, a3_src(a, 4, I->src[2], sel_int));
+      a3_set(a, 5, a3_src(a, 5, I->src[3], sel_int));
+
+      if (len == 14 || a3_check(a, out))
+         break;
+   }
+
+   a3_emit(a, emission);
+}
+
+/* iadd: D = A + (B << shift), isub for a negated B; 64-bit adds have no
+ * shift */
+static void
+a3_iadd_op(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
+{
+   agx_index srcs[2] = {I->src[0], I->src[1]};
+   bool sub = srcs[1].neg;
+   srcs[1].neg = false;
+
+   if (srcs[0].neg)
+      a3_fail(a, "iadd with a negated first source");
+
+   if (I->dest[0].size == AGX_SIZE_64) {
+      if (I->shift)
+         a3_fail(a, "64-bit iadd with a shift");
+
+      a3_alu(a, I, sub ? &a3_isub64 : &a3_iadd64, srcs, emission);
+   } else if (I->shift) {
+      if (I->shift > 4 || I->saturate)
+         a3_fail(a, "iadd shift form not supported");
+
+      const struct a3_alu *d = sub ? &a3_isub_sh : &a3_iadd_sh;
+      a3_begin(a, I, d->instr, d->tmpl);
+      a3_set(a, 0, a3_reg(a, 0, I->dest[0], 0, 0, 0));
+      a3_set(a, 3, a3_src(a, 3, srcs[0], true));
+      a3_set(a, 4, a3_src(a, 4, srcs[1], true));
+      a3_set(a, IADD_SHIFT, I->shift & 3);
+      a3_vt(a, 1);
+      a3_vt(a, 2);
+      a3_emit(a, emission);
+   } else {
+      a3_alu(a, I, sub ? &a3_isub : &a3_iadd, srcs, emission);
+   }
+}
+
+/* convert: src[0] is the G13 mode, src[1] the value */
+static void
+a3_convert(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
+{
+   static const int8_t f2i[16] = {
+      [0 ... 15] = -1,
+      [AGX_CONVERT_F_TO_U16] = 4, [AGX_CONVERT_F_TO_S16] = 3,
+      [AGX_CONVERT_F_TO_U32] = 0, [AGX_CONVERT_F_TO_S32] = 5,
+   };
+   static const int8_t i2f[16] = {
+      [0 ... 15] = -1,
+      [AGX_CONVERT_U8_TO_F] = 1,  [AGX_CONVERT_S8_TO_F] = 3,
+      [AGX_CONVERT_U16_TO_F] = 0, [AGX_CONVERT_S16_TO_F] = 2,
+      [AGX_CONVERT_U32_TO_F] = 4, [AGX_CONVERT_S32_TO_F] = 6,
+   };
+
+   if (I->src[0].type != AGX_INDEX_IMMEDIATE || I->src[0].value > 15)
+      a3_fail(a, "convert mode is not an immediate");
+
+   unsigned mode = I->src[0].value;
+   bool to_int = f2i[mode] >= 0;
+
+   if (!to_int && i2f[mode] < 0)
+      a3_fail(a, "convert mode not supported");
+
+   a3_begin(a, I, to_int ? AGX3_CONVERT_F2I : AGX3_CONVERT_I2F,
+            to_int ? T_F2I : T_I2F);
+   a3_set(a, CONVERT_MODE, to_int ? f2i[mode] : i2f[mode]);
+   a3_set(a, CONVERT_DST, a3_reg(a, CONVERT_DST, I->dest[0], 0, 0, 0));
+   a3_set(a, CONVERT_SRC, a3_src(a, CONVERT_SRC, I->src[1], !to_int));
+   if (!to_int)
+      a3_set(a, CONVERT_RND, I->round == AGX_ROUND_RTZ ? 1 : 0);
+   a3_vt(a, CONVERT_VT);
+   a3_emit(a, emission);
+}
 
 static void
 a3_mov_imm(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
@@ -516,17 +870,173 @@ a3_uniform_store(struct a3 *a, const agx_instr *I,
 
       agx_index dst = agx_uniform(offset.value + 2 * w, size);
 
-      a3_begin(a, I, AGX3_MOV, T_MOV);
-      a3_set(a, MOV_DST, a3_reg(a, MOV_DST, dst, 0, 0, 0));
-      a3_set(a, MOV_SRC, a3_reg(a, MOV_SRC, src, 0, BITFIELD_BIT(A3_SX), 0));
+      /* The 4-byte mov reaches registers and uniforms below 64 */
+      for (unsigned len = 4;; len = 10) {
+         uint8_t out[AGX3_MAX_BYTES];
+
+         a3_begin(a, I, len == 4 ? AGX3_MOV : AGX3_MOV10,
+                  len == 4 ? T_MOV : T_ZERO10);
+         a3_set(a, MOV_DST, a3_reg(a, MOV_DST, dst, 0, 0, 0));
+         a3_set(a, MOV_SRC,
+                a3_reg(a, MOV_SRC, src, 0, BITFIELD_BIT(A3_SX), 0));
+
+         if (len == 10 || a3_check(a, out))
+            break;
+      }
+
       a3_emit(a, emission);
    }
 }
 
+
+/* Control flow. G15 has no nesting counter in r0l: the exec stack
+ * instructions (if, else, while, break; push_exec, pop_exec) take a
+ * condition code cc0-cc5 that a cmp sets (TODO: not verified on hardware).
+ * The IR's compare-and-branch instructions are a cmp to CF_CC and the
+ * instruction on it. */
+#define CF_CC          0
+#define CC_ALWAYS      6
+#define CMP_CC         0
+#define CMP_D          1
+#define CMP_A          2
+#define CMP_B          3
+#define EXEC_A         0
+#define EXEC_N         1
+#define JMP_TARGET     0
+
+struct agx3_fixup {
+   agx_block *block;
+   uint32_t offset;
+   bool skip_to_end;
+};
+
+static unsigned
+a3_icc(enum agx_icond c)
+{
+   static const uint8_t icc[] = {
+      [AGX_ICOND_UEQ] = 15, [AGX_ICOND_ULT] = 5, [AGX_ICOND_UGT] = 4,
+      [AGX_ICOND_SEQ] = 15, [AGX_ICOND_SLT] = 7, [AGX_ICOND_SGT] = 6,
+   };
+   return icc[c];
+}
+
+static unsigned
+a3_fcc(enum agx_fcond c)
+{
+   static const uint8_t fcc[] = {
+      [AGX_FCOND_EQ] = 8, [AGX_FCOND_LT] = 3,  [AGX_FCOND_GT] = 2,
+      [AGX_FCOND_LTN] = 1, [AGX_FCOND_GE] = 10, [AGX_FCOND_LE] = 11,
+      [AGX_FCOND_GTN] = 0,
+   };
+   return fcc[c];
+}
+
+/* cmp: cc = A cond B, inverted by invert (cmpselcc4: 32 + cond, 48 + the
+ * inverted cond) */
+static void
+a3_cmp(struct a3 *a, const agx_instr *I, bool fl, unsigned cond, bool invert,
+       unsigned cc, struct util_dynarray *emission)
+{
+   a3_begin(a, I, AGX3_CMPCC10, T_ZERO10);
+   a3_set(a, CMP_CC, (invert ? 48 : 32) + cond);
+   a3_set(a, CMP_D, cc);
+   a3_set(a, CMP_A, a3_src(a, CMP_A, I->src[0], !fl));
+   a3_set(a, CMP_B, a3_src(a, CMP_B, I->src[1], !fl));
+   a3_emit(a, emission);
+}
+
+/* An exec stack instruction on a condition code */
+static void
+a3_exec(struct a3 *a, const agx_instr *I, enum agx3_instr instr,
+        const char *tmpl, unsigned cc, unsigned n,
+        struct util_dynarray *emission)
+{
+   a3_begin(a, I, instr, tmpl);
+   a3_set(a, EXEC_A, cc);
+   a3_set(a, EXEC_N, n);
+   a3_emit(a, emission);
+}
+
+/* if/else/while: the IR's compare, then the instruction on its result.
+ * A compare of 0.0 == 0.0 (emit_if's unconditional else, agx_push_exec's
+ * if) is cc_always: the if is push_exec. */
+static void
+a3_cf_cmp(struct a3 *a, const agx_instr *I, enum agx3_instr instr,
+          const char *tmpl, struct util_dynarray *emission)
+{
+   bool fl = I->op == AGX_OPCODE_IF_FCMP || I->op == AGX_OPCODE_ELSE_FCMP ||
+             I->op == AGX_OPCODE_WHILE_FCMP || I->op == AGX_OPCODE_BREAK_IF_FCMP;
+   unsigned cond = fl ? a3_fcc(I->fcond) : a3_icc(I->icond);
+   unsigned cc = CF_CC;
+
+   bool always = fl && I->fcond == AGX_FCOND_EQ && !I->invert_cond &&
+                 agx_is_equiv(I->src[0], agx_zero()) &&
+                 agx_is_equiv(I->src[1], agx_zero());
+
+   if (always)
+      cc = CC_ALWAYS;
+   else
+      a3_cmp(a, I, fl, cond, I->invert_cond, cc, emission);
+
+   a3_exec(a, I, instr, tmpl, cc, I->nest, emission);
+}
+
+/* A jump: the target is patched by agx3_fixup_branches */
+static void
+a3_jmp(struct a3 *a, const agx_instr *I, enum agx3_instr instr,
+       struct util_dynarray *emission, struct util_dynarray *fixups)
+{
+   if (!I->target || !fixups)
+      a3_fail(a, "jump without a target");
+
+   struct agx3_fixup fixup = {
+      .block = I->target,
+      .offset = emission->size,
+      .skip_to_end = I->op == AGX_OPCODE_JMP_EXEC_NONE_AFTER,
+   };
+   util_dynarray_append(fixups, fixup);
+
+   a3_begin(a, I, instr, T_JMP);
+   a3_set(a, JMP_TARGET, 0);
+   a3_emit(a, emission);
+}
+
+/* The branch operand: bit 0 clear (relative), the offset in halfwords from
+ * the jump instruction in bits 1:47; at instruction bits 24:71 */
 void
-agx3_pack_instr(struct util_dynarray *emission, const agx_instr *I)
+agx3_fixup_branches(struct util_dynarray *emission,
+                    struct util_dynarray *fixups)
+{
+   util_dynarray_foreach(fixups, struct agx3_fixup, fix) {
+      uint8_t *p = (uint8_t *)emission->data + fix->offset;
+      uint32_t target =
+         fix->skip_to_end ? fix->block->last_offset : fix->block->offset;
+      int64_t bytes = (int64_t)target - (int64_t)fix->offset;
+      uint64_t v = ((uint64_t)(bytes >> 1) & BITFIELD64_MASK(47)) << 1;
+
+      assert((bytes & 1) == 0);
+      for (unsigned i = 0; i < 6; i++)
+         p[3 + i] = v >> (8 * i);
+   }
+}
+
+void
+agx3_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
+                const agx_instr *I)
 {
    struct a3 a = {.I = I};
+
+   static bool once;
+   if (!once) {
+      once = true;
+      a3_survey_on = debug_get_bool_option("AGX3_SURVEY", false);
+      a3_debug = debug_get_bool_option("AGX3_DEBUG", false);
+      if (a3_survey_on)
+         atexit(a3_survey_print);
+   }
+
+   if (a3_survey_on && setjmp(a3_survey_jmp))
+      return;
 
    switch (I->op) {
    case AGX_OPCODE_MOV_IMM:
@@ -548,29 +1058,103 @@ agx3_pack_instr(struct util_dynarray *emission, const agx_instr *I)
       return;
 
    case AGX_OPCODE_IADD:
-      if (I->shift != 0 || I->dest[0].size != AGX_SIZE_32)
-         a3_fail(&a, "iadd form not supported yet");
-
-      a3_begin(&a, I, AGX3_IADD, T_IADD);
-      a3_set(&a, IADD_DST, a3_reg(&a, IADD_DST, I->dest[0], 0, 0, 0));
-      a3_set(&a, IADD_A, a3_src(&a, IADD_A, I->src[0], true));
-      a3_set(&a, IADD_B, a3_src(&a, IADD_B, I->src[1], true));
-      a3_set(&a, IADD_SAT, I->saturate);
-      a3_emit(&a, emission);
+      a3_iadd_op(&a, I, emission);
       return;
+
+   case AGX_OPCODE_IMAD: {
+      agx_index srcs[3] = {I->src[0], I->src[1], I->src[2]};
+      bool sub = srcs[2].neg;
+      srcs[2].neg = false;
+
+      if (I->shift)
+         a3_fail(&a, "imad with a shift");
+
+      a3_alu(&a, I, sub ? &a3_imsub : &a3_imadd, srcs, emission);
+      return;
+   }
 
    case AGX_OPCODE_BFI:
-      if (I->dest[0].size != AGX_SIZE_32)
-         a3_fail(&a, "bfi form not supported yet");
-
-      a3_begin(&a, I, AGX3_BFI, T_BFI);
-      a3_set(&a, BFI_DST, a3_reg(&a, BFI_DST, I->dest[0], 0, 0, 0));
-      a3_set(&a, BFI_A, a3_src(&a, BFI_A, I->src[0], true));
-      a3_set(&a, BFI_B, a3_src(&a, BFI_B, I->src[1], true));
-      a3_set(&a, BFI_C, a3_src(&a, BFI_C, I->src[2], true));
+   case AGX_OPCODE_BFEIL:
+   case AGX_OPCODE_EXTR: {
+      const struct a3_alu *d = I->op == AGX_OPCODE_BFI     ? &a3_bfi
+                               : I->op == AGX_OPCODE_BFEIL ? &a3_bfeil
+                                                           : &a3_extr;
+      a3_begin(&a, I, d->instr, d->tmpl);
+      a3_set(&a, 0, a3_reg(&a, 0, I->dest[0], 0, 0, 0));
+      for (unsigned i = 0; i < 3; i++)
+         a3_set(&a, d->srcs[i], a3_src(&a, d->srcs[i], I->src[i], true));
       a3_set(&a, BFI_MASK, I->bfi_mask);
+      a3_vt(&a, VT);
       a3_emit(&a, emission);
       return;
+   }
+
+   case AGX_OPCODE_ASR:
+      a3_alu(&a, I, &a3_asr, I->src, emission);
+      return;
+
+   case AGX_OPCODE_BITREV:
+      a3_alu(&a, I, &a3_bitrev, I->src, emission);
+      return;
+
+   case AGX_OPCODE_POPCOUNT:
+      a3_alu(&a, I, &a3_popcount, I->src, emission);
+      return;
+
+   case AGX_OPCODE_FFS:
+      a3_alu(&a, I, &a3_ffs, I->src, emission);
+      return;
+
+   case AGX_OPCODE_BITOP:
+      a3_bitop(&a, I, emission);
+      return;
+
+   case AGX_OPCODE_ICMPSEL:
+   case AGX_OPCODE_FCMPSEL:
+      a3_cmpsel(&a, I, emission);
+      return;
+
+   case AGX_OPCODE_CONVERT:
+      a3_convert(&a, I, emission);
+      return;
+
+   case AGX_OPCODE_FADD:
+      a3_alu(&a, I, &a3_fadd, I->src, emission);
+      return;
+
+   case AGX_OPCODE_FMUL:
+      a3_alu(&a, I, &a3_fmul, I->src, emission);
+      return;
+
+   case AGX_OPCODE_FFMA:
+      a3_alu(&a, I, &a3_ffma, I->src, emission);
+      return;
+
+   case AGX_OPCODE_HADD:
+      a3_alu(&a, I, &a3_hadd, I->src, emission);
+      return;
+
+   case AGX_OPCODE_HMUL:
+      a3_alu(&a, I, &a3_hmul, I->src, emission);
+      return;
+
+   case AGX_OPCODE_HFMA:
+      a3_alu(&a, I, &a3_hfma, I->src, emission);
+      return;
+
+   case AGX_OPCODE_FLOOR:
+   case AGX_OPCODE_CEIL:
+   case AGX_OPCODE_TRUNC:
+   case AGX_OPCODE_ROUNDEVEN:
+   case AGX_OPCODE_RCP:
+   case AGX_OPCODE_RSQRT:
+   case AGX_OPCODE_SRSQRT:
+   case AGX_OPCODE_LOG2:
+   case AGX_OPCODE_EXP2: {
+      struct a3_alu d = {a3_funop(I->op), T_FUNOP, {2}, VT, -1, -1, false};
+      a3_alu(&a, I, &d, I->src, emission);
+      return;
+   }
 
    case AGX_OPCODE_DEVICE_LOAD:
    case AGX_OPCODE_DEVICE_STORE:
@@ -579,6 +1163,45 @@ agx3_pack_instr(struct util_dynarray *emission, const agx_instr *I)
 
    case AGX_OPCODE_UNIFORM_STORE:
       a3_uniform_store(&a, I, emission);
+      return;
+
+   case AGX_OPCODE_IF_ICMP:
+   case AGX_OPCODE_IF_FCMP:
+      a3_cf_cmp(&a, I, AGX3_IF, T_IF, emission);
+      return;
+
+   case AGX_OPCODE_ELSE_ICMP:
+   case AGX_OPCODE_ELSE_FCMP:
+      a3_cf_cmp(&a, I, AGX3_ELSE, T_ELSE, emission);
+      return;
+
+   case AGX_OPCODE_WHILE_ICMP:
+   case AGX_OPCODE_WHILE_FCMP:
+      a3_cf_cmp(&a, I, AGX3_WHILE, T_WHILE, emission);
+      return;
+
+   case AGX_OPCODE_BREAK_IF_ICMP:
+   case AGX_OPCODE_BREAK_IF_FCMP:
+      a3_cf_cmp(&a, I, AGX3_BREAK, T_BREAK, emission);
+      return;
+
+   case AGX_OPCODE_BREAK:
+      a3_exec(&a, I, AGX3_BREAK, T_BREAK, CC_ALWAYS, I->nest, emission);
+      return;
+
+   case AGX_OPCODE_POP_EXEC:
+      a3_begin(&a, I, AGX3_POP_EXEC, T_POP_EXEC);
+      a3_set(&a, 0, I->nest);
+      a3_emit(&a, emission);
+      return;
+
+   case AGX_OPCODE_JMP_EXEC_ANY:
+      a3_jmp(&a, I, AGX3_JMP_EXEC_ANY, emission, fixups);
+      return;
+
+   case AGX_OPCODE_JMP_EXEC_NONE:
+   case AGX_OPCODE_JMP_EXEC_NONE_AFTER:
+      a3_jmp(&a, I, AGX3_JMP_EXEC_NONE, emission, fixups);
       return;
 
    case AGX_OPCODE_WAIT:
@@ -607,7 +1230,7 @@ agx3_emit_mov_imm(struct util_dynarray *out, unsigned reg, uint32_t imm)
    agx_instr I = {.op = AGX_OPCODE_MOV_IMM, .imm = imm};
    agx_index dst = agx_register(2 * reg, AGX_SIZE_32);
    I.dest = &dst;
-   agx3_pack_instr(out, &I);
+   agx3_pack_instr(out, NULL, &I);
 }
 
 void
@@ -628,14 +1251,14 @@ agx3_emit_load(struct util_dynarray *out, unsigned slot, unsigned dst,
       .dest = &d,
       .src = srcs,
    };
-   agx3_pack_instr(out, &I);
+   agx3_pack_instr(out, NULL, &I);
 }
 
 void
 agx3_emit_wait(struct util_dynarray *out, unsigned slot)
 {
    agx_instr I = {.op = AGX_OPCODE_WAIT, .scoreboard = slot};
-   agx3_pack_instr(out, &I);
+   agx3_pack_instr(out, NULL, &I);
 }
 
 void
@@ -647,14 +1270,14 @@ agx3_emit_uniform_store(struct util_dynarray *out, unsigned uniform,
       agx_immediate(2 * uniform),
    };
    agx_instr I = {.op = AGX_OPCODE_UNIFORM_STORE, .src = srcs};
-   agx3_pack_instr(out, &I);
+   agx3_pack_instr(out, NULL, &I);
 }
 
 void
 agx3_emit_stop(struct util_dynarray *out)
 {
    agx_instr I = {.op = AGX_OPCODE_STOP};
-   agx3_pack_instr(out, &I);
+   agx3_pack_instr(out, NULL, &I);
 }
 
 /* The length of the AGX3 instruction at code, 0 if none matches */
