@@ -979,6 +979,32 @@
   </enum>
 
   <!--
+   Atomic operation, the hardware's code (atomicdev/atomictg). Apple's
+   compiler passes G13's operation numbering (Mesa's agx_atomic_opc: the
+   low 4 bits of its memory-flags operand, sub_251C62B48) through a table
+   to this code. The 64-bit atomicdev form takes umin..imax only (Metal's
+   64-bit min/max); 3 and 7-10 have no G13 name.
+  -->
+  <enum kind="atomic_op" name="Atomic operation">
+    <value value="0">add</value>
+    <value value="1">and</value>
+    <value value="2">cmpxchg</value>
+    <value value="3">op11</value>
+    <value value="4">imax</value>
+    <value value="5">imin</value>
+    <value value="6">or</value>
+    <value value="7">op13</value>
+    <value value="8">op14</value>
+    <value value="9">op15</value>
+    <value value="10">op16</value>
+    <value value="11">sub</value>
+    <value value="12">umax</value>
+    <value value="13">umin</value>
+    <value value="14">xchg</value>
+    <value value="15">xor</value>
+  </enum>
+
+  <!--
    Destination of the variable-length ALU instructions (VariableDstDesc), 20 bits:
     0 l, 1:4 reg, 5:6 x, 7 h, 8:11 j, 12:13 y, 14 z (register: bits 0:14),
     15 s (32-bit), 16 c (cache; coordinate if uniform; stack bit 16),
@@ -2131,6 +2157,140 @@
       <exact bit="0">1</exact>
       <immediate name="imm" bit="1:47" shift="1"/>
       <property name="hex"/>
+    </case>
+  </encoding>
+
+  <!--
+   The G15 threadgroup memory and atomic operands below are from the
+   encoder tables of libLLVM.dylib (GPUCompiler.framework 32023, macOS
+   26A434): the field trees of ldtg, sttg, atomictg and atomicdev.
+
+   Threadgroup memory base (ldtg, sttg, atomictg): 0:7 the 16-bit register
+   or the 8-bit immediate, 8 the uniform's ninth bit (for a register an
+   unknown flag), 9 uniform (for a register: lu), 10 register
+  -->
+  <encoding name="tgbase">
+    <case>
+      <exact bit="10">1</exact>
+      <immediate name="reg" bit="0:7"/>
+      <modifier name="lu" bit="9"/>
+      <carry bit="8"/>
+    </case>
+    <case>
+      <exact bit="9:10">01</exact>
+      <immediate name="uniform" bit="0:8"/>
+    </case>
+    <case>
+      <exact bit="8:10">000</exact>
+      <immediate name="imm" bit="0:7"/>
+    </case>
+  </encoding>
+
+  <!--
+   Threadgroup memory index (ldtg, sttg): 0:15 the 16-bit immediate, the
+   16-bit register (0:7, 11 an unknown flag, 14 lu) or the uniform (0:8);
+   16 register, 17 uniform
+  -->
+  <encoding name="tgidx">
+    <case>
+      <exact bit="16:17">01</exact>
+      <immediate name="reg" bit="0:7"/>
+      <modifier name="lu" bit="14"/>
+      <carry bit="11"/>
+    </case>
+    <case>
+      <exact bit="16:17">10</exact>
+      <immediate name="uniform" bit="0:8"/>
+    </case>
+    <case>
+      <exact bit="16:17">00</exact>
+      <immediate name="imm" bit="0:15"/>
+    </case>
+  </encoding>
+
+  <!-- atomictg's index: tgidx with lu at 8 and the unknown flag at 15 -->
+  <encoding name="atgidx">
+    <case>
+      <exact bit="16:17">01</exact>
+      <immediate name="reg" bit="0:7"/>
+      <modifier name="lu" bit="8"/>
+      <carry bit="15"/>
+    </case>
+    <case>
+      <exact bit="16:17">10</exact>
+      <immediate name="uniform" bit="0:8"/>
+    </case>
+    <case>
+      <exact bit="16:17">00</exact>
+      <immediate name="imm" bit="0:15"/>
+    </case>
+  </encoding>
+
+  <!-- An atomic's data or result: 0:6 the 32-bit register, 7 lu -->
+  <encoding name="atomreg">
+    <case>
+      <immediate name="reg" bit="0:6" shift="1"/>
+      <modifier name="lu" bit="7"/>
+      <property name="size32"/>
+    </case>
+  </encoding>
+
+  <!--
+   atomicdev's base: 0:6 the 64-bit register (or uniform), 7 register,
+   8 an unknown flag, 9 lu
+  -->
+  <encoding name="atombase">
+    <case>
+      <exact bit="7">1</exact>
+      <immediate name="reg" bit="0:6" shift="1"/>
+      <modifier name="lu" bit="9"/>
+      <property name="size64"/>
+      <carry bit="8"/>
+    </case>
+    <case>
+      <exact bit="7:9">000</exact>
+      <immediate name="uniform" bit="0:6" shift="2"/>
+      <property name="size64"/>
+    </case>
+  </encoding>
+
+  <!--
+   atomicdev's index: 0:15 the 16-bit immediate, or the register (0:7, 8 an
+   unknown flag, 9 s (32-bit), 10 lu) or the uniform (0:8, 9 s); 16 sx,
+   17 register, 18 uniform
+  -->
+  <encoding name="atomidx">
+    <case>
+      <exact bit="9 17:18">011</exact>
+      <immediate name="reg" bit="1:7" shift="1"/>
+      <modifier name="sx" bit="16"/>
+      <modifier name="lu" bit="10"/>
+      <property name="size32"/>
+      <carry bit="0 8"/>
+    </case>
+    <case>
+      <exact bit="9 17:18">010</exact>
+      <immediate name="reg" bit="0:7"/>
+      <modifier name="sx" bit="16"/>
+      <modifier name="lu" bit="10"/>
+      <carry bit="8"/>
+    </case>
+    <case>
+      <exact bit="9 17:18">101</exact>
+      <immediate name="uniform" bit="1:8" shift="1"/>
+      <modifier name="sx" bit="16"/>
+      <property name="size32"/>
+      <carry bit="0"/>
+    </case>
+    <case>
+      <exact bit="9 17:18">100</exact>
+      <immediate name="uniform" bit="0:8"/>
+      <modifier name="sx" bit="16"/>
+    </case>
+    <case>
+      <exact bit="17:18">00</exact>
+      <immediate name="imm" bit="0:15"/>
+      <carry bit="16"/>
     </case>
   </encoding>
 
@@ -3516,6 +3676,96 @@
     <src kind="fsrc" bit="49 50:56 57 82 74 =00 =0 =0 =0 =0"/>
     <modifier name="mod" bit="78:80" kind="shufflemod"/>
     <modifier name="group" bit="67 69:70 68" kind="fgroup"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <!--
+   Threadgroup memory, atomics and the barrier, from libLLVM 32023's
+   encoder (ldtg 14 B, sttg 14 B, atomictg 12 B, atomicdev 14 B, barrier
+   6 B). Not verified on the hardware.
+
+   threadgroup_load (ldtg): g is the load group; 57:65, 76, 93 and 97 are
+   an optional extra operand (clear: none), bit 11 an unknown flag.
+  -->
+  <ins name="threadgroup_load" display="threadgroup_load" length="14">
+    <exact bit="0:10">01001100111</exact>
+    <immediate name="g" bit="72:74"/>
+    <modifier name="type" bit="70:71" kind="device_load_type"/>
+    <modifier name="mask" bit="66:69" kind="device_load_mask"/>
+    <dest kind="memreg" bit="24 25:31 70:71 66:69"/>
+    <src kind="tgbase" bit="32:39 40 75 98"/>
+    <src kind="tgidx" bit="41:56 99 100"/>
+    <modifier name="shift" bit="94:96" kind="memshift"/>
+    <immediate name="offset" bit="77:92" kind="signed"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <!-- threadgroup_store (sttg): bit 72 is the data register's lu -->
+  <ins name="threadgroup_store" display="threadgroup_store" length="14">
+    <exact bit="0:10">01011100111</exact>
+    <modifier name="type" bit="70:71" kind="device_store_type"/>
+    <modifier name="mask" bit="66:69" kind="device_store_mask"/>
+    <src kind="memreg" bit="24 25:31 70:71 66:69"/>
+    <src kind="tgbase" bit="32:39 40 73 96"/>
+    <src kind="tgidx" bit="41:56 97 98"/>
+    <modifier name="shift" bit="92:94" kind="memshift"/>
+    <immediate name="offset" bit="75:90" kind="signed"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <!--
+   threadgroup_atomic (atomictg), 32-bit: g is the result's load group + 1
+   (0: no result); c (63:64) is an unknown 0-2 field of Apple's, encoded
+   through the table 2 0 1. cmpxchg's data is a register pair.
+  -->
+  <ins name="threadgroup_atomic" display="threadgroup_atomic" length="12">
+    <exact bit="0:10">01101100111</exact>
+    <immediate name="g" bit="65:67"/>
+    <dest kind="atomreg" bit="24:30 =0"/>
+    <src kind="atomreg" bit="40:46 69"/>
+    <src kind="tgbase" bit="31:38 39 68 93"/>
+    <src kind="atgidx" bit="47:62 94 95"/>
+    <modifier name="op" bit="86:89" kind="atomic_op"/>
+    <modifier name="shift" bit="90:92" kind="memshift"/>
+    <immediate name="offset" bit="70:85" kind="signed"/>
+    <immediate name="c" bit="63:64"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <!--
+   device_atomic (atomicdev), 32-bit, without a result: the result goes
+   to the stack registers only (g at 73:75 = the group + 1, the stack
+   register at 24:39), not modelled here. Bit 70 set is the 64-bit form.
+  -->
+  <ins name="device_atomic" display="device_atomic" length="14">
+    <exact bit="0:10 70 73:75 96">0000000101100111</exact>
+    <src kind="atomreg" bit="47:53 78"/>
+    <src kind="atombase" bit="40:46 104 76 77"/>
+    <src kind="atomidx" bit="54:69 79 105 106"/>
+    <modifier name="op" bit="97:100" kind="atomic_op"/>
+    <modifier name="shift" bit="101:103" kind="memshift"/>
+    <immediate name="offset" bit="80:95" kind="signed"/>
+    <immediate name="c" bit="71:72"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <!--
+   barrier: flags at 24:35, Apple's MI flags (the lowering sub_250907088):
+    0 execution (threadgroup_barrier), 1 imageblock memory, 2 device
+    memory, 3 unknown, 4 texture memory, 5 threadgroup memory, 6:8 the
+    ordering (0 acquire, 4 release, 5 acq_rel without memory; 3 acquire,
+    1 release, 2 acq_rel with device or texture memory), 9 threadgroup or
+    wider scope (or texture memory), 10 device scope, 11 simdgroup scope
+    or a cache control (bit 3 is not set by Apple's barrier builder)
+  -->
+  <ins name="barrier" display="barrier" length="6">
+    <exact bit="0:10">10000000111</exact>
+    <immediate name="flags" bit="24:35"/>
     <modifier name="wait" bit="12:17" kind="wait"/>
     <modifier name="unk" bit="18 20 22" kind="expect3"/>
   </ins>
