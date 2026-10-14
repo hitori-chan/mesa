@@ -642,7 +642,8 @@ asahi_add_attachment(struct attachments *att, struct agx_resource *rsrc)
 void
 agx_batch_submit(struct agx_context *ctx, struct agx_batch *batch,
                  struct drm_asahi_cmd_compute *compute,
-                 struct drm_asahi_cmd_render *render)
+                 struct drm_asahi_cmd_render *render,
+                 struct drm_asahi_cmd_render_g15 *render_g15)
 {
    struct agx_device *dev = agx_device(ctx->base.screen);
    struct agx_screen *screen = agx_screen(ctx->base.screen);
@@ -859,8 +860,15 @@ agx_batch_submit(struct agx_context *ctx, struct agx_batch *batch,
       struct drm_asahi_cmd_header header = agx_cmd_header(
          false, compute ? DRM_ASAHI_BARRIER_NONE : 0, compute ? 1 : 0);
 
+      /* On G15 the command carries the uAPI's G15 part after it */
+      if (render_g15)
+         header.size += sizeof(*render_g15);
+
       util_dynarray_append(&cmdbuf, header);
       util_dynarray_append(&cmdbuf, *render);
+
+      if (render_g15)
+         util_dynarray_append(&cmdbuf, *render_g15);
    }
 
    struct drm_asahi_submit submit = {

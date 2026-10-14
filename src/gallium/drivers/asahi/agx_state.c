@@ -56,6 +56,7 @@
 #include "agx_bo.h"
 #include "agx_device.h"
 #include "agx_disk_cache.h"
+#include "agx_esl.h"
 #include "agx_linker.h"
 #include "agx_nir.h"
 #include "agx_nir_lower_vbo.h"
@@ -2654,6 +2655,30 @@ agx_nr_tex_descriptors(struct agx_batch *batch, struct agx_compiled_shader *cs)
 }
 
 /*
+ * G15 has no texture ABI yet: a shader that does not sample binds no textures
+ * or samplers (as in Honeykrisp), so that it builds. For a shader that does,
+ * the entry program fails to build, saying so.
+ */
+static bool
+agx_binds_samplers(struct agx_batch *batch, struct agx_compiled_shader *cs)
+{
+   struct agx_device *dev = agx_device(batch->ctx->base.screen);
+
+   return dev->params.gpu_generation < 15 || cs->b.info.uses_txf ||
+          agx_nr_tex_descriptors(batch, cs) > 0;
+}
+
+static enum agx_sampler_states
+agx_sampler_state_count(struct agx_batch *batch, struct agx_compiled_shader *cs,
+                        mesa_shader_stage stage)
+{
+   if (!agx_binds_samplers(batch, cs))
+      return AGX_SAMPLER_STATES_0;
+
+   return translate_sampler_state_count(batch->ctx, stage);
+}
+
+/*
  * For spilled render targets, upload a texture/PBE pair for each surface to
  * allow loading/storing to the render target from the shader.
  */
@@ -2872,6 +2897,32 @@ agx_update_descriptors(struct agx_batch *batch, struct agx_compiled_shader *cs)
       agx_pool_upload_aligned(&batch->pool, unif, sizeof(*unif), 16);
 }
 
+/*
+ * G15 starts a shader through an entry program built from its USC words
+ * (agx_esl.h). Returns its VA, or 0 if G15 cannot build one yet
+ * (agx_esl_from_usc says why).
+ */
+static uint64_t
+agx_upload_esl(struct agx_batch *batch, const uint8_t *usc,
+               const struct agx_esl_code *code, enum agx_esl_stage stage)
+{
+   struct agx_device *dev = agx_device(batch->ctx->base.screen);
+   struct util_dynarray esl;
+   util_dynarray_init(&esl, NULL);
+
+   uint64_t addr = 0;
+   if (agx_esl_from_usc(&esl, usc, dev->shader_base, code, stage)) {
+      struct agx_ptr t =
+         agx_pool_alloc_aligned(&batch->pipeline_pool, esl.size, 64);
+
+      memcpy(t.cpu, esl.data, esl.size);
+      addr = t.gpu;
+   }
+
+   util_dynarray_fini(&esl);
+   return addr;
+}
+
 static uint32_t
 agx_build_pipeline(struct agx_batch *batch, struct agx_compiled_shader *cs,
                    struct agx_linked_shader *linked,
@@ -2892,7 +2943,9 @@ agx_build_pipeline(struct agx_batch *batch, struct agx_compiled_shader *cs,
 
    mesa_shader_stage stage = cs->stage;
 
-   if (batch->texture_count[stage]) {
+   bool bind_samplers = agx_binds_samplers(batch, cs);
+
+   if (bind_samplers && batch->texture_count[stage]) {
       agx_usc_pack(&b, TEXTURE, cfg) {
          cfg.start = 0;
          cfg.count =
@@ -2901,7 +2954,7 @@ agx_build_pipeline(struct agx_batch *batch, struct agx_compiled_shader *cs,
       }
    }
 
-   if (batch->sampler_count[stage]) {
+   if (bind_samplers && batch->sampler_count[stage]) {
       agx_usc_pack(&b, SAMPLER, cfg) {
          cfg.start = 0;
          cfg.count = batch->sampler_count[stage];
@@ -2994,7 +3047,60 @@ agx_build_pipeline(struct agx_batch *batch, struct agx_compiled_shader *cs,
          ;
    }
 
+   if (dev->params.gpu_generation >= 15) {
+      struct agx_esl_code code = {
+         .va = cs->bo ? cs->bo->va->addr : 0,
+         .cpu = cs->bo ? agx_bo_map(cs->bo) : NULL,
+         .size = cs->b.info.binary_size,
+         .main_size = linked ? linked->main_size : cs->b.info.main_size,
+         .stack_size = cs->b.info.stack_size,
+      };
+
+      /* The hardware stage: geometry and tessellation run as compute kernels
+       * and a hardware vertex shader */
+      enum agx_esl_stage esl_stage =
+         phys_stage == MESA_SHADER_FRAGMENT ? AGX_ESL_FRAGMENT
+         : phys_stage == MESA_SHADER_VERTEX ? AGX_ESL_VERTEX
+                                            : AGX_ESL_COMPUTE;
+
+      /* Only compute entry programs set up a stack */
+      if (cs->b.info.stack_size && esl_stage != AGX_ESL_COMPUTE) {
+         fprintf(stderr, "G15: a %s shader with a stack is not supported yet\n",
+                 esl_stage == AGX_ESL_VERTEX ? "vertex" : "fragment");
+         return 0;
+      }
+
+      uint64_t esl = agx_upload_esl(batch, t.cpu, &code, esl_stage);
+      return esl ? agx_usc_addr(dev, esl) : 0;
+   }
+
    return agx_usc_addr(dev, t.gpu);
+}
+
+/*
+ * G15: the direct launch block (spec: metal-compute.md; hk_cdm_launch_g15). The
+ * launch points at the entry program, a full VA.
+ */
+static uint32_t *
+agx_cdm_launch_g15(uint32_t *out, struct agx_device *dev, struct agx_grid grid,
+                   struct agx_workgroup wg, uint32_t usc)
+{
+   bool multi = grid.count[1] > 1 || grid.count[2] > 1;
+
+   *(out++) = multi ? BITFIELD_BIT(19) : 0;
+   agx_g15_pipeline(out, dev->shader_base + usc);
+   out += AGX_G15_PIPELINE_LENGTH / 4;
+   *(out++) = 0x40000001;
+   *(out++) = grid.count[0];
+   *(out++) = grid.count[1];
+   *(out++) = grid.count[2];
+   *(out++) = wg.x & BITFIELD_MASK(11);
+   *(out++) = wg.y & BITFIELD_MASK(11);
+   *(out++) = wg.z & BITFIELD_MASK(11);
+
+   /* G15C: Metal's barrier after a launch */
+   *(out++) = 0x60000160;
+   return out;
 }
 
 static void
@@ -3008,8 +3114,18 @@ agx_launch_internal(struct agx_batch *batch, struct agx_grid grid,
 
    uint32_t *out = (uint32_t *)batch->cdm.current;
 
-   out = agx_cdm_launch(out, dev->chip, grid, wg, launch, usc);
-   out = agx_cdm_barrier(out, dev->chip);
+   if (dev->params.gpu_generation >= 15) {
+      if (!usc || agx_is_indirect(grid)) {
+         fprintf(
+            stderr, "G15: dispatch skipped (%s)\n",
+            usc ? "indirect dispatch not supported yet" : "no entry program");
+      } else {
+         out = agx_cdm_launch_g15(out, dev, grid, wg, usc);
+      }
+   } else {
+      out = agx_cdm_launch(out, dev->chip, grid, wg, launch, usc);
+      out = agx_cdm_barrier(out, dev->chip);
+   }
 
    batch->cdm.current = (void *)out;
    assert(batch->cdm.current <= batch->cdm.end &&
@@ -3035,6 +3151,15 @@ agx_launch_precomp(struct agx_batch *batch, struct agx_grid grid,
                    void *args, size_t arg_size)
 {
    struct agx_device *dev = agx_device(batch->ctx->base.screen);
+
+   /* libagx's kernels have no G15 build yet (they would run as G13 code) */
+   if (dev->params.gpu_generation >= 15) {
+      fprintf(stderr,
+              "G15: libagx kernel %u has no G15 build, dispatch skipped\n",
+              program);
+      return;
+   }
+
    struct agx_precompiled_shader *cs =
       agx_get_precompiled(&batch->ctx->bg_eot, program);
 
@@ -3237,6 +3362,20 @@ agx_build_bg_eot(struct agx_batch *batch, bool store, bool partial_render)
    }
 
    struct asahi_bg_eot ret = {.usc = t.gpu};
+
+   /* G15 runs an entry program; usc is its VA */
+   if (dev->params.gpu_generation >= 15) {
+      struct agx_esl_code code = {
+         .va = shader->ptr,
+         .cpu = (uint8_t *)agx_bo_map(shader->bo) +
+                (shader->ptr - shader->bo->va->addr),
+         .size = shader->info.binary_size,
+         .main_size = shader->info.main_size,
+      };
+
+      ret.usc = agx_upload_esl(
+         batch, t.cpu, &code, store ? AGX_ESL_END_OF_TILE : AGX_ESL_BACKGROUND);
+   }
 
    agx_pack(&ret.counts, COUNTS, cfg) {
       cfg.uniform_register_count = shader->info.push_count;
@@ -3483,13 +3622,20 @@ agx_encode_state(struct agx_batch *batch, uint8_t *out)
          cfg.preshader_register_count = vs->b.info.nr_preamble_gprs;
          cfg.texture_state_register_count = agx_nr_tex_descriptors(batch, vs);
          cfg.sampler_state_register_count =
-            translate_sampler_state_count(ctx, vs->stage);
+            agx_sampler_state_count(batch, vs, vs->stage);
       }
 
-      agx_push(out, VDM_STATE_VERTEX_SHADER_WORD_1, cfg) {
-         cfg.pipeline =
-            agx_build_pipeline(batch, vs, ctx->gs ? NULL : ctx->linked.vs,
-                               MESA_SHADER_VERTEX, 0, 0);
+      uint32_t pipeline = agx_build_pipeline(
+         batch, vs, ctx->gs ? NULL : ctx->linked.vs, MESA_SHADER_VERTEX, 0, 0);
+
+      /* G15: word 1 is the entry program's VA, 8 bytes */
+      if (dev->params.gpu_generation >= 15) {
+         agx_g15_pipeline(out, dev->shader_base + pipeline);
+         out += AGX_G15_PIPELINE_LENGTH;
+      } else {
+         agx_push(out, VDM_STATE_VERTEX_SHADER_WORD_1, cfg) {
+            cfg.pipeline = pipeline;
+         }
       }
 
       agx_push_packed(out, vs->uvs.vdm, VDM_STATE_VERTEX_OUTPUTS);
@@ -3561,11 +3707,20 @@ agx_encode_state(struct agx_batch *batch, uint8_t *out)
       .viewport_count = 1, /* irrelevant */
    };
 
+   bool g15 = dev->params.gpu_generation >= 15;
    size_t size = agx_ppp_update_size(&dirty);
+
+   if (g15 && dirty.fragment_shader)
+      size += AGX_G15_PIPELINE_LENGTH;
+
+   /* G15: the occlusion query element is 8 bytes (demo15's) */
+   if (g15 && dirty.occlusion_query)
+      size += 4;
+
    struct agx_ptr T =
       agx_pool_alloc_aligned(&batch->pool, size, AGX_PPP_HEADER_ALIGN);
-   struct agx_ppp_update ppp = agx_new_ppp_update(
-      agx_vdm_ptr(agx_device(batch->ctx->base.screen), T), size, &dirty);
+   struct agx_ppp_update ppp =
+      agx_new_ppp_update(agx_vdm_ptr(dev, T), size, &dirty);
 
    if (dirty.fragment_control) {
       agx_ppp_push(&ppp, FRAGMENT_CONTROL, cfg) {
@@ -3676,17 +3831,26 @@ agx_encode_state(struct agx_batch *batch, uint8_t *out)
          cfg.texture_state_register_count =
             agx_nr_tex_descriptors(batch, ctx->fs);
          cfg.sampler_state_register_count =
-            translate_sampler_state_count(ctx, MESA_SHADER_FRAGMENT);
+            agx_sampler_state_count(batch, ctx->fs, MESA_SHADER_FRAGMENT);
          cfg.cf_binding_count = ctx->linked.fs->cf.nr_bindings;
       }
 
+      uint32_t pipeline = agx_build_pipeline(batch, ctx->fs, ctx->linked.fs,
+                                             MESA_SHADER_FRAGMENT, 0, 0);
+
       agx_ppp_push(&ppp, FRAGMENT_SHADER_WORD_1, cfg) {
-         cfg.pipeline = agx_build_pipeline(batch, ctx->fs, ctx->linked.fs,
-                                           MESA_SHADER_FRAGMENT, 0, 0);
+         cfg.pipeline = g15 ? 0 : pipeline;
       }
 
       agx_ppp_push(&ppp, FRAGMENT_SHADER_WORD_2, cfg) {
          cfg.cf_bindings = batch->varyings;
+      }
+
+      /* G15: the entry program's VA follows word 2 */
+      if (g15) {
+         agx_ppp_validate(&ppp, AGX_G15_PIPELINE_LENGTH);
+         agx_g15_pipeline(ppp.head, dev->shader_base + pipeline);
+         ppp.head += AGX_G15_PIPELINE_LENGTH;
       }
 
       agx_ppp_push(&ppp, FRAGMENT_SHADER_WORD_3, cfg) {
@@ -3700,6 +3864,13 @@ agx_encode_state(struct agx_batch *batch, uint8_t *out)
          if (ctx->active_queries && ctx->occlusion_query) {
             cfg.index = agx_get_oq_index(batch, ctx->occlusion_query);
          }
+      }
+
+      /* G15: a second word, demo15's 0xe (its meaning is not traced) */
+      if (g15) {
+         agx_ppp_validate(&ppp, 4);
+         memcpy(ppp.head, &(uint32_t){0xe}, 4);
+         ppp.head += 4;
       }
    }
 
@@ -5201,7 +5372,7 @@ agx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
       (AGX_VDM_STATE_LENGTH * 2) + (AGX_PPP_STATE_LENGTH * MAX_PPP_UPDATES) +
          AGX_VDM_STATE_RESTART_INDEX_LENGTH +
          AGX_VDM_STATE_VERTEX_SHADER_WORD_0_LENGTH +
-         AGX_VDM_STATE_VERTEX_SHADER_WORD_1_LENGTH +
+         AGX_VDM_STATE_VERTEX_SHADER_WORD_1_LENGTH + AGX_G15_PIPELINE_LENGTH +
          AGX_VDM_STATE_VERTEX_OUTPUTS_LENGTH +
          AGX_VDM_STATE_VERTEX_UNKNOWN_LENGTH + 4 /* padding */ +
          AGX_INDEX_LIST_LENGTH + AGX_INDEX_LIST_BUFFER_LO_LENGTH +
@@ -5237,6 +5408,18 @@ agx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
          draw.index_bias = draws->index_bias;
    }
 
+   /* G15: the VDM reads the index buffer and indirect draw pointers in its
+    * 40-bit form too (assumed from the stream's other pointers, not verified)
+    */
+   struct agx_device *dev = agx_device(ctx->base.screen);
+   if (dev->params.gpu_generation >= 15) {
+      if (draw.indexed)
+         draw.index_buffer = agx_vdm_va(dev, draw.index_buffer);
+
+      if (indirect)
+         draw.b.ptr = agx_vdm_va(dev, draw.b.ptr);
+   }
+
    out = (void *)agx_vdm_draw((uint32_t *)out, 0 /* ignored for now */, draw,
                               agx_primitive_for_pipe(info->mode));
 
@@ -5244,7 +5427,6 @@ agx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
     * This is the other half of agx_legalize_xfb.
     */
    if (ctx->gs && ctx->streamout.num_targets > 0) {
-      struct agx_device *dev = agx_device(ctx->base.screen);
       out = (void *)agx_vdm_barrier((uint32_t *)out, dev->chip);
    }
 
@@ -5351,7 +5533,7 @@ agx_launch(struct agx_batch *batch, struct agx_grid grid,
       cfg.texture_state_register_count =
          cs ? agx_nr_tex_descriptors(batch, cs) : 0;
       cfg.sampler_state_register_count =
-         translate_sampler_state_count(ctx, stage);
+         agx_sampler_state_count(batch, cs, stage);
    }
 
    agx_launch_internal(batch, grid, wg, launch, stage, usc);

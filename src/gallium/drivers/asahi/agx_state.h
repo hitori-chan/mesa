@@ -1103,10 +1103,13 @@ agx_batch_add_bo(struct agx_batch *batch, struct agx_bo *bo)
 
 struct drm_asahi_cmd_compute;
 struct drm_asahi_cmd_render;
+struct drm_asahi_cmd_render_g15;
 
+/* render_g15 is the render command's G15 part, NULL on other generations */
 void agx_batch_submit(struct agx_context *ctx, struct agx_batch *batch,
                       struct drm_asahi_cmd_compute *compute,
-                      struct drm_asahi_cmd_render *render);
+                      struct drm_asahi_cmd_render *render,
+                      struct drm_asahi_cmd_render_g15 *render_g15);
 
 void agx_flush_batch(struct agx_context *ctx, struct agx_batch *batch);
 void agx_flush_batch_for_reason(struct agx_context *ctx,
