@@ -1571,3 +1571,12 @@ d70454040000         zs_emit  cr2, 0, s
 670154f401820085006c00008205 device_atomic 6, st500, ^r1, ^dr2, u10, and, lsl 3, 0, 0
 0c800843             get_stack 2, 2, r0, ^st0
 0c80094300800000     get_stack 2, 2, r0, ^st0, wait 2
+5710540000000080a8750000 block_image_store ^cr0, 0, du0, 0, 7530, wait 0
+9705540400080000d0401000 pack_imgwir cr2, 0, u2l, 0, 0, 4
+5730540440000410a8750000 block_image_store cr2, 1, du4, 64, 7530, wait 01
+5700540640e1b0a0ab750600 block_image_store ^cr3, 2, dr10, ^$r7, 7530, pcache, plu
+57005402806020d0a8750800 block_image_store ^cr1, 5, du8, u3, 7530
+5780540000900080a8750400 block_image_store ^cr0, 0, du0, r4h, 7530, wait 3
+970554022006143810442000 pack_imgwir ^cr1, 1, 3, 5, 7, 8
+972554060014a040d0d50600 pack_imgwir cr3, 3, ^r5l, u20l, r4, 1, wait 1
+97055404200c1c60f0420900 pack_imgwir ^cr2, 0, u3l, ^r3h, u6, 2
