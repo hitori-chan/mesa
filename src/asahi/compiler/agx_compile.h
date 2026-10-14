@@ -268,6 +268,12 @@ struct agx_device_key {
     * kernel, but that's functionally a hardware feature.
     */
    bool soft_fault;
+
+   /* GPU generation (13, 14 or 15). 0 is G13/G14 machine code, which is what
+    * shaders built without a device (e.g. precompiled libagx) get. G15 (M3)
+    * has its own instruction encoding, AGX3.
+    */
+   uint8_t gpu_generation;
 };
 
 struct agx_shader_key {

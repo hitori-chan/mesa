@@ -965,5 +965,6 @@ agx_gather_device_key(struct agx_device *dev)
    return (struct agx_device_key){
       .needs_g13x_coherency = u_tristate_make(g13x_coh),
       .soft_fault = agx_has_soft_fault(dev),
+      .gpu_generation = dev->params.gpu_generation,
    };
 }
