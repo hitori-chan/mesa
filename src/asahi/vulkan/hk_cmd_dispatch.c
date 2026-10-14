@@ -67,10 +67,9 @@ hk_cdm_launch_g15(struct hk_device *dev, uint32_t *out, struct agx_grid grid,
    uint64_t va = dev->dev.shader_base + usc;
    bool multi = grid.count[1] > 1 || grid.count[2] > 1;
 
-   assert((va & 63) == 0);
    *(out++) = multi ? BITFIELD_BIT(19) : 0;
-   *(out++) = ((va >> 38) & BITFIELD_MASK(10)) << 22;
-   *(out++) = va >> 6;
+   agx_g15_pipeline(out, va);
+   out += AGX_G15_PIPELINE_LENGTH / 4;
    *(out++) = 0x40000001;
    *(out++) = grid.count[0];
    *(out++) = grid.count[1];
