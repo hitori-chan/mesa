@@ -329,7 +329,7 @@ find_push_range_containing(struct agx_compiled_shader *shader, uint8_t table,
 
 static unsigned
 lay_out_table(struct agx_compiled_shader *shader, struct table_state *state,
-              unsigned table_index, unsigned uniform)
+              unsigned table_index, unsigned uniform, bool g15)
 {
    unsigned start, end;
    BITSET_FOREACH_RANGE(start, end, state->pushed, sizeof(state->pushed) * 8) {
@@ -348,8 +348,11 @@ lay_out_table(struct agx_compiled_shader *shader, struct table_state *state,
               ++range_end)
             ;
 
-         /* Now make the range with the given size (naturally aligned) */
-         uniform = ALIGN_POT(uniform, size);
+         /* Now make the range with the given size (naturally aligned). G15's
+          * entry program fills the uniform file in 32-bit words, so its ranges
+          * start and end on one (reading a little more than intended).
+          */
+         uniform = ALIGN_POT(uniform, g15 ? MAX2(size, 2) : size);
 
          assert((shader->push_range_count < ARRAY_SIZE(shader->push)) &&
                 "AGX_MAX_PUSH_RANGES must be an upper bound");
@@ -359,14 +362,18 @@ lay_out_table(struct agx_compiled_shader *shader, struct table_state *state,
           */
          range_start = ROUND_DOWN_TO(range_start, 4 / 2);
 
+         unsigned length = range_end - range_start;
+         if (g15)
+            length = ALIGN_POT(length, 2);
+
          shader->push[shader->push_range_count++] = (struct agx_push_range){
             .uniform = uniform,
             .table = table_index,
             .offset = range_start * 2 /* bytes, not elements */,
-            .length = (range_end - range_start),
+            .length = length,
          };
 
-         uniform += (range_end - range_start);
+         uniform += length;
          range_start = range_end;
       } while (range_start < end);
    }
@@ -375,7 +382,8 @@ lay_out_table(struct agx_compiled_shader *shader, struct table_state *state,
 }
 
 static unsigned
-lay_out_uniforms(struct agx_compiled_shader *shader, struct state *state)
+lay_out_uniforms(struct agx_compiled_shader *shader, struct state *state,
+                 bool g15)
 {
    unsigned uniform = 0;
 
@@ -451,7 +459,7 @@ lay_out_uniforms(struct agx_compiled_shader *shader, struct state *state)
     * uniform goes to the bindless texture base.
     */
    for (int t = AGX_NUM_SYSVAL_TABLES - 1; t >= 0; --t)
-      uniform = lay_out_table(shader, &state->tables[t], t, uniform);
+      uniform = lay_out_table(shader, &state->tables[t], t, uniform, g15);
 
    /* Step 4: Fill in the loads */
    util_dynarray_foreach(&state->loads, nir_intrinsic_instr *, intr_) {
@@ -504,7 +512,7 @@ agx_nir_lower_sysvals(nir_shader *shader, mesa_shader_stage desc_stage,
 bool
 agx_nir_layout_uniforms(nir_shader *shader,
                         struct agx_compiled_shader *compiled,
-                        unsigned *push_size)
+                        unsigned *push_size, bool g15)
 {
    struct state state = {
       .stage = compiled->stage,
@@ -514,7 +522,7 @@ agx_nir_layout_uniforms(nir_shader *shader,
    nir_shader_intrinsics_pass(shader, record_loads, nir_metadata_control_flow,
                               &state);
 
-   *push_size = lay_out_uniforms(compiled, &state);
+   *push_size = lay_out_uniforms(compiled, &state, g15);
 
    util_dynarray_fini(&state.loads);
 

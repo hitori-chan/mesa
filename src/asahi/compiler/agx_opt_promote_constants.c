@@ -129,8 +129,12 @@ pass(agx_context *ctx, void *memctx)
       struct constant_info *info = flat[i];
       assert(info->nr_promotable_uses > 0);
 
-      /* Try to assign a uniform */
+      /* Try to assign a uniform. G15's entry program fills the uniform file in
+       * 32-bit words, so the constants must start on one.
+       */
       unsigned uniform = ALIGN_POT(ctx->out->push_count, info->align_16);
+      if (i == 0 && ctx->key->dev.gpu_generation >= 15)
+         uniform = ALIGN_POT(uniform, 2);
       unsigned new_count = uniform + info->align_16;
       if (new_count > AGX_NUM_UNIFORMS)
          break;
