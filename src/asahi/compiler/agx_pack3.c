@@ -697,6 +697,8 @@ a3_memshift(const struct a3 *a, unsigned bytes)
 #define T_LDCF      "1f0354000002"                 /* ldcf 2, r0, 0 */
 #define T_ITER      "2f055400020000021000"         /* iter r0, cf0, center */
 #define T_ZS_EMIT   "d70454000003"                 /* zs_emit ^cr0, 0, z */
+#define T_PACK_IMGWIR "9705540400080000d0401000"   /* pack_imgwir cr2, 0, u2l, 0, 0, 4 */
+#define T_IMGWBLK   "5710540000000080a8750000"     /* block_image_store ^cr0, 0, du0, 0, 7530 */
 
 /* Operand positions (AGX3.xml order) */
 enum {
@@ -781,6 +783,19 @@ enum {
    ZS_G = 1,
    ZS_MODE = 2,
    ZS_WAIT = 3,
+   PACK_IMGWIR_DST = 0,
+   PACK_IMGWIR_G = 1,
+   PACK_IMGWIR_A = 2,
+   PACK_IMGWIR_B = 3,
+   PACK_IMGWIR_C = 4,
+   PACK_IMGWIR_LAYOUT = 5,
+   PACK_IMGWIR_WAIT = 6,
+   IMGWBLK_CR = 0,
+   IMGWBLK_G = 1,
+   IMGWBLK_PTR = 2,
+   IMGWBLK_OFFSET = 3,
+   IMGWBLK_FLAGS = 4,
+   IMGWBLK_WAIT = 7,
 };
 
 /* An ALU instruction: the destination, the sources in IR order at the
@@ -1523,6 +1538,64 @@ a3_zs_emit(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
    a3_emit(a, emission);
 }
 
+/* block_image_store (imgwblk): the tile to the image a PBE descriptor
+ * describes. G15 takes the descriptor's address in a 64-bit uniform (the IR's
+ * base, which the entry program loads) and three coordinate registers: x and
+ * y of the tile's first pixel (the IR's coords, a 32-bit vec2) in cr0 and
+ * cr1, and pack_imgwir's register in cr2, all written in group 0 as demo15's
+ * end-of-tile program does (it ran on the hardware: imadd to cr0 and cr1,
+ * pack_imgwir to cr4 in 16-bit units, imgwblk waiting for group 0). What
+ * pack_imgwir packs (the layer and the sample, probably) and what the
+ * flags hold is not known; the one supported form, 2D with one sample and no
+ * layer, takes demo15's: zero sources (demo15's first is a uniform its entry
+ * program sets to 0), the layout it uses and its flags. The offset is the
+ * render target's offset in the tilebuffer in bytes (a guess: demo15's is 0).
+ * The coordinates move through mov to cr, which demo15 does not use (its
+ * imadd writes the cr), the way st_vary does. */
+static void
+a3_block_image_store(struct a3 *a, const agx_instr *I,
+                     struct util_dynarray *emission)
+{
+   agx_index base = I->src[0];
+   agx_index offset = I->src[2];
+   agx_index coords = I->src[3];
+
+   if (base.type != AGX_INDEX_UNIFORM || base.size != AGX_SIZE_64 ||
+       coords.type != AGX_INDEX_REGISTER || coords.size != AGX_SIZE_32 ||
+       agx_channels(coords) != 2 || !I->explicit_coords ||
+       I->dim != AGX_DIM_2D)
+      a3_fail(a, "block_image_store of a layered, multisampled or bindless "
+                 "image (G15: imgwblk's layer and sample operands are not "
+                 "known)");
+
+   agx_index x = agx_register(coords.value, AGX_SIZE_32);
+   agx_index y = agx_register(coords.value + 2, AGX_SIZE_32);
+
+   a3_mov_cr(a, I, 0, x, emission);
+   a3_mov_cr(a, I, 1, y, emission);
+
+   a3_begin(a, I, AGX3_PACK_IMGWIR, T_PACK_IMGWIR);
+   a3_set(a, PACK_IMGWIR_DST,
+          a3_kind_value(a, PACK_IMGWIR_DST, A3_CR, 2, 0));
+   a3_set(a, PACK_IMGWIR_G, 0);
+   a3_set(a, PACK_IMGWIR_A, a3_src9(a, PACK_IMGWIR_A, agx_immediate(0)));
+   a3_set(a, PACK_IMGWIR_B, a3_imm(a, PACK_IMGWIR_B, 0, false));
+   a3_set(a, PACK_IMGWIR_C, a3_imm(a, PACK_IMGWIR_C, 0, false));
+   a3_emit(a, emission);
+
+   a3_begin(a, I, AGX3_BLOCK_IMAGE_STORE, T_IMGWBLK);
+   a3_set(a, IMGWBLK_CR,
+          a3_kind_value(a, IMGWBLK_CR, A3_CR, 0, BITFIELD_BIT(A3_LU)));
+   a3_set(a, IMGWBLK_G, 0);
+   a3_set(a, IMGWBLK_PTR, a3_membase(a, IMGWBLK_PTR, base));
+   a3_set(a, IMGWBLK_OFFSET,
+          offset.type == AGX_INDEX_IMMEDIATE
+             ? a3_imm(a, IMGWBLK_OFFSET, offset.value, false)
+             : a3_reg(a, IMGWBLK_OFFSET, offset, 0, 0, 0));
+   a3_set(a, IMGWBLK_WAIT, BITFIELD_BIT(0));
+   a3_emit(a, emission);
+}
+
 /* icmp_ballot/fcmp_ballot (and the quad forms): cc, dest, t/v, A, B. The
  * inverted conditions are the condition + 8. G15 has no NaN-aware ballot
  * compare (G13's LTN and GTN). */
@@ -1995,7 +2068,8 @@ agx3_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
       a3_fail(&a, "sample_mask (G15's cmsk operands are not known)");
 
    case AGX_OPCODE_BLOCK_IMAGE_STORE:
-      a3_fail(&a, "block_image_store (G15's imgwblk takes a PBE address)");
+      a3_block_image_store(&a, I, emission);
+      return;
 
    case AGX_OPCODE_STOP:
       a3_begin(&a, I, AGX3_STOP, T_STOP);
