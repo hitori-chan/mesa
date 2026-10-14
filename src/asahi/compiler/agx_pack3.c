@@ -1500,19 +1500,24 @@ a3_ldcf(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
    a3_wait(a, I, A3_SYNC_G, emission);
 }
 
-/* iter/iterproj (f32interp): one instruction per channel, coefficient
- * registers cf, cf + 1, ...; synchronous. iterproj sets persp, Apple's
- * projected interpolation (a guess), which takes no W coefficient
- * register: the IR's is dropped. Centroid and a dynamic sample need
- * itrcoords into a register first. */
+/* iter (f32interp): one instruction per channel, coefficient registers cf,
+ * cf + 1, ...; synchronous. persp is Apple's flag on the iteration of W's
+ * coefficients, whose result only the coefficient-register forms of rcp and
+ * fmul that follow it in Apple's code consume (a plain read gives 0; the
+ * compiler does not set it). G15 has no projected
+ * iteration: agx_emit_load_vary lowers iterproj. Centroid and a dynamic
+ * sample need itrcoords into a register first. */
 static void
 a3_iter(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
 {
-   bool proj = I->op == AGX_OPCODE_ITERPROJ;
    agx_index cf = I->src[0];
-   agx_index sample = I->src[proj ? 2 : 1];
+   agx_index sample = I->src[1];
    agx_index dest = I->dest[0];
    unsigned mode = 0;
+
+   if (I->op == AGX_OPCODE_ITERPROJ)
+      a3_fail(a, "iterproj (G15 iterates W, takes its reciprocal and "
+                 "multiplies: agx_emit_load_vary)");
 
    if (cf.type != AGX_INDEX_IMMEDIATE)
       a3_fail(a, "iter with a coefficient register in a GPR");
@@ -1537,7 +1542,7 @@ a3_iter(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
       a3_set(a, ITER_DST, a3_reg(a, ITER_DST, d, 0, 0, 0));
       a3_set(a, ITER_CF, a3_kind_value(a, ITER_CF, A3_CF, cf.value + i, 0));
       a3_set(a, ITER_MODE, mode);
-      a3_set(a, ITER_PERSP, proj);
+      a3_set(a, ITER_PERSP, I->perspective);
       a3_emit(a, emission);
    }
 }

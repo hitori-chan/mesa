@@ -410,6 +410,9 @@ typedef struct {
    /* TODO: Handle iter ops more efficient */
    enum agx_interpolation interpolation : 2;
 
+   /* G15's flag on the iteration of W's coefficients */
+   bool perspective : 1;
+
    /* TODO: Handle loads more efficiently */
    bool coherent : 1;
 
@@ -427,7 +430,7 @@ typedef struct {
    bool saturate : 1;
    unsigned mask : 4;
 
-   unsigned padding : 8;
+   unsigned padding : 7;
 } agx_instr;
 
 static inline void
