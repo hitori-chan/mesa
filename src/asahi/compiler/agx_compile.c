@@ -3843,7 +3843,8 @@ agx_compile_shader_nir(nir_shader *nir, struct agx_shader_key *key,
 
    /* G15's tile accesses move raw data */
    if (key->dev.gpu_generation >= 15)
-      NIR_PASS(_, nir, agx_nir_lower_tile_raw);
+      NIR_PASS(_, nir, agx_nir_lower_tile_raw,
+               nir->info.stage == MESA_SHADER_FRAGMENT ? key->fs.nr_samples : 0);
 
    /* Late sysval lowering creates large loads. Load lowering creates unpacks */
    nir_lower_mem_access_bit_sizes_options lower_mem_access_options = {
