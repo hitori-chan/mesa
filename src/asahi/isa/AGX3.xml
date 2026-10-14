@@ -11,6 +11,16 @@
  applegpu's "unsure constants" (bits it expects set without knowing why)
  are modifiers that print nothing when set and flag the instruction
  otherwise; bits it decodes but does not print are "hidden" modifiers.
+
+ Register operands (kinds named reg/uniform/stack in the cases) pack one
+ dense field; base = dense << shift, and each of the count components
+ (the count property or the count modifier, else 1) occupies size/16
+ slots of the 16-bit register space: component k is 16-bit register
+ base + k * size/16, printed as pN{lh} for 16-bit (N = reg/2, lh =
+ reg&1), pN for 32-bit, dN for 64-bit (the base is then asserted even).
+ So the dense field is 2*i+h for 16-bit registers, i for 32-bit ones,
+ and i/2 for the shift-2 64-bit uniform (du) of membase. The hl property
+ appends the hl suffix (a 32-bit pair).
 -->
 <isa ordered="true">
 
