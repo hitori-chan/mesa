@@ -85,6 +85,11 @@ struct agx_bo {
    /* Mapping */
    struct agx_va *va;
 
+   /* G15: the alias of the whole BO in the image heap, created on first use
+    * (agx_bo_image_addr)
+    */
+   struct agx_va *image_va;
+
    /* Suffixed to force agx_bo_map access */
    void *_map;
 
@@ -138,6 +143,9 @@ int agx_bo_export(struct agx_device *dev, struct agx_bo *bo);
 void agx_bo_make_shared(struct agx_device *dev, struct agx_bo *bo);
 
 void agx_bo_free(struct agx_device *dev, struct agx_bo *bo);
+
+uint64_t agx_bo_image_addr(struct agx_device *dev, struct agx_bo *bo,
+                           uint64_t addr);
 struct agx_bo *agx_bo_cache_fetch(struct agx_device *dev, size_t size,
                                   size_t align, uint32_t flags,
                                   const bool dontwait);

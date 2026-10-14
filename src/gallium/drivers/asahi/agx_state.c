@@ -708,15 +708,17 @@ agx_pack_texture(void *out, struct agx_resource *rsrc,
       cfg.compressed = rsrc->layout.compressed;
       cfg.extended = cfg.compressed;
 
-      cfg.address = agx_map_texture_gpu(rsrc, first_layer);
+      uint64_t address = agx_map_texture_gpu(rsrc, first_layer);
 
       if (state->target == PIPE_BUFFER)
-         cfg.address += state->u.buf.offset;
+         address += state->u.buf.offset;
+
+      cfg.address = agx_desc_addr(rsrc, address);
 
       if (rsrc->layout.compressed) {
-         cfg.acceleration_buffer =
-            agx_map_gpu(rsrc) + rsrc->layout.metadata_offset_B +
-            (first_layer * rsrc->layout.compression_layer_stride_B);
+         cfg.acceleration_buffer = agx_desc_addr(
+            rsrc, agx_map_gpu(rsrc) + rsrc->layout.metadata_offset_B +
+                     (first_layer * rsrc->layout.compression_layer_stride_B));
       }
 
       if (state->target == PIPE_TEXTURE_3D) {

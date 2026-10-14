@@ -2451,6 +2451,12 @@ agx_screen_create(int fd, struct renderonly *ro,
    if (driQueryOptionb(config->options, "asahi_no_fp16"))
       agx_screen->dev.debug |= AGX_DBG_NO16;
 
+   /* G15's compressed images (the PBE's and texture's acceleration buffer
+    * words) are not understood yet
+    */
+   if (agx_screen->dev.params.gpu_generation >= 15)
+      agx_screen->dev.debug |= AGX_DBG_NOCOMPRESS;
+
    int ret =
       drmSyncobjCreate(agx_device(screen)->fd, 0, &agx_screen->flush_syncobj);
    assert(!ret);
