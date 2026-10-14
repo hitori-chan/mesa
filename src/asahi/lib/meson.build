@@ -8,6 +8,7 @@ libasahi_lib_files = files(
   'agx_border.c',
   'agx_device.c',
   'agx_device_virtio.c',
+  'agx_esl.c',
   'agx_linker.c',
   'agx_bg_eot.c',
   'agx_tilebuffer.c',
