@@ -1543,3 +1543,25 @@ c70655400358d537adb40300 simd_shuffle_and_fill_down cr32, r86, ^$r38, u245l, raw
 c726541100748cca10930500 simd_shuffle_and_fill_down u8h, ^$r29l, $r25l, $r35l, rawmod 6, wait 1
 c72655db0122f48d1f950000 simd_shuffle_and_fill_down u237, $r8h, $r113h, u125l, group 1, wait 14
 c70654100004902880400000 simd_shuffle_and_fill_down cr8, r1l, r5l, 72, mod 2, group 0
+5716540600404800     st_var   ^cr3, 0, 0, wait 0
+5726540420404900     st_var   ^cr2, 1, 1, wait 1
+5746540240404a00     st_var   ^cr1, 2, 2, wait 2
+5786540060404b00     st_var   ^cr0, 3, 3, wait 3
+e70654000000014e00000000 tile_store i8, xyzw, r0l_r0h, 1, 0, 0, 0
+870254000600         wait_pix 512, f0
+8702540c0800         wait_pix 12, f1
+0702540c0200         signal_pix 524
+070254f30200         signal_pix 755
+5746540c20215200     st_var   cr6, ^r4h, 2, wait 2
+5706540180e54d00     st_var   ^cr0, u150l, 5
+e72654080a080712daff020c tile_store i16, xy, r4l_r4h, ^r10, ^r3h, 16, -3, 5, wait 1
+670654048010ff2e11000000 tile_load 2, i32, xyzw, r2_r3_r4_r5, 255, u16h, 0, 0
+670654060000014200000000 tile_load 0, i8, x, r3l, 1, 0, 0, 0
+1f0354840402         ldcf     2, r4, 9
+1f1354948219         ldcf     1, r20, ^$r2h, wait 0
+2f055404020400021000 iter     r2, cf2, center
+2f35540502fe8f821000 iter     r2h, cf127, sample 3, persp, wait 01
+2f055428008004021000 iter     u20, cf64, center, persp
+d71454000003         zs_emit  ^cr0, 0, z, wait 0
+d70454022007         zs_emit  ^cr1, 1, zs
+d70454040000         zs_emit  cr2, 0, s
