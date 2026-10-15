@@ -3057,6 +3057,19 @@
   </ins>
 
   <!--
+   inctk: the stack frame push/pop the shader body needs for a device atomic
+   with a result (metal-compute.md). Form B (the corpus's 726x form): byte 0 =
+   0x07, byte 2 = 0x54, bit 32 = 1 (the form select). f25 (12-bit, bits 24:31
+   33:36) and f24 (16-bit, bits 37:52) are the frame, signed (the pop before
+   stop is the two's-complement negation). The units are not yet pinned down.
+  -->
+  <ins name="inctk" display="inctk" length="8">
+    <exact bit="0:10 16:23 32">10101010000000000111</exact>
+    <immediate name="f25" bit="24:31 33:36"/>
+    <immediate name="f24" bit="37:52"/>
+  </ins>
+
+  <!--
    zs_emit (depthf): depth and/or stencil from a coordinate register (g
    its group). No sample mask: G13's zs_emit has one. The layout of depth
    and stencil in the cr is not known.
