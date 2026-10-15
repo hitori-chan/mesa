@@ -1210,6 +1210,39 @@ agx_pack_binary(agx_context *ctx, struct util_dynarray *emission)
    util_dynarray_init(&fixups, ctx);
    util_dynarray_init(&fixups3, ctx);
 
+   /* G15: a kernel that uses a stack register (a device atomic with a result)
+    * pushes its frame with incStk at entry and pops it before stop, or the
+    * get_stack read of the result returns garbage (metal-compute.md). The
+    * frame's units are not pinned down, so the frame and the specTPR
+    * allocation are overridable for the hardware sweep:
+    *   AGX_MESA_G15_INCTK_F24 (default 0),
+    *   AGX_MESA_G15_INCTK_F25 (default 16, the corpus minimum; 0 = no pair),
+    *   AGX_MESA_G15_STACK (specTPR bytes, default 128).
+    * Only kernels that use the stack (vkcompute dev) are affected; the
+    * passing tests (alu, cf, sg, tg) have a stack size of 0. */
+   bool g15_stack = false;
+   unsigned inctk_f24 = 0, inctk_f25 = 16, g15_stack_bytes = 128;
+   if (ctx->key->dev.gpu_generation >= 15) {
+      const char *e;
+      if ((e = getenv("AGX_MESA_G15_INCTK_F24")))
+         inctk_f24 = (unsigned)atoi(e) & 0xffff;
+      if ((e = getenv("AGX_MESA_G15_INCTK_F25")))
+         inctk_f25 = (unsigned)atoi(e) & 0xfff;
+      if ((e = getenv("AGX_MESA_G15_STACK")))
+         g15_stack_bytes = (unsigned)atoi(e);
+      unsigned total = 0;
+      agx_foreach_block(ctx, block)
+         agx_foreach_instr_in_block(block, ins)
+            total = MAX2(total, agx3_stack_size(ins));
+      if (total > 0) {
+         if (inctk_f25 != 0) {
+            agx3_emit_incstk(emission, inctk_f24, inctk_f25); /* +incStk */
+            g15_stack = true;
+         }
+         ctx->out->stack_size = MAX2(ctx->out->stack_size, g15_stack_bytes);
+      }
+   }
+
    agx_foreach_block(ctx, block) {
       /* Relative to the start of the binary, the block begins at the current
        * number of bytes emitted */
@@ -1219,6 +1252,10 @@ agx_pack_binary(agx_context *ctx, struct util_dynarray *emission)
          block->last_offset = emission->size;
 
          if (ctx->key->dev.gpu_generation >= 15) {
+            if (g15_stack && ins->op == AGX_OPCODE_STOP) { /* -incStk before stop */
+               agx3_emit_incstk(emission, (0x10000 - inctk_f24) & 0xffff,
+                                (0x1000 - inctk_f25) & 0xfff);
+            }
             agx3_pack_instr(emission, &fixups3, ins);
             ctx->out->stack_size =
                MAX2(ctx->out->stack_size, agx3_stack_size(ins));
