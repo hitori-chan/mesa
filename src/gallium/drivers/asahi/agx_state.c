@@ -3928,25 +3928,40 @@ agx_encode_state(struct agx_batch *batch, uint8_t *out)
    if (dirty.fragment_shader) {
       unsigned frag_tex_count = ctx->stage[MESA_SHADER_FRAGMENT].texture_count;
 
-      agx_ppp_push(&ppp, FRAGMENT_SHADER_WORD_0, cfg) {
-         cfg.uniform_register_count = ctx->fs->b.info.push_count;
-         cfg.preshader_register_count = ctx->fs->b.info.nr_preamble_gprs;
-         cfg.texture_state_register_count =
-            agx_nr_tex_descriptors(batch, ctx->fs);
-         cfg.sampler_state_register_count =
-            agx_sampler_state_count(batch, ctx->fs, MESA_SHADER_FRAGMENT);
-         cfg.cf_binding_count = ctx->linked.fs->cf.nr_bindings;
-      }
-
       uint32_t pipeline = agx_build_pipeline(batch, ctx->fs, ctx->linked.fs,
                                              MESA_SHADER_FRAGMENT, 0, 0);
 
-      agx_ppp_push(&ppp, FRAGMENT_SHADER_WORD_1, cfg) {
-         cfg.pipeline = g15 ? 0 : pipeline;
-      }
+      if (g15) {
+         /* G15 has no register counts: word 0 bits 15:0 and word 1 hold the
+          * CF binding table's full VA (bits 47:32, then 31:2), as Apple's
+          * emitFragmentProgramVariantAndArguments builds them. */
+         uint64_t cf = dev->shader_base + batch->varyings;
+         uint32_t w[3] = {
+            ((cf >> 32) & 0xffff) | (ctx->linked.fs->cf.nr_bindings << 16),
+            cf & ~3u,
+            batch->varyings,
+         };
+         agx_ppp_validate(&ppp, sizeof(w));
+         memcpy(ppp.head, w, sizeof(w));
+         ppp.head += sizeof(w);
+      } else {
+         agx_ppp_push(&ppp, FRAGMENT_SHADER_WORD_0, cfg) {
+            cfg.uniform_register_count = ctx->fs->b.info.push_count;
+            cfg.preshader_register_count = ctx->fs->b.info.nr_preamble_gprs;
+            cfg.texture_state_register_count =
+               agx_nr_tex_descriptors(batch, ctx->fs);
+            cfg.sampler_state_register_count =
+               agx_sampler_state_count(batch, ctx->fs, MESA_SHADER_FRAGMENT);
+            cfg.cf_binding_count = ctx->linked.fs->cf.nr_bindings;
+         }
 
-      agx_ppp_push(&ppp, FRAGMENT_SHADER_WORD_2, cfg) {
-         cfg.cf_bindings = batch->varyings;
+         agx_ppp_push(&ppp, FRAGMENT_SHADER_WORD_1, cfg) {
+            cfg.pipeline = pipeline;
+         }
+
+         agx_ppp_push(&ppp, FRAGMENT_SHADER_WORD_2, cfg) {
+            cfg.cf_bindings = batch->varyings;
+         }
       }
 
       /* G15: the entry program's VA follows word 2 */
