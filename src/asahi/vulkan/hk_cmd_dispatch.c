@@ -61,15 +61,16 @@ hk_cdm_cache_flush(struct hk_device *dev, struct hk_cs *cs)
 }
 
 /* G15: the direct launch block (spec: metal-compute.md); the launch
- * points at the entry program, a full VA. Word 0 bits 14:3 and word 1 bits
- * 20:3 are the per-thread stack and spill counts, from Apple's
- * ComputeProgramVariant::finalize (decompiled 2026-07-21,
- * work/scratch/agx3/spill/cpv_finalize.c): word 0 = 8*(((stack_bytes+3)/4 +
- * 1) & ~1), word 1 = 8*((spill_bytes+3)/4). They tell the CDM the per-thread
- * private memory to carve from the UMA pool; a kernel returning a device
- * atomic's result (st0) needs a nonzero stack count, or the read of st0
- * returns 0 and the atomic is dropped (vkcompute dev 11/11 wrong). AGX_MESA_
- * G15_LAUNCH_W0 / _W1 override the two field values for the sweep. */
+ * points at the entry program, a full VA. The LOW bits of word 0 and word 1
+ * are the per-thread stack and spill counts, from Apple's
+ * ComputeProgramVariant::finalize (decompiled, work/scratch/agx3/spill/
+ * cpv_finalize.c, lines 900-921): word 0 = ... | 8*(((stack_bytes+3)/4 + 1)
+ * & ~1) (OR'd into the low bits, no shift), word 1 = 8*((spill_bytes+3)/4)
+ * (low bits). They tell the CDM the per-thread private memory to carve from
+ * the UMA pool; a kernel returning a device atomic's result (st0) needs a
+ * nonzero stack count, or the read of st0 returns 0 and the atomic is
+ * dropped (vkcompute dev 11/11 wrong). AGX_MESA_G15_LAUNCH_W0 / _W1 override
+ * the two field values for the sweep. */
 static uint32_t *
 hk_cdm_launch_g15(struct hk_device *dev, uint32_t *out, struct agx_grid grid,
                   struct agx_workgroup wg, uint32_t usc, unsigned stack_size,
@@ -81,18 +82,16 @@ hk_cdm_launch_g15(struct hk_device *dev, uint32_t *out, struct agx_grid grid,
 
    uint32_t w0 = multi ? BITFIELD_BIT(19) : 0;
    if (stack_size)
-      w0 |= (8u * (((stack_size + 3) / 4 + 1) & ~1u)) << 3;
+      w0 |= 8u * (((stack_size + 3) / 4 + 1) & ~1u);
    if ((e = getenv("AGX_MESA_G15_LAUNCH_W0")))
-      w0 = (w0 & ~(BITFIELD_MASK(12) << 3)) |
-           ((atoi(e) & BITFIELD_MASK(12)) << 3);
+      w0 = (w0 & ~0x1FFFu) | (atoi(e) & 0x1FFFu);
    *(out++) = w0;
 
    agx_g15_pipeline(out, va);
    if (spill_size)
-      out[0] |= (8u * ((spill_size + 3) / 4)) << 3;
+      out[0] |= 8u * ((spill_size + 3) / 4);
    if ((e = getenv("AGX_MESA_G15_LAUNCH_W1")))
-      out[0] = (out[0] & ~(BITFIELD_MASK(18) << 3)) |
-               ((atoi(e) & BITFIELD_MASK(18)) << 3);
+      out[0] = (out[0] & ~0x7FFFFu) | (atoi(e) & 0x7FFFFu);
    out += AGX_G15_PIPELINE_LENGTH / 4;
    *(out++) = 0x40000001;
    *(out++) = grid.count[0];
