@@ -1211,7 +1211,17 @@ a3_atomic(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
 
    a3_set(a, o + ADEV_DATA, a3_atomic_data(a, o + ADEV_DATA, I->src[0]));
    a3_set(a, o + ADEV_BASE, a3_membase(a, o + ADEV_BASE, I->src[1]));
-   a3_set(a, o + ADEV_INDEX, a3_memidx(a, o + ADEV_INDEX, I->src[2]));
+   /* G15 device-atomic sweep (metal-compute.md, "the device atomic's RMW
+    * reads zero"): the AIR gives sign_extend=0 for the atomic's index, and
+    * the working device_store on the same register encodes it without the
+    * sx hint (instruction bit 79), but a3_ext_src sets sx here (a packer
+    * inconsistency). Apple's reference encode has sx=0. AGX_MESA_G15_ADEV_NO_SX
+    * drops the hint to test whether it is what makes the RMW read a zero
+    * location instead of du10 + r1*4. */
+   agx_index adev_idx = I->src[2];
+   if (getenv("AGX_MESA_G15_ADEV_NO_SX"))
+      adev_idx.abs = true;
+   a3_set(a, o + ADEV_INDEX, a3_memidx(a, o + ADEV_INDEX, adev_idx));
    a3_set(a, o + ADEV_OP, a3_atomic_op(a, I->atomic_opc));
    a3_set(a, o + ADEV_SHIFT, a3_memshift(a, 2));
    a3_set(a, o + ADEV_OFFSET, 0);
@@ -1241,6 +1251,29 @@ agx3_stack_size(const agx_instr *I)
       return 4 * (A3_ATOMIC_STACK + 1);
 
    return 0;
+}
+
+/* The incStk the shader body needs for a stack frame (metal-compute.md, the
+ * section "the incStk the shader body needs"): G15 pushes the frame at kernel
+ * entry (incStk +frame) and pops it before stop (incStk -frame). The specTPR
+ * allocates the stack in hardware, but without the incStk the get_stack read
+ * of the atomic result (st0) returns 0 or garbage (vkcompute dev 11/11 wrong).
+ * Form B (the corpus's 726x form) is bit-exact: byte 0 = 0x07, byte 1 = 0,
+ * byte 2 = 0x54 (f26=f27=f28=0), byte 3 = f25[0:7], byte 4 (bits 32:39) = bit
+ * 32 the form select (1) | f25[8:11] << 1 | f24[0:2] << 5, byte 5 = f24[3:10],
+ * byte 6 bits 0:4 = f24[11:15]. f24 (16-bit) and f25 (12-bit) are signed (the
+ * pop is the two's-complement negation); their units are not yet pinned down
+ * (a guess, to be confirmed on the Mac). */
+void
+agx3_emit_incstk(struct util_dynarray *out, unsigned f24, unsigned f25)
+{
+   uint64_t v = 0x07;
+   v |= (uint64_t) 0x54 << 16;
+   v |= (uint64_t) (f25 & 0xff) << 24;
+   v |= (uint64_t) 1 << 32;
+   v |= (uint64_t) ((f25 >> 8) & 0xf) << 33;
+   v |= (uint64_t) (f24 & 0xffff) << 37;
+   memcpy(util_dynarray_grow_bytes(out, 1, 8), &v, 8);
 }
 
 /* Barriers: G15 has one barrier instruction whose flags (AGX3.xml) say

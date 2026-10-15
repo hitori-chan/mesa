@@ -18,14 +18,16 @@
  */
 
 /* The code a USC word list refers to: the shader binary at its GPU
- * address, the main shader's size (ldshdr's size class) and its stack
- * registers in bytes per thread (agx_shader_info::stack_size) */
+ * address, the main shader's size (ldshdr's size class), its stack
+ * registers and its texture results in bytes per thread
+ * (agx_shader_info::stack_size, texture_results) */
 struct agx_esl_code {
    uint64_t va;
    const uint8_t *cpu;
    uint32_t size;
    uint32_t main_size;
    uint32_t stack_size;
+   uint32_t texture_results;
 
    /* A fragment program's pixel fences: it waits on these and signals them at
     * its end; its entry program releases the others */
