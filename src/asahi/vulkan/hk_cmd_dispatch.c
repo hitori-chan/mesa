@@ -22,6 +22,8 @@
 #include "libagx_shaders.h"
 #include "pool.h"
 
+#include <stdlib.h>
+
 void
 hk_cmd_buffer_begin_compute(struct hk_cmd_buffer *cmd,
                             const VkCommandBufferBeginInfo *pBeginInfo)
@@ -59,16 +61,38 @@ hk_cdm_cache_flush(struct hk_device *dev, struct hk_cs *cs)
 }
 
 /* G15: the direct launch block (spec: metal-compute.md); the launch
- * points at the entry program, a full VA */
+ * points at the entry program, a full VA. Word 0 bits 14:3 and word 1 bits
+ * 20:3 are the per-thread stack and spill counts, from Apple's
+ * ComputeProgramVariant::finalize (decompiled 2026-07-21,
+ * work/scratch/agx3/spill/cpv_finalize.c): word 0 = 8*(((stack_bytes+3)/4 +
+ * 1) & ~1), word 1 = 8*((spill_bytes+3)/4). They tell the CDM the per-thread
+ * private memory to carve from the UMA pool; a kernel returning a device
+ * atomic's result (st0) needs a nonzero stack count, or the read of st0
+ * returns 0 and the atomic is dropped (vkcompute dev 11/11 wrong). AGX_MESA_
+ * G15_LAUNCH_W0 / _W1 override the two field values for the sweep. */
 static uint32_t *
 hk_cdm_launch_g15(struct hk_device *dev, uint32_t *out, struct agx_grid grid,
-                  struct agx_workgroup wg, uint32_t usc)
+                  struct agx_workgroup wg, uint32_t usc, unsigned stack_size,
+                  unsigned spill_size)
 {
    uint64_t va = dev->dev.shader_base + usc;
    bool multi = grid.count[1] > 1 || grid.count[2] > 1;
+   const char *e;
 
-   *(out++) = multi ? BITFIELD_BIT(19) : 0;
+   uint32_t w0 = multi ? BITFIELD_BIT(19) : 0;
+   if (stack_size)
+      w0 |= (8u * (((stack_size + 3) / 4 + 1) & ~1u)) << 3;
+   if ((e = getenv("AGX_MESA_G15_LAUNCH_W0")))
+      w0 = (w0 & ~(BITFIELD_MASK(12) << 3)) |
+           ((atoi(e) & BITFIELD_MASK(12)) << 3);
+   *(out++) = w0;
+
    agx_g15_pipeline(out, va);
+   if (spill_size)
+      out[0] |= (8u * ((spill_size + 3) / 4)) << 3;
+   if ((e = getenv("AGX_MESA_G15_LAUNCH_W1")))
+      out[0] = (out[0] & ~(BITFIELD_MASK(18) << 3)) |
+               ((atoi(e) & BITFIELD_MASK(18)) << 3);
    out += AGX_G15_PIPELINE_LENGTH / 4;
    *(out++) = 0x40000001;
    *(out++) = grid.count[0];
@@ -84,7 +108,8 @@ void
 hk_dispatch_with_usc_launch(struct hk_device *dev, struct hk_cs *cs,
                             struct agx_cdm_launch_word_0_packed launch,
                             uint32_t usc, struct agx_grid grid,
-                            struct agx_workgroup wg)
+                            struct agx_workgroup wg, unsigned stack_size,
+                            unsigned spill_size)
 {
    hk_ensure_cs_has_space(cs->cmd, cs, 0x2000 /* TODO */);
    cs->stats.cmds++;
@@ -97,7 +122,9 @@ hk_dispatch_with_usc_launch(struct hk_device *dev, struct hk_cs *cs,
          return;
       }
 
-      cs->current = hk_cdm_launch_g15(dev, cs->current, grid, wg, usc);
+      cs->current =
+         hk_cdm_launch_g15(dev, cs->current, grid, wg, usc, stack_size,
+                           spill_size);
    } else {
       cs->current =
          agx_cdm_launch(cs->current, dev->dev.chip, grid, wg, launch, usc);
@@ -120,7 +147,9 @@ hk_dispatch_with_usc(struct hk_device *dev, struct hk_cs *cs,
       cfg.preshader_register_count = info->nr_preamble_gprs;
    }
 
-   hk_dispatch_with_usc_launch(dev, cs, launch, usc, grid, local_size);
+   hk_dispatch_with_usc_launch(dev, cs, launch, usc, grid, local_size,
+                               info->stack_size,
+                               0 /* G15: spilling is unsupported yet */);
 }
 
 static void
