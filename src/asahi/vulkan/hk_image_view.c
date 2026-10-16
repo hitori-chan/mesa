@@ -196,6 +196,79 @@ format_for_plane(struct hk_image_view *view, unsigned view_plane)
    return p_format;
 }
 
+/*
+ * G15's texture descriptor (cmdbuf.xml's "Texture G15"), as Gallium packs it:
+ * uncompressed, single-sampled, linear with one layer or twiddled, the raw VA
+ * (texture.md). The rest fails here rather than reaching the hardware
+ * misread.
+ */
+static void
+pack_texture_g15(struct hk_image_view *view, unsigned view_plane,
+                 enum hk_desc_usage usage, const uint8_t *swizzle,
+                 enum pipe_format p_format, unsigned layers,
+                 struct agx_texture_packed *out)
+{
+   struct hk_image *image = container_of(view->vk.image, struct hk_image, vk);
+   const uint8_t image_plane = view->planes[view_plane].image_plane;
+   struct hk_image_plane *plane = &image->planes[image_plane];
+   struct ail_layout *layout = &plane->layout;
+   const struct util_format_description *desc =
+      util_format_description(p_format);
+   unsigned level = view->vk.base_mip_level;
+   unsigned layer = view->vk.base_array_layer;
+   struct hk_3d denom = view_denominator(view);
+
+   if (layout->compressed || view->vk.image->samples > 1 || plane->sparse_map ||
+       (layout->tiling == AIL_TILING_LINEAR && layers > 1)) {
+      mesa_loge("G15: a compressed, multisampled, sparse or linear layered "
+                "texture is not supported yet");
+      assert(0);
+   }
+
+   agx_pack(out, TEXTURE_G15, cfg) {
+      cfg.dimension = translate_image_view_type(
+         view->vk.view_type, view->vk.image->samples > 1, layers > 1, usage);
+      cfg.layout = agx_translate_layout(layout->tiling);
+      cfg.channels = ail_pixel_format[p_format].channels;
+      cfg.type = ail_pixel_format[p_format].type;
+      cfg.swizzle_r = agx_channel_from_pipe(swizzle[0]);
+      cfg.swizzle_g = agx_channel_from_pipe(swizzle[1]);
+      cfg.swizzle_b = agx_channel_from_pipe(swizzle[2]);
+      cfg.swizzle_a = agx_channel_from_pipe(swizzle[3]);
+
+      /* The raw VA: G15 subtracts nothing */
+      uint64_t base_addr = hk_image_base_address(image, image_plane);
+
+      if (denom.x > 1) {
+         assert(view->vk.level_count == 1);
+         assert(view->vk.layer_count == 1);
+
+         cfg.address = base_addr + ail_get_layer_level_B(layout, layer, level);
+         cfg.width = DIV_ROUND_UP(u_minify(layout->width_px, level), denom.x);
+         cfg.height = DIV_ROUND_UP(u_minify(layout->height_px, level), denom.y);
+         cfg.first_level = 0;
+         cfg.last_level = 0;
+      } else {
+         cfg.address = base_addr + ail_get_layer_offset_B(layout, layer);
+         cfg.width = layout->width_px;
+         cfg.height = layout->height_px;
+         cfg.first_level = level;
+         cfg.last_level = level + view->vk.level_count - 1;
+      }
+
+      cfg.extended = cfg.first_level || cfg.last_level;
+      cfg.mipmapped = layout->levels > 1;
+      cfg.srgb = (desc->colorspace == UTIL_FORMAT_COLORSPACE_SRGB);
+      cfg.srgb_2_channel = cfg.srgb && util_format_colormask(desc) == 0x3;
+      cfg.depth = layers;
+
+      if (layout->tiling == AIL_TILING_LINEAR)
+         cfg.stride = ail_get_linear_stride_B(layout, 0) - 16;
+      else
+         cfg.page_aligned_layers = layout->page_aligned_layers;
+   }
+}
+
 static void
 pack_texture(struct hk_image_view *view, unsigned view_plane,
              enum hk_desc_usage usage, struct agx_texture_packed *out)
@@ -258,6 +331,12 @@ pack_texture(struct hk_image_view *view, unsigned view_plane,
    }
 
    util_format_compose_swizzles(format_swizzle, view_swizzle, out_swizzle);
+
+   if (dev->dev.params.gpu_generation >= 15) {
+      pack_texture_g15(view, view_plane, usage, out_swizzle, p_format, layers,
+                       out);
+      return;
+   }
 
    agx_pack(out, TEXTURE, cfg) {
       cfg.dimension = translate_image_view_type(

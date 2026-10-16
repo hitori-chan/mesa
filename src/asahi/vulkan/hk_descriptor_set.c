@@ -52,12 +52,79 @@ write_desc(struct hk_descriptor_set *set, uint32_t binding, uint32_t elem,
    memcpy(dst, desc_data, desc_size);
 }
 
+/* G15's layout of a sampled image descriptor (hk_descriptor_set.h) */
+static void
+write_sampled_image_view_desc_g15(struct hk_descriptor_set *set,
+                                  const VkDescriptorImageInfo *const info,
+                                  uint32_t binding, uint32_t elem,
+                                  VkDescriptorType descriptor_type)
+{
+   struct hk_sampled_image_descriptor_g15 desc[3] = {};
+
+   for (unsigned i = 0; i < 3; ++i) {
+      agx_set_null_texture_g15(&desc[i].tex);
+      desc[i].clamp_0_sampler_index_or_negative = -1;
+   }
+
+   uint8_t plane_count = 1;
+   bool ia = (descriptor_type == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT);
+
+   if (descriptor_type != VK_DESCRIPTOR_TYPE_SAMPLER && info &&
+       info->imageView != VK_NULL_HANDLE) {
+      VK_FROM_HANDLE(hk_image_view, view, info->imageView);
+
+      plane_count = view->plane_count;
+      for (uint8_t plane = 0; plane < plane_count; plane++) {
+         desc[plane].tex =
+            ia ? view->planes[plane].ia : view->planes[plane].sampled;
+
+         float min_lod = MAX2(view->vk.min_lod - view->vk.base_mip_level, 0.0);
+
+         desc[plane].min_lod_fp16 = _mesa_float_to_half(min_lod);
+         desc[plane].min_lod_uint16 = min_lod;
+      }
+   }
+
+   if (descriptor_type == VK_DESCRIPTOR_TYPE_SAMPLER ||
+       descriptor_type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
+      const struct hk_descriptor_set_binding_layout *binding_layout =
+         &set->layout->binding[binding];
+
+      struct hk_sampler *sampler;
+      if (binding_layout->immutable_samplers) {
+         sampler = binding_layout->immutable_samplers[elem];
+      } else {
+         sampler = hk_sampler_from_handle(info->sampler);
+      }
+
+      if (sampler->has_border)
+         mesa_loge("G15: custom border colours are not supported yet");
+      else
+         plane_count = MAX2(plane_count, sampler->plane_count);
+
+      for (uint8_t plane = 0; plane < plane_count; plane++) {
+         uint8_t sampler_plane = MIN2(plane, sampler->plane_count - 1);
+         desc[plane].sampler = sampler->planes[sampler_plane].hw->key;
+         desc[plane].lod_bias_fp16 = sampler->lod_bias_fp16;
+      }
+   }
+   write_desc(set, binding, elem, desc, sizeof(desc[0]) * plane_count);
+}
+
 static void
 write_sampled_image_view_desc(struct hk_descriptor_set *set,
                               const VkDescriptorImageInfo *const info,
                               uint32_t binding, uint32_t elem,
                               VkDescriptorType descriptor_type)
 {
+   /* The layout's device: a push descriptor set has no object of its own */
+   struct hk_device *dev = (struct hk_device *)set->layout->vk.base.device;
+   if (dev->dev.params.gpu_generation >= 15) {
+      write_sampled_image_view_desc_g15(set, info, binding, elem,
+                                        descriptor_type);
+      return;
+   }
+
    struct hk_sampled_image_descriptor desc[3] = {};
 
    /* "Zero" initialize */
