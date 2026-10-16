@@ -3141,6 +3141,24 @@
   </ins>
 
   <!--
+   movmsk: the sample mask, from a coordinate register (g its group): cr0 =
+   LIVE (bits 3:0) | n << 4 | TARGET (bits 11:8), one bit per sample, written
+   by a mov to cr0 first (hardware boots #326-#329, one sample, a punch-
+   through pass: TARGET 1 tests the sample if LIVE is 1 and kills it if not,
+   TARGET 0 leaves it alone, a killed sample stays killed, a second test of
+   one sample kills it). Apple's discard sets n and TARGET to is_active_thread.
+   Apple's capture has 24:36 = 0 and bit 40 = 1 (cr0, last use): the fields
+   zs_emit's source has. Waits for the mov (bit 12).
+  -->
+  <ins name="movmsk" display="movmsk" length="6">
+    <exact bit="0:10">10001010111</exact>
+    <src kind="crsrc" bit="24:36 40"/>
+    <immediate name="g" bit="37:39"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <!--
    pack_imgwir: writes a 32-bit coordinate register, the third of the three
    imgwblk takes as its coordinates (cr, cr + 1, cr + 2: x, y and this one).
    The sources (a and b 16-bit, c 32 or 16) are probably the layer, the
