@@ -3823,10 +3823,11 @@ agx_encode_state(struct agx_batch *batch, uint8_t *out)
 
    bool g15 = dev->params.gpu_generation >= 15;
 
-   /* G15 has no fragment control bits: each fragment control word leads its
-    * front face element (8 bytes), and the 32-bit and 16-bit varying counts
-    * are one 8-byte element under the counts 32 bit, as Apple's Metal driver
-    * emits them. */
+   /* G15 has no fragment control bits: the front face bit also selects the
+    * fragment control word and the front face 2 bit fragment control 2, in
+    * G13's element order (control, control 2, face, face 2: boot #309). The
+    * 32-bit and 16-bit varying counts are one 8-byte element under the counts
+    * 32 bit, as Apple's Metal driver emits them. */
    bool fc = dirty.fragment_control, fc2 = dirty.fragment_control_2;
    if (g15) {
       dirty.fragment_front_face |= fc;
@@ -3885,7 +3886,7 @@ agx_encode_state(struct agx_batch *batch, uint8_t *out)
       cfg.tag_write_disable = rast->base.rasterizer_discard;                   \
    }
 
-   if (fc2 && !g15)
+   if (fc2)
       PUSH_FRAGMENT_CONTROL_2();
 
    if (dirty.fragment_front_face) {
@@ -3896,8 +3897,6 @@ agx_encode_state(struct agx_batch *batch, uint8_t *out)
       }
    }
 
-   if (fc2 && g15)
-      PUSH_FRAGMENT_CONTROL_2();
 #undef PUSH_FRAGMENT_CONTROL_2
 
    if (dirty.fragment_front_face_2)

@@ -2465,9 +2465,9 @@ hk_flush_ppp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
 
    dirty.fragment_shader &= !linked_fs->b.no_op;
 
-   /* G15 has no fragment control bits: each fragment control word leads its
-    * front face element, and the varying counts are one 8-byte element (see
-    * agx_state.c).
+   /* G15 has no fragment control bits: the face bits also select the
+    * fragment control words, in G13's element order, and the varying counts
+    * are one 8-byte element (see agx_state.c).
     */
    bool fc = dirty.fragment_control, fc2 = dirty.fragment_control_2;
    if (g15) {
@@ -2536,7 +2536,7 @@ hk_flush_ppp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
       cfg.tag_write_disable = hk_rast_discard(cmd);                            \
    }
 
-   if (fc2 && !g15)
+   if (fc2)
       PUSH_FRAGMENT_CONTROL_2();
 
    struct agx_fragment_face_packed fragment_face = {};
@@ -2562,8 +2562,6 @@ hk_flush_ppp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
       }
    }
 
-   if (fc2 && g15)
-      PUSH_FRAGMENT_CONTROL_2();
 #undef PUSH_FRAGMENT_CONTROL_2
 
    if (dirty.fragment_front_face_2) {
