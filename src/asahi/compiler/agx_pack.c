@@ -1210,36 +1210,6 @@ agx_pack_binary(agx_context *ctx, struct util_dynarray *emission)
    util_dynarray_init(&fixups, ctx);
    util_dynarray_init(&fixups3, ctx);
 
-   /* G15: a kernel that uses a stack register (a device atomic with a result)
-    * needs only the entry program's stack size (the specTPR, from
-    * stack_size); Apple's kernels push no incStk frame for it. A frame and a
-    * larger stack stay available for experiments:
-    *   AGX_MESA_G15_INCTK_F24 (default 0),
-    *   AGX_MESA_G15_INCTK_F25 (default 0: no frame),
-    *   AGX_MESA_G15_STACK (stack bytes, default the shader's own). */
-   bool g15_stack = false;
-   unsigned inctk_f24 = 0, inctk_f25 = 0, g15_stack_bytes = 0;
-   if (ctx->key->dev.gpu_generation >= 15) {
-      const char *e;
-      if ((e = getenv("AGX_MESA_G15_INCTK_F24")))
-         inctk_f24 = (unsigned)atoi(e) & 0xffff;
-      if ((e = getenv("AGX_MESA_G15_INCTK_F25")))
-         inctk_f25 = (unsigned)atoi(e) & 0xfff;
-      if ((e = getenv("AGX_MESA_G15_STACK")))
-         g15_stack_bytes = (unsigned)atoi(e);
-      unsigned total = 0;
-      agx_foreach_block(ctx, block)
-         agx_foreach_instr_in_block(block, ins)
-            total = MAX2(total, agx3_stack_size(ins));
-      if (total > 0) {
-         if (inctk_f25 != 0) {
-            agx3_emit_incstk(emission, inctk_f24, inctk_f25); /* +incStk */
-            g15_stack = true;
-         }
-         ctx->out->stack_size = MAX2(ctx->out->stack_size, g15_stack_bytes);
-      }
-   }
-
    agx_foreach_block(ctx, block) {
       /* Relative to the start of the binary, the block begins at the current
        * number of bytes emitted */
@@ -1249,17 +1219,10 @@ agx_pack_binary(agx_context *ctx, struct util_dynarray *emission)
          block->last_offset = emission->size;
 
          if (ctx->key->dev.gpu_generation >= 15) {
-            if (g15_stack && ins->op == AGX_OPCODE_STOP) { /* -incStk before stop */
-               agx3_emit_incstk(emission, (0x10000 - inctk_f24) & 0xffff,
-                                (0x1000 - inctk_f25) & 0xfff);
-            }
             agx3_pack_instr(emission, &fixups3, ins);
             ctx->out->stack_size =
                MAX2(ctx->out->stack_size, agx3_stack_size(ins));
-            if (ins->op == AGX_OPCODE_TEXTURE_SAMPLE ||
-                ins->op == AGX_OPCODE_TEXTURE_LOAD ||
-                ins->op == AGX_OPCODE_IMAGE_LOAD)
-               ctx->out->texture_results += 16;
+            ctx->out->cr_count = MAX2(ctx->out->cr_count, agx3_cr_count(ins));
          } else
             agx_pack_instr(emission, &fixups, ins,
                            ctx->key->dev.needs_g13x_coherency);

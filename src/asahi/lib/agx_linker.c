@@ -116,6 +116,7 @@ agx_fast_link(struct agx_linked_shader *linked, struct agx_device *dev,
 
       size += part->info.main_size;
       linked->pix_wait_mask |= part->info.pix_wait_mask;
+      linked->cr_count = MAX2(linked->cr_count, part->info.cr_count);
 
       nr_gprs = MAX2(nr_gprs, part->info.nr_gprs);
       scratch_size = MAX2(scratch_size, part->info.scratch_size);
