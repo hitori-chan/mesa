@@ -2265,7 +2265,20 @@ agx_emit_alu(agx_builder *b, nir_alu_instr *instr)
    }
 
    case nir_op_fsin_agx: {
-      agx_index fixup = agx_sin_pt_1(b, s0);
+      agx_index fixup;
+
+      /* G15 has sin_pt_2 (its sinc) but no sin_pt_1: fold the quadrant q in
+       * [0, 4) into [-1, 1] as sin_pt_1 does: q, 2 - q or q - 4 */
+      if (b->shader->key->dev.gpu_generation >= 15) {
+         agx_index hi = agx_fcmpsel(
+            b, s0, agx_immediate_f(3.0),
+            agx_fadd(b, agx_neg(s0), agx_immediate_f(2.0)),
+            agx_fadd(b, s0, agx_immediate_f(-4.0)), AGX_FCOND_LT);
+         fixup = agx_fcmpsel(b, s0, agx_immediate_f(1.0), s0, hi, AGX_FCOND_LT);
+      } else {
+         fixup = agx_sin_pt_1(b, s0);
+      }
+
       agx_index sinc = agx_sin_pt_2(b, fixup);
       return agx_fmul_to(b, dst, sinc, fixup);
    }

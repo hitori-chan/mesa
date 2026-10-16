@@ -899,6 +899,7 @@ a3_funop(enum agx_opcode op)
    case AGX_OPCODE_SRSQRT: return AGX3_RSQRT_SPECIAL;
    case AGX_OPCODE_LOG2: return AGX3_LOG2;
    case AGX_OPCODE_EXP2: return AGX3_EXP2;
+   case AGX_OPCODE_SIN_PT_2: return AGX3_SINC; /* sin(A pi / 2) / A */
    default: return AGX3_NUM_INSTRS;
    }
 }
@@ -2102,7 +2103,8 @@ agx3_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
    case AGX_OPCODE_RSQRT:
    case AGX_OPCODE_SRSQRT:
    case AGX_OPCODE_LOG2:
-   case AGX_OPCODE_EXP2: {
+   case AGX_OPCODE_EXP2:
+   case AGX_OPCODE_SIN_PT_2: {
       struct a3_alu d = {a3_funop(I->op), T_FUNOP, {2}, VT, -1, -1, false};
       a3_alu(&a, I, &d, I->src, emission);
       return;
