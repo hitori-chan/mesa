@@ -3806,26 +3806,33 @@ agx_encode_state(struct agx_batch *batch, uint8_t *out)
 
    bool g15 = dev->params.gpu_generation >= 15;
 
-   /* G15: the PPP's varying counts elements hang the TA or suppress the draw
-    * (boots #189-#198); the counts are not needed for a draw without varyings
-    * and where they go for one with is not known yet */
-   if (g15)
-      dirty.varying_counts_32 = dirty.varying_counts_16 = false;
+   /* G15 has no fragment control bits: each fragment control word leads its
+    * front face element (8 bytes), and the 32-bit and 16-bit varying counts
+    * are one 8-byte element under the counts 32 bit, as Apple's Metal driver
+    * emits them. */
+   bool fc = dirty.fragment_control, fc2 = dirty.fragment_control_2;
+   if (g15) {
+      dirty.fragment_front_face |= fc;
+      dirty.fragment_front_face_2 |= fc2;
+      fc = dirty.fragment_front_face;
+      fc2 = dirty.fragment_front_face_2;
+      dirty.fragment_control = dirty.fragment_control_2 = false;
+      dirty.varying_counts_16 = false;
+   }
    size_t size = agx_ppp_update_size(&dirty);
 
-   if (g15 && dirty.fragment_shader)
-      size += AGX_G15_PIPELINE_LENGTH;
-
-   /* G15: the occlusion query element is 8 bytes (demo15's) */
-   if (g15 && dirty.occlusion_query)
-      size += 4;
+   if (g15) {
+      size += AGX_FRAGMENT_CONTROL_LENGTH * (fc + fc2);
+      size += dirty.varying_counts_32 ? AGX_VARYING_COUNTS_LENGTH : 0;
+      size += dirty.fragment_shader ? AGX_G15_PIPELINE_LENGTH : 0;
+   }
 
    struct agx_ptr T =
       agx_pool_alloc_aligned(&batch->pool, size, AGX_PPP_HEADER_ALIGN);
    struct agx_ppp_update ppp =
       agx_new_ppp_update(agx_vdm_ptr(dev, T), size, &dirty);
 
-   if (dirty.fragment_control) {
+   if (fc) {
       agx_ppp_push(&ppp, FRAGMENT_CONTROL, cfg) {
          if (ctx->active_queries && ctx->occlusion_query) {
             if (ctx->occlusion_query->type == PIPE_QUERY_OCCLUSION_COUNTER)
@@ -3850,16 +3857,18 @@ agx_encode_state(struct agx_batch *batch, uint8_t *out)
       }
    }
 
-   if (dirty.fragment_control_2) {
-      /* Annoying, rasterizer_discard seems to be ignored (sometimes?) in the
-       * main fragment control word and has to be combined into the secondary
-       * word for reliable behaviour.
-       */
-      agx_ppp_push_merged(&ppp, FRAGMENT_CONTROL, cfg,
-                          ctx->linked.fs->fragment_control) {
-         cfg.tag_write_disable = rast->base.rasterizer_discard;
-      }
+   /* Annoying, rasterizer_discard seems to be ignored (sometimes?) in the
+    * main fragment control word and has to be combined into the secondary
+    * word for reliable behaviour.
+    */
+#define PUSH_FRAGMENT_CONTROL_2()                                              \
+   agx_ppp_push_merged(&ppp, FRAGMENT_CONTROL, cfg,                            \
+                       ctx->linked.fs->fragment_control) {                     \
+      cfg.tag_write_disable = rast->base.rasterizer_discard;                   \
    }
+
+   if (fc2 && !g15)
+      PUSH_FRAGMENT_CONTROL_2();
 
    if (dirty.fragment_front_face) {
       agx_ppp_push_merged(&ppp, FRAGMENT_FACE, cfg, ctx->zs->depth) {
@@ -3868,6 +3877,10 @@ agx_encode_state(struct agx_batch *batch, uint8_t *out)
          cfg.polygon_mode = rast->polygon_mode;
       }
    }
+
+   if (fc2 && g15)
+      PUSH_FRAGMENT_CONTROL_2();
+#undef PUSH_FRAGMENT_CONTROL_2
 
    if (dirty.fragment_front_face_2)
       agx_ppp_fragment_face_2(&ppp, object_type, &ctx->fs->b.info);
@@ -3892,20 +3905,18 @@ agx_encode_state(struct agx_batch *batch, uint8_t *out)
    if (dirty.fragment_back_stencil)
       agx_ppp_push_packed(&ppp, ctx->zs->back_stencil.opaque, FRAGMENT_STENCIL);
 
-   assert(dirty.varying_counts_32 == dirty.varying_counts_16);
-   assert(g15 || dirty.varying_counts_32 == dirty.output_select);
+   assert(g15 || dirty.varying_counts_32 == dirty.varying_counts_16);
+   assert(dirty.varying_counts_32 == dirty.output_select);
 
    if (dirty.output_select) {
       agx_ppp_push_merged_blobs(&ppp, AGX_OUTPUT_SELECT_LENGTH, &vs->uvs.osel,
                                 &ctx->linked.fs->osel);
 
-      if (!g15) {
-         agx_ppp_push_packed(&ppp, &batch->linked_varyings.counts_32,
-                             VARYING_COUNTS);
+      agx_ppp_push_packed(&ppp, &batch->linked_varyings.counts_32,
+                          VARYING_COUNTS);
 
-         agx_ppp_push_packed(&ppp, &batch->linked_varyings.counts_16,
-                             VARYING_COUNTS);
-      }
+      agx_ppp_push_packed(&ppp, &batch->linked_varyings.counts_16,
+                          VARYING_COUNTS);
    }
 
    if (dirty.cull) {
@@ -3984,13 +3995,6 @@ agx_encode_state(struct agx_batch *batch, uint8_t *out)
          if (ctx->active_queries && ctx->occlusion_query) {
             cfg.index = agx_get_oq_index(batch, ctx->occlusion_query);
          }
-      }
-
-      /* G15: a second word, demo15's 0xe (its meaning is not traced) */
-      if (g15) {
-         agx_ppp_validate(&ppp, 4);
-         memcpy(ppp.head, &(uint32_t){0xe}, 4);
-         ppp.head += 4;
       }
    }
 
