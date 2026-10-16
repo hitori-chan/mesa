@@ -406,6 +406,12 @@ agx_compression_allowed(const struct agx_resource *pres)
       return false;
    }
 
+   /* G15's compressed descriptors are not known (texture.md) */
+   if (agx_device(pres->base.screen)->params.gpu_generation >= 15) {
+      rsrc_debug(pres, "No compression: G15\n");
+      return false;
+   }
+
    /* Limited to renderable */
    if (pres->base.bind &
        ~(PIPE_BIND_SAMPLER_VIEW | PIPE_BIND_RENDER_TARGET |
