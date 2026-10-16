@@ -1355,6 +1355,10 @@ agx3_cr_count(const agx_instr *I)
    case AGX_OPCODE_ST_VARY:
       return I->src[0].type == AGX_INDEX_IMMEDIATE ? (I->src[0].value & 7) + 1
                                                    : 1;
+   case AGX_OPCODE_SAMPLE_MASK:
+      /* the mov to cr0 before movmsk: Apple's discard shader has 1 here;
+       * with 0, movmsk does not kill (boots #333-#360) */
+      return 1;
    default:
       return 0;
    }
