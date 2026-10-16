@@ -836,8 +836,7 @@ void hk_cdm_cache_flush(struct hk_device *dev, struct hk_cs *cs);
 void hk_dispatch_with_usc_launch(struct hk_device *dev, struct hk_cs *cs,
                                  struct agx_cdm_launch_word_0_packed launch,
                                  uint32_t usc, struct agx_grid grid,
-                                 struct agx_workgroup local_size,
-                                 unsigned stack_size, unsigned spill_size);
+                                 struct agx_workgroup local_size);
 
 void hk_dispatch_with_usc(struct hk_device *dev, struct hk_cs *cs,
                           struct agx_shader_info *info, uint32_t usc,
