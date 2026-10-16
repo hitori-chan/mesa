@@ -304,6 +304,20 @@ avoid_instr(const nir_instr *instr, const void *data)
    return false;
 }
 
+/* G15 has no texture or sampler state registers: its texture instructions
+ * name the tables' uniform pairs and index them, so the handles stay in the
+ * shader for the backend */
+static bool
+avoid_instr_g15(const nir_instr *instr, const void *data)
+{
+   if (instr->type != nir_instr_type_intrinsic)
+      return false;
+
+   nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+   return intr->intrinsic == nir_intrinsic_bindless_image_agx ||
+          intr->intrinsic == nir_intrinsic_bindless_sampler_agx;
+}
+
 static const nir_opt_preamble_options preamble_options = {
    .drawid_uniform = true,
    .subgroup_size_uniform = true,
@@ -313,6 +327,28 @@ static const nir_opt_preamble_options preamble_options = {
    .instr_cost_cb = instr_cost,
    .rewrite_cost_cb = rewrite_cost,
    .avoid_instr_cb = avoid_instr,
+
+   /* hardware size is 512, but it's polite to leave some wiggle room to push
+    * hot constants so we don't end up rematerializing all over the place.
+    * 480 seems to be a sweetspot, based on a few minutes of shader-db.
+    */
+   .preamble_storage_size[nir_preamble_class_general] = 480,
+
+   /* We have at least 32 texture state registers. TODO: check for more? */
+   .preamble_storage_size[nir_preamble_class_image] = 32,
+
+   /* We have at least 16 sampler state registers. TODO: check for more? */
+   .preamble_storage_size[nir_preamble_class_sampler] = 16,
+};
+static const nir_opt_preamble_options preamble_options_g15 = {
+   .drawid_uniform = true,
+   .subgroup_size_uniform = true,
+   /* not supported in hardware */
+   .load_workgroup_size_allowed = false,
+   .def_size = def_size,
+   .instr_cost_cb = instr_cost,
+   .rewrite_cost_cb = rewrite_cost,
+   .avoid_instr_cb = avoid_instr_g15,
 
    /* hardware size is 512, but it's polite to leave some wiggle room to push
     * hot constants so we don't end up rematerializing all over the place.
@@ -348,10 +384,17 @@ lower_store_preamble(nir_builder *b, nir_intrinsic_instr *intr, void *data)
    return true;
 }
 
+struct lower_preamble_state {
+   int16_t *heaps;
+   bool g15;
+};
+
 static bool
 lower_preamble(nir_builder *b, nir_intrinsic_instr *intr, void *data)
 {
-   if (intr->intrinsic == nir_intrinsic_bindless_sampler_agx) {
+   struct lower_preamble_state *state = data;
+
+   if (intr->intrinsic == nir_intrinsic_bindless_sampler_agx && !state->g15) {
       /* Rematerialize bindless_sampler_agx before store_preamble with only the
        * byte offset (first source), not the sampler index.
        */
@@ -379,7 +422,7 @@ lower_preamble(nir_builder *b, nir_intrinsic_instr *intr, void *data)
    if (intr->intrinsic != nir_intrinsic_load_preamble)
       return false;
 
-   int16_t *heaps = data;
+   int16_t *heaps = state->heaps;
    b->cursor = nir_after_instr(&intr->instr);
 
    unsigned base = nir_intrinsic_base(intr);
@@ -424,10 +467,11 @@ lower_preamble(nir_builder *b, nir_intrinsic_instr *intr, void *data)
 }
 
 bool
-agx_nir_opt_preamble(nir_shader *nir, unsigned *sizes)
+agx_nir_opt_preamble(nir_shader *nir, unsigned *sizes, bool g15)
 {
    bool progress = false;
-   NIR_PASS(progress, nir, nir_opt_preamble, &preamble_options, sizes);
+   NIR_PASS(progress, nir, nir_opt_preamble,
+            g15 ? &preamble_options_g15 : &preamble_options, sizes);
 
    int16_t heap[512];
    memset(heap, ~0, sizeof(heap));
@@ -438,8 +482,9 @@ agx_nir_opt_preamble(nir_shader *nir, unsigned *sizes)
                                    nir_metadata_control_flow, heap);
    }
 
+   struct lower_preamble_state state = {heap, g15};
    NIR_PASS(progress, nir, nir_shader_intrinsics_pass, lower_preamble,
-            nir_metadata_control_flow, heap);
+            nir_metadata_control_flow, &state);
 
    return progress;
 }
