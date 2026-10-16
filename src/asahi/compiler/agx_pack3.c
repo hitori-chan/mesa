@@ -1395,8 +1395,9 @@ a3_barrier(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
    a3_emit(a, emission);
 }
 
-/* uniform_store: a mov to the uniform. The value is a 16, 32 or 64-bit
- * register; a 64-bit value is two 32-bit movs. */
+/* uniform_store: a mov to the uniform per element. The value is a vector of
+ * the mask's length (16 or 32-bit elements) or one 64-bit register, which is
+ * two 32-bit movs. */
 static void
 a3_uniform_store(struct a3 *a, const agx_instr *I,
                  struct util_dynarray *emission)
@@ -1409,16 +1410,22 @@ a3_uniform_store(struct a3 *a, const agx_instr *I,
    if (value.type != AGX_INDEX_REGISTER)
       a3_fail(a, "uniform_store of a non-register");
 
-   unsigned words = value.size == AGX_SIZE_64 ? 2 : 1;
+   unsigned count = MAX2(util_last_bit(I->mask), 1);
    enum agx_size size = value.size == AGX_SIZE_16 ? AGX_SIZE_16 : AGX_SIZE_32;
+   unsigned stride = agx_size_align_16(size);
 
-   for (unsigned w = 0; w < words; w++) {
+   if (value.size == AGX_SIZE_64) {
+      assert(count == 1);
+      count = 2;
+   }
+
+   for (unsigned w = 0; w < count; w++) {
       agx_index src = value;
       src.size = size;
-      src.value += 2 * w;
+      src.value += stride * w;
       src.abs = src.neg = false;
 
-      agx_index dst = agx_uniform(offset.value + 2 * w, size);
+      agx_index dst = agx_uniform(offset.value + stride * w, size);
 
       /* The 4-byte mov reaches registers and uniforms below 64 */
       for (unsigned len = 4;; len = 10) {
