@@ -81,6 +81,13 @@ create_dag(agx_context *ctx, agx_block *block, void *memctx)
       enum agx_schedule_class dep = agx_opcodes_info[I->op].schedule_class;
       assert(dep != AGX_SCHEDULE_CLASS_INVALID && "invalid instruction seen");
 
+      /* G15 samples after the pixel fence its fragment shaders wait on
+       * (agx_compile.c): keep texture accesses below the barriers */
+      if (ctx->key->dev.gpu_generation >= 15 &&
+          (I->op == AGX_OPCODE_TEXTURE_SAMPLE ||
+           I->op == AGX_OPCODE_TEXTURE_LOAD || I->op == AGX_OPCODE_IMAGE_LOAD))
+         dep = AGX_SCHEDULE_CLASS_LOAD;
+
       bool barrier = dep == AGX_SCHEDULE_CLASS_BARRIER;
       bool discards =
          I->op == AGX_OPCODE_SAMPLE_MASK || I->op == AGX_OPCODE_ZS_EMIT;
