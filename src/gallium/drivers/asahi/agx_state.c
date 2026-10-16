@@ -3377,13 +3377,14 @@ agx_build_bg_eot(struct agx_batch *batch, bool store, bool partial_render)
              * memory: demo15's end-of-tile data holds a pointer to the
              * descriptor). There are no texture state registers. Apple's
              * descriptors are 32 bytes: the hardware may read the fourth word
-             * of one, so the padding is zero.
+             * of one, so the padding is zero. It ignores the low 5 bits of
+             * the descriptor's address.
              */
             uint64_t words[4] = {0};
             memcpy(words, pbe.cpu, AGX_PBE_LENGTH);
 
             uint64_t desc_va =
-               agx_pool_upload_aligned(&batch->pool, words, sizeof(words), 8);
+               agx_pool_upload_aligned(&batch->pool, words, sizeof(words), 32);
             uint64_t ptr = agx_pool_upload_aligned(&batch->pool, &desc_va,
                                                    sizeof(desc_va), 8);
 

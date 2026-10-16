@@ -440,8 +440,9 @@ hk_build_bg_eot(struct hk_cmd_buffer *cmd, const VkRenderingInfo *info,
             memcpy(words, desc, sizeof(*desc));
 
             /* Apple's descriptors are 32 bytes: the hardware may read the
-             * fourth word of one, so the padding is zero */
-            uint64_t desc_va = hk_pool_upload(cmd, words, sizeof(words), 8);
+             * fourth word of one, so the padding is zero. It ignores the low
+             * 5 bits of the descriptor's address. */
+            uint64_t desc_va = hk_pool_upload(cmd, words, sizeof(words), 32);
             uint64_t ptr = hk_pool_upload(cmd, &desc_va, sizeof(desc_va), 8);
 
             agx_usc_uniform(&b, 4 * rt, 4, ptr);
