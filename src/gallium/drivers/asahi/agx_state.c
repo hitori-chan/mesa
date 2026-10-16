@@ -3128,8 +3128,9 @@ agx_build_pipeline(struct agx_batch *batch, struct agx_compiled_shader *cs,
          .cpu = cs->bo ? agx_bo_map(cs->bo) : NULL,
          .size = cs->b.info.binary_size,
          .main_size = linked ? linked->main_size : cs->b.info.main_size,
-         .texture_results = cs->b.info.texture_results,
          .stack_size = cs->b.info.stack_size,
+         .cr_count = linked ? MAX2(linked->cr_count, cs->b.info.cr_count)
+                            : cs->b.info.cr_count,
          .pix_wait_mask = linked ? linked->pix_wait_mask : 0,
       };
 

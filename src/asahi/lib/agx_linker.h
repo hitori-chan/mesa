@@ -38,6 +38,9 @@ struct agx_linked_shader {
    /* Size in bytes of the linked program (G15's entry program wants it) */
    unsigned main_size;
 
+   /* G15: coefficient registers the linked program writes (specTPR) */
+   unsigned cr_count;
+
    /* Coefficient register bindings */
    struct agx_varyings_fs cf;
 
