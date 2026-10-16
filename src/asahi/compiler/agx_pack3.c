@@ -1251,6 +1251,26 @@ a3_tex_pair(struct a3 *a, agx_index base)
    return base.value >> 2;
 }
 
+/* A texture or sampler index: an immediate, or a 16-bit register of the
+ * low 64 (the field counts halves, boot #323); a 32-bit register is read as
+ * its low half */
+static uint64_t
+a3_tex_index(struct a3 *a, unsigned op, enum a3_kind kind, agx_index idx)
+{
+   if (idx.type == AGX_INDEX_IMMEDIATE) {
+      if (idx.value >= 256)
+         a3_fail(a, "texture or sampler index immediate out of range");
+      return a3_kind_value(a, op, kind, idx.value, 0);
+   }
+
+   if (idx.type != AGX_INDEX_REGISTER || idx.size > AGX_SIZE_32 ||
+       idx.value >= 128)
+      a3_fail(a, "texture or sampler index is not a register below r64");
+
+   idx.size = AGX_SIZE_16;
+   return a3_reg(a, op, idx, 0, 0, 0);
+}
+
 /* texture_sample / texture_load (texture.md; boots #252 and #256 run
  * Apple's forms): G15 has no texture state registers. The texture is entry
  * ts of the 32 B state array at a uniform pair (the IR's bindless base, its
@@ -1258,7 +1278,7 @@ a3_tex_pair(struct a3 *a, agx_index base)
  * table at another pair (src[6]). The coordinates go to cr0.. in group 0,
  * which the instruction waits for; the result arrives in group A3_SYNC_G and
  * is waited for at once. Done: 2D, automatic LOD (fragment shaders) and
- * level 0, immediate indices. */
+ * level 0, immediate or register indices. */
 static void
 a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
 {
@@ -1278,9 +1298,6 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
       a3_fail(a, "texture LOD other than automatic or level 0");
    if (load && auto_lod)
       a3_fail(a, "texture_load with an automatic LOD");
-   if (texture.type != AGX_INDEX_IMMEDIATE || texture.value >= 256 ||
-       sampler.type != AGX_INDEX_IMMEDIATE || sampler.value >= 256)
-      a3_fail(a, "texture or sampler index is not a small immediate");
    if (coords.size != AGX_SIZE_32)
       a3_fail(a, "texture coordinates are not 32-bit");
    if (I->mask == 0 || I->mask > 15)
@@ -1303,12 +1320,12 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
    a3_set(a, TEX_MASK, a3_tex_mask[I->mask]);
    a3_set(a, TEX_DST,
           a3_reg(a, TEX_DST, I->dest[0], 0, 0, a3_tex_mask[I->mask]));
-   a3_set(a, TEX_TS, a3_kind_value(a, TEX_TS, A3_TS, texture.value, 0));
+   a3_set(a, TEX_TS, a3_tex_index(a, TEX_TS, A3_TS, texture));
    a3_set(a, TEX_CR, a3_kind_value(a, TEX_CR, A3_CR, 0, 0));
    a3_set(a, TEX_Q1, 1);
    a3_set(a, TEX_Q2, load ? 0 : 1);
    a3_set(a, TEX_WAIT, 1);
-   a3_set(a, TEX_SS, a3_kind_value(a, TEX_SS, A3_SS, sampler.value, 0));
+   a3_set(a, TEX_SS, a3_tex_index(a, TEX_SS, A3_SS, sampler));
    a3_set(a, TEX_USMP, a3_tex_pair(a, I->src[6]));
    a3_set(a, TEX_UTEX, a3_tex_pair(a, I->src[2]));
    a3_emit(a, emission);

@@ -2156,17 +2156,33 @@
     </case>
   </encoding>
 
-  <!-- Texture state -->
+  <!--
+   Texture state: an immediate index, or (bit 8 set) a 16-bit register
+   counting halves (bits 1:7, so r0l..r63h; boot #323). Bit 0 set with
+   bit 8 is a second register form whose meaning is not known.
+  -->
   <encoding name="ts">
     <case>
+      <exact bit="8">0</exact>
       <immediate name="ts" bit="0:7"/>
+    </case>
+    <case>
+      <exact bit="8">1</exact>
+      <exact bit="0">0</exact>
+      <immediate name="reg" bit="1:7"/>
     </case>
   </encoding>
 
-  <!-- Sampler state -->
+  <!-- Sampler state: the same two forms -->
   <encoding name="ss">
     <case>
+      <exact bit="8">0</exact>
       <immediate name="ss" bit="0:7"/>
+    </case>
+    <case>
+      <exact bit="8">1</exact>
+      <exact bit="0">0</exact>
+      <immediate name="reg" bit="1:7"/>
     </case>
   </encoding>
 
@@ -2633,13 +2649,13 @@
     <immediate name="g1" bit="42:44"/>
     <modifier name="mask" bit="27:28 37 86" kind="texture_sample_mask"/>
     <dest kind="texreg" bit="3 4:7 22:23 15 27:28 37 86"/>
-    <src kind="ts" bit="71 11:14 68:70"/>
+    <src kind="ts" bit="71 11:14 68:70 87"/>
     <src kind="cr" bit="8:10 24:26"/>
     <immediate name="q1" bit="29"/>
     <immediate name="q2" bit="31"/>
     <modifier name="wait" bit="39:41" kind="wait1"/>
     <modifier name="unk" bit="18:19 36 84" kind="expect4"/>
-    <src kind="ss" bit="72 32:35 65:67"/>
+    <src kind="ss" bit="72 32:35 65:67 88"/>
     <immediate name="usmp" bit="96:99"/>
     <immediate name="utex" bit="100:103"/>
   </ins>
@@ -2651,13 +2667,13 @@
     <immediate name="g1" bit="42:44"/>
     <modifier name="mask" bit="27:28 37 86" kind="texture_sample_mask"/>
     <dest kind="texreg" bit="3 4:7 22:23 15 27:28 37 86"/>
-    <src kind="ts" bit="71 11:14 68:70"/>
+    <src kind="ts" bit="71 11:14 68:70 87"/>
     <src kind="cr" bit="8:10 24:26"/>
     <immediate name="q1" bit="29"/>
     <immediate name="q2" bit="31"/>
     <modifier name="wait" bit="39:41" kind="wait1"/>
     <modifier name="unk" bit="18:19 36 84" kind="expect4"/>
-    <src kind="ss" bit="72 32:35 65:67"/>
+    <src kind="ss" bit="72 32:35 65:67 88"/>
     <immediate name="usmp" bit="96:99"/>
     <immediate name="utex" bit="100:103"/>
     <immediate name="q3" bit="64"/>
@@ -2670,13 +2686,13 @@
     <immediate name="g1" bit="42:44"/>
     <modifier name="mask" bit="27:28 37 86" kind="texture_load_mask"/>
     <dest kind="texreg" bit="3 4:7 22:23 15 27:28 37 86"/>
-    <src kind="ts" bit="71 11:14 68:70"/>
+    <src kind="ts" bit="71 11:14 68:70 87"/>
     <src kind="cr" bit="8:10 24:26"/>
     <immediate name="q1" bit="29"/>
     <immediate name="q2" bit="31"/>
     <modifier name="wait" bit="39:41" kind="wait1"/>
     <modifier name="unk" bit="18:19 36" kind="expect3"/>
-    <src kind="ss" bit="72 32:35 65:67"/>
+    <src kind="ss" bit="72 32:35 65:67 88"/>
     <immediate name="usmp" bit="96:99"/>
     <immediate name="utex" bit="100:103"/>
   </ins>
