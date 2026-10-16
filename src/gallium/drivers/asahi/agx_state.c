@@ -3131,6 +3131,7 @@ agx_build_pipeline(struct agx_batch *batch, struct agx_compiled_shader *cs,
          .stack_size = cs->b.info.stack_size,
          .cr_count = linked ? MAX2(linked->cr_count, cs->b.info.cr_count)
                             : cs->b.info.cr_count,
+         .pix_wait_mask = linked ? linked->pix_wait_mask : 0,
       };
 
       /* The hardware stage: geometry and tessellation run as compute kernels
