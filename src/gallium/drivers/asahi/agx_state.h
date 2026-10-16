@@ -469,6 +469,12 @@ struct agx_zsa {
    struct agx_fragment_face_packed depth;
    struct agx_fragment_stencil_packed front_stencil, back_stencil;
 
+   /* G15: with neither depth writes nor a stencil test, enable a stencil test
+    * that always passes and masks nothing, as Apple's Metal driver does for a
+    * pass without a depth attachment (without it nothing is drawn).
+    */
+   bool g15_stencil_always;
+
    /* PIPE_CLEAR_* bitmask corresponding to this depth/stencil state */
    uint32_t load, store;
 };
