@@ -2510,6 +2510,13 @@ agx_emit_tex(agx_builder *b, nir_tex_instr *instr)
    else if (!agx_is_null(compare))
       compare_offset = compare;
 
+   /* G15: Apple's fragment shaders wait on fence 0x200 before they sample
+    * (the ftex capture). Sampled before it, the texture instructions of
+    * neighbouring primitives read each other's coordinates (boot #313).
+    */
+   if (g15 && b->shader->stage == MESA_SHADER_FRAGMENT)
+      agx_wait_pixel_mask(b, 0x200);
+
    agx_index tmp = agx_vec_temp(b->shader, dst.size, instr->is_sparse ? 8 : 4);
    agx_instr *I = agx_texture_sample_to(
       b, tmp, coords, lod, bindless, texture, sampler, compare_offset,
