@@ -27,7 +27,7 @@ struct esl_tile {
  * worked (boots #318, #319). So each pushed word N within reach is loaded into
  * register N + AGX_G15_PUSH_REG, moved to uN from there, and left there for
  * the preamble, which reads it from the register (agx_compile.c). */
-#define ESL_PUSH_REGS (128 - AGX_G15_PUSH_REG)
+#define ESL_PUSH_REGS AGX_G15_PUSH_WORDS
 
 struct esl_range {
    unsigned start_halfs, size_halfs;
