@@ -1578,6 +1578,14 @@ a3_tile(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
    unsigned r = load ? LD_TILE_REG : ST_TILE_REG;
    unsigned type = a3_tile_type(a, I);
 
+   /* Explicit coordinates are x and y as two 16-bit halves (the compute
+    * blit's local invocation id): the encoding names them as one 32-bit
+    * register */
+   if (I->explicit_coords && coords.type == AGX_INDEX_REGISTER &&
+       coords.size == AGX_SIZE_16 && agx_channels(coords) == 2 &&
+       !(coords.value & 1))
+      coords = agx_register(coords.value, AGX_SIZE_32);
+
    a3_begin(a, I, load ? AGX3_TILE_LOAD : AGX3_TILE_STORE,
             load ? T_LD_TILE : T_ST_TILE);
    if (load)
