@@ -950,7 +950,7 @@ agx_emit_load_preamble(agx_builder *b, agx_index dst,
    for (unsigned i = 0; i < dim; ++i) {
       unsigned halfs = base + i * stride;
 
-      if (g15 && halfs + 2 * stride <= AGX_NUM_REGS - 2 * AGX_G15_PUSH_REG)
+      if (g15 && halfs + 2 * stride <= 2 * AGX_G15_PUSH_WORDS)
          srcs[i] = agx_g15_pushed(b, halfs, dst.size);
       else
          srcs[i] = agx_uniform(halfs, dst.size);
