@@ -2695,6 +2695,7 @@
     <src kind="ss" bit="72 32:35 65:67 88"/>
     <immediate name="usmp" bit="96:99"/>
     <immediate name="utex" bit="100:103"/>
+    <immediate name="lod" bit="59:63 89:94 20"/>
   </ins>
 
   <!-- bitop_unary, op 1 -->
