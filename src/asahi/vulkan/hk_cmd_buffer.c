@@ -675,7 +675,8 @@ hk_upload_esl(struct hk_cmd_buffer *cmd, struct hk_shader *s,
       .size = s->b.info.binary_size,
       .main_size = linked->b.bo ? linked->b.bo->size : s->b.info.main_size,
       .stack_size = s->b.info.stack_size,
-      .texture_results = s->b.info.texture_results,
+      .cr_count = linked->b.bo ? MAX2(linked->b.cr_count, s->b.info.cr_count)
+                               : s->b.info.cr_count,
       .pix_wait_mask = linked->b.pix_wait_mask,
    };
 
