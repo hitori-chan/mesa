@@ -215,6 +215,10 @@ agx_compact_kernel_info(struct agx_shader_info *info)
    };
 }
 
+/* G15: a preamble reads pushed uniform word N from register N +
+ * AGX_G15_PUSH_REG, where the entry program loads it (lib/agx_esl.c) */
+#define AGX_G15_PUSH_REG 2
+
 /* G15 (AGX3) building blocks for the entry program, from the compiler's
  * G15 packer (agx_pack3.c). Registers and uniforms are 32-bit indices. */
 struct util_dynarray;

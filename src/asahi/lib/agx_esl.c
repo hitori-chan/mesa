@@ -21,6 +21,19 @@ struct esl_tile {
 #define ESL_DATA 2
 #define ESL_SLOT 0
 
+/* The entry program cannot read back the uniforms it writes: a preamble's
+ * load from a pushed pointer read a stale one in about half the SIMD groups of
+ * a fragment program, the same pointer loaded from memory into a register
+ * worked (boots #318, #319). So each pushed word N within reach is loaded into
+ * register N + AGX_G15_PUSH_REG, moved to uN from there, and left there for
+ * the preamble, which reads it from the register (agx_compile.c). */
+#define ESL_PUSH_REGS (128 - AGX_G15_PUSH_REG)
+
+struct esl_range {
+   unsigned start_halfs, size_halfs;
+   uint64_t buffer;
+};
+
 static void
 esl_u64(struct util_dynarray *out, uint64_t v)
 {
@@ -33,27 +46,36 @@ esl_u16(struct util_dynarray *out, uint16_t v)
    util_dynarray_append(out, v);
 }
 
-/* Load size_halfs 16-bit uniforms from buffer into the uniforms from
- * start_halfs on. The uniform file is filled in 32-bit words; an odd
- * count rounds up (the extra half belongs to the buffer's padding). */
+/* Load a range's 16-bit uniforms from its buffer into the uniforms from
+ * start_halfs on: the words within reach of the push registers through them
+ * (reach), or the others through r2-r5. The uniform file is filled in 32-bit
+ * words; an odd count rounds up (the extra half belongs to the buffer's
+ * padding). */
 static void
-esl_uniforms(struct util_dynarray *out, unsigned start_halfs,
-             unsigned size_halfs, uint64_t buffer)
+esl_uniforms(struct util_dynarray *out, const struct esl_range *r, bool reach)
 {
-   assert((start_halfs & 1) == 0 && "uniform ranges start 32-bit aligned");
-   unsigned words = DIV_ROUND_UP(size_halfs, 2);
+   assert((r->start_halfs & 1) == 0 && "uniform ranges start 32-bit aligned");
+   unsigned first = r->start_halfs / 2;
+   unsigned end = first + DIV_ROUND_UP(r->size_halfs, 2);
+   unsigned from = reach ? first : MAX2(first, ESL_PUSH_REGS);
+   unsigned to = reach ? MIN2(end, ESL_PUSH_REGS) : end;
 
+   if (from >= to)
+      return;
+
+   uint64_t buffer = r->buffer + 4 * (from - first);
    agx3_emit_mov_imm(out, ESL_BASE, buffer);
    agx3_emit_mov_imm(out, ESL_BASE + 1, buffer >> 32);
 
-   for (unsigned w = 0; w < words; w += 4) {
-      unsigned n = MIN2(4, words - w);
+   for (unsigned u = from; u < to; u += 4) {
+      unsigned n = MIN2(4, to - u);
+      unsigned data = reach ? u + AGX_G15_PUSH_REG : ESL_DATA;
 
-      agx3_emit_load(out, ESL_SLOT, ESL_DATA, ESL_BASE, w / 4, n);
+      agx3_emit_load(out, ESL_SLOT, data, ESL_BASE, (u - from) / 4, n);
       agx3_emit_wait(out, ESL_SLOT);
 
       for (unsigned i = 0; i < n; i++)
-         agx3_emit_uniform_store(out, start_halfs / 2 + w + i, ESL_DATA + i);
+         agx3_emit_uniform_store(out, u + i, data + i);
    }
 }
 
@@ -208,6 +230,8 @@ agx_esl_from_usc(struct util_dynarray *out, const uint8_t *usc,
                  enum agx_esl_stage stage)
 {
    uint64_t main_va = 0, preamble_va = 0;
+   struct esl_range ranges[32];
+   unsigned nr_ranges = 0;
    unsigned shared_bytes = 0;
 
    /* demo15's: 32x32, one sample of 8 bytes */
@@ -219,7 +243,15 @@ agx_esl_from_usc(struct util_dynarray *out, const uint8_t *usc,
       case AGX_USC_CONTROL_UNIFORM_HIGH: {
          agx_unpack(NULL, usc, USC_UNIFORM, u);
          unsigned high = usc[0] == AGX_USC_CONTROL_UNIFORM_HIGH ? 256 : 0;
-         esl_uniforms(out, u.start_halfs + high, u.size_halfs, u.buffer);
+         if (nr_ranges == ARRAY_SIZE(ranges)) {
+            fprintf(stderr, "G15: too many uniform ranges\n");
+            return false;
+         }
+         ranges[nr_ranges++] = (struct esl_range){
+            .start_halfs = u.start_halfs + high,
+            .size_halfs = u.size_halfs,
+            .buffer = u.buffer,
+         };
          usc += AGX_USC_UNIFORM_LENGTH;
          break;
       }
@@ -294,6 +326,14 @@ agx_esl_from_usc(struct util_dynarray *out, const uint8_t *usc,
 
    if (!main_va)
       return false;
+
+   /* The words out of reach go through r2-r5 first, before the push
+    * registers hold anything */
+   for (unsigned i = 0; i < nr_ranges; i++)
+      esl_uniforms(out, &ranges[i], false);
+
+   for (unsigned i = 0; i < nr_ranges; i++)
+      esl_uniforms(out, &ranges[i], true);
 
    /* The preamble runs before the tail, as G13's preshader runs before the
     * shader (AGX_G15_PREAMBLE_LAST=1: after it, where Metal branches to its

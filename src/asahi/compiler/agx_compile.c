@@ -877,6 +877,33 @@ agx_translate_bindless_handle(agx_builder *b, nir_src *handle, agx_index *base)
    return agx_src_index(&intr->src[0]);
 }
 
+/* G15: a preamble runs in the entry program, which cannot read back the
+ * uniforms it writes; it reads pushed word N from register N +
+ * AGX_G15_PUSH_REG instead, where the entry program loaded it (agx_esl.c) */
+static agx_index
+agx_g15_pushed(agx_builder *b, unsigned halfs, enum agx_size size)
+{
+   unsigned reg = 2 * AGX_G15_PUSH_REG + (halfs & ~1);
+
+   if (size == AGX_SIZE_64) {
+      agx_index words[2] = {
+         agx_cached_preload(b->shader, reg, AGX_SIZE_32),
+         agx_cached_preload(b->shader, reg + 2, AGX_SIZE_32),
+      };
+      agx_index v = agx_temp(b->shader, AGX_SIZE_64);
+      agx_emit_collect_to(b, v, 2, words);
+      return v;
+   }
+
+   agx_index word = agx_cached_preload(b->shader, reg, AGX_SIZE_32);
+   if (size == AGX_SIZE_32)
+      return word;
+
+   agx_index v = agx_temp(b->shader, AGX_SIZE_16);
+   agx_subdivide_to(b, v, word, halfs & 1);
+   return v;
+}
+
 /* Preambles write directly to uniform registers, so move from uniform to GPR */
 static agx_instr *
 agx_emit_load_preamble(agx_builder *b, agx_index dst,
@@ -888,9 +915,16 @@ agx_emit_load_preamble(agx_builder *b, agx_index dst,
 
    unsigned base = nir_intrinsic_base(instr);
    unsigned stride = agx_size_align_16(dst.size);
+   bool g15 = b->shader->is_preamble && b->shader->key->dev.gpu_generation >= 15;
 
-   for (unsigned i = 0; i < dim; ++i)
-      srcs[i] = agx_uniform(base + i * stride, dst.size);
+   for (unsigned i = 0; i < dim; ++i) {
+      unsigned halfs = base + i * stride;
+
+      if (g15 && halfs + 2 * stride <= AGX_NUM_REGS - 2 * AGX_G15_PUSH_REG)
+         srcs[i] = agx_g15_pushed(b, halfs, dst.size);
+      else
+         srcs[i] = agx_uniform(halfs, dst.size);
+   }
 
    return agx_emit_collect_to(b, dst, dim, srcs);
 }
