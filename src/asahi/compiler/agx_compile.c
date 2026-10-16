@@ -865,6 +865,13 @@ agx_translate_bindless_handle(agx_builder *b, nir_src *handle, agx_index *base)
           intr->intrinsic == nir_intrinsic_bindless_sampler_agx);
 
    *base = agx_uniform(nir_intrinsic_desc_set(intr), AGX_SIZE_64);
+
+   /* G15 takes a constant index as an immediate (its texture instructions
+    * index the table by an immediate in their short form) */
+   if (b->shader->key->dev.gpu_generation >= 15 &&
+       nir_src_is_const(intr->src[0]))
+      return agx_immediate(nir_src_as_uint(intr->src[0]));
+
    return agx_src_index(&intr->src[0]);
 }
 
@@ -1307,7 +1314,7 @@ agx_emit_image_load(agx_builder *b, agx_index dst, nir_intrinsic_instr *intr)
    agx_index tmp = agx_vec_temp(b->shader, dst.size, sparse ? 8 : 4);
 
    agx_instr *I = agx_image_load_to(b, tmp, coords, lod, bindless, texture,
-                                    agx_immediate(0), agx_null(),
+                                    agx_immediate(0), agx_null(), agx_null(),
                                     agx_tex_dim(dim, is_array), lod_mode, 0,
                                     false, sparse, nir_is_coherent(intr));
    I->mask = agx_expand_tex_to(b, &intr->def, tmp, !sparse);
@@ -2354,7 +2361,8 @@ agx_emit_tex(agx_builder *b, nir_tex_instr *instr)
              texture = agx_immediate(instr->texture_index),
              sampler = agx_immediate(instr->sampler_index),
              lod = agx_immediate(0), compare = agx_null(),
-             packed_offset = agx_null();
+             packed_offset = agx_null(), sampler_base = agx_null();
+   bool g15 = b->shader->key->dev.gpu_generation >= 15;
 
    /* Default to the txf sampler at ss0 */
    if (!nir_tex_instr_need_sampler(instr)) {
@@ -2399,8 +2407,17 @@ agx_emit_tex(agx_builder *b, nir_tex_instr *instr)
          b->shader->out->uses_sampler_heap = true;
          nir_intrinsic_instr *intr = nir_src_as_intrinsic(instr->src[i].src);
          if (intr && intr->intrinsic == nir_intrinsic_bindless_sampler_agx) {
-            /* Heap offset */
+            /* Heap offset; on G15 the index into the sampler table at the
+             * "descriptor set" uniform */
             sampler = agx_src_index(&intr->src[1]);
+
+            if (g15) {
+               sampler_base =
+                  agx_uniform(nir_intrinsic_desc_set(intr), AGX_SIZE_64);
+
+               if (nir_src_is_const(intr->src[1]))
+                  sampler = agx_immediate(nir_src_as_uint(intr->src[1]));
+            }
          } else {
             sampler = index;
          }
@@ -2473,6 +2490,13 @@ agx_emit_tex(agx_builder *b, nir_tex_instr *instr)
    if (lod_mode == AGX_LOD_MODE_AUTO_LOD) {
       /* Ignored logically but asserted 0 */
       lod = agx_immediate(0);
+
+      /* G15 computes an automatic LOD from derivatives in fragment shaders
+       * only; level 0 is an explicit level (Apple's compute shaders) */
+      if (g15 && (b->shader->stage != MESA_SHADER_FRAGMENT ||
+                  instr->op == nir_texop_txl || instr->op == nir_texop_txf ||
+                  instr->op == nir_texop_txf_ms))
+         lod_mode = AGX_LOD_MODE_LOD_MIN;
    }
 
    agx_index dst = agx_def_index(&instr->def);
@@ -2490,6 +2514,7 @@ agx_emit_tex(agx_builder *b, nir_tex_instr *instr)
    agx_index tmp = agx_vec_temp(b->shader, dst.size, instr->is_sparse ? 8 : 4);
    agx_instr *I = agx_texture_sample_to(
       b, tmp, coords, lod, bindless, texture, sampler, compare_offset,
+      sampler_base,
       agx_tex_dim(instr->sampler_dim, instr->is_array), lod_mode, 0,
       !agx_is_null(packed_offset), !agx_is_null(compare),
       instr->op == nir_texop_lod, agx_gather_for_nir(instr), instr->is_sparse);

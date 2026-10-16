@@ -84,20 +84,19 @@ esl_ldshdr(struct util_dynarray *out, uint64_t va, unsigned size)
    esl_u16(out, ((va >> 47) & 1) | (size_class[MIN2(size >> 7, 3)] << 1));
 }
 
-/* specTPR: the per-thread memory (metal-compute.md, from Apple's kernels):
- * 16 B for each texture instruction's result, in 8 B units at 41:31, and the
- * private (st) stack in words at 57:42 (its low 12 bits) and 73:58, both the
- * same count: the shader's stack plus 4 words, as Apple's kernels have it.
- * Without these the texture results and get_stack are never written. */
+/* specTPR: the per-thread memory (metal-compute.md, from Apple's kernels and
+ * render programs): the coordinate registers the shader writes at 41:31 (the
+ * highest plus one, 8 B each), and the private (st) stack in words at 57:42
+ * (its low 12 bits) and 73:58, both the same count: the shader's stack plus 4
+ * words, as Apple's kernels have it. Without these the texture instructions
+ * read no coordinates and get_stack is never written. */
 static void
-esl_spectpr(struct util_dynarray *out, unsigned stack_bytes,
-            unsigned texture_bytes)
+esl_spectpr(struct util_dynarray *out, unsigned stack_bytes, unsigned crs)
 {
-   unsigned tex = DIV_ROUND_UP(texture_bytes, 8);
    unsigned words = stack_bytes ? DIV_ROUND_UP(stack_bytes, 4) + 4 : 0;
-   assert(tex < (1 << 11) && words < (1 << 12));
+   assert(crs < (1 << 11) && words < (1 << 12));
 
-   esl_u64(out, 0x2A00F7 | ((uint64_t)tex << 31) | ((uint64_t)words << 42) |
+   esl_u64(out, 0x2A00F7 | ((uint64_t)crs << 31) | ((uint64_t)words << 42) |
                    ((uint64_t)(words & 0x3F) << 58));
    esl_u16(out, words >> 6);
 }
@@ -308,18 +307,31 @@ agx_esl_from_usc(struct util_dynarray *out, const uint8_t *usc,
    case AGX_ESL_COMPUTE:
       esl_speclm(out, shared_bytes);
       esl_ldshdr(out, main_va, code ? code->main_size : 0);
-      esl_spectpr(out, code ? code->stack_size : 0,
-                  code ? code->texture_results : 0);
+      esl_spectpr(out, code ? code->stack_size : 0, code ? code->cr_count : 0);
       break;
 
-   case AGX_ESL_VERTEX:
+   case AGX_ESL_VERTEX: {
+      /* Apple's vertex programs (the 2026-10-16 triangle): specLM, ldshdr,
+       * specTPR; demo15's: ldshdr and the 0x6F7 word. Experiments:
+       * AGX_G15_VS=l (Apple's specLM first), t (no specTPR), c (no 0x6F7
+       * word) */
+      const char *vs = getenv("AGX_G15_VS");
+      if (vs && strchr(vs, 'l'))
+         esl_speclm(out, 0);
       esl_ldshdr(out, main_va, code ? code->main_size : 0);
-      esl_vertex_config(out);
+      if (!(vs && strchr(vs, 't')))
+         esl_spectpr(out, 0, code ? code->cr_count : 0);
+      if (!(vs && strchr(vs, 'c')))
+         esl_vertex_config(out);
       break;
+   }
 
    case AGX_ESL_FRAGMENT:
+      /* Apple's fragment programs have a specTPR after ldshdr */
       esl_speclm_imageblock(out, &tile);
       esl_ldshdr(out, main_va, code ? code->main_size : 0);
+      if (!getenv("AGX_G15_FS_NOTPR"))
+         esl_spectpr(out, 0, code ? code->cr_count : 0);
       esl_pixrel(out, code ? code->pix_wait_mask : 0);
       break;
 
@@ -329,9 +341,10 @@ agx_esl_from_usc(struct util_dynarray *out, const uint8_t *usc,
       break;
 
    case AGX_ESL_END_OF_TILE:
+      /* demo15's: the block write's coordinates in cr0 and cr1 */
       esl_speclm_imageblock(out, &tile);
       esl_ldshdr(out, main_va, code ? code->main_size : 0);
-      esl_spectpr(out, 0, 16);
+      esl_spectpr(out, 0, 2);
       break;
    }
 

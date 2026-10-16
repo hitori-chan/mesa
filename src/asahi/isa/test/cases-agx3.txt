@@ -231,42 +231,42 @@ e7f047aae9641300ccd07a160b00 device_store 3, i16, yz, r85l_r85h, dr105, 9929, ls
 e7704511983a2b00be0016970a00 device_store 2, i32, w, r8, dr24, 22133, lsl 4, -7488, wait 0124, 1, 0
 e760457a43112100e01b30802200 device_store 7, i8, du134, ^u17.sx, lsl 4, 1539, wait 124, 0, 0
 e760547737572100dbaa56970800 device_store 3, i32, xz, r59_r60, dr55, 17070, -5419, wait 12, 1, 1
-05040c2210000900800010000100 texture_sample 0, 0, x, r0l, ts1, cr20, 1, 0
-8551cc9d90d20900200050000100 texture_sample 6, 4, zw, r56l_r56h, ts84, cr41, 0, 1, wait 4
-0d81cc0010000900000010000100 texture_sample 0, 0, x, r97, ts0, cr1, 0, 0
-25008c3010810900800010000100 texture_sample 4, 0, z, r34l, ts1, cr0, 1, 0, wait 1
-3dee8c35905d0900d00210000100000000000000 texture_sample 2, 7, z, r71, ts187, cr46, 1, 0, wait 2
-9553cc2c302b0900100010000100 texture_sample 1, 2, xy, r57l_r57h, ts52, cr35, 1, 0, wait 5
-f5408cae30a00900800250000100000000000000 texture_sample 5, 0, xyw, r47l_r47h_r48l, ts17, cr48, 1, 1
-05200c0890800900000210000100000000000000 texture_sample 4, 0, y, r0l, ts8, cr0, 0, 0, wait 0
-0d000c0110460900000010000100 texture_sample 2, 1, x, r0h, ts0, cr8, 0, 0, wait 3
-0de90cbd30600900600250000100000000000000 texture_sample 3, 0, _, ts218, cr41, 1, 1
-cdde4c8f90be0900000050000100 texture_sample 5, 7, yz, r57_r58, ts22, cr62, 0, 1, wait 4
-05000c1010810900100050000100 texture_sample 4, 0, yw, r0l_r0h, ts32, cr0, 0, 0, wait 1
-edd00c9890a00900d00010000100 texture_sample 5, 0, w, r29, ts181, cr0, 0, 1, wait 0
-b5014c82b05e0900d00050000100 texture_sample 2, 7, xzw, r27l_r27h_r28l, ts161, cr17, 0, 1, wait 4
-8db58c2530a10900200010000100 texture_sample 5, 0, xw, r81_r82, ts76, cr45, 1, 0, wait 1
-5dd34c32b0360900900010000100 texture_sample 1, 5, xyz, r43_r44_r45, ts53, cr19, 1, 0, wait 4
-45c74c99307a0900600210000100000000000000 texture_sample 3, 6, xyzw, r40_r41_r42_r43, ts208, cr15, 0, 1, wait 3
-cde2cc23105f0900100250000100000000000000 texture_sample 2, 7, xz, r121_r122, ts56, cr26, 1, 0, wait 5
-e50c0c1230010900800050000100 texture_sample 0, 0, yzw, r14l_r14h_r15l, ts3, cr20, 0, 0, wait 1
-35790c1790701701800040000100 texture_load 3, 4, yw, r3l_r3h, ts31, cr57, 0, 0, wait 0
-05194c0e100a1701000200000100000000000000 texture_load 0, 2, y, r16l, ts6, cr49, 0, 0, wait 3
-050c8c8090801701200000000100 texture_load 4, 0, x, r32l, ts66, cr4, 0, 1, wait 0
-3dff0c2390241701a00240000100000000000000 texture_load 1, 1, xz, r7_r8, ts95, cr31, 1, 0, wait 0
-15000c0010a01701000000000100 texture_load 5, 0, x, r1l, ts0, cr0, 0, 0
-bd7acc8a30901701d00240000100000000000000 texture_load 4, 4, xyw, r59h_r60l_r60h, ts191, cr18, 0, 1
-05408c1410021701000000000100 texture_load 0, 0, z, r32l, ts16, cr32, 0, 0, wait 3
-5d2f4c2c90c61701c00240000100000000000000 texture_load 6, 1, yz, r21h_r22l, ts139, cr39, 1, 0, wait 4
-05604cb130e01701700040000100 texture_load 7, 0, yzw, r16l_r16h_r17l, ts248, cr8, 1, 1
-1d60cc0030d41701f00200000100000000000000 texture_load 6, 5, xw, r49h_r50l, ts249, cr0, 0, 0
-2db40c9f106a1701300240000100000000000000 texture_load 3, 2, zw, r5_r6, ts108, cr60, 0, 1, wait 3
-3ddb4cb8302e1701300200000100000000000000 texture_load 1, 3, xyzw, r39_r40_r41_r42, ts118, cr3, 1, 1, wait 3
-1d008c0030001701000040000100 texture_load 0, 0, xzw, r33h_r34l_r34h, ts0, cr0, 0, 0
-65f68c2930881701200000000100 texture_load 4, 2, xy, r76_r77, ts92, cr14, 1, 0
-85918c90b0c41701300000000100 texture_load 6, 1, xyz, r80_r81_r82, ts100, cr1, 0, 1, wait 0
-f5c98cbd100a1701500200000100000000000000 texture_load 0, 2, w, r94, ts178, cr41, 1, 1, wait 3
-fd3fcc9b30531701900240000100000000000000 texture_load 2, 4, _, ts47, cr31, 0, 1, wait 5
+05040c2210000900800010000100 texture_sample 0, 0, x, r0l, ts1, cr20, 1, 0, ss0, 1, 0
+8551cc9d90d20900200050000100 texture_sample 6, 4, zw, r56l_r56h, ts84, cr41, 0, 1, wait 4, ss0, 1, 0
+0d81cc0010000900000010000100 texture_sample 0, 0, x, r97, ts0, cr1, 0, 0, ss0, 1, 0
+25008c3010810900800010000100 texture_sample 4, 0, z, r34l, ts1, cr0, 1, 0, wait 1, ss0, 1, 0
+3dee8c35905d0900d00210000100000000000000 texture_sample 2, 7, z, r71, ts187, cr46, 1, 0, wait 2, ss0, 1, 0
+9553cc2c302b0900100010000100 texture_sample 1, 2, xy, r57l_r57h, ts52, cr35, 1, 0, wait 5, ss0, 1, 0
+f5408cae30a00900800250000100000000000000 texture_sample 5, 0, xyw, r47l_r47h_r48l, ts17, cr48, 1, 1, ss0, 1, 0
+05200c0890800900000210000100000000000000 texture_sample 4, 0, y, r0l, ts8, cr0, 0, 0, wait 0, ss0, 1, 0
+0d000c0110460900000010000100 texture_sample 2, 1, x, r0h, ts0, cr8, 0, 0, wait 3, ss0, 1, 0
+0de90cbd30600900600250000100000000000000 texture_sample 3, 0, _, ts218, cr41, 1, 1, ss0, 1, 0
+cdde4c8f90be0900000050000100 texture_sample 5, 7, yz, r57_r58, ts22, cr62, 0, 1, wait 4, ss0, 1, 0
+05000c1010810900100050000100 texture_sample 4, 0, yw, r0l_r0h, ts32, cr0, 0, 0, wait 1, ss0, 1, 0
+edd00c9890a00900d00010000100 texture_sample 5, 0, w, r29, ts181, cr0, 0, 1, wait 0, ss0, 1, 0
+b5014c82b05e0900d00050000100 texture_sample 2, 7, xzw, r27l_r27h_r28l, ts161, cr17, 0, 1, wait 4, ss0, 1, 0
+8db58c2530a10900200010000100 texture_sample 5, 0, xw, r81_r82, ts76, cr45, 1, 0, wait 1, ss0, 1, 0
+5dd34c32b0360900900010000100 texture_sample 1, 5, xyz, r43_r44_r45, ts53, cr19, 1, 0, wait 4, ss0, 1, 0
+45c74c99307a0900600210000100000000000000 texture_sample 3, 6, xyzw, r40_r41_r42_r43, ts208, cr15, 0, 1, wait 3, ss0, 1, 0
+cde2cc23105f0900100250000100000000000000 texture_sample 2, 7, xz, r121_r122, ts56, cr26, 1, 0, wait 5, ss0, 1, 0
+e50c0c1230010900800050000100 texture_sample 0, 0, yzw, r14l_r14h_r15l, ts3, cr20, 0, 0, wait 1, ss0, 1, 0
+35790c1790701701800040000100 texture_load 3, 4, yw, r3l_r3h, ts31, cr57, 0, 0, wait 0, ss0, 1, 0
+05194c0e100a1701000200000100000000000000 texture_load 0, 2, y, r16l, ts6, cr49, 0, 0, wait 3, ss0, 1, 0
+050c8c8090801701200000000100 texture_load 4, 0, x, r32l, ts66, cr4, 0, 1, wait 0, ss0, 1, 0
+3dff0c2390241701a00240000100000000000000 texture_load 1, 1, xz, r7_r8, ts95, cr31, 1, 0, wait 0, ss0, 1, 0
+15000c0010a01701000000000100 texture_load 5, 0, x, r1l, ts0, cr0, 0, 0, ss0, 1, 0
+bd7acc8a30901701d00240000100000000000000 texture_load 4, 4, xyw, r59h_r60l_r60h, ts191, cr18, 0, 1, ss0, 1, 0
+05408c1410021701000000000100 texture_load 0, 0, z, r32l, ts16, cr32, 0, 0, wait 3, ss0, 1, 0
+5d2f4c2c90c61701c00240000100000000000000 texture_load 6, 1, yz, r21h_r22l, ts139, cr39, 1, 0, wait 4, ss0, 1, 0
+05604cb130e01701700040000100 texture_load 7, 0, yzw, r16l_r16h_r17l, ts248, cr8, 1, 1, ss0, 1, 0
+1d60cc0030d41701f00200000100000000000000 texture_load 6, 5, xw, r49h_r50l, ts249, cr0, 0, 0, ss0, 1, 0
+2db40c9f106a1701300240000100000000000000 texture_load 3, 2, zw, r5_r6, ts108, cr60, 0, 1, wait 3, ss0, 1, 0
+3ddb4cb8302e1701300200000100000000000000 texture_load 1, 3, xyzw, r39_r40_r41_r42, ts118, cr3, 1, 1, wait 3, ss0, 1, 0
+1d008c0030001701000040000100 texture_load 0, 0, xzw, r33h_r34l_r34h, ts0, cr0, 0, 0, ss0, 1, 0
+65f68c2930881701200000000100 texture_load 4, 2, xy, r76_r77, ts92, cr14, 1, 0, ss0, 1, 0
+85918c90b0c41701300000000100 texture_load 6, 1, xyz, r80_r81_r82, ts100, cr1, 0, 1, wait 0, ss0, 1, 0
+f5c98cbd100a1701500200000100000000000000 texture_load 0, 2, w, r94, ts178, cr41, 1, 1, wait 3, ss0, 1, 0
+fd3fcc9b30531701900240000100000000000000 texture_load 2, 4, _, ts47, cr31, 0, 1, wait 5, ss0, 1, 0
 83bf4dbc             bitop_unary mov5, u24l, 191, wait 4
 03800042             bitop_unary zero, st0l, $r0l, group 0, wait 1
 b3ec488a             bitop_unary zero, st27l, 236, group 0, wait 3

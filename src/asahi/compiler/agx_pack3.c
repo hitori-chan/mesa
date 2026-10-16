@@ -32,6 +32,7 @@ enum a3_kind {
    A3_IMM,
    A3_FIMM,
    A3_TS,
+   A3_SS,
    A3_CF,
 };
 
@@ -707,6 +708,12 @@ a3_memshift(const struct a3 *a, unsigned bytes)
 #define T_PACK_IMGWIR "9705540400080000d0401000"   /* pack_imgwir cr2, 0, u2l, 0, 0, 4 */
 #define T_IMGWBLK   "5710540000000080a8750000"     /* block_image_store ^cr0, 0, du0, 0, 7530 */
 
+/* Apple's texture instructions (the 2026-10-16 capture's kernels and the
+ * QuartzCore corpus, texture.md) */
+#define T_TEX_L0    "05820cb830250900000010000100" /* texture_sample 2D, level 0 */
+#define T_TEX_AUTO  "05000cb8b0000000010110000100" /* texture_sample 2D, auto LOD */
+#define T_TEX_LOAD  "25800c38b0001701000100000100" /* texture_load 2D, level 0 */
+
 /* Operand positions (AGX3.xml order) */
 enum {
    MOV_IMM_DST = 0,
@@ -803,6 +810,18 @@ enum {
    IMGWBLK_OFFSET = 3,
    IMGWBLK_FLAGS = 4,
    IMGWBLK_WAIT = 7,
+   TEX_G0 = 0,
+   TEX_G1 = 1,
+   TEX_MASK = 2,
+   TEX_DST = 3,
+   TEX_TS = 4,
+   TEX_CR = 5,
+   TEX_Q1 = 6,
+   TEX_Q2 = 7,
+   TEX_WAIT = 8,
+   TEX_SS = 10,
+   TEX_USMP = 11,
+   TEX_UTEX = 12,
 };
 
 /* An ALU instruction: the destination, the sources in IR order at the
@@ -1040,7 +1059,9 @@ a3_mem(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
 
    a3_begin(a, I, store ? AGX3_DEVICE_STORE : AGX3_DEVICE_LOAD,
             store ? T_STORE : T_LOAD);
-   a3_set(a, MEM_G, I->scoreboard);
+   /* A store with g bit 0 set frees its source register: it reads 0 after
+    * (boot #264). Apple's stores use g = 0. */
+   a3_set(a, MEM_G, store ? 0 : I->scoreboard);
    a3_set(a, MEM_REG, a3_memreg(a, MEM_REG, reg, type, a3_mem_mask[I->mask]));
    a3_set(a, MEM_BASE, a3_membase(a, MEM_BASE, base));
    a3_set(a, MEM_INDEX, a3_memidx(a, MEM_INDEX, index));
@@ -1188,17 +1209,7 @@ a3_atomic(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
 
    a3_set(a, o + ADEV_DATA, a3_atomic_data(a, o + ADEV_DATA, I->src[0]));
    a3_set(a, o + ADEV_BASE, a3_membase(a, o + ADEV_BASE, I->src[1]));
-   /* G15 device-atomic sweep (metal-compute.md, "the device atomic's RMW
-    * reads zero"): the AIR gives sign_extend=0 for the atomic's index, and
-    * the working device_store on the same register encodes it without the
-    * sx hint (instruction bit 79), but a3_ext_src sets sx here (a packer
-    * inconsistency). Apple's reference encode has sx=0. AGX_MESA_G15_ADEV_NO_SX
-    * drops the hint to test whether it is what makes the RMW read a zero
-    * location instead of du10 + r1*4. */
-   agx_index adev_idx = I->src[2];
-   if (getenv("AGX_MESA_G15_ADEV_NO_SX"))
-      adev_idx.abs = true;
-   a3_set(a, o + ADEV_INDEX, a3_memidx(a, o + ADEV_INDEX, adev_idx));
+   a3_set(a, o + ADEV_INDEX, a3_memidx(a, o + ADEV_INDEX, I->src[2]));
    a3_set(a, o + ADEV_OP, a3_atomic_op(a, I->atomic_opc));
    a3_set(a, o + ADEV_SHIFT, a3_memshift(a, 2));
    a3_set(a, o + ADEV_OFFSET, 0);
@@ -1211,12 +1222,120 @@ a3_atomic(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
    a3_set(a, GET_STACK_G, A3_SYNC_G);
    a3_set(a, GET_STACK_Q, A3_SYNC_G);
    a3_set(a, GET_STACK_DST, a3_reg(a, GET_STACK_DST, I->dest[0], 0, 0, 0));
-   a3_set(a, GET_STACK_SRC, a3_stack(a, GET_STACK_SRC, A3_ATOMIC_STACK,
-                                     BITFIELD_BIT(A3_LU)));
+   a3_set(a, GET_STACK_SRC,
+          a3_stack(a, GET_STACK_SRC, A3_ATOMIC_STACK, BITFIELD_BIT(A3_LU)));
    a3_set(a, GET_STACK_WAIT, BITFIELD_BIT(A3_SYNC_G));
    a3_emit(a, emission);
 
    a3_wait(a, I, A3_SYNC_G, emission);
+}
+
+static void a3_mov_cr(struct a3 *a, const agx_instr *I, unsigned cr,
+                      agx_index value, struct util_dynarray *emission);
+
+/* The texture instructions' result masks (texture.md): Apple's 4-bit code
+ * for each IR mask (x = 1, y = 2, z = 4, w = 8), 0xff for none */
+static const uint8_t a3_tex_mask[16] = {
+   0xff, 0, 1, 5, 2, 8, 9, 6, 3, 4, 10, 13, 11, 12, 14, 7,
+};
+
+/* A texture table's uniform pair, as the instruction names it: n for
+ * u(2n):u(2n+1), so the table base must be a 64-bit uniform below u32 */
+static unsigned
+a3_tex_pair(struct a3 *a, agx_index base)
+{
+   if (base.type != AGX_INDEX_UNIFORM || base.size != AGX_SIZE_64 ||
+       (base.value & 3) || base.value >= 64)
+      a3_fail(a, "texture table base is not a uniform pair below u32");
+
+   return base.value >> 2;
+}
+
+/* texture_sample / texture_load (texture.md; boots #252 and #256 run
+ * Apple's forms): G15 has no texture state registers. The texture is entry
+ * ts of the 32 B state array at a uniform pair (the IR's bindless base, its
+ * index counting 32 B descriptors), the sampler entry ss of the 32 B sampler
+ * table at another pair (src[6]). The coordinates go to cr0.. in group 0,
+ * which the instruction waits for; the result arrives in group A3_SYNC_G and
+ * is waited for at once. Done: 2D, automatic LOD (fragment shaders) and
+ * level 0, immediate indices. */
+static void
+a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
+{
+   bool load = I->op == AGX_OPCODE_TEXTURE_LOAD;
+   bool auto_lod = I->lod_mode == AGX_LOD_MODE_AUTO_LOD;
+   agx_index coords = I->src[0], lod = I->src[1];
+   agx_index texture = I->src[3], sampler = I->src[4];
+
+   if (I->op == AGX_OPCODE_IMAGE_LOAD)
+      a3_fail(a, "image load not supported yet");
+   if (I->dim != AGX_DIM_2D)
+      a3_fail(a, "texture dimension other than 2D not supported yet");
+   if (I->offset || I->shadow || I->query_lod || I->gather || I->sparse)
+      a3_fail(a, "texture offset, compare, query, gather or sparse");
+   if (!auto_lod && !(I->lod_mode == AGX_LOD_MODE_LOD_MIN &&
+                      lod.type == AGX_INDEX_IMMEDIATE && lod.value == 0))
+      a3_fail(a, "texture LOD other than automatic or level 0");
+   if (load && auto_lod)
+      a3_fail(a, "texture_load with an automatic LOD");
+   if (texture.type != AGX_INDEX_IMMEDIATE || texture.value >= 256 ||
+       sampler.type != AGX_INDEX_IMMEDIATE || sampler.value >= 256)
+      a3_fail(a, "texture or sampler index is not a small immediate");
+   if (coords.size != AGX_SIZE_32)
+      a3_fail(a, "texture coordinates are not 32-bit");
+   if (I->mask == 0 || I->mask > 15)
+      a3_fail(a, "texture result mask");
+
+   for (unsigned c = 0; c < 2; ++c) {
+      agx_index v = coords;
+      v.value += 2 * c;
+      v.channels_m1 = 0;
+      a3_mov_cr(a, I, c, v, emission);
+   }
+
+   a3_begin(a, I,
+            load       ? AGX3_TEXTURE_LOAD
+            : auto_lod ? AGX3_TEXTURE_SAMPLE_AUTO
+                       : AGX3_TEXTURE_SAMPLE,
+            load ? T_TEX_LOAD : auto_lod ? T_TEX_AUTO : T_TEX_L0);
+   a3_set(a, TEX_G0, A3_SYNC_G);
+   a3_set(a, TEX_G1, A3_SYNC_G);
+   a3_set(a, TEX_MASK, a3_tex_mask[I->mask]);
+   a3_set(a, TEX_DST,
+          a3_reg(a, TEX_DST, I->dest[0], 0, 0, a3_tex_mask[I->mask]));
+   a3_set(a, TEX_TS, a3_kind_value(a, TEX_TS, A3_TS, texture.value, 0));
+   a3_set(a, TEX_CR, a3_kind_value(a, TEX_CR, A3_CR, 0, 0));
+   a3_set(a, TEX_Q1, 1);
+   a3_set(a, TEX_Q2, load ? 0 : 1);
+   a3_set(a, TEX_WAIT, 1);
+   a3_set(a, TEX_SS, a3_kind_value(a, TEX_SS, A3_SS, sampler.value, 0));
+   a3_set(a, TEX_USMP, a3_tex_pair(a, I->src[6]));
+   a3_set(a, TEX_UTEX, a3_tex_pair(a, I->src[2]));
+   a3_emit(a, emission);
+
+   a3_wait(a, I, A3_SYNC_G, emission);
+}
+
+/* The coordinate registers the packing of I writes, the highest plus one,
+ * for the entry program to back (the specTPR's 41:31: Apple's kernels and
+ * render programs set it to their highest cr written plus one, pack_imgwir's
+ * destination aside, 2026-10-16) */
+unsigned
+agx3_cr_count(const agx_instr *I)
+{
+   switch (I->op) {
+   case AGX_OPCODE_TEXTURE_SAMPLE:
+   case AGX_OPCODE_TEXTURE_LOAD:
+   case AGX_OPCODE_IMAGE_LOAD:
+   case AGX_OPCODE_ZS_EMIT:
+   case AGX_OPCODE_BLOCK_IMAGE_STORE:
+      return 2;
+   case AGX_OPCODE_ST_VARY:
+      return I->src[0].type == AGX_INDEX_IMMEDIATE ? (I->src[0].value & 7) + 1
+                                                   : 1;
+   default:
+      return 0;
+   }
 }
 
 /* The stack registers (bytes per thread) the packing of I uses, for the
@@ -1228,29 +1347,6 @@ agx3_stack_size(const agx_instr *I)
       return 4 * (A3_ATOMIC_STACK + 1);
 
    return 0;
-}
-
-/* The incStk the shader body needs for a stack frame (metal-compute.md, the
- * section "the incStk the shader body needs"): G15 pushes the frame at kernel
- * entry (incStk +frame) and pops it before stop (incStk -frame). The specTPR
- * allocates the stack in hardware, but without the incStk the get_stack read
- * of the atomic result (st0) returns 0 or garbage (vkcompute dev 11/11 wrong).
- * Form B (the corpus's 726x form) is bit-exact: byte 0 = 0x07, byte 1 = 0,
- * byte 2 = 0x54 (f26=f27=f28=0), byte 3 = f25[0:7], byte 4 (bits 32:39) = bit
- * 32 the form select (1) | f25[8:11] << 1 | f24[0:2] << 5, byte 5 = f24[3:10],
- * byte 6 bits 0:4 = f24[11:15]. f24 (16-bit) and f25 (12-bit) are signed (the
- * pop is the two's-complement negation); their units are not yet pinned down
- * (a guess, to be confirmed on the Mac). */
-void
-agx3_emit_incstk(struct util_dynarray *out, unsigned f24, unsigned f25)
-{
-   uint64_t v = 0x07;
-   v |= (uint64_t) 0x54 << 16;
-   v |= (uint64_t) (f25 & 0xff) << 24;
-   v |= (uint64_t) 1 << 32;
-   v |= (uint64_t) ((f25 >> 8) & 0xf) << 33;
-   v |= (uint64_t) (f24 & 0xffff) << 37;
-   memcpy(util_dynarray_grow_bytes(out, 1, 8), &v, 8);
 }
 
 /* Barriers: G15 has one barrier instruction whose flags (AGX3.xml) say
@@ -1857,6 +1953,7 @@ agx3_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
       once = true;
       assert(!strcmp(agx3_kind_names[A3_CR], "cr"));
       assert(!strcmp(agx3_kind_names[A3_CF], "cf"));
+      assert(!strcmp(agx3_kind_names[A3_SS], "ss"));
       a3_survey_on = debug_get_bool_option("AGX3_SURVEY", false);
       a3_debug = debug_get_bool_option("AGX3_DEBUG", false);
       if (a3_survey_on)
@@ -2002,6 +2099,12 @@ agx3_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
 
    case AGX_OPCODE_LOCAL_ATOMIC:
       a3_local_atomic(&a, I, emission);
+      return;
+
+   case AGX_OPCODE_TEXTURE_SAMPLE:
+   case AGX_OPCODE_TEXTURE_LOAD:
+   case AGX_OPCODE_IMAGE_LOAD:
+      a3_texture(&a, I, emission);
       return;
 
    case AGX_OPCODE_ATOMIC:
