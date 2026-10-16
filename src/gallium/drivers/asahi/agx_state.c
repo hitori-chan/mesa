@@ -3429,6 +3429,23 @@ agx_build_bg_eot(struct agx_batch *batch, bool store, bool partial_render)
    unsigned uniforms = 0;
    unsigned nr_tex = 0;
 
+   bool g15 = dev->params.gpu_generation >= 15;
+   struct agx_ptr g15_tex = {0};
+
+   /* G15: the sampler table's pair goes past the clear colours */
+   bool loads = false;
+   unsigned first_free = 4;
+   for (unsigned rt = 0; rt < PIPE_MAX_COLOR_BUFS && g15; ++rt) {
+      loads |= key.op[rt] == AGX_BG_LOAD;
+      if (key.op[rt] == AGX_BG_CLEAR)
+         first_free = 4 + 8 * (rt + 1);
+   }
+
+   if (loads) {
+      key.g15_sampler_uniform = first_free;
+      assert(first_free <= AGX_G15_MAX_BG_SAMPLER_UNIFORM);
+   }
+
    for (unsigned rt = 0; rt < PIPE_MAX_COLOR_BUFS; ++rt) {
       if (key.op[rt] == AGX_BG_LOAD) {
          /* Each reloaded render target is textured */
@@ -3437,6 +3454,27 @@ agx_build_bg_eot(struct agx_batch *batch, bool store, bool partial_render)
          /* Will be uploaded later, this would be clobbered */
          if (needs_textures_for_spilled_rts)
             continue;
+
+         /* G15 has no texture state registers: the descriptors are a table at
+          * u0 (the compiler indexes it by 2 * rt, as for spilled targets) */
+         if (g15) {
+            const struct pipe_surface *surf = &batch->key.cbufs[rt];
+            assert(surf->texture != NULL && "cannot load nonexistent attachment");
+
+            if (!g15_tex.cpu) {
+               g15_tex = agx_pool_alloc_aligned(
+                  &batch->pool, agx_tex_desc_stride(batch) * 2 * batch->key.nr_cbufs,
+                  64);
+               memset(g15_tex.cpu, 0,
+                      agx_tex_desc_stride(batch) * 2 * batch->key.nr_cbufs);
+            }
+
+            struct pipe_sampler_view sampler_view = sampler_view_for_surface(surf);
+            agx_pack_texture(
+               (uint8_t *)g15_tex.cpu + 2 * rt * agx_tex_desc_stride(batch),
+               agx_resource(surf->texture), surf->format, &sampler_view);
+            continue;
+         }
 
          struct agx_ptr texture =
             agx_pool_alloc_aligned(&batch->pool, AGX_TEXTURE_LENGTH, 64);
@@ -3526,8 +3564,37 @@ agx_build_bg_eot(struct agx_batch *batch, bool store, bool partial_render)
       uniforms = MAX2(uniforms, 4);
    }
 
+   if (g15 && g15_tex.cpu) {
+      agx_usc_uniform(&b, 0, 4,
+                      agx_pool_upload_aligned(&batch->pool, &g15_tex.gpu, 8, 8));
+      uniforms = MAX2(uniforms, 4);
+   }
+
    /* All render targets share a sampler */
-   if (needs_sampler) {
+   if (g15 && needs_sampler) {
+      /* G15's sampler table has 32 B entries; the program reads the first
+       * through a uniform pair */
+      struct agx_ptr sampler = agx_pool_alloc_aligned(&batch->pool, 32, 64);
+      memset(sampler.cpu, 0, 32);
+
+      agx_pack(sampler.cpu, SAMPLER, cfg) {
+         cfg.minimum_lod = 0.0f;
+         cfg.maximum_lod = INFINITY;
+         cfg.magnify = AGX_FILTER_LINEAR;
+         cfg.minify = AGX_FILTER_NEAREST;
+         cfg.mip_filter = AGX_MIP_FILTER_NONE;
+         cfg.wrap_s = AGX_WRAP_CLAMP_TO_EDGE;
+         cfg.wrap_t = AGX_WRAP_CLAMP_TO_EDGE;
+         cfg.wrap_r = AGX_WRAP_CLAMP_TO_EDGE;
+         cfg.pixel_coordinates = true;
+         cfg.compare_func = AGX_COMPARE_FUNC_ALWAYS;
+      }
+
+      agx_usc_uniform(
+         &b, key.g15_sampler_uniform, 4,
+         agx_pool_upload_aligned(&batch->pool, &sampler.gpu, 8, 8));
+      uniforms = MAX2(uniforms, key.g15_sampler_uniform + 4);
+   } else if (needs_sampler) {
       struct agx_ptr sampler =
          agx_pool_alloc_aligned(&batch->pool, AGX_SAMPLER_LENGTH, 64);
 
@@ -3587,6 +3654,7 @@ agx_build_bg_eot(struct agx_batch *batch, bool store, bool partial_render)
                 (shader->ptr - shader->bo->va->addr),
          .size = shader->info.binary_size,
          .main_size = shader->info.main_size,
+         .cr_count = shader->info.cr_count,
       };
 
       ret.usc = agx_upload_esl(

@@ -378,6 +378,12 @@ agx_esl_from_usc(struct util_dynarray *out, const uint8_t *usc,
    case AGX_ESL_BACKGROUND:
       esl_speclm_imageblock(out, &tile);
       esl_ldshdr(out, main_va, code ? code->main_size : 0);
+
+      /* a program that loads render targets has its coordinates in cr (a
+       * clearing one has none, demo15's); it waits for no pixel fence, the
+       * background programs are the eldest pixels */
+      if (code && code->cr_count)
+         esl_spectpr(out, 0, code->cr_count);
       break;
 
    case AGX_ESL_END_OF_TILE:

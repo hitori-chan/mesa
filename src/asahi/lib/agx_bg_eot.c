@@ -17,24 +17,62 @@
 #include "nir_builder.h"
 #include "pool.h"
 
+/* G15 indexes its texture table by descriptor (32 B) and takes the sampler
+ * table's base from a uniform pair as well */
 static bool
 lower_tex_handle_to_u0(nir_builder *b, nir_intrinsic_instr *intr, void *data)
 {
+   bool g15 = *(bool *)data;
+
    if (intr->intrinsic != nir_intrinsic_load_texture_handle_agx)
       return false;
 
    b->cursor = nir_instr_remove(&intr->instr);
-   nir_def_rewrite_uses(
-      &intr->def, nir_bindless_image_agx(
-                     b, nir_imul_imm(b, intr->src[0].ssa, 24), .desc_set = 0));
+   nir_def *offs = g15 ? nir_u2u32(b, intr->src[0].ssa)
+                       : nir_imul_imm(b, intr->src[0].ssa, 24);
+   nir_def_rewrite_uses(&intr->def, nir_bindless_image_agx(b, offs, .desc_set = 0));
 
    return true;
+}
+
+static bool
+add_handles_g15(nir_builder *b, nir_instr *instr, void *data)
+{
+   unsigned sampler_uniform = *(unsigned *)data;
+
+   if (instr->type != nir_instr_type_tex)
+      return false;
+
+   nir_tex_instr *tex = nir_instr_as_tex(instr);
+   bool progress = false;
+
+   b->cursor = nir_before_instr(instr);
+
+   /* The background load's texture is a table entry, not a state register */
+   if (nir_tex_instr_src_index(tex, nir_tex_src_texture_handle) < 0) {
+      nir_def *handle = nir_bindless_image_agx(
+         b, nir_imm_int(b, tex->texture_index), .desc_set = 0);
+      nir_tex_instr_add_src(tex, nir_tex_src_texture_handle, handle);
+      tex->texture_index = 0;
+      progress = true;
+   }
+
+   if (nir_tex_instr_src_index(tex, nir_tex_src_sampler_handle) < 0) {
+      nir_def *sampler = nir_bindless_sampler_agx(
+         b, nir_imm_int(b, 0), nir_imm_intN_t(b, 0, 16),
+         .desc_set = sampler_uniform);
+      nir_tex_instr_add_src(tex, nir_tex_src_sampler_handle, sampler);
+      progress = true;
+   }
+
+   return progress;
 }
 
 static struct agx_bg_eot_shader *
 agx_compile_bg_eot_shader(struct agx_bg_eot_cache *cache, nir_shader *shader,
                           struct agx_shader_key *key,
-                          struct agx_tilebuffer_layout *tib)
+                          struct agx_tilebuffer_layout *tib,
+                          unsigned g15_sampler_uniform)
 {
    agx_nir_lower_texture(shader);
    agx_preprocess_nir(shader);
@@ -45,8 +83,12 @@ agx_compile_bg_eot_shader(struct agx_bg_eot_cache *cache, nir_shader *shader,
       NIR_PASS(_, shader, agx_nir_lower_monolithic_msaa, tib->nr_samples);
       NIR_PASS(_, shader, agx_nir_lower_multisampled_image_store);
       NIR_PASS(_, shader, agx_nir_lower_texture);
+      bool g15 = cache->dev->params.gpu_generation >= 15;
       NIR_PASS(_, shader, nir_shader_intrinsics_pass, lower_tex_handle_to_u0,
-               nir_metadata_control_flow, NULL);
+               nir_metadata_control_flow, &g15);
+      if (g15)
+         NIR_PASS(_, shader, nir_shader_instructions_pass, add_handles_g15,
+                  nir_metadata_control_flow, &g15_sampler_uniform);
    }
 
    struct agx_bg_eot_shader *res = rzalloc(cache->ht, struct agx_bg_eot_shader);
@@ -67,15 +109,16 @@ agx_compile_bg_eot_shader(struct agx_bg_eot_cache *cache, nir_shader *shader,
 
 static nir_def *
 build_background_op(nir_builder *b, enum agx_bg_eot_op op, unsigned rt,
-                    unsigned nr, bool msaa, bool layered)
+                    unsigned nr, bool msaa, bool layered, bool g15)
 {
    if (op == AGX_BG_LOAD) {
       nir_def *coord = nir_load_pixel_coord(b);
 
       /* MSAA/array lowerings assume 32-bit coordinates, could be lifted but
-       * that's going to need more work.
+       * that's going to need more work. G15 puts its coordinates in 32-bit
+       * registers.
        */
-      if (layered || msaa)
+      if (layered || msaa || g15)
          coord = nir_u2u32(b, coord);
 
       if (layered) {
@@ -131,7 +174,9 @@ agx_build_background_shader(struct agx_bg_eot_cache *cache,
       assert(nr > 0);
 
       nir_store_output(
-         &b, build_background_op(&b, key->op[rt], rt, nr, msaa, layered),
+         &b,
+         build_background_op(&b, key->op[rt], rt, nr, msaa, layered,
+                             cache->dev->params.gpu_generation >= 15),
          nir_imm_int(&b, 0), .write_mask = BITFIELD_MASK(nr),
          .src_type = nir_type_uint32,
          .io_semantics.location = FRAG_RESULT_DATA0 + rt,
@@ -140,7 +185,8 @@ agx_build_background_shader(struct agx_bg_eot_cache *cache,
       b.shader->info.outputs_written |= BITFIELD64_BIT(FRAG_RESULT_DATA0 + rt);
    }
 
-   return agx_compile_bg_eot_shader(cache, b.shader, &compiler_key, &key->tib);
+   return agx_compile_bg_eot_shader(cache, b.shader, &compiler_key, &key->tib,
+                                    key->g15_sampler_uniform);
 }
 
 static struct agx_bg_eot_shader *
@@ -181,7 +227,7 @@ agx_build_end_of_tile_shader(struct agx_bg_eot_cache *cache,
       .reserved_preamble = key->reserved_preamble,
    };
 
-   return agx_compile_bg_eot_shader(cache, b.shader, &compiler_key, NULL);
+   return agx_compile_bg_eot_shader(cache, b.shader, &compiler_key, NULL, 0);
 }
 
 struct agx_bg_eot_shader *

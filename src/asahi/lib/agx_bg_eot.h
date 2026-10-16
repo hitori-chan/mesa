@@ -47,10 +47,22 @@ enum agx_bg_eot_op {
    AGX_EOT_STORE,
 };
 
+/* G15: a background program that loads render targets reads their texture
+ * descriptors (2 per render target, 32 B each, the texture at 2 * rt) through
+ * the 64-bit uniform at u0 and the sampler table's first entry through
+ * another (a texture instruction names the pair of a table below u32): the
+ * first one past the clear colours of the render targets it clears, at 4 + 8
+ * * rt */
+#define AGX_G15_MAX_BG_SAMPLER_UNIFORM 60
+
 struct agx_bg_eot_key {
    struct agx_tilebuffer_layout tib;
    enum agx_bg_eot_op op[8];
    unsigned reserved_preamble;
+
+   /* G15, loading programs: the uniform (in 16-bit halves) of the sampler
+    * table's base */
+   unsigned g15_sampler_uniform;
 };
 
 struct agx_bg_eot_shader {
