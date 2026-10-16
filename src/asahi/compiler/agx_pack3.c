@@ -1188,7 +1188,17 @@ a3_atomic(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
 
    a3_set(a, o + ADEV_DATA, a3_atomic_data(a, o + ADEV_DATA, I->src[0]));
    a3_set(a, o + ADEV_BASE, a3_membase(a, o + ADEV_BASE, I->src[1]));
-   a3_set(a, o + ADEV_INDEX, a3_memidx(a, o + ADEV_INDEX, I->src[2]));
+   /* G15 device-atomic sweep (metal-compute.md, "the device atomic's RMW
+    * reads zero"): the AIR gives sign_extend=0 for the atomic's index, and
+    * the working device_store on the same register encodes it without the
+    * sx hint (instruction bit 79), but a3_ext_src sets sx here (a packer
+    * inconsistency). Apple's reference encode has sx=0. AGX_MESA_G15_ADEV_NO_SX
+    * drops the hint to test whether it is what makes the RMW read a zero
+    * location instead of du10 + r1*4. */
+   agx_index adev_idx = I->src[2];
+   if (getenv("AGX_MESA_G15_ADEV_NO_SX"))
+      adev_idx.abs = true;
+   a3_set(a, o + ADEV_INDEX, a3_memidx(a, o + ADEV_INDEX, adev_idx));
    a3_set(a, o + ADEV_OP, a3_atomic_op(a, I->atomic_opc));
    a3_set(a, o + ADEV_SHIFT, a3_memshift(a, 2));
    a3_set(a, o + ADEV_OFFSET, 0);
