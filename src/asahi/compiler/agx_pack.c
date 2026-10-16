@@ -1211,17 +1211,14 @@ agx_pack_binary(agx_context *ctx, struct util_dynarray *emission)
    util_dynarray_init(&fixups3, ctx);
 
    /* G15: a kernel that uses a stack register (a device atomic with a result)
-    * pushes its frame with incStk at entry and pops it before stop, or the
-    * get_stack read of the result returns garbage (metal-compute.md). The
-    * frame's units are not pinned down, so the frame and the specTPR
-    * allocation are overridable for the hardware sweep:
+    * needs only the entry program's stack size (the specTPR, from
+    * stack_size); Apple's kernels push no incStk frame for it. A frame and a
+    * larger stack stay available for experiments:
     *   AGX_MESA_G15_INCTK_F24 (default 0),
-    *   AGX_MESA_G15_INCTK_F25 (default 16, the corpus minimum; 0 = no pair),
-    *   AGX_MESA_G15_STACK (specTPR bytes, default 128).
-    * Only kernels that use the stack (vkcompute dev) are affected; the
-    * passing tests (alu, cf, sg, tg) have a stack size of 0. */
+    *   AGX_MESA_G15_INCTK_F25 (default 0: no frame),
+    *   AGX_MESA_G15_STACK (stack bytes, default the shader's own). */
    bool g15_stack = false;
-   unsigned inctk_f24 = 0, inctk_f25 = 16, g15_stack_bytes = 128;
+   unsigned inctk_f24 = 0, inctk_f25 = 0, g15_stack_bytes = 0;
    if (ctx->key->dev.gpu_generation >= 15) {
       const char *e;
       if ((e = getenv("AGX_MESA_G15_INCTK_F24")))
@@ -1259,6 +1256,10 @@ agx_pack_binary(agx_context *ctx, struct util_dynarray *emission)
             agx3_pack_instr(emission, &fixups3, ins);
             ctx->out->stack_size =
                MAX2(ctx->out->stack_size, agx3_stack_size(ins));
+            if (ins->op == AGX_OPCODE_TEXTURE_SAMPLE ||
+                ins->op == AGX_OPCODE_TEXTURE_LOAD ||
+                ins->op == AGX_OPCODE_IMAGE_LOAD)
+               ctx->out->texture_results += 16;
          } else
             agx_pack_instr(emission, &fixups, ins,
                            ctx->key->dev.needs_g13x_coherency);

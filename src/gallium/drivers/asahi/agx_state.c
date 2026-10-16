@@ -3129,6 +3129,7 @@ agx_build_pipeline(struct agx_batch *batch, struct agx_compiled_shader *cs,
          .size = cs->b.info.binary_size,
          .main_size = linked ? linked->main_size : cs->b.info.main_size,
          .stack_size = cs->b.info.stack_size,
+         .texture_results = cs->b.info.texture_results,
       };
 
       /* The hardware stage: geometry and tessellation run as compute kernels
