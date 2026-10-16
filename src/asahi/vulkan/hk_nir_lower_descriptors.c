@@ -27,7 +27,15 @@ struct lower_descriptors_ctx {
    bool clamp_desc_array_bounds;
    nir_address_format ubo_addr_format;
    nir_address_format ssbo_addr_format;
+
+   /* G15's sampled image descriptors and texture handles */
+   bool g15;
 };
+
+/* A sampled image descriptor field's offset in the generation's layout */
+#define SAMPLED_OFFS(ctx, field)                                               \
+   ((ctx)->g15 ? offsetof(struct hk_sampled_image_descriptor_g15, field)       \
+               : offsetof(struct hk_sampled_image_descriptor, field))
 
 static const struct hk_descriptor_set_binding_layout *
 get_binding_layout(uint32_t set, uint32_t binding,
@@ -329,6 +337,37 @@ load_image_handle(nir_builder *b, const struct lower_descriptors_ctx *ctx,
    return nir_bindless_image_agx(b, desc_offs_B, .desc_set = set);
 }
 
+/* G15: the texture handle is an index into the set seen as a table of 32 B
+ * entries, and the sampler of a combined descriptor the entry after it */
+static nir_def *
+load_texture_index_g15(nir_builder *b, const struct lower_descriptors_ctx *ctx,
+                       nir_src src, unsigned offset_B, bool sampler)
+{
+   uint32_t set, binding;
+   nir_def *index;
+   get_resource_deref_binding(b, nir_src_as_deref(src), &set, &binding, &index);
+
+   const struct hk_descriptor_set_binding_layout *binding_layout =
+      get_binding_layout(set, binding, ctx);
+
+   if (ctx->clamp_desc_array_bounds)
+      index =
+         nir_umin(b, index, nir_imm_int(b, binding_layout->array_size - 1));
+
+   assert(binding_layout->stride > 0 && binding_layout->stride % 32 == 0);
+   assert(binding_layout->offset % 32 == 0 && offset_B % 32 == 0);
+   nir_def *entry =
+      nir_iadd_imm(b, nir_imul_imm(b, index, binding_layout->stride / 32),
+                   (binding_layout->offset + offset_B) / 32);
+
+   if (sampler) {
+      nir_def *desc_offs_B = nir_imul_imm(b, entry, 32);
+      return nir_bindless_sampler_agx(b, desc_offs_B, entry, .desc_set = set);
+   }
+
+   return nir_bindless_image_agx(b, entry, .desc_set = set);
+}
+
 static bool
 lower_image_intrin(nir_builder *b, nir_intrinsic_instr *intr,
                    const struct lower_descriptors_ctx *ctx)
@@ -617,14 +656,16 @@ lower_tex(nir_builder *b, nir_tex_instr *tex,
       plane_ssa ? nir_src_as_uint(nir_src_for_ssa(plane_ssa)) : 0;
    const uint64_t plane_offset_B =
       plane * sizeof(struct hk_sampled_image_descriptor);
+   static_assert(sizeof(struct hk_sampled_image_descriptor) ==
+                    sizeof(struct hk_sampled_image_descriptor_g15),
+                 "one stride");
 
    /* LOD bias is passed in the descriptor set, rather than embedded into
     * the sampler descriptor. There's no spot in the hardware descriptor,
     * plus this saves on precious sampler heap spots.
     */
    if (tex->op == nir_texop_lod_bias) {
-      unsigned offs =
-         offsetof(struct hk_sampled_image_descriptor, lod_bias_fp16);
+      unsigned offs = SAMPLED_OFFS(ctx, lod_bias_fp16);
 
       nir_def *bias = load_resource_deref_desc(
          b, 1, 16, nir_src_as_deref(nir_src_for_ssa(sampler)),
@@ -638,10 +679,9 @@ lower_tex(nir_builder *b, nir_tex_instr *tex,
       assert(tex->dest_type == nir_type_float16 ||
              tex->dest_type == nir_type_uint16);
 
-      unsigned offs =
-         tex->dest_type == nir_type_float16
-            ? offsetof(struct hk_sampled_image_descriptor, min_lod_fp16)
-            : offsetof(struct hk_sampled_image_descriptor, min_lod_uint16);
+      unsigned offs = tex->dest_type == nir_type_float16
+                         ? SAMPLED_OFFS(ctx, min_lod_fp16)
+                         : SAMPLED_OFFS(ctx, min_lod_uint16);
 
       nir_def *min = load_resource_deref_desc(
          b, 1, 16, nir_src_as_deref(nir_src_for_ssa(texture)),
@@ -652,8 +692,7 @@ lower_tex(nir_builder *b, nir_tex_instr *tex,
    }
 
    if (tex->op == nir_texop_has_custom_border_color_agx) {
-      unsigned offs = offsetof(struct hk_sampled_image_descriptor,
-                               clamp_0_sampler_index_or_negative);
+      unsigned offs = SAMPLED_OFFS(ctx, clamp_0_sampler_index_or_negative);
 
       nir_def *res = load_resource_deref_desc(
          b, 1, 16, nir_src_as_deref(nir_src_for_ssa(sampler)),
@@ -664,7 +703,7 @@ lower_tex(nir_builder *b, nir_tex_instr *tex,
    }
 
    if (tex->op == nir_texop_custom_border_color_agx) {
-      unsigned offs = offsetof(struct hk_sampled_image_descriptor, border);
+      unsigned offs = SAMPLED_OFFS(ctx, border);
 
       nir_def *border = load_resource_deref_desc(
          b, 4, 32, nir_src_as_deref(nir_src_for_ssa(sampler)),
@@ -674,6 +713,24 @@ lower_tex(nir_builder *b, nir_tex_instr *tex,
       border = nir_convert_to_bit_size(b, border, T, tex->def.bit_size);
 
       nir_def_replace(&tex->def, border);
+      return true;
+   }
+
+   if (ctx->g15) {
+      unsigned offset_B = plane_offset_B + SAMPLED_OFFS(ctx, tex);
+      nir_def *handle = load_texture_index_g15(b, ctx, nir_src_for_ssa(texture),
+                                               offset_B, false);
+      nir_tex_instr_add_src(tex, nir_tex_src_texture_handle, handle);
+
+      /* The sampler (a texture without one, for txf: the entry's zero
+       * sampler); no custom border colours yet */
+      if (!nir_tex_instr_is_query(tex)) {
+         offset_B = plane_offset_B + SAMPLED_OFFS(ctx, sampler);
+         nir_def *s = load_texture_index_g15(
+            b, ctx, nir_src_for_ssa(sampler ? sampler : texture), offset_B,
+            true);
+         nir_tex_instr_add_src(tex, nir_tex_src_sampler_handle, s);
+      }
       return true;
    }
 
@@ -907,9 +964,11 @@ bool
 hk_nir_lower_descriptors(nir_shader *nir,
                          const struct vk_pipeline_robustness_state *rs,
                          uint32_t set_layout_count,
-                         struct vk_descriptor_set_layout *const *set_layouts)
+                         struct vk_descriptor_set_layout *const *set_layouts,
+                         bool g15)
 {
    struct lower_descriptors_ctx ctx = {
+      .g15 = g15,
       .clamp_desc_array_bounds =
          rs->storage_buffers !=
             VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DISABLED_EXT ||
