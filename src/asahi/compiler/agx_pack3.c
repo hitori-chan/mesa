@@ -1621,8 +1621,9 @@ a3_ldcf(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
 
 /* iter (f32interp): one instruction per channel, coefficient registers cf,
  * cf + 1, ...; synchronous. persp is Apple's flag on the iteration of W's
- * coefficients (demo15's colour shader sets it on the iteration that its
- * reciprocal follows; what it does is not known). G15 has no projected
+ * coefficients, whose result only the coefficient-register forms of rcp and
+ * fmul that follow it in Apple's code consume (a plain read gives 0; the
+ * compiler does not set it). G15 has no projected
  * iteration: agx_emit_load_vary lowers iterproj. Centroid and a dynamic
  * sample need itrcoords into a register first. */
 static void

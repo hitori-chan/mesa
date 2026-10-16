@@ -668,13 +668,15 @@ agx_emit_load_vary(agx_builder *b, agx_index dest, nir_intrinsic_instr *instr)
       agx_index J = agx_get_cf(b->shader, VARYING_SLOT_POS, 3);
 
       if (b->shader->key->dev.gpu_generation >= 15) {
-         /* G15 has no projected iteration. Apple's compiler iterates W's
-          * coefficients with the perspective flag, takes the reciprocal,
-          * iterates the varying and multiplies each channel (the colour
-          * shader of noopwafel's demo15, from a macOS capture).
+         /* G15 has no projected iteration: iterate W's coefficients (1/W,
+          * linear in screen space), take the reciprocal, iterate the varying
+          * and multiply each channel. Apple's compiler sets the perspective
+          * flag on W's iteration, but then its reciprocal and multiplies
+          * name the coefficient registers (forms the packer does not have);
+          * with plain ones the flagged iteration reads 0 (boots #274-#282).
           */
          agx_index w = agx_temp(b->shader, AGX_SIZE_32);
-         agx_iter_to(b, w, J, sample_index, 1, interp, true);
+         agx_iter_to(b, w, J, sample_index, 1, interp, false);
          agx_index rcp_w = agx_rcp(b, w);
 
          agx_index vec = agx_vec_temp(b->shader, AGX_SIZE_32, components);
@@ -1539,11 +1541,8 @@ agx_emit_intrinsic(agx_builder *b, nir_intrinsic_instr *instr)
    case nir_intrinsic_load_frag_coord_w: {
       agx_index cf = agx_get_cf(b->shader, VARYING_SLOT_POS, 3);
 
-      /* On G15 the iteration of W's coefficients has a flag (not verified for
-       * this use: Apple's compiler sets it for the W it takes the reciprocal
-       * of) */
       return agx_iter_to(b, dst, cf, agx_zero(), 1, AGX_INTERPOLATION_CENTER,
-                         b->shader->key->dev.gpu_generation >= 15);
+                         false);
    }
 
    case nir_intrinsic_sample_mask_agx: {
