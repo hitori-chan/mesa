@@ -264,15 +264,16 @@ op("icmp", _, srcs = 2, imms = [ICOND, INVERT_COND])
 op("fcmp", _, srcs = 2, imms = [FCOND, INVERT_COND])
 
 # sources are coordinates, LOD, texture bindless base (zero for texture state
-# registers), texture, sampler, shadow/offset
+# registers), texture, sampler, shadow/offset, and on G15 the sampler table's
+# base (a 64-bit uniform; null on G13, which has sampler state registers)
 op("texture_sample",
       encoding = (0x31, 8, 10), # XXX WRONG SIZE
-      srcs = 6, imms = [DIM, LOD_MODE, MASK, SCOREBOARD, OFFSET, SHADOW,
+      srcs = 7, imms = [DIM, LOD_MODE, MASK, SCOREBOARD, OFFSET, SHADOW,
                         QUERY_LOD, GATHER, SPARSE])
 for memory, can_reorder in [("texture", True), ("image", False)]:
     coherency = [COHERENT] if not can_reorder else []
     op(f"{memory}_load", encoding = (0x71, 8, 10), # XXX WRONG SIZE
-       srcs = 6, imms = [DIM, LOD_MODE, MASK, SCOREBOARD, OFFSET, SPARSE] + coherency,
+       srcs = 7, imms = [DIM, LOD_MODE, MASK, SCOREBOARD, OFFSET, SPARSE] + coherency,
        can_reorder = can_reorder,
        schedule_class = "none" if can_reorder else "load")
 

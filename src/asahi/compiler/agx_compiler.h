@@ -1055,7 +1055,7 @@ void agx3_pack_instr(struct util_dynarray *emission,
 void agx3_fixup_branches(struct util_dynarray *emission,
                          struct util_dynarray *fixups);
 unsigned agx3_stack_size(const agx_instr *I);
-void agx3_emit_incstk(struct util_dynarray *out, unsigned f24, unsigned f25);
+unsigned agx3_cr_count(const agx_instr *I);
 
 #ifndef NDEBUG
 void agx_validate(agx_context *ctx, const char *after_str);
