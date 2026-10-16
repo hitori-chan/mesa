@@ -1760,14 +1760,18 @@ a3_sample_mask(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
  * y of the tile's first pixel (the IR's coords, a 32-bit vec2) in cr0 and
  * cr1, and pack_imgwir's register in cr2, all written in group 0 as demo15's
  * end-of-tile program does (it ran on the hardware: imadd to cr0 and cr1,
- * pack_imgwir to cr4 in 16-bit units, imgwblk waiting for group 0). What
- * pack_imgwir packs (the layer and the sample, probably) and what the
- * flags hold is not known; the one supported form, 2D with one sample and no
- * layer, takes demo15's: zero sources (demo15's first is a uniform its entry
- * program sets to 0), the layout it uses and its flags. The offset is the
- * render target's offset in the tilebuffer in bytes (a guess: demo15's is 0).
- * The coordinates move through mov to cr, which demo15 does not use (its
- * imadd writes the cr), the way st_vary does. */
+ * pack_imgwir to cr4 in 16-bit units, imgwblk waiting for group 0).
+ * pack_imgwir's first source is the render target's offset in the tilebuffer
+ * in bytes (boot #406: a second target at 4 comes out right with it, and
+ * every offset in imgwblk's own operand reads another descriptor); its
+ * other two and the flags are not known, the one supported form, 2D with one
+ * sample and no layer, takes demo15's: zero sources, the layout it uses and
+ * its flags. imgwblk's own operand stays 0, each render target has its own
+ * descriptor pointer. A following block write overwrites cr2 before the
+ * earlier one has read it, so each is followed by a wait (boots #404, #406:
+ * without it the two swap their data). The coordinates move through mov to
+ * cr, which demo15 does not use (its imadd writes the cr), the way st_vary
+ * does. */
 static void
 a3_block_image_store(struct a3 *a, const agx_instr *I,
                      struct util_dynarray *emission)
@@ -1794,7 +1798,7 @@ a3_block_image_store(struct a3 *a, const agx_instr *I,
    a3_set(a, PACK_IMGWIR_DST,
           a3_kind_value(a, PACK_IMGWIR_DST, A3_CR, 2, 0));
    a3_set(a, PACK_IMGWIR_G, 0);
-   a3_set(a, PACK_IMGWIR_A, a3_src9(a, PACK_IMGWIR_A, agx_immediate(0)));
+   a3_set(a, PACK_IMGWIR_A, a3_src9(a, PACK_IMGWIR_A, offset));
    a3_set(a, PACK_IMGWIR_B, a3_imm(a, PACK_IMGWIR_B, 0, false));
    a3_set(a, PACK_IMGWIR_C, a3_imm(a, PACK_IMGWIR_C, 0, false));
    a3_emit(a, emission);
@@ -1804,12 +1808,11 @@ a3_block_image_store(struct a3 *a, const agx_instr *I,
           a3_kind_value(a, IMGWBLK_CR, A3_CR, 0, BITFIELD_BIT(A3_LU)));
    a3_set(a, IMGWBLK_G, 0);
    a3_set(a, IMGWBLK_PTR, a3_membase(a, IMGWBLK_PTR, base));
-   a3_set(a, IMGWBLK_OFFSET,
-          offset.type == AGX_INDEX_IMMEDIATE
-             ? a3_imm(a, IMGWBLK_OFFSET, offset.value, false)
-             : a3_reg(a, IMGWBLK_OFFSET, offset, 0, 0, 0));
+   a3_set(a, IMGWBLK_OFFSET, a3_imm(a, IMGWBLK_OFFSET, 0, false));
    a3_set(a, IMGWBLK_WAIT, BITFIELD_BIT(0));
    a3_emit(a, emission);
+
+   a3_wait(a, I, 0, emission);
 }
 
 /* icmp_ballot/fcmp_ballot (and the quad forms): cc, dest, t/v, A, B. The
