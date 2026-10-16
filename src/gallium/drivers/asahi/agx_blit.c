@@ -534,7 +534,10 @@ agx_blit(struct pipe_context *pipe, const struct pipe_blit_info *info)
    agx_legalize_compression(ctx, agx_resource(info->src.resource),
                             info->src.format);
 
-   if (asahi_compute_blit_supported(info)) {
+   /* G15 draws its blits: the compute blit's tile stores and block image
+    * writes are not verified on its hardware */
+   if (agx_device(pipe->screen)->params.gpu_generation < 15 &&
+       asahi_compute_blit_supported(info)) {
       asahi_compute_blit(pipe, info, &ctx->compute_blitter);
       return;
    }
