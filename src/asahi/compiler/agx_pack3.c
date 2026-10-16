@@ -1298,8 +1298,13 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
       a3_fail(a, "texture dimension other than 2D not supported yet");
    if (I->offset || I->shadow || I->query_lod || I->gather || I->sparse)
       a3_fail(a, "texture offset, compare, query, gather or sparse");
-   if (!auto_lod && !(I->lod_mode == AGX_LOD_MODE_LOD_MIN &&
-                      lod.type == AGX_INDEX_IMMEDIATE && lod.value == 0))
+   /* A fetch's level is F28's 12-bit immediate (Apple's loads have 0) */
+   bool imm_level = load && I->lod_mode == AGX_LOD_MODE_LOD_MIN &&
+                    lod.type == AGX_INDEX_IMMEDIATE && lod.value < 4096;
+
+   if (!auto_lod && !imm_level &&
+       !(I->lod_mode == AGX_LOD_MODE_LOD_MIN &&
+         lod.type == AGX_INDEX_IMMEDIATE && lod.value == 0))
       a3_fail(a, "texture LOD other than automatic or level 0");
    if (load && auto_lod)
       a3_fail(a, "texture_load with an automatic LOD");
@@ -1334,6 +1339,15 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
    a3_set(a, TEX_USMP, a3_tex_pair(a, I->src[6]));
    a3_set(a, TEX_UTEX, a3_tex_pair(a, I->src[2]));
    a3_emit(a, emission);
+
+   /* F28's immediate: bits 59:63, 89:94 and 20 (texture.md) */
+   if (imm_level && lod.value) {
+      uint8_t *ins = (uint8_t *)util_dynarray_end(emission) - 14;
+      unsigned v = lod.value;
+      ins[7] |= (v & 0x1f) << 3;
+      ins[11] |= ((v >> 5) & 0x3f) << 1;
+      ins[2] |= ((v >> 11) & 1) << 4;
+   }
 
    a3_wait(a, I, A3_SYNC_G, emission);
 }
