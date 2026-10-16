@@ -1974,6 +1974,11 @@ agx_emit_imadshl_agx(agx_builder *b, nir_alu_instr *alu, agx_index dst,
        nir_alu_src_as_uint(alu->src[1]) == 1) {
 
       return agx_iadd_to(b, dst, s0, s2, shift);
+   } else if (shift && b->shader->key->dev.gpu_generation >= 15) {
+      /* G15's imadd has no shift: shift the addend with an iadd first */
+      agx_index t = agx_temp(b->shader, dst.size);
+      agx_iadd_to(b, t, agx_immediate(0), s2, shift);
+      return agx_imad_to(b, dst, s0, s1, t, 0);
    } else {
       return agx_imad_to(b, dst, s0, s1, s2, shift);
    }
