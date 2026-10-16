@@ -28,7 +28,7 @@ agx_instr_accepts_uniform(enum agx_opcode op, unsigned src_index,
    case AGX_OPCODE_TEXTURE_SAMPLE:
       /* Unknown if this works, but the driver will never hit this. */
       assert(!(src_index == 2 && high) && "texture heap always low");
-      return !high && (src_index == 1 || src_index == 2);
+      return !high && (src_index == 1 || src_index == 2 || src_index == 6);
 
    case AGX_OPCODE_TEX_STATE_STORE:
    case AGX_OPCODE_SAMPLER_STATE_STORE:
