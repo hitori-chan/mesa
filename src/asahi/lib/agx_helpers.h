@@ -217,7 +217,22 @@ agx_pack_line_width(float line_width)
  * Accordingly, the caller must pass some address that lives at least as long as
  * the texture descriptor itself.
  */
-static void
+static inline void
+agx_set_null_texture_g15(struct agx_texture_packed *tex)
+{
+   agx_pack(tex, TEXTURE_G15, cfg) {
+      cfg.layout = AGX_LAYOUT_TWIDDLED;
+      cfg.channels = AGX_CHANNELS_R8;
+      cfg.type = AGX_TEXTURE_TYPE_UNORM /* don't care */;
+      cfg.swizzle_r = AGX_CHANNEL_0;
+      cfg.swizzle_g = AGX_CHANNEL_0;
+      cfg.swizzle_b = AGX_CHANNEL_0;
+      cfg.swizzle_a = AGX_CHANNEL_0;
+      cfg.address = AGX_ZERO_PAGE_ADDRESS;
+   }
+}
+
+static inline void
 agx_set_null_texture(struct agx_texture_packed *tex)
 {
    agx_pack(tex, TEXTURE, cfg) {

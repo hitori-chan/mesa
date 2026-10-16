@@ -116,11 +116,15 @@ load_ubo(nir_builder *b, nir_intrinsic_instr *intr, void *bases)
                                    .align_mul = nir_intrinsic_align(intr));
 }
 
+/* G15's texture instructions index the table by descriptor (32 B each), not
+ * by byte offset */
 static nir_def *
-load_texture_handle(nir_builder *b, nir_intrinsic_instr *intr, void *base)
+load_texture_handle(nir_builder *b, nir_intrinsic_instr *intr, void *base,
+                    bool g15)
 {
-   nir_def *offs_B =
-      nir_imul_imm(b, nir_u2u32(b, intr->src[0].ssa), AGX_TEXTURE_DESC_STRIDE);
+   nir_def *offs_B = nir_u2u32(b, intr->src[0].ssa);
+   if (!g15)
+      offs_B = nir_imul_imm(b, offs_B, AGX_TEXTURE_DESC_STRIDE);
 
    nir_load_sysval_agx(b, 1, 64, .desc_set = stage_table(b),
                        .binding = (uintptr_t)base, .flags = ~0);
@@ -134,10 +138,31 @@ load_provoking_vtx(nir_builder *b)
    return load_sysval_root(b, 1, 16, &u->provoking_vertex);
 }
 
+/* G15: a sampler is an index into the stage's sampler table (32 B entries),
+ * whose base is a uniform pair */
+static nir_def *
+load_sampler_handle_g15(nir_builder *b, nir_intrinsic_instr *intr)
+{
+   struct agx_stage_uniforms *s = NULL;
+   nir_def *zero = nir_imm_int(b, 0);
+   nir_def *index = nir_u2u16(b, intr->src[0].ssa);
+
+   /* The layout pass finds the handle right after the base's load */
+   nir_load_sysval_agx(b, 1, 64, .desc_set = stage_table(b),
+                       .binding = (uintptr_t)&s->sampler_base, .flags = ~0);
+   return nir_bindless_sampler_agx(b, zero, index);
+}
+
+struct lower_sysvals_opts {
+   bool lower_draw_params;
+   bool g15;
+};
+
 static nir_def *
 lower_intrinsic(nir_builder *b, nir_intrinsic_instr *intr,
-                bool lower_draw_params)
+                const struct lower_sysvals_opts *opts)
 {
+   bool lower_draw_params = opts->lower_draw_params;
    struct agx_draw_uniforms *u = NULL;
    struct agx_stage_uniforms *s = NULL;
 
@@ -145,8 +170,11 @@ lower_intrinsic(nir_builder *b, nir_intrinsic_instr *intr,
    case nir_intrinsic_load_ubo:
       return load_ubo(b, intr, s->ubo_base);
    case nir_intrinsic_load_texture_handle_agx:
-      return load_texture_handle(b, intr, &s->texture_base);
+      return load_texture_handle(b, intr, &s->texture_base, opts->g15);
    case nir_intrinsic_load_sampler_handle_agx:
+      if (opts->g15)
+         return load_sampler_handle_g15(b, intr);
+
       return load_sysval_indirect(b, 1, 16, stage_table(b), &s->sampler_handle,
                                   intr->src[0].ssa);
    case nir_intrinsic_load_vbo_base_agx:
@@ -240,7 +268,7 @@ lower_intrinsic(nir_builder *b, nir_intrinsic_instr *intr,
 static bool
 lower_sysvals(nir_builder *b, nir_instr *instr, void *data)
 {
-   bool *lower_draw_params = data;
+   const struct lower_sysvals_opts *opts = data;
    b->cursor = nir_before_instr(instr);
    nir_def *old;
    nir_def *replacement = NULL;
@@ -248,7 +276,7 @@ lower_sysvals(nir_builder *b, nir_instr *instr, void *data)
    if (instr->type == nir_instr_type_intrinsic) {
       nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
       old = &intr->def;
-      replacement = lower_intrinsic(b, intr, *lower_draw_params);
+      replacement = lower_intrinsic(b, intr, opts);
    } else if (instr->type == nir_instr_type_tex) {
       nir_tex_instr *tex = nir_instr_as_tex(instr);
       old = &tex->def;
@@ -479,7 +507,8 @@ lay_out_uniforms(struct agx_compiled_shader *shader, struct state *state,
          assert(next->type == nir_instr_type_intrinsic);
 
          nir_intrinsic_instr *nintr = nir_instr_as_intrinsic(next);
-         assert(nintr->intrinsic == nir_intrinsic_bindless_image_agx);
+         assert(nintr->intrinsic == nir_intrinsic_bindless_image_agx ||
+                nintr->intrinsic == nir_intrinsic_bindless_sampler_agx);
 
          nir_intrinsic_set_desc_set(nintr, base);
       } else {
@@ -494,8 +523,10 @@ lay_out_uniforms(struct agx_compiled_shader *shader, struct state *state,
 
 bool
 agx_nir_lower_sysvals(nir_shader *shader, mesa_shader_stage desc_stage,
-                      bool lower_draw_params)
+                      bool lower_draw_params, bool g15)
 {
+   struct lower_sysvals_opts opts = {lower_draw_params, g15};
+
    /* override stage for the duration on the pass. XXX: should refactor, but
     * it's annoying!
     */
@@ -503,7 +534,7 @@ agx_nir_lower_sysvals(nir_shader *shader, mesa_shader_stage desc_stage,
    shader->info.stage = desc_stage;
 
    bool progress = nir_shader_instructions_pass(
-      shader, lower_sysvals, nir_metadata_control_flow, &lower_draw_params);
+      shader, lower_sysvals, nir_metadata_control_flow, &opts);
 
    shader->info.stage = phys_stage;
    return progress;
