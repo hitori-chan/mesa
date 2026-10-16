@@ -3161,9 +3161,12 @@
   <!--
    pack_imgwir: writes a 32-bit coordinate register, the third of the three
    imgwblk takes as its coordinates (cr, cr + 1, cr + 2: x, y and this one).
-   The sources (a and b 16-bit, c 32 or 16) are probably the layer, the
-   sample and a base; their meaning is not known. demo15's, for a 2D image,
-   are zero (a is a uniform its entry program sets to 0). layout is Apple's
+   The sources (a and b 16-bit, c 32 or 16): a is the render target's byte
+   offset in the tilebuffer (boot #406: a second target at 4 comes out
+   right; the block write itself always reads the target at offset 0 of
+   its own operand); b and c are probably the layer and the sample, not
+   known. demo15's, for a 2D image, are zero (a is a uniform its entry
+   program sets to 0). layout is Apple's
    description of the fields it packs, modelled as the encoder's mode (bits
    82:83: 0 8-bit and 7-bit fields at 0 or 16 and 8 or 24, picked by bits 84
    and 85; 1 6 and 6 bits at 12 and 22; 2 4 and 10 bits at 0 and 12) and
@@ -3188,8 +3191,9 @@
    holds it, to the image a PBE descriptor describes. The coordinates are
    three coordinate registers from cr: x and y of the tile's first pixel,
    then pack_imgwir's. The descriptor's address is in a 64-bit uniform or
-   register pair; the offset is the render target's offset in the tilebuffer
-   (a guess: demo15's is 0). g is the group of the coordinate registers'
+   register pair; the offset is added to the descriptor's address (Apple's
+   corpus has 1; a nonzero one reads another descriptor, boots #399-#403:
+   the render target's offset in the tilebuffer is pack_imgwir's a). g is the group of the coordinate registers'
    producers (codes 0-3, then 5 and 6 for groups 4 and 5). flags is what
    Apple's flags operand makes of the image type (dimension, array, lod,
    multisampling and explicit coordinates are in it, not decoded): demo15's
