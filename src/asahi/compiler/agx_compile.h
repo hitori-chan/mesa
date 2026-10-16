@@ -219,6 +219,13 @@ agx_compact_kernel_info(struct agx_shader_info *info)
  * AGX_G15_PUSH_REG, where the entry program loads it (lib/agx_esl.c) */
 #define AGX_G15_PUSH_REG 2
 
+/* Only the words below this go through those registers: a fragment program
+ * whose entry program wrote r95 hung the GPU, one that stopped at r94 ran
+ * (boots #391-#393: shaders with 40 promoted constants, whose loads reach
+ * word 93; synthetic ones with 80 to 120), so the entry program stays
+ * below r90 */
+#define AGX_G15_PUSH_WORDS 88
+
 /* G15 (AGX3) building blocks for the entry program, from the compiler's
  * G15 packer (agx_pack3.c). Registers and uniforms are 32-bit indices. */
 struct util_dynarray;
