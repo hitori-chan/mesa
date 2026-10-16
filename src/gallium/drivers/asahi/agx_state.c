@@ -320,6 +320,21 @@ agx_create_zsa_state(struct pipe_context *ctx,
       so->back_stencil = so->front_stencil;
    }
 
+   so->g15_stencil_always =
+      agx_device(ctx->screen)->params.gpu_generation >= 15 &&
+      !state->stencil[0].enabled && !state->depth_writemask;
+
+   if (so->g15_stencil_always) {
+      agx_pack(&so->front_stencil, FRAGMENT_STENCIL, cfg) {
+         cfg.compare = AGX_ZS_FUNC_ALWAYS;
+         cfg.depth_pass = AGX_STENCIL_OP_KEEP;
+         cfg.depth_fail = AGX_STENCIL_OP_KEEP;
+         cfg.stencil_fail = AGX_STENCIL_OP_KEEP;
+      }
+
+      so->back_stencil = so->front_stencil;
+   }
+
    if (depth_func != PIPE_FUNC_NEVER && depth_func != PIPE_FUNC_ALWAYS)
       so->load |= PIPE_CLEAR_DEPTH;
 
@@ -3842,7 +3857,8 @@ agx_encode_state(struct agx_batch *batch, uint8_t *out)
                cfg.visibility_mode = AGX_VISIBILITY_MODE_BOOLEAN;
          }
 
-         cfg.stencil_test_enable = ctx->zs->base.stencil[0].enabled;
+         cfg.stencil_test_enable =
+            ctx->zs->base.stencil[0].enabled || ctx->zs->g15_stencil_always;
          cfg.two_sided_stencil = ctx->zs->base.stencil[1].enabled;
          cfg.depth_bias_enable =
             rast->depth_bias && object_type == AGX_OBJECT_TYPE_TRIANGLE;

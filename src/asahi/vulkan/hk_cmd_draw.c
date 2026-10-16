@@ -2071,9 +2071,17 @@ translate_stencil_op(VkStencilOp vk_op)
 
 static void
 hk_ppp_push_stencil_face(struct agx_ppp_update *ppp,
-                         struct vk_stencil_test_face_state s, bool enabled)
+                         struct vk_stencil_test_face_state s, bool enabled,
+                         bool g15_always)
 {
-   if (enabled) {
+   if (g15_always) {
+      agx_ppp_push(ppp, FRAGMENT_STENCIL, cfg) {
+         cfg.compare = AGX_ZS_FUNC_ALWAYS;
+         cfg.depth_pass = AGX_STENCIL_OP_KEEP;
+         cfg.depth_fail = AGX_STENCIL_OP_KEEP;
+         cfg.stencil_fail = AGX_STENCIL_OP_KEEP;
+      }
+   } else if (enabled) {
       agx_ppp_push(ppp, FRAGMENT_STENCIL, cfg) {
          cfg.compare = translate_compare_op(s.op.compare);
          cfg.write_mask = s.write_mask;
@@ -2104,6 +2112,23 @@ hk_stencil_test_enabled(struct hk_cmd_buffer *cmd)
 
    return dyn->ds.stencil.test_enable &&
           render->stencil_att.vk_format != VK_FORMAT_UNDEFINED;
+}
+
+/* G15: with neither depth writes nor a stencil test, a stencil test that
+ * always passes and masks nothing, as Apple's Metal driver enables for a pass
+ * without a depth attachment (without it nothing is drawn).
+ */
+static bool
+hk_g15_stencil_always(struct hk_cmd_buffer *cmd)
+{
+   const struct hk_rendering_state *render = &cmd->state.gfx.render;
+   struct vk_dynamic_graphics_state *dyn = &cmd->vk.dynamic_graphics_state;
+   bool has_z = render->depth_att.vk_format != VK_FORMAT_UNDEFINED;
+   bool z_write =
+      has_z && dyn->ds.depth.test_enable && dyn->ds.depth.write_enable;
+
+   return hk_cmd_buffer_device(cmd)->dev.params.gpu_generation >= 15 &&
+          !hk_stencil_test_enabled(cmd) && !z_write;
 }
 
 static void
@@ -2400,7 +2425,8 @@ hk_flush_ppp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
 
    bool stencil_face_dirty =
       IS_DIRTY(DS_STENCIL_OP) || IS_DIRTY(DS_STENCIL_COMPARE_MASK) ||
-      IS_DIRTY(DS_STENCIL_WRITE_MASK) || IS_DIRTY(DS_STENCIL_TEST_ENABLE);
+      IS_DIRTY(DS_STENCIL_WRITE_MASK) || IS_DIRTY(DS_STENCIL_TEST_ENABLE) ||
+      (g15 && face_dirty);
 
    struct AGX_PPP_HEADER dirty = {
       .fragment_control =
@@ -2483,6 +2509,7 @@ hk_flush_ppp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
 
          /* TODO: Consider optimizing this? */
          cfg.two_sided_stencil = cfg.stencil_test_enable;
+         cfg.stencil_test_enable |= hk_g15_stencil_always(cmd);
 
          cfg.depth_bias_enable = dyn->rs.depth_bias.enable &&
                                  gfx->object_type == AGX_OBJECT_TYPE_TRIANGLE;
@@ -2549,7 +2576,8 @@ hk_flush_ppp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
 
    if (dirty.fragment_front_stencil) {
       hk_ppp_push_stencil_face(&ppp, dyn->ds.stencil.front,
-                               hk_stencil_test_enabled(cmd));
+                               hk_stencil_test_enabled(cmd),
+                               hk_g15_stencil_always(cmd));
    }
 
    if (dirty.fragment_back_face) {
@@ -2568,7 +2596,8 @@ hk_flush_ppp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
 
    if (dirty.fragment_back_stencil) {
       hk_ppp_push_stencil_face(&ppp, dyn->ds.stencil.back,
-                               hk_stencil_test_enabled(cmd));
+                               hk_stencil_test_enabled(cmd),
+                               hk_g15_stencil_always(cmd));
    }
 
    if (dirty.output_select) {
