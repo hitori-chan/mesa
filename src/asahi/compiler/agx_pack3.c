@@ -826,6 +826,7 @@ enum {
    TEX_SS = 10,
    TEX_USMP = 11,
    TEX_UTEX = 12,
+   TEX_LOD = 13,
 };
 
 /* An ALU instruction: the destination, the sources in IR order at the
@@ -1338,16 +1339,12 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
    a3_set(a, TEX_SS, a3_tex_index(a, TEX_SS, A3_SS, sampler));
    a3_set(a, TEX_USMP, a3_tex_pair(a, I->src[6]));
    a3_set(a, TEX_UTEX, a3_tex_pair(a, I->src[2]));
-   a3_emit(a, emission);
 
-   /* F28's immediate: bits 59:63, 89:94 and 20 (texture.md) */
-   if (imm_level && lod.value) {
-      uint8_t *ins = (uint8_t *)util_dynarray_end(emission) - 14;
-      unsigned v = lod.value;
-      ins[7] |= (v & 0x1f) << 3;
-      ins[11] |= ((v >> 5) & 0x3f) << 1;
-      ins[2] |= ((v >> 11) & 1) << 4;
-   }
+   /* a fetch's level is F28's 12-bit immediate */
+   if (load)
+      a3_set(a, TEX_LOD, imm_level ? lod.value : 0);
+
+   a3_emit(a, emission);
 
    a3_wait(a, I, A3_SYNC_G, emission);
 }

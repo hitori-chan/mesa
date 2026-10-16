@@ -134,7 +134,7 @@ image_write_source_can_be_immediate(agx_instr *I, unsigned s)
 }
 
 static void
-agx_optimizer_inline_imm(agx_instr **defs, agx_instr *I)
+agx_optimizer_inline_imm(agx_instr **defs, agx_instr *I, bool g15)
 {
    agx_foreach_ssa_src(I, s) {
       agx_index src = I->src[s];
@@ -149,6 +149,15 @@ agx_optimizer_inline_imm(agx_instr **defs, agx_instr *I)
       uint16_t value_u16 = def->imm;
 
       bool float_src = agx_is_float_src(I, s);
+
+      /* G15 fetches at the level F28's immediate gives: an integer, and the
+       * level is the one source of a fetch that can be an immediate */
+      if (I->op == AGX_OPCODE_TEXTURE_LOAD) {
+         if (!g15 || s != 1)
+            continue;
+
+         float_src = false;
+      }
 
       if (I->op == AGX_OPCODE_ST_TILE && s == 0)
          continue;
@@ -562,9 +571,8 @@ agx_optimizer_forward(agx_context *ctx)
 
       /* Inline immediates if we can. TODO: systematic */
       if (I->op != AGX_OPCODE_COLLECT && I->op != AGX_OPCODE_IMAGE_LOAD &&
-          I->op != AGX_OPCODE_TEXTURE_LOAD &&
           I->op != AGX_OPCODE_UNIFORM_STORE && I->op != AGX_OPCODE_EXPORT)
-         agx_optimizer_inline_imm(defs, I);
+         agx_optimizer_inline_imm(defs, I, ctx->key && ctx->key->dev.gpu_generation >= 15);
 
       if (I->op == AGX_OPCODE_IF_ICMP) {
          agx_optimizer_if_not(defs, I);

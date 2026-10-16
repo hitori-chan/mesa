@@ -250,23 +250,23 @@ b5014c82b05e0900d00050000100 texture_sample 2, 7, xzw, r27l_r27h_r28l, ts161, cr
 45c74c99307a0900600210000100000000000000 texture_sample 3, 6, xyzw, r40_r41_r42_r43, ts208, cr15, 0, 1, wait 3, ss0, 1, 0
 cde2cc23105f0900100250000100000000000000 texture_sample 2, 7, xz, r121_r122, ts56, cr26, 1, 0, wait 5, ss0, 1, 0
 e50c0c1230010900800050000100 texture_sample 0, 0, yzw, r14l_r14h_r15l, ts3, cr20, 0, 0, wait 1, ss0, 1, 0
-35790c1790701701800040000100 texture_load 3, 4, yw, r3l_r3h, ts31, cr57, 0, 0, wait 0, ss0, 1, 0
-05194c0e100a1701000200000100000000000000 texture_load 0, 2, y, r16l, ts6, cr49, 0, 0, wait 3, ss0, 1, 0
-050c8c8090801701200000000100 texture_load 4, 0, x, r32l, ts66, cr4, 0, 1, wait 0, ss0, 1, 0
-3dff0c2390241701a00240000100000000000000 texture_load 1, 1, xz, r7_r8, ts95, cr31, 1, 0, wait 0, ss0, 1, 0
-15000c0010a01701000000000100 texture_load 5, 0, x, r1l, ts0, cr0, 0, 0, ss0, 1, 0
-bd7acc8a30901701d00240000100000000000000 texture_load 4, 4, xyw, r59h_r60l_r60h, ts191, cr18, 0, 1, ss0, 1, 0
-05408c1410021701000000000100 texture_load 0, 0, z, r32l, ts16, cr32, 0, 0, wait 3, ss0, 1, 0
-5d2f4c2c90c61701c00240000100000000000000 texture_load 6, 1, yz, r21h_r22l, ts139, cr39, 1, 0, wait 4, ss0, 1, 0
-05604cb130e01701700040000100 texture_load 7, 0, yzw, r16l_r16h_r17l, ts248, cr8, 1, 1, ss0, 1, 0
-1d60cc0030d41701f00200000100000000000000 texture_load 6, 5, xw, r49h_r50l, ts249, cr0, 0, 0, ss0, 1, 0
-2db40c9f106a1701300240000100000000000000 texture_load 3, 2, zw, r5_r6, ts108, cr60, 0, 1, wait 3, ss0, 1, 0
-3ddb4cb8302e1701300200000100000000000000 texture_load 1, 3, xyzw, r39_r40_r41_r42, ts118, cr3, 1, 1, wait 3, ss0, 1, 0
-1d008c0030001701000040000100 texture_load 0, 0, xzw, r33h_r34l_r34h, ts0, cr0, 0, 0, ss0, 1, 0
-65f68c2930881701200000000100 texture_load 4, 2, xy, r76_r77, ts92, cr14, 1, 0, ss0, 1, 0
-85918c90b0c41701300000000100 texture_load 6, 1, xyz, r80_r81_r82, ts100, cr1, 0, 1, wait 0, ss0, 1, 0
-f5c98cbd100a1701500200000100000000000000 texture_load 0, 2, w, r94, ts178, cr41, 1, 1, wait 3, ss0, 1, 0
-fd3fcc9b30531701900240000100000000000000 texture_load 2, 4, _, ts47, cr31, 0, 1, wait 5, ss0, 1, 0
+35790c1790701701800040000100 texture_load 3, 4, yw, r3l_r3h, ts31, cr57, 0, 0, wait 0, ss0, 1, 0, 0
+05194c0e100a1701000200000100000000000000 texture_load 0, 2, y, r16l, ts6, cr49, 0, 0, wait 3, ss0, 1, 0, 0
+050c8c8090801701200000000100 texture_load 4, 0, x, r32l, ts66, cr4, 0, 1, wait 0, ss0, 1, 0, 0
+3dff0c2390241701a00240000100000000000000 texture_load 1, 1, xz, r7_r8, ts95, cr31, 1, 0, wait 0, ss0, 1, 0, 0
+15000c0010a01701000000000100 texture_load 5, 0, x, r1l, ts0, cr0, 0, 0, ss0, 1, 0, 0
+bd7acc8a30901701d00240000100000000000000 texture_load 4, 4, xyw, r59h_r60l_r60h, ts191, cr18, 0, 1, ss0, 1, 0, 0
+05408c1410021701000000000100 texture_load 0, 0, z, r32l, ts16, cr32, 0, 0, wait 3, ss0, 1, 0, 0
+5d2f4c2c90c61701c00240000100000000000000 texture_load 6, 1, yz, r21h_r22l, ts139, cr39, 1, 0, wait 4, ss0, 1, 0, 0
+05604cb130e01701700040000100 texture_load 7, 0, yzw, r16l_r16h_r17l, ts248, cr8, 1, 1, ss0, 1, 0, 0
+1d60cc0030d41701f00200000100000000000000 texture_load 6, 5, xw, r49h_r50l, ts249, cr0, 0, 0, ss0, 1, 0, 0
+2db40c9f106a1701300240000100000000000000 texture_load 3, 2, zw, r5_r6, ts108, cr60, 0, 1, wait 3, ss0, 1, 0, 0
+3ddb4cb8302e1701300200000100000000000000 texture_load 1, 3, xyzw, r39_r40_r41_r42, ts118, cr3, 1, 1, wait 3, ss0, 1, 0, 0
+1d008c0030001701000040000100 texture_load 0, 0, xzw, r33h_r34l_r34h, ts0, cr0, 0, 0, ss0, 1, 0, 0
+65f68c2930881701200000000100 texture_load 4, 2, xy, r76_r77, ts92, cr14, 1, 0, ss0, 1, 0, 0
+85918c90b0c41701300000000100 texture_load 6, 1, xyz, r80_r81_r82, ts100, cr1, 0, 1, wait 0, ss0, 1, 0, 0
+f5c98cbd100a1701500200000100000000000000 texture_load 0, 2, w, r94, ts178, cr41, 1, 1, wait 3, ss0, 1, 0, 0
+fd3fcc9b30531701900240000100000000000000 texture_load 2, 4, _, ts47, cr31, 0, 1, wait 5, ss0, 1, 0, 0
 83bf4dbc             bitop_unary mov5, u24l, 191, wait 4
 03800042             bitop_unary zero, st0l, $r0l, group 0, wait 1
 b3ec488a             bitop_unary zero, st27l, 236, group 0, wait 3
