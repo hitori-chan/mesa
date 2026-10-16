@@ -36,12 +36,47 @@ lower_sampler(nir_builder *b, nir_tex_instr *tex)
    return true;
 }
 
+/*
+ * G15 has no sampler state registers: a texture instruction names its sampler
+ * by index into the stage's sampler table (entry 0 the txf sampler, API
+ * sampler i at i + 1), whose base the instruction takes from a uniform pair.
+ */
+static bool
+lower_sampler_g15(nir_builder *b, nir_tex_instr *tex)
+{
+   bool txf = tex->op == nir_texop_txf || tex->op == nir_texop_txf_ms;
+
+   if (nir_tex_instr_src_index(tex, nir_tex_src_sampler_handle) >= 0 ||
+       !(nir_tex_instr_need_sampler(tex) || txf))
+      return false;
+
+   nir_def *index = nir_steal_tex_src(tex, nir_tex_src_sampler_offset);
+   if (!nir_tex_instr_need_sampler(tex))
+      index = nir_imm_int(b, 0);
+   else if (!index)
+      index = nir_imm_int(b, tex->sampler_index + 1);
+   else
+      index = nir_iadd_imm(b, index, 1);
+
+   nir_tex_instr_add_src(tex, nir_tex_src_sampler_handle,
+                         nir_load_sampler_handle_agx(b, index));
+   return true;
+}
+
+struct lower_bindings_state {
+   bool *uses_bindless_samplers;
+   bool g15;
+};
+
 static bool
 lower(nir_builder *b, nir_instr *instr, void *data)
 {
-   bool *uses_bindless_samplers = data;
+   const struct lower_bindings_state *state = data;
+   bool *uses_bindless_samplers = state->uses_bindless_samplers;
    bool progress = false;
-   bool force_bindless = agx_nir_needs_texture_crawl(instr);
+
+   /* G15 has no texture state registers: everything is bindless */
+   bool force_bindless = state->g15 || agx_nir_needs_texture_crawl(instr);
    b->cursor = nir_before_instr(instr);
 
    if (instr->type == nir_instr_type_intrinsic) {
@@ -105,7 +140,9 @@ lower(nir_builder *b, nir_instr *instr, void *data)
    } else if (instr->type == nir_instr_type_tex) {
       nir_tex_instr *tex = nir_instr_as_tex(instr);
 
-      if (((BITSET_COUNT(b->shader->info.samplers_used) > 16) &&
+      if (state->g15) {
+         progress |= lower_sampler_g15(b, tex);
+      } else if (((BITSET_COUNT(b->shader->info.samplers_used) > 16) &&
            (nir_tex_instr_src_index(tex, nir_tex_src_sampler_offset) >= 0 ||
             tex->sampler_index >= 16)) &&
           lower_sampler(b, tex)) {
@@ -143,8 +180,11 @@ lower(nir_builder *b, nir_instr *instr, void *data)
 }
 
 bool
-agx_nir_lower_bindings(nir_shader *shader, bool *uses_bindless_samplers)
+agx_nir_lower_bindings(nir_shader *shader, bool *uses_bindless_samplers,
+                       bool g15)
 {
+   struct lower_bindings_state state = {uses_bindless_samplers, g15};
+
    /* First lower index to offset so we can lower more naturally */
    bool progress = nir_lower_tex(
       shader, &(nir_lower_tex_options){.lower_index_to_offset = true});
@@ -155,6 +195,6 @@ agx_nir_lower_bindings(nir_shader *shader, bool *uses_bindless_samplers)
    progress |= nir_opt_constant_folding(shader);
 
    progress |= nir_shader_instructions_pass(
-      shader, lower, nir_metadata_control_flow, uses_bindless_samplers);
+      shader, lower, nir_metadata_control_flow, &state);
    return progress;
 }

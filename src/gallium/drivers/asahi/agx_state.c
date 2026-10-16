@@ -650,6 +650,65 @@ target_is_cube(enum pipe_texture_target target)
    return target == PIPE_TEXTURE_CUBE || target == PIPE_TEXTURE_CUBE_ARRAY;
 }
 
+/*
+ * G15's texture descriptor (cmdbuf.xml's "Texture G15", 32 B slots). Only what
+ * the hardware has shown is packed: uncompressed, single-sampled textures,
+ * linear with one layer or twiddled; the levels in the extended word. The
+ * rest fails here rather than reaching the hardware misread.
+ */
+static void
+agx_pack_texture_g15(void *out, struct agx_resource *rsrc,
+                     enum pipe_format format,
+                     const struct pipe_sampler_view *state,
+                     const uint8_t *swizzle, unsigned first_layer)
+{
+   const struct util_format_description *desc = util_format_description(format);
+   bool is_buffer = state->target == PIPE_BUFFER;
+   unsigned layers =
+      is_buffer ? 1 : state->u.tex.last_layer - state->u.tex.first_layer + 1;
+
+   if (is_buffer || rsrc->layout.compressed || rsrc->base.nr_samples > 1 ||
+       (rsrc->layout.tiling == AIL_TILING_LINEAR && layers > 1)) {
+      fprintf(stderr, "G15: texture of a buffer, compressed, multisampled or "
+                      "linear layered image is not supported yet\n");
+      assert(0);
+   }
+
+   agx_pack(out, TEXTURE_G15, cfg) {
+      cfg.dimension = agx_translate_tex_dim(state->target,
+                                            util_res_sample_count(&rsrc->base));
+      cfg.layout = agx_translate_layout(rsrc->layout.tiling);
+      cfg.channels = ail_pixel_format[format].channels;
+      cfg.type = ail_pixel_format[format].type;
+      cfg.swizzle_r = agx_channel_from_pipe(swizzle[0]);
+      cfg.swizzle_g = agx_channel_from_pipe(swizzle[1]);
+      cfg.swizzle_b = agx_channel_from_pipe(swizzle[2]);
+      cfg.swizzle_a = agx_channel_from_pipe(swizzle[3]);
+      cfg.width = rsrc->base.width0;
+      cfg.height = rsrc->base.height0;
+      cfg.first_level = state->u.tex.first_level;
+      cfg.last_level = state->u.tex.last_level;
+      cfg.extended = cfg.first_level || cfg.last_level;
+      cfg.mipmapped = rsrc->mipmapped;
+      cfg.srgb = (desc->colorspace == UTIL_FORMAT_COLORSPACE_SRGB);
+      cfg.srgb_2_channel = cfg.srgb && util_format_colormask(desc) == 0x3;
+
+      /* The raw VA: G15 subtracts nothing (texture.md) */
+      cfg.address = agx_map_texture_gpu(rsrc, first_layer);
+
+      if (state->target == PIPE_TEXTURE_3D) {
+         cfg.depth = rsrc->base.depth0;
+      } else {
+         cfg.depth = target_is_cube(state->target) ? layers / 6 : layers;
+      }
+
+      if (rsrc->layout.tiling == AIL_TILING_LINEAR)
+         cfg.stride = ail_get_linear_stride_B(&rsrc->layout, 0) - 16;
+      else
+         cfg.page_aligned_layers = rsrc->layout.page_aligned_layers;
+   }
+}
+
 static void
 agx_pack_texture(void *out, struct agx_resource *rsrc,
                  enum pipe_format format /* override */,
@@ -687,6 +746,11 @@ agx_pack_texture(void *out, struct agx_resource *rsrc,
 
    unsigned first_layer =
       (state->target == PIPE_BUFFER) ? 0 : state->u.tex.first_layer;
+
+   if (agx_device(rsrc->base.screen)->params.gpu_generation >= 15) {
+      agx_pack_texture_g15(out, rsrc, format, state, out_swizzle, first_layer);
+      return;
+   }
 
    /* Pack the descriptor into GPU memory */
    agx_pack(out, TEXTURE, cfg) {
@@ -1560,7 +1624,8 @@ agx_compile_nir(struct agx_device *dev, nir_shader *nir,
    if (internal_kernel) {
       key.reserved_preamble = 8;
    } else if (!secondary) {
-      NIR_PASS(_, nir, agx_nir_lower_sysvals, stage, true);
+      NIR_PASS(_, nir, agx_nir_lower_sysvals, stage, true,
+               dev->params.gpu_generation >= 15);
       NIR_PASS(_, nir, agx_nir_layout_uniforms, compiled,
                &key.reserved_preamble, dev->params.gpu_generation >= 15);
    }
@@ -1847,7 +1912,8 @@ agx_shader_initialize(struct agx_device *dev, struct agx_uncompiled_shader *so,
    /* We need to lower binding tables before calling agx_preprocess_nir, since
     * that does texture lowering that needs to know the binding model.
     */
-   NIR_PASS(_, nir, agx_nir_lower_bindings, &so->uses_bindless_samplers);
+   NIR_PASS(_, nir, agx_nir_lower_bindings, &so->uses_bindless_samplers,
+            dev->params.gpu_generation >= 15);
 
    /* We need to do some I/O lowering before lowering textures */
    so->info.nr_bindful_textures = BITSET_LAST_BIT(nir->info.textures_used);
@@ -2745,17 +2811,24 @@ agx_nr_tex_descriptors(struct agx_batch *batch, struct agx_compiled_shader *cs)
 }
 
 /*
- * G15 has no texture ABI yet: a shader that does not sample binds no textures
- * or samplers (as in Honeykrisp), so that it builds. For a shader that does,
- * the entry program fails to build, saying so.
+ * G13 binds texture and sampler state with USC words. G15 has none: its
+ * shaders read the tables through uniform pairs (texture_base, sampler_base).
  */
 static bool
 agx_binds_samplers(struct agx_batch *batch, struct agx_compiled_shader *cs)
 {
    struct agx_device *dev = agx_device(batch->ctx->base.screen);
 
-   return dev->params.gpu_generation < 15 || cs->b.info.uses_txf ||
-          agx_nr_tex_descriptors(batch, cs) > 0;
+   return dev->params.gpu_generation < 15;
+}
+
+/* G15's texture and PBE descriptors take 32 B slots */
+static unsigned
+agx_tex_desc_stride(struct agx_batch *batch)
+{
+   struct agx_device *dev = agx_device(batch->ctx->base.screen);
+
+   return dev->params.gpu_generation >= 15 ? 32 : AGX_TEXTURE_LENGTH;
 }
 
 static enum agx_sampler_states
@@ -2773,12 +2846,15 @@ agx_sampler_state_count(struct agx_batch *batch, struct agx_compiled_shader *cs,
  * allow loading/storing to the render target from the shader.
  */
 static void
-agx_upload_spilled_rt_descriptors(struct agx_texture_packed *out,
-                                  struct agx_batch *batch)
+agx_upload_spilled_rt_descriptors(uint8_t *out, struct agx_batch *batch)
 {
+   unsigned stride = agx_tex_desc_stride(batch);
+
    for (unsigned rt = 0; rt < batch->key.nr_cbufs; ++rt) {
-      struct agx_texture_packed *texture = out + (2 * rt);
-      struct agx_pbe_packed *pbe = (struct agx_pbe_packed *)(texture + 1);
+      struct agx_texture_packed *texture =
+         (struct agx_texture_packed *)(out + (2 * rt) * stride);
+      struct agx_pbe_packed *pbe =
+         (struct agx_pbe_packed *)(out + (2 * rt + 1) * stride);
 
       const struct pipe_surface *surf = &batch->key.cbufs[rt];
       if (!surf->texture)
@@ -2812,17 +2888,27 @@ agx_upload_textures(struct agx_batch *batch, struct agx_compiled_shader *cs,
    unsigned nr_active_textures = ctx->stage[stage].texture_count;
    unsigned nr_tex_descriptors = agx_nr_tex_descriptors(batch, cs);
    unsigned nr_images = cs->so->info.nr_bindful_images;
+   unsigned stride = agx_tex_desc_stride(batch);
+   bool g15 = stride != AGX_TEXTURE_LENGTH;
 
-   struct agx_ptr T_tex = agx_pool_alloc_aligned(
-      &batch->pool, AGX_TEXTURE_LENGTH * nr_tex_descriptors, 64);
+   struct agx_ptr T_tex =
+      agx_pool_alloc_aligned(&batch->pool, stride * nr_tex_descriptors, 64);
 
-   struct agx_texture_packed *textures = T_tex.cpu;
+   /* G15: the slots' last 8 bytes (compression) stay zero */
+   if (g15)
+      memset(T_tex.cpu, 0, stride * nr_tex_descriptors);
+
+#define TEX_DESC(i)                                                            \
+   ((struct agx_texture_packed *)((uint8_t *)T_tex.cpu + (i) * stride))
 
    for (unsigned i = 0; i < MIN2(nr_textures, nr_active_textures); ++i) {
       struct agx_sampler_view *tex = ctx->stage[stage].textures[i];
 
       if (tex == NULL) {
-         agx_set_null_texture(&textures[i]);
+         if (g15)
+            agx_set_null_texture_g15(TEX_DESC(i));
+         else
+            agx_set_null_texture(TEX_DESC(i));
          continue;
       }
 
@@ -2834,21 +2920,27 @@ agx_upload_textures(struct agx_batch *batch, struct agx_compiled_shader *cs,
        */
       agx_pack_texture(&tex->desc, rsrc, tex->format, &tex->base);
 
-      textures[i] = tex->desc;
+      *TEX_DESC(i) = tex->desc;
    }
 
-   for (unsigned i = nr_active_textures; i < nr_textures; ++i)
-      agx_set_null_texture(&textures[i]);
+   for (unsigned i = nr_active_textures; i < nr_textures; ++i) {
+      if (g15)
+         agx_set_null_texture_g15(TEX_DESC(i));
+      else
+         agx_set_null_texture(TEX_DESC(i));
+   }
 
    for (unsigned i = 0; i < nr_images; ++i) {
       /* Image descriptors come in pairs after the textures */
-      struct agx_texture_packed *texture =
-         ((struct agx_texture_packed *)T_tex.cpu) + nr_textures + (2 * i);
-
-      struct agx_pbe_packed *pbe = (struct agx_pbe_packed *)(texture + 1);
+      struct agx_texture_packed *texture = TEX_DESC(nr_textures + (2 * i));
+      struct agx_pbe_packed *pbe =
+         (struct agx_pbe_packed *)TEX_DESC(nr_textures + (2 * i) + 1);
 
       if (!(ctx->stage[stage].image_mask & BITFIELD_BIT(i))) {
-         agx_set_null_texture(texture);
+         if (g15)
+            agx_set_null_texture_g15(texture);
+         else
+            agx_set_null_texture(texture);
          agx_set_null_pbe(pbe);
          continue;
       }
@@ -2876,12 +2968,12 @@ agx_upload_textures(struct agx_batch *batch, struct agx_compiled_shader *cs,
    if (stage == MESA_SHADER_FRAGMENT &&
        agx_tilebuffer_spills(&batch->tilebuffer_layout)) {
 
-      struct agx_texture_packed *out =
-         ((struct agx_texture_packed *)T_tex.cpu) +
-         agx_nr_tex_descriptors_without_spilled_rts(cs);
-
-      agx_upload_spilled_rt_descriptors(out, batch);
+      agx_upload_spilled_rt_descriptors(
+         (uint8_t *)TEX_DESC(agx_nr_tex_descriptors_without_spilled_rts(cs)),
+         batch);
    }
+
+#undef TEX_DESC
 
    batch->texture_count[stage] = nr_tex_descriptors;
    batch->stage_uniforms[stage].texture_base = T_tex.gpu;
@@ -2921,8 +3013,17 @@ agx_upload_samplers(struct agx_batch *batch, struct agx_compiled_shader *cs,
    size_t sampler_length =
       AGX_SAMPLER_LENGTH + (custom_borders ? AGX_BORDER_LENGTH : 0);
 
+   /* G15's sampler table has 32 B entries, the state at +0 (texture.md). Where
+    * a custom border goes is not known: it follows the state as on G13. */
+   bool g15 = agx_device(ctx->base.screen)->params.gpu_generation >= 15;
+   if (g15)
+      sampler_length = 32;
+
    struct agx_ptr T =
       agx_pool_alloc_aligned(&batch->pool, sampler_length * nr_samplers, 64);
+
+   if (g15)
+      memset(T.cpu, 0, sampler_length * nr_samplers);
 
    /* Sampler #0 is reserved for txf */
    agx_pack_txf_sampler(T.cpu);
@@ -2953,6 +3054,7 @@ agx_upload_samplers(struct agx_batch *batch, struct agx_compiled_shader *cs,
 
    batch->sampler_count[stage] = nr_samplers;
    batch->samplers[stage] = T.gpu;
+   batch->stage_uniforms[stage].sampler_base = T.gpu;
 }
 
 static void

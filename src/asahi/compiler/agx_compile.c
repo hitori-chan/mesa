@@ -3014,7 +3014,7 @@ set_speculate(nir_builder *b, nir_instr *instr, UNUSED void *_)
 
 static void
 agx_optimize_nir(nir_shader *nir, bool soft_fault, uint16_t *preamble_size,
-                 uint8_t *ts_count, uint8_t *ss_count)
+                 uint8_t *ts_count, uint8_t *ss_count, bool g15)
 {
    /* This runs only once up front since other optimizations don't affect it */
    NIR_PASS(_, nir, nir_opt_shrink_stores, true);
@@ -3139,7 +3139,8 @@ agx_optimize_nir(nir_shader *nir, bool soft_fault, uint16_t *preamble_size,
       if (sizes[2] == 0)
          sizes[2]++;
 
-      NIR_PASS(_, nir, agx_nir_opt_preamble, sizes);
+
+      NIR_PASS(_, nir, agx_nir_opt_preamble, sizes, g15);
 
       *preamble_size = sizes[0];
 
@@ -3921,7 +3922,8 @@ agx_compile_shader_nir(nir_shader *nir, struct agx_shader_key *key,
       (key->secondary || !key->promote_textures) ? NULL
                                                  : &info->texture_state_count,
       (key->secondary || !key->promote_textures) ? NULL
-                                                 : &info->sampler_state_count);
+                                                 : &info->sampler_state_count,
+      key->dev.gpu_generation >= 15);
 
    if (nir->info.stage == MESA_SHADER_FRAGMENT) {
       info->varyings.fs.nr_cf = key->fs.cf_base;

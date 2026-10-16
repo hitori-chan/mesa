@@ -320,6 +320,45 @@
     <field name="Levels" size="4" start="176" type="uint" modifier="minus(1)"/>
   </struct>
 
+  <!--
+   G15's texture read state, from Apple's TextureGen4::encodeImageReadState.
+   The hardware reads 32 bytes per texture (the table's stride, verified);
+   the fourth word only carries compression. Word 0 bits 55:0 are G13's;
+   samples, mipmapping and compression move into word 0's top byte, the
+   address is the raw VA (44 bits of VA >> 4) and the levels move to the
+   extended word. Verified for linear 2D RGBA8 (boots #252, #256).
+  -->
+  <struct name="Texture G15" size="24">
+    <field name="Dimension" size="4" start="0" type="Texture dimension"/>
+    <field name="Layout" size="2" start="4" type="Layout"/>
+    <field name="Channels" size="7" start="6" type="Channels"/>
+    <field name="Type" size="3" start="13" type="Texture Type"/>
+    <field name="Swizzle R" size="3" start="16" type="Channel"/>
+    <field name="Swizzle G" size="3" start="19" type="Channel"/>
+    <field name="Swizzle B" size="3" start="22" type="Channel"/>
+    <field name="Swizzle A" size="3" start="25" type="Channel"/>
+    <field name="Width" size="14" start="28" type="uint" modifier="minus(1)"/>
+    <field name="Height" size="14" start="42" type="uint" modifier="minus(1)"/>
+    <!-- 0 for one sample; the multisampled codes are not known -->
+    <field name="Samples" size="2" start="56" type="uint"/>
+    <field name="Mipmapped" size="1" start="58" type="bool"/>
+    <field name="Compressed" size="1" start="59" type="bool"/>
+    <field name="Mode" size="2" start="60" type="Image Mode"/>
+    <field name="Compression" size="2" start="62" type="hex"/>
+    <field name="Address" size="44" start="64" type="address" modifier="shr(4)"/>
+    <field name="sRGB" size="1" start="108" type="bool"/>
+    <field name="sRGB 2-channel" size="1" start="109" type="bool"/>
+    <!-- Linear: the row stride in 16-byte units, minus 1 -->
+    <field name="Stride" size="16" start="110" type="hex" modifier="shr(4)"/>
+    <field name="Depth" size="14" start="110" type="uint" modifier="minus(1)"/>
+    <field name="Page-aligned layers" size="1" start="126" type="bool"/>
+    <!-- Read the next word (set with several mip levels or compression) -->
+    <field name="Extended" size="1" start="127" type="bool"/>
+    <field name="Acceleration buffer" size="44" start="128" type="address" modifier="shr(4)"/>
+    <field name="First level" size="4" start="172" type="uint"/>
+    <field name="Last level" size="4" start="176" type="uint"/>
+  </struct>
+
   <struct name="Texture" size="24">
     <field name="Dimension" size="4" start="0" type="Texture dimension"/>
     <field name="Layout" size="2" start="4" type="Layout"/>
