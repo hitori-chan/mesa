@@ -718,7 +718,7 @@ agx_wait_pixel_mask(agx_builder *b, uint32_t mask)
    /* G15: Apple's fragment shaders wait on fence 0x200 before they access the
     * tilebuffer (demo15's: 0x200, then 0xC), and release it with the others
     */
-   if (b->shader->key->dev.gpu_generation >= 15 && (mask & 0xC))
+   if (b->shader->key->dev.gpu_generation >= 15 && (mask & 0xD))
       mask |= 0x200;
 
    /* No need to wait twice on a fence */
@@ -764,6 +764,36 @@ agx_emit_local_store_pixel(agx_builder *b, nir_intrinsic_instr *instr)
                       agx_format_for_pipe(nir_intrinsic_format(instr)),
                       nir_intrinsic_write_mask(instr),
                       nir_intrinsic_base(instr), explicit);
+}
+
+/* G15: the sample mask is a value in cr0, applied by movmsk (AGX3.xml): the
+ * live samples in bits 3:0, the thread's is_active_thread flag in bit 4 and
+ * the target samples in bits 11:8, which Apple sets to the flag too (a helper
+ * thread targets nothing). One sample per pixel (hardware boots #326-#329):
+ * a four-sample target is not verified, the fields hold one bit per sample as
+ * far as is known. The result goes to the instruction's first source. */
+static agx_instr *
+agx_emit_sample_mask_g15(agx_builder *b, nir_intrinsic_instr *instr)
+{
+   agx_index target = agx_src_index(&instr->src[0]);
+   agx_index live = agx_src_index(&instr->src[1]);
+   agx_index active = agx_get_sr_coverage(b, 32, AGX_SR_IS_ACTIVE_THREAD);
+
+   agx_index t = agx_temp(b->shader, AGX_SIZE_32);
+   agx_index l = agx_temp(b->shader, AGX_SIZE_32);
+   agx_mov_to(b, t, target);
+   agx_mov_to(b, l, live);
+   t = agx_and(b, t, agx_immediate(0xf));
+   l = agx_and(b, l, agx_immediate(0xf));
+
+   /* cr0 = active * (0x10 + target * 0x100) + live (iadd shifts by 4 at most) */
+   agx_index t4 = agx_temp(b->shader, AGX_SIZE_32);
+   agx_index tt = agx_temp(b->shader, AGX_SIZE_32);
+   agx_iadd_to(b, t4, agx_immediate(0), t, 4);
+   agx_iadd_to(b, tt, agx_immediate(0x10), t4, 4);
+   agx_index cr0 = agx_imad(b, active, tt, l, 0);
+
+   return agx_sample_mask(b, cr0, agx_zero());
 }
 
 static agx_instr *
@@ -1592,6 +1622,9 @@ agx_emit_intrinsic(agx_builder *b, nir_intrinsic_instr *instr)
 
       if (!no_tests)
          agx_wait_pixel_mask(b, 0x1);
+
+      if (b->shader->key->dev.gpu_generation >= 15)
+         return agx_emit_sample_mask_g15(b, instr);
 
       return agx_sample_mask(b, agx_src_index(&instr->src[0]),
                              agx_src_index(&instr->src[1]));

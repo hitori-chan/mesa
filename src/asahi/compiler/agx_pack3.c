@@ -705,6 +705,7 @@ a3_memshift(const struct a3 *a, unsigned bytes)
 #define T_LDCF      "1f0354000002"                 /* ldcf 2, r0, 0 */
 #define T_ITER      "2f055400020000021000"         /* iter r0, cf0, center */
 #define T_ZS_EMIT   "d70454000003"                 /* zs_emit ^cr0, 0, z */
+#define T_MOVMSK    "570454000000"                 /* movmsk ^cr0, 0 */
 #define T_PACK_IMGWIR "9705540400080000d0401000"   /* pack_imgwir cr2, 0, u2l, 0, 0, 4 */
 #define T_IMGWBLK   "5710540000000080a8750000"     /* block_image_store ^cr0, 0, du0, 0, 7530 */
 
@@ -797,6 +798,9 @@ enum {
    ZS_G = 1,
    ZS_MODE = 2,
    ZS_WAIT = 3,
+   MOVMSK_CR = 0,
+   MOVMSK_G = 1,
+   MOVMSK_WAIT = 2,
    PACK_IMGWIR_DST = 0,
    PACK_IMGWIR_G = 1,
    PACK_IMGWIR_A = 2,
@@ -1722,6 +1726,22 @@ a3_zs_emit(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
    a3_emit(a, emission);
 }
 
+/* sample_mask: G15's version has one source, the 32-bit value for cr0 that
+ * the compiler built (LIVE | active << 4 | TARGET << 8, see movmsk in
+ * AGX3.xml); a mov writes cr0 and movmsk waits for it and applies it. The
+ * second source is unused. */
+static void
+a3_sample_mask(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
+{
+   a3_mov_cr(a, I, 0, I->src[0], emission);
+
+   a3_begin(a, I, AGX3_MOVMSK, T_MOVMSK);
+   a3_set(a, MOVMSK_CR, a3_kind_value(a, MOVMSK_CR, A3_CR, 0, BITFIELD_BIT(A3_LU)));
+   a3_set(a, MOVMSK_G, 0);
+   a3_set(a, MOVMSK_WAIT, BITFIELD_BIT(0));
+   a3_emit(a, emission);
+}
+
 /* block_image_store (imgwblk): the tile to the image a PBE descriptor
  * describes. G15 takes the descriptor's address in a 64-bit uniform (the IR's
  * base, which the entry program loads) and three coordinate registers: x and
@@ -2257,12 +2277,8 @@ agx3_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
       return;
 
    case AGX_OPCODE_SAMPLE_MASK:
-      /* Apple's encoder has no instruction that writes the sample mask: cmsk
-       * (10 B) has a destination and three sources, and the tile accesses
-       * take a sample mask operand of their own (demo15 passes 1). How
-       * discard and gl_SampleMask work on G15 is not known. */
-      a3_fail(&a, "sample_mask (discard and gl_SampleMask: G15 has no sample "
-                  "mask write, cmsk's meaning is not known)");
+      a3_sample_mask(&a, I, emission);
+      return;
 
    case AGX_OPCODE_BLOCK_IMAGE_STORE:
       a3_block_image_store(&a, I, emission);
