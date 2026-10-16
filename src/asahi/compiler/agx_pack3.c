@@ -910,16 +910,28 @@ static enum agx3_instr
 a3_funop(enum agx_opcode op)
 {
    switch (op) {
-   case AGX_OPCODE_FLOOR: return AGX3_FLOOR;
-   case AGX_OPCODE_CEIL: return AGX3_CEIL;
-   case AGX_OPCODE_TRUNC: return AGX3_TRUNC;
-   case AGX_OPCODE_ROUNDEVEN: return AGX3_RINT;
-   case AGX_OPCODE_RCP: return AGX3_RCP;
-   case AGX_OPCODE_RSQRT: return AGX3_RSQRT;
-   case AGX_OPCODE_SRSQRT: return AGX3_RSQRT_SPECIAL;
-   case AGX_OPCODE_LOG2: return AGX3_LOG2;
-   case AGX_OPCODE_EXP2: return AGX3_EXP2;
-   default: return AGX3_NUM_INSTRS;
+   case AGX_OPCODE_FLOOR:
+      return AGX3_FLOOR;
+   case AGX_OPCODE_CEIL:
+      return AGX3_CEIL;
+   case AGX_OPCODE_TRUNC:
+      return AGX3_TRUNC;
+   case AGX_OPCODE_ROUNDEVEN:
+      return AGX3_RINT;
+   case AGX_OPCODE_RCP:
+      return AGX3_RCP;
+   case AGX_OPCODE_RSQRT:
+      return AGX3_RSQRT;
+   case AGX_OPCODE_SRSQRT:
+      return AGX3_RSQRT_SPECIAL;
+   case AGX_OPCODE_LOG2:
+      return AGX3_LOG2;
+   case AGX_OPCODE_EXP2:
+      return AGX3_EXP2;
+   case AGX_OPCODE_SIN_PT_2:
+      return AGX3_SINC; /* sin(A pi / 2) / A */
+   default:
+      return AGX3_NUM_INSTRS;
    }
 }
 
@@ -2148,7 +2160,8 @@ agx3_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
    case AGX_OPCODE_RSQRT:
    case AGX_OPCODE_SRSQRT:
    case AGX_OPCODE_LOG2:
-   case AGX_OPCODE_EXP2: {
+   case AGX_OPCODE_EXP2:
+   case AGX_OPCODE_SIN_PT_2: {
       struct a3_alu d = {a3_funop(I->op), T_FUNOP, {2}, VT, -1, -1, false};
       a3_alu(&a, I, &d, I->src, emission);
       return;
