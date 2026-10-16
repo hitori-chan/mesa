@@ -1358,10 +1358,13 @@ hk_image_plane_bind(struct hk_device *dev, struct hk_image_plane *plane,
          plane->va = NULL;
       }
 
-      if (plane->va)
+      if (plane->va) {
          plane->addr = plane->va->addr + (*offset_B - page_B);
-      else
+      } else {
+         /* PBE and texture addresses must be in the image heap */
+         mesa_loge("g15: aliasing an image in the image heap failed");
          plane->addr = mem->bo->va->addr + *offset_B;
+      }
 
       plane->map = agx_bo_map(mem->bo) + *offset_B;
       plane->rem = mem->bo->size - (*offset_B);
