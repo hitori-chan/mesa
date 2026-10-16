@@ -98,9 +98,10 @@ struct agx_shader_info {
    /* G15: the stack registers in bytes per thread (specTPR) */
    unsigned stack_size;
 
-   /* G15: bytes per thread for texture results, 16 per texture instruction
-    * (specTPR) */
-   unsigned texture_results;
+   /* G15: the coordinate registers (cr) the shader uses, the highest written
+    * plus one: the specTPR backs each with 8 bytes per thread (Apple's
+    * kernels and render programs, 2026-10-16) */
+   unsigned cr_count;
 
    /* Size in bytes of the main sahder */
    unsigned main_size;
