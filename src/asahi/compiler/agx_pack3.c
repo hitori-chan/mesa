@@ -721,6 +721,9 @@ a3_memshift(const struct a3 *a, unsigned bytes)
 #define T_MOVMSK    "570454000000"                 /* movmsk ^cr0, 0 */
 #define T_PACK_IMGWIR "9705540400080000d0401000"   /* pack_imgwir cr2, 0, u2l, 0, 0, 4 */
 #define T_IMGWBLK   "5710540000000080a8750000"     /* block_image_store ^cr0, 0, du0, 0, 7530 */
+/* Apple's rw.write() of the imgw capture (macOS 27.0.1): image_write ^cr8,
+ * group 0, du2, index 1, level 0, xyzw, wait 0 */
+#define T_IMGW "d71054102040000100040000883a0900"
 
 /* Apple's texture instructions (the 2026-10-16 capture's kernels and the
  * QuartzCore corpus, texture.md) */
@@ -827,6 +830,13 @@ enum {
    IMGWBLK_OFFSET = 3,
    IMGWBLK_FLAGS = 4,
    IMGWBLK_WAIT = 7,
+   IMGW_CR = 0,
+   IMGW_G = 1,
+   IMGW_BASE = 2,
+   IMGW_INDEX = 3,
+   IMGW_LOD = 4,
+   IMGW_DATA = 5,
+   IMGW_WAIT = 6,
    TEX_G0 = 0,
    TEX_G1 = 1,
    TEX_MASK = 2,
@@ -1518,6 +1528,8 @@ agx3_cr_count(const agx_instr *I)
    case AGX_OPCODE_ZS_EMIT:
    case AGX_OPCODE_BLOCK_IMAGE_STORE:
       return 2;
+   case AGX_OPCODE_IMAGE_WRITE:
+      return 8;
    case AGX_OPCODE_ST_VARY:
       return I->src[0].type == AGX_INDEX_IMMEDIATE ? (I->src[0].value & 7) + 1
                                                    : 1;
@@ -1978,6 +1990,89 @@ a3_block_image_store(struct a3 *a, const agx_instr *I,
    a3_emit(a, emission);
 
    a3_wait(a, I, 0, emission);
+}
+
+/* image_write (imgwci): the PBE descriptor is entry index of the 32 B array
+ * at the IR's bindless base (a 64-bit uniform or register pair), the index an
+ * immediate or a register. The coordinates and the data go to a tuple of
+ * eight 32-bit coordinate registers, written in group 0, which the
+ * instruction waits for and frees. With two coordinates (2D, a 1D array's
+ * layer as the second): x, y, data x, data y in slots 0-3, data z and w in 6
+ * and 7 (Apple's code). A 2D array's layer is slot 3 and moves data y to
+ * slot 5; a 3D image's z is slot 2 and moves the data to slots 4-7 (both on
+ * the hardware, kernels #274 and #276; the 1D array is not verified). Apple's
+ * builder clamps a layer to 0x7ff (pack_args' min7ff).
+ * Cube images are 2D arrays here. The level is the instruction's immediate;
+ * all four data components are given. */
+
+static void
+a3_image_write(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
+{
+   static const enum agx3_instr instr[] = {
+      [AGX_DIM_1D] = AGX3_IMAGE_WRITE_1D,
+      [AGX_DIM_1D_ARRAY] = AGX3_IMAGE_WRITE_1D_ARRAY,
+      [AGX_DIM_2D] = AGX3_IMAGE_WRITE,
+      [AGX_DIM_2D_ARRAY] = AGX3_IMAGE_WRITE_2D_ARRAY,
+      [AGX_DIM_2D_MS] = A3_NONE,
+      [AGX_DIM_3D] = AGX3_IMAGE_WRITE_3D,
+      [AGX_DIM_CUBE] = AGX3_IMAGE_WRITE_CUBE,
+      [AGX_DIM_CUBE_ARRAY] = AGX3_IMAGE_WRITE_CUBE_ARRAY,
+      [AGX_DIM_2D_MS_ARRAY] = A3_NONE,
+   };
+   agx_index data = I->src[0], coords = I->src[1], lod = I->src[2];
+   agx_index base = I->src[3], index = I->src[4];
+
+   if (I->dim >= ARRAY_SIZE(instr) || instr[I->dim] == A3_NONE)
+      a3_fail(a, "image write to a multisampled image (lowered on G13)");
+   if (lod.type != AGX_INDEX_IMMEDIATE || lod.value >= 4096)
+      a3_fail(a, "image write at a level that is not an immediate");
+   if (data.size != AGX_SIZE_32 || coords.size != AGX_SIZE_32)
+      a3_fail(a, "image write of 16-bit data or coordinates");
+
+   unsigned ncoords = coords.channels_m1 + 1;
+
+   /* The third coordinate: a 3D image's z or an array's layer */
+   bool is_3d = I->dim == AGX_DIM_3D;
+   const uint8_t coord_slot[3] = {0, 1, is_3d ? 2 : 3};
+   static const uint8_t data_slots[3][4] = {
+      {2, 3, 6, 7}, /* two coordinates */
+      {2, 5, 6, 7}, /* an array's layer */
+      {4, 5, 6, 7}, /* a 3D image's z */
+   };
+   const uint8_t *data_slot = data_slots[ncoords > 2 ? (is_3d ? 2 : 1) : 0];
+
+   for (unsigned c = 0; c < ncoords; ++c) {
+      agx_index v = coords;
+      v.value += 2 * c;
+      v.channels_m1 = 0;
+      a3_mov_cr(a, I, coord_slot[c], v, emission);
+   }
+
+   for (unsigned c = 0; c < 4; ++c) {
+      agx_index v = data;
+      v.value += 2 * c;
+      v.channels_m1 = 0;
+      a3_mov_cr(a, I, data_slot[c], v, emission);
+   }
+
+   a3_begin(a, I, instr[I->dim], T_IMGW);
+   a3_set(a, IMGW_CR, a3_kind_value(a, IMGW_CR, A3_CR, 0, BITFIELD_BIT(A3_LU)));
+   a3_set(a, IMGW_G, 0);
+   a3_set(a, IMGW_BASE, a3_membase(a, IMGW_BASE, base));
+
+   if (index.type == AGX_INDEX_IMMEDIATE) {
+      a3_set(a, IMGW_INDEX, a3_imm(a, IMGW_INDEX, index.value, false));
+   } else {
+      if (index.size == AGX_SIZE_64)
+         a3_fail(a, "image index is 64-bit");
+      index.abs = index.neg = false;
+      a3_set(a, IMGW_INDEX, a3_reg(a, IMGW_INDEX, index, 0, 0, 0));
+   }
+
+   a3_set(a, IMGW_LOD, lod.value);
+   a3_set(a, IMGW_DATA, 4);
+   a3_set(a, IMGW_WAIT, BITFIELD_BIT(0));
+   a3_emit(a, emission);
 }
 
 /* icmp_ballot/fcmp_ballot (and the quad forms): cc, dest, t/v, A, B. The
@@ -2485,6 +2580,10 @@ agx3_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
 
    case AGX_OPCODE_BLOCK_IMAGE_STORE:
       a3_block_image_store(&a, I, emission);
+      return;
+
+   case AGX_OPCODE_IMAGE_WRITE:
+      a3_image_write(&a, I, emission);
       return;
 
    case AGX_OPCODE_STOP:
