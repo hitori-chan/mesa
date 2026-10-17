@@ -667,10 +667,13 @@ agx_pack_texture_g15(void *out, struct agx_resource *rsrc,
    unsigned layers =
       is_buffer ? 1 : state->u.tex.last_layer - state->u.tex.first_layer + 1;
 
-   if (rsrc->layout.compressed || rsrc->base.nr_samples > 1 ||
-       (rsrc->layout.tiling == AIL_TILING_LINEAR && layers > 1)) {
-      fprintf(stderr, "G15: texture of a compressed, multisampled or linear "
-                      "layered image is not supported yet\n");
+   /* A multisampled texture is never linear on G15 (Apple's encoder has no
+    * linear multisampled dimension, texture.md) */
+   if (rsrc->layout.compressed ||
+       (rsrc->layout.tiling == AIL_TILING_LINEAR &&
+        (layers > 1 || rsrc->base.nr_samples > 1))) {
+      fprintf(stderr, "G15: texture of a compressed, linear multisampled or "
+                      "linear layered image is not supported yet\n");
       assert(0);
    }
 
@@ -746,6 +749,10 @@ agx_pack_texture_g15(void *out, struct agx_resource *rsrc,
          cfg.stride = ail_get_linear_stride_B(&rsrc->layout, 0) - 16;
       else
          cfg.page_aligned_layers = rsrc->layout.page_aligned_layers;
+
+      /* (samples >> 2) & 3, the dimension says multisampled (texture.md) */
+      if (rsrc->base.nr_samples > 1)
+         cfg.samples = agx_translate_sample_count(rsrc->base.nr_samples);
    }
 }
 
@@ -1260,18 +1267,22 @@ static void
 agx_pack_pbe_g15(struct agx_pbe_packed *out, struct agx_resource *tex,
                  const struct pipe_image_view *view,
                  enum pipe_texture_target target, unsigned level,
-                 unsigned layer)
+                 unsigned layer, bool block_access)
 {
    const struct util_format_description *desc =
       util_format_description(view->format);
    bool is_buffer = (tex->base.target == PIPE_BUFFER);
    unsigned layers = is_buffer ? 1 : view->u.tex.last_layer - layer + 1;
+   bool ms = util_res_sample_count(&tex->base) > 1;
 
-   if (is_buffer || tex->layout.compressed ||
-       util_res_sample_count(&tex->base) > 1 || target == PIPE_TEXTURE_3D ||
+   /* A multisampled PBE is the end-of-tile block write's (G13 binds the image
+    * stores' as a buffer); it is never linear (texture.md) */
+   if (is_buffer || tex->layout.compressed || target == PIPE_TEXTURE_3D ||
+       (ms && (!block_access || tex->layout.tiling == AIL_TILING_LINEAR)) ||
        (tex->layout.tiling == AIL_TILING_LINEAR && layers > 1)) {
-      fprintf(stderr, "G15: PBE of a buffer, compressed, multisampled, 3D or "
-                      "linear layered image is not supported yet\n");
+      fprintf(stderr, "G15: PBE of a buffer, compressed or 3D image, a "
+                      "multisampled image store or a linear layered image "
+                      "is not supported yet\n");
       assert(0);
    }
 
@@ -1322,6 +1333,10 @@ agx_pack_pbe_g15(struct agx_pbe_packed *out, struct agx_resource *tex,
             cfg.levels = tex->base.last_level + 1;
          }
       }
+
+      /* (samples >> 2) & 3, as the read state (texture.md) */
+      if (ms)
+         cfg.samples = agx_translate_sample_count(tex->base.nr_samples);
    }
 }
 
@@ -1354,7 +1369,7 @@ agx_batch_upload_pbe(struct agx_batch *batch, struct agx_pbe_packed *out,
    unsigned layer = is_buffer ? 0 : view->u.tex.first_layer;
 
    if (agx_device(batch->ctx->base.screen)->params.gpu_generation >= 15) {
-      agx_pack_pbe_g15(out, tex, view, target, level, layer);
+      agx_pack_pbe_g15(out, tex, view, target, level, layer, block_access);
       return;
    }
 

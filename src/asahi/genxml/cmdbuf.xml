@@ -339,7 +339,8 @@
     <field name="Swizzle A" size="3" start="25" type="Channel"/>
     <field name="Width" size="14" start="28" type="uint" modifier="minus(1)"/>
     <field name="Height" size="14" start="42" type="uint" modifier="minus(1)"/>
-    <!-- 0 for one sample; the multisampled codes are not known -->
+    <!-- (samples >> 2) & 3 (Apple's encoder): 2 and 4 samples are "Sample
+         Count"'s codes, the dimension marks a multisampled texture -->
     <field name="Samples" size="2" start="56" type="uint"/>
     <field name="Mipmapped" size="1" start="58" type="bool"/>
     <field name="Compressed" size="1" start="59" type="bool"/>
