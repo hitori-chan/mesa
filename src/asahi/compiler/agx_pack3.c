@@ -1289,14 +1289,105 @@ a3_tex_index(struct a3 *a, unsigned op, enum a3_kind kind, agx_index idx)
    return a3_reg(a, op, idx, 0, 0, 0);
 }
 
+/* The texture instruction of each form for each IR dimension (AGX3.xml: bits
+ * 48:63 code the LOD mode, the dimension and the array kind, from libLLVM
+ * 32023's smp tree). AGX3_NUM_INSTRS where the tree has none: 1D and
+ * multisampled textures have no level, so they sample at the automatic LOD
+ * and fetch without a level only. */
+#define A3_NONE AGX3_NUM_INSTRS
+static const enum agx3_instr a3_tex_l0[] = {
+   [AGX_DIM_1D] = A3_NONE,
+   [AGX_DIM_1D_ARRAY] = A3_NONE,
+   [AGX_DIM_2D] = AGX3_TEXTURE_SAMPLE,
+   [AGX_DIM_2D_ARRAY] = AGX3_TEXTURE_SAMPLE_2D_ARRAY,
+   [AGX_DIM_2D_MS] = A3_NONE,
+   [AGX_DIM_3D] = AGX3_TEXTURE_SAMPLE_3D,
+   [AGX_DIM_CUBE] = AGX3_TEXTURE_SAMPLE_CUBE,
+   [AGX_DIM_CUBE_ARRAY] = AGX3_TEXTURE_SAMPLE_CUBE_ARRAY,
+   [AGX_DIM_2D_MS_ARRAY] = A3_NONE,
+};
+
+static const enum agx3_instr a3_tex_auto[] = {
+   [AGX_DIM_1D] = AGX3_TEXTURE_SAMPLE_AUTO_1D,
+   [AGX_DIM_1D_ARRAY] = AGX3_TEXTURE_SAMPLE_AUTO_1D_ARRAY,
+   [AGX_DIM_2D] = AGX3_TEXTURE_SAMPLE_AUTO,
+   [AGX_DIM_2D_ARRAY] = AGX3_TEXTURE_SAMPLE_AUTO_2D_ARRAY,
+   [AGX_DIM_2D_MS] = AGX3_TEXTURE_SAMPLE_AUTO_2D_MS,
+   [AGX_DIM_3D] = AGX3_TEXTURE_SAMPLE_AUTO_3D,
+   [AGX_DIM_CUBE] = AGX3_TEXTURE_SAMPLE_AUTO_CUBE,
+   [AGX_DIM_CUBE_ARRAY] = AGX3_TEXTURE_SAMPLE_AUTO_CUBE_ARRAY,
+   [AGX_DIM_2D_MS_ARRAY] = AGX3_TEXTURE_SAMPLE_AUTO_2D_MS_ARRAY,
+};
+
+static const enum agx3_instr a3_tex_load[] = {
+   [AGX_DIM_1D] = A3_NONE,
+   [AGX_DIM_1D_ARRAY] = A3_NONE,
+   [AGX_DIM_2D] = AGX3_TEXTURE_LOAD,
+   [AGX_DIM_2D_ARRAY] = AGX3_TEXTURE_LOAD_2D_ARRAY,
+   [AGX_DIM_2D_MS] = A3_NONE,
+   [AGX_DIM_3D] = AGX3_TEXTURE_LOAD_3D,
+   [AGX_DIM_CUBE] = AGX3_TEXTURE_LOAD_CUBE,
+   [AGX_DIM_CUBE_ARRAY] = AGX3_TEXTURE_LOAD_CUBE_ARRAY,
+   [AGX_DIM_2D_MS_ARRAY] = A3_NONE,
+};
+
+static const enum agx3_instr a3_tex_load_nolod[] = {
+   [AGX_DIM_1D] = AGX3_TEXTURE_LOAD_NOLOD_1D,
+   [AGX_DIM_1D_ARRAY] = AGX3_TEXTURE_LOAD_NOLOD_1D_ARRAY,
+   [AGX_DIM_2D] = AGX3_TEXTURE_LOAD_NOLOD,
+   [AGX_DIM_2D_ARRAY] = AGX3_TEXTURE_LOAD_NOLOD_2D_ARRAY,
+   [AGX_DIM_2D_MS] = AGX3_TEXTURE_LOAD_NOLOD_2D_MS,
+   [AGX_DIM_3D] = AGX3_TEXTURE_LOAD_NOLOD_3D,
+   [AGX_DIM_CUBE] = AGX3_TEXTURE_LOAD_NOLOD_CUBE,
+   [AGX_DIM_CUBE_ARRAY] = AGX3_TEXTURE_LOAD_NOLOD_CUBE_ARRAY,
+   [AGX_DIM_2D_MS_ARRAY] = AGX3_TEXTURE_LOAD_NOLOD_2D_MS_ARRAY,
+};
+
+/* The IR's coordinate vector, G13's layout: the spatial coordinates (a
+ * cube's direction), then for an array or a multisampled texture one 32-bit
+ * word holding the layer, or the sample index in its low half and the layer
+ * in its high half */
+static unsigned
+a3_tex_coords(const agx_instr *I)
+{
+   return I->src[0].channels_m1 + 1;
+}
+
+static bool
+a3_tex_has_layer_word(const agx_instr *I)
+{
+   switch (I->dim) {
+   case AGX_DIM_1D_ARRAY:
+   case AGX_DIM_2D_ARRAY:
+   case AGX_DIM_2D_MS:
+   case AGX_DIM_2D_MS_ARRAY:
+   case AGX_DIM_CUBE_ARRAY:
+      return true;
+   default:
+      return false;
+   }
+}
+
+/* The cr slot of IR coordinate word c (texture.md, boot of 2026-10-17): the
+ * spatial coordinates in slots 0-2, the layer word in slot 3 whatever the
+ * dimension (a 2D array's layer in slot 2 is ignored) */
+static unsigned
+a3_tex_slot(const agx_instr *I, unsigned c)
+{
+   return (a3_tex_has_layer_word(I) && c == a3_tex_coords(I) - 1) ? 3 : c;
+}
+
 /* texture_sample / texture_load (texture.md; boots #252 and #256 run
- * Apple's forms): G15 has no texture state registers. The texture is entry
- * ts of the 32 B state array at a uniform pair (the IR's bindless base, its
- * index counting 32 B descriptors), the sampler entry ss of the 32 B sampler
- * table at another pair (src[6]). The coordinates go to cr0.. in group 0,
- * which the instruction waits for; the result arrives in group A3_SYNC_G and
- * is waited for at once. Done: 2D, automatic LOD (fragment shaders) and
- * level 0, immediate or register indices. */
+ * Apple's 2D forms): G15 has no texture state registers. The texture is
+ * entry ts of the 32 B state array at a uniform pair (the IR's bindless base,
+ * its index counting 32 B descriptors), the sampler entry ss of the 32 B
+ * sampler table at another pair (src[6]). The coordinates go to cr0..cr3,
+ * one 32-bit slot each (a3_tex_slot), in group 0, which the instruction
+ * waits for; the result arrives in group A3_SYNC_G and is waited for at
+ * once. Done: every dimension, automatic LOD (fragment shaders) and level 0,
+ * a fetch at a constant level, immediate or register indices. A cube reads
+ * face 0 whatever the direction: where the face goes is not known
+ * (texture.md). */
 static void
 a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
 {
@@ -1307,37 +1398,54 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
 
    if (I->op == AGX_OPCODE_IMAGE_LOAD)
       a3_fail(a, "image load not supported yet");
-   if (I->dim != AGX_DIM_2D)
-      a3_fail(a, "texture dimension other than 2D not supported yet");
+   if (I->dim >= ARRAY_SIZE(a3_tex_auto))
+      a3_fail(a, "texture dimension");
    if (I->offset || I->shadow || I->query_lod || I->gather || I->sparse)
       a3_fail(a, "texture offset, compare, query, gather or sparse");
    /* A fetch's level is F28's 12-bit immediate (Apple's loads have 0) */
    bool imm_level = load && I->lod_mode == AGX_LOD_MODE_LOD_MIN &&
                     lod.type == AGX_INDEX_IMMEDIATE && lod.value < 4096;
+   bool level0 = I->lod_mode == AGX_LOD_MODE_LOD_MIN &&
+                 lod.type == AGX_INDEX_IMMEDIATE && lod.value == 0;
 
-   if (!auto_lod && !imm_level &&
-       !(I->lod_mode == AGX_LOD_MODE_LOD_MIN &&
-         lod.type == AGX_INDEX_IMMEDIATE && lod.value == 0))
+   if (!auto_lod && !imm_level && !level0)
       a3_fail(a, "texture LOD other than automatic or level 0");
    if (load && auto_lod)
       a3_fail(a, "texture_load with an automatic LOD");
-   if (coords.size != AGX_SIZE_32)
-      a3_fail(a, "texture coordinates are not 32-bit");
+   if (coords.size != AGX_SIZE_32 || a3_tex_coords(I) > 4)
+      a3_fail(a, "texture coordinates are not 32-bit or more than four");
    if (I->mask == 0 || I->mask > 15)
       a3_fail(a, "texture result mask");
 
-   for (unsigned c = 0; c < 2; ++c) {
+   enum agx3_instr instr;
+   if (load) {
+      /* A dimension without levels fetches without F28 */
+      instr = a3_tex_load[I->dim];
+      if (instr == A3_NONE) {
+         if (!level0)
+            a3_fail(a, "texture_load at a level of a texture without levels");
+         instr = a3_tex_load_nolod[I->dim];
+      }
+   } else {
+      instr = auto_lod ? a3_tex_auto[I->dim] : a3_tex_l0[I->dim];
+   }
+
+   if (instr == A3_NONE)
+      a3_fail(a, "explicit level 0 of a texture without levels");
+
+   bool has_lod = load && a3_tex_load[I->dim] != A3_NONE;
+
+   for (unsigned c = 0; c < a3_tex_coords(I); ++c) {
       agx_index v = coords;
       v.value += 2 * c;
       v.channels_m1 = 0;
-      a3_mov_cr(a, I, c, v, emission);
+      a3_mov_cr(a, I, a3_tex_slot(I, c), v, emission);
    }
 
-   a3_begin(a, I,
-            load       ? AGX3_TEXTURE_LOAD
-            : auto_lod ? AGX3_TEXTURE_SAMPLE_AUTO
-                       : AGX3_TEXTURE_SAMPLE,
-            load ? T_TEX_LOAD : auto_lod ? T_TEX_AUTO : T_TEX_L0);
+   a3_begin(a, I, instr,
+            load       ? T_TEX_LOAD
+            : auto_lod ? T_TEX_AUTO
+                       : T_TEX_L0);
    a3_set(a, TEX_G0, A3_SYNC_G);
    a3_set(a, TEX_G1, A3_SYNC_G);
    a3_set(a, TEX_MASK, a3_tex_mask[I->mask]);
@@ -1353,7 +1461,7 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
    a3_set(a, TEX_UTEX, a3_tex_pair(a, I->src[2]));
 
    /* a fetch's level is F28's 12-bit immediate */
-   if (load)
+   if (has_lod)
       a3_set(a, TEX_LOD, imm_level ? lod.value : 0);
 
    a3_emit(a, emission);
@@ -1371,6 +1479,7 @@ agx3_cr_count(const agx_instr *I)
    switch (I->op) {
    case AGX_OPCODE_TEXTURE_SAMPLE:
    case AGX_OPCODE_TEXTURE_LOAD:
+      return MAX2(a3_tex_slot(I, a3_tex_coords(I) - 1) + 1, 2);
    case AGX_OPCODE_IMAGE_LOAD:
    case AGX_OPCODE_ZS_EMIT:
    case AGX_OPCODE_BLOCK_IMAGE_STORE:
