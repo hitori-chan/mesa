@@ -179,20 +179,72 @@ lower(nir_builder *b, nir_instr *instr, void *data)
    return true;
 }
 
+/*
+ * G15 has no image load (libLLVM 32023 knows none): an image is read as its
+ * texture descriptor by a fetch with the txf sampler, the coordinates as
+ * agx_nir_lower_texture leaves them (a 1D or buffer image as 2D, a cube as a
+ * 2D array, the layer robust). Multisampled loads are left alone.
+ */
+static bool
+lower_image_load_g15(nir_builder *b, nir_intrinsic_instr *intr)
+{
+   if (intr->intrinsic != nir_intrinsic_bindless_image_load)
+      return false;
+
+   enum glsl_sampler_dim dim = nir_intrinsic_image_dim(intr);
+   bool array = nir_intrinsic_image_array(intr);
+
+   if (dim == GLSL_SAMPLER_DIM_MS)
+      return false;
+
+   if (dim == GLSL_SAMPLER_DIM_CUBE) {
+      dim = GLSL_SAMPLER_DIM_2D;
+      array = true;
+   }
+
+   assert(dim == GLSL_SAMPLER_DIM_2D || dim == GLSL_SAMPLER_DIM_3D);
+   unsigned n = glsl_get_sampler_dim_coordinate_components(dim) + array;
+
+   nir_tex_instr *tex = nir_tex_instr_create(b->shader, 3);
+   tex->op = nir_texop_txf;
+   tex->sampler_dim = dim;
+   tex->is_array = array;
+   tex->coord_components = n;
+   tex->dest_type = nir_intrinsic_dest_type(intr);
+   tex->src[0] = nir_tex_src_for_ssa(nir_tex_src_backend1,
+                                     nir_trim_vector(b, intr->src[1].ssa, n));
+   tex->src[1] = nir_tex_src_for_ssa(nir_tex_src_lod, intr->src[3].ssa);
+   tex->src[2] =
+      nir_tex_src_for_ssa(nir_tex_src_texture_handle, intr->src[0].ssa);
+
+   nir_def_init(&tex->instr, &tex->def, 4, intr->def.bit_size);
+   nir_builder_instr_insert(b, &tex->instr);
+   nir_def_replace(&intr->def,
+                   nir_trim_vector(b, &tex->def, intr->def.num_components));
+
+   b->cursor = nir_before_instr(&tex->instr);
+   lower_sampler_g15(b, tex);
+   return true;
+}
+
 static bool
 lower_txf_sampler_g15(nir_builder *b, nir_instr *instr, UNUSED void *data)
 {
+   b->cursor = nir_before_instr(instr);
+
+   if (instr->type == nir_instr_type_intrinsic)
+      return lower_image_load_g15(b, nir_instr_as_intrinsic(instr));
+
    if (instr->type != nir_instr_type_tex)
       return false;
 
-   b->cursor = nir_before_instr(instr);
    return lower_sampler_g15(b, nir_instr_as_tex(instr));
 }
 
 /*
  * G15: agx_nir_lower_texture rewrites a buffer texture's fetch as a 2D fetch
  * without its sampler (G13 has a txf sampler state register); give it the
- * table's txf sampler again.
+ * table's txf sampler again. Image loads become such fetches.
  */
 bool
 agx_nir_lower_txf_samplers_g15(nir_shader *shader)
