@@ -3340,25 +3340,39 @@ agx_build_pipeline(struct agx_batch *batch, struct agx_compiled_shader *cs,
 }
 
 /*
- * G15: the direct launch block (spec: metal-compute.md; hk_cdm_launch_g15). The
- * launch points at the entry program, a full VA.
+ * G15: the launch block (spec: metal-compute.md; hk_cdm_launch_g15). The
+ * launch points at the entry program, a full VA. The mode is G13's (word 0
+ * bits 28:27): an indirect global launch reads the threadgroup counts at the
+ * VA, as Metal's dispatchThreadgroupsWithIndirectBuffer does; an indirect
+ * local one the threadgroup size as well. Indirect launches are not verified
+ * on the hardware.
  */
 static uint32_t *
 agx_cdm_launch_g15(uint32_t *out, struct agx_device *dev, struct agx_grid grid,
                    struct agx_workgroup wg, uint32_t usc)
 {
-   bool multi = grid.count[1] > 1 || grid.count[2] > 1;
+   bool indirect = agx_is_indirect(grid);
+   bool multi = indirect || grid.count[1] > 1 || grid.count[2] > 1;
 
-   *(out++) = multi ? BITFIELD_BIT(19) : 0;
+   *(out++) = (multi ? BITFIELD_BIT(19) : 0) | (grid.mode << 27);
    agx_g15_pipeline(out, dev->shader_base + usc);
    out += AGX_G15_PIPELINE_LENGTH / 4;
    *(out++) = 0x40000001;
-   *(out++) = grid.count[0];
-   *(out++) = grid.count[1];
-   *(out++) = grid.count[2];
-   *(out++) = wg.x & BITFIELD_MASK(11);
-   *(out++) = wg.y & BITFIELD_MASK(11);
-   *(out++) = wg.z & BITFIELD_MASK(11);
+
+   if (indirect) {
+      *(out++) = (grid.ptr >> 32) & BITFIELD_MASK(16);
+      *(out++) = grid.ptr;
+   } else {
+      *(out++) = grid.count[0];
+      *(out++) = grid.count[1];
+      *(out++) = grid.count[2];
+   }
+
+   if (grid.mode != AGX_CDM_MODE_INDIRECT_LOCAL) {
+      *(out++) = wg.x & BITFIELD_MASK(11);
+      *(out++) = wg.y & BITFIELD_MASK(11);
+      *(out++) = wg.z & BITFIELD_MASK(11);
+   }
 
    /* G15C: Metal's barrier after a launch */
    *(out++) = 0x60000160;
@@ -3377,10 +3391,8 @@ agx_launch_internal(struct agx_batch *batch, struct agx_grid grid,
    uint32_t *out = (uint32_t *)batch->cdm.current;
 
    if (dev->params.gpu_generation >= 15) {
-      if (!usc || agx_is_indirect(grid)) {
-         fprintf(
-            stderr, "G15: dispatch skipped (%s)\n",
-            usc ? "indirect dispatch not supported yet" : "no entry program");
+      if (!usc) {
+         fprintf(stderr, "G15: dispatch skipped (no entry program)\n");
       } else {
          out = agx_cdm_launch_g15(out, dev, grid, wg, usc);
       }
