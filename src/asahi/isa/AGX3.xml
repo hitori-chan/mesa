@@ -2459,6 +2459,52 @@
     </case>
   </encoding>
 
+  <!--
+   itrcoords' source, a register in Apple's operand form: 0:7 the register
+   in 16-bit units, 8 cache, 9 register (Apple's kind 2; kind 3 clears it
+   and widens the number), 10 the register form (the immediate-free forms
+   of a uniform or the stack clear it), 11 32-bit
+  -->
+  <encoding name="itrsrc">
+    <case>
+      <exact bit="9:11">111</exact>
+      <immediate name="reg" bit="1:7" shift="1"/>
+      <modifier name="cache" bit="8"/>
+      <property name="size32"/>
+      <carry bit="0"/>
+    </case>
+    <case>
+      <exact bit="9:11">011</exact>
+      <immediate name="reg" bit="0:7"/>
+      <modifier name="cache" bit="8"/>
+    </case>
+  </encoding>
+
+  <!--
+   A 32-bit register named in 16-bit units, 8 bits (itrcoords' destination)
+  -->
+  <encoding name="reg8x2">
+    <case>
+      <immediate name="reg" bit="1:7" shift="1"/>
+      <property name="size32"/>
+      <carry bit="0"/>
+    </case>
+  </encoding>
+
+  <!--
+   f32interp's coordinate register (itrcoords' result): 0:6 the 32-bit
+   register (Apple's 16-bit number halved), 7 cache, 8 a flag the corpus
+   sets on each of its three (probably lu)
+  -->
+  <encoding name="itrcrd">
+    <case>
+      <immediate name="reg" bit="0:6" shift="1"/>
+      <modifier name="cache" bit="7"/>
+      <modifier name="lu" bit="8"/>
+      <property name="size32"/>
+    </case>
+  </encoding>
+
   <!-- A coefficient register, 7 bits (f32interp) -->
   <encoding name="cfimm">
     <case>
@@ -3207,6 +3253,48 @@
     <src kind="cfimm" bit="41:47"/>
     <modifier name="mode" bit="48:49 51" kind="iter_mode"/>
     <modifier name="persp" bit="50"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <!--
+   iter at coordinates (f32interp with a GPR location, Apple's
+   llvm.agx3.interp.coords): bit 68 clear, the location the 32-bit register
+   itrcoords wrote. Apple's projection flag moves to bit 64 in this form
+   (and then bit 69 must be clear); the form here has none. From the
+   encoder tree and the corpus's three (2f055404030202022000, after an
+   itrcoords), not verified on the hardware.
+  -->
+  <ins name="iter_coords" display="iter" length="10">
+    <exact bit="0:10 57 64 65 68">000110100101111</exact>
+    <dest kind="idst" bit="24:31 32 33 63 55"/>
+    <src kind="cfimm" bit="41:47"/>
+    <src kind="itrcrd" bit="48:54 67 69"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <!--
+   itrcoords: the interpolation coordinates of a location, for iter_coords.
+   Apple's intrinsics llvm.agx3.coords.centroid (its lowering, libLLVM_32023
+   sub_2511C9B04, passes the coverage mask and the sample mask input,
+   truncated to 16 bits) and llvm.agx3.coords.sample (the sample index) are
+   machine opcodes 12622 and 12623 (the DAG lowering sub_250712EE4 pairs
+   the centroid's two operands into one value; the selector sub_2506BC7BC);
+   the encoder's handler sub_25090328C sets bit 57 for 12623, the sample.
+   The source is one 32-bit register: the index in its low half (the
+   corpus's three clear only the low half), or the centroid's two masks
+   (which half holds which is a guess). Not run on the hardware. The source
+   has no immediate form; the uniform and stack forms are not modelled.
+   dcache (bit 56) is set in the corpus (the destination's cache flag, by
+   its place among the operand's fields).
+  -->
+  <ins name="itrcoords" display="itrcoords" length="8">
+    <exact bit="0:10">10010101111</exact>
+    <dest kind="reg8x2" bit="41:48"/>
+    <src kind="itrsrc" bit="24:31 32 33 51 49"/>
+    <modifier name="sample" bit="57"/>
+    <modifier name="dcache" bit="56"/>
     <modifier name="wait" bit="12:17" kind="wait"/>
     <modifier name="unk" bit="18 20 22" kind="expect3"/>
   </ins>
