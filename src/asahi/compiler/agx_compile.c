@@ -11,6 +11,7 @@
 #include "asahi/layout/layout.h"
 #include "asahi/lib/agx_abi.h"
 #include "compiler/nir/nir_builder.h"
+#include "compiler/nir/nir_format_convert.h"
 #include "util/bitset.h"
 #include "util/glheader.h"
 #include "util/list.h"
@@ -881,6 +882,154 @@ agx_emit_store(agx_builder *b, nir_intrinsic_instr *instr)
    agx_device_store(b, agx_recollect_vector(b, instr->src[0]), addr, offset,
                     fmt, BITFIELD_MASK(nir_src_num_components(instr->src[0])),
                     shift, nir_is_coherent(instr));
+}
+
+/*
+ * G15's device_load moves raw 8-, 16- and 32-bit integers (a3_mem_type): a load
+ * in a format G13's converts (normalized, half float, RGB10A2, R11G11B10F,
+ * sRGB) loads the integers and converts them in ALU.
+ */
+static bool
+lower_load_format_g15(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   if (intr->intrinsic != nir_intrinsic_load_agx &&
+       intr->intrinsic != nir_intrinsic_load_constant_agx)
+      return false;
+
+   enum pipe_format format = nir_intrinsic_format(intr);
+   unsigned comps = intr->def.num_components;
+   unsigned raw_comps = comps, raw_bits = 32;
+   enum pipe_format raw_format;
+
+   switch (format) {
+   case PIPE_FORMAT_R8_UNORM:
+   case PIPE_FORMAT_R8_SNORM:
+   case PIPE_FORMAT_R8G8B8A8_SRGB:
+      raw_format = PIPE_FORMAT_R8_UINT;
+      break;
+   case PIPE_FORMAT_R16_UNORM:
+   case PIPE_FORMAT_R16_SNORM:
+      raw_format = PIPE_FORMAT_R16_UINT;
+      break;
+   case PIPE_FORMAT_R16_FLOAT:
+      raw_format = PIPE_FORMAT_R16_UINT;
+      raw_bits = 16;
+      break;
+   case PIPE_FORMAT_R10G10B10A2_UNORM:
+   case PIPE_FORMAT_R11G11B10_FLOAT:
+      raw_format = PIPE_FORMAT_R32_UINT;
+      raw_comps = 1;
+      break;
+   default:
+      return false;
+   }
+
+   b->cursor = nir_before_instr(&intr->instr);
+
+   nir_def *addr = intr->src[0].ssa, *index = intr->src[1].ssa;
+   enum gl_access_qualifier access = nir_intrinsic_access(intr);
+   unsigned shift = nir_intrinsic_base(intr);
+   bool sign_extend = nir_intrinsic_sign_extend(intr);
+   nir_def *raw;
+
+   if (intr->intrinsic == nir_intrinsic_load_agx) {
+      raw = nir_load_agx(b, raw_comps, raw_bits, addr, index, .access = access,
+                         .base = shift, .format = raw_format,
+                         .sign_extend = sign_extend);
+   } else {
+      raw = nir_load_constant_agx(b, raw_comps, raw_bits, addr, index,
+                                  .access = access, .base = shift,
+                                  .format = raw_format,
+                                  .sign_extend = sign_extend);
+   }
+
+   const unsigned bits8[4] = {8, 8, 8, 8}, bits16[4] = {16, 16, 16, 16};
+   const unsigned bits1010102[4] = {10, 10, 10, 2};
+   nir_def *value;
+
+   switch (format) {
+   case PIPE_FORMAT_R8_UNORM:
+      value = nir_format_unorm_to_float(b, raw, bits8);
+      break;
+   case PIPE_FORMAT_R8_SNORM:
+      value = nir_format_snorm_to_float(
+         b, nir_format_sign_extend_ivec(b, raw, bits8), bits8);
+      break;
+   case PIPE_FORMAT_R16_UNORM:
+      value = nir_format_unorm_to_float(b, raw, bits16);
+      break;
+   case PIPE_FORMAT_R16_SNORM:
+      value = nir_format_snorm_to_float(
+         b, nir_format_sign_extend_ivec(b, raw, bits16), bits16);
+      break;
+   case PIPE_FORMAT_R16_FLOAT:
+      value = raw;
+      break;
+   case PIPE_FORMAT_R8G8B8A8_SRGB: {
+      nir_def *unorm = nir_format_unorm_to_float(b, raw, bits8);
+      nir_def *rgb = nir_format_srgb_to_linear(
+         b, nir_trim_vector(b, unorm, MIN2(comps, 3)));
+      value = comps > 3 ? nir_vector_insert_imm(
+                             b, nir_pad_vector(b, rgb, 4),
+                             nir_channel(b, unorm, 3), 3)
+                        : rgb;
+      break;
+   }
+   case PIPE_FORMAT_R10G10B10A2_UNORM:
+      value = nir_format_unorm_to_float(
+         b, nir_format_unpack_uint(b, raw, bits1010102, 4), bits1010102);
+      break;
+   case PIPE_FORMAT_R11G11B10_FLOAT:
+      value = nir_pad_vector_imm_int(b, nir_format_unpack_11f11f10f(b, raw),
+                                     fui(1.0), 4);
+      break;
+   default:
+      UNREACHABLE("handled above");
+   }
+
+   value = nir_trim_vector(b, value, comps);
+   if (format != PIPE_FORMAT_R16_FLOAT || intr->def.bit_size != 16)
+      value = nir_f2fN(b, value, intr->def.bit_size);
+
+   nir_def_replace(&intr->def, value);
+   return true;
+}
+
+/*
+ * G15 has no derivative instruction (none in AGX3.xml): a derivative is the
+ * difference across the quad, lane bit 0 being x and bit 1 y as in Metal's
+ * quads (not verified on the hardware).
+ */
+static bool
+lower_derivatives_g15(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   bool x;
+
+   switch (intr->intrinsic) {
+   case nir_intrinsic_ddx:
+   case nir_intrinsic_ddx_coarse:
+   case nir_intrinsic_ddx_fine:
+      x = true;
+      break;
+   case nir_intrinsic_ddy:
+   case nir_intrinsic_ddy_coarse:
+   case nir_intrinsic_ddy_fine:
+      x = false;
+      break;
+   default:
+      return false;
+   }
+
+   b->cursor = nir_before_instr(&intr->instr);
+
+   nir_def *v = intr->src[0].ssa;
+   nir_def *other = x ? nir_quad_swap_horizontal(b, v) : nir_quad_swap_vertical(b, v);
+   nir_def *lane = nir_load_subgroup_invocation(b);
+   nir_def *second = nir_i2b(b, nir_iand_imm(b, lane, x ? 1 : 2));
+
+   nir_def_replace(&intr->def, nir_bcsel(b, second, nir_fsub(b, v, other),
+                                         nir_fsub(b, other, v)));
+   return true;
 }
 
 /*
@@ -4014,6 +4163,14 @@ agx_compile_shader_nir(nir_shader *nir, struct agx_shader_key *key,
    if (key->dev.gpu_generation >= 15)
       NIR_PASS(_, nir, nir_shader_instructions_pass, lower_txf_lod_g15,
                nir_metadata_none, NULL);
+
+   if (key->dev.gpu_generation >= 15)
+      NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_load_format_g15,
+               nir_metadata_control_flow, NULL);
+
+   if (key->dev.gpu_generation >= 15)
+      NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_derivatives_g15,
+               nir_metadata_control_flow, NULL);
 
    /* Late sysval lowering creates large loads. Load lowering creates unpacks */
    nir_lower_mem_access_bit_sizes_options lower_mem_access_options = {
