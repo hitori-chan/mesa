@@ -1253,10 +1253,11 @@ target_is_array(enum pipe_texture_target target)
 /*
  * G15's PBE descriptor (cmdbuf.xml's "PBE G15"; Honeykrisp's pack_pbe_g15).
  * Only what Apple's encoder and demo15 settle is packed: uncompressed images
- * without multisampling, 2D, linear with one layer or twiddled, and buffers
- * as linear 2D images AGX_TEXTURE_BUFFER_WIDTH texels wide like their
- * textures (not verified on G15). The rest fails here rather than reaching
- * the hardware as a G13 descriptor.
+ * without multisampling, linear with one layer or twiddled; buffers as linear
+ * 2D images AGX_TEXTURE_BUFFER_WIDTH texels wide like their textures, and 3D
+ * images with their depth in the layer count, as the texture's depth field
+ * (both not verified on G15). The rest fails here rather than reaching the
+ * hardware as a G13 descriptor.
  */
 static void
 agx_pack_pbe_g15(struct agx_pbe_packed *out, struct agx_resource *tex,
@@ -1270,10 +1271,9 @@ agx_pack_pbe_g15(struct agx_pbe_packed *out, struct agx_resource *tex,
    unsigned layers = is_buffer ? 1 : view->u.tex.last_layer - layer + 1;
 
    if (tex->layout.compressed || util_res_sample_count(&tex->base) > 1 ||
-       target == PIPE_TEXTURE_3D ||
        (tex->layout.tiling == AIL_TILING_LINEAR && layers > 1)) {
-      fprintf(stderr, "G15: PBE of a compressed, multisampled, 3D or "
-                      "linear layered image is not supported yet\n");
+      fprintf(stderr, "G15: PBE of a compressed, multisampled or linear "
+                      "layered image is not supported yet\n");
       assert(0);
    }
 
