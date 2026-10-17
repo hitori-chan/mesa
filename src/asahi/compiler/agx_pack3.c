@@ -699,6 +699,7 @@ a3_memshift(const struct a3 *a, unsigned bytes)
 #define T_POP_EXEC  "0f0604010000"                 /* pop_exec 1 */
 #define T_JMP       "0f015402a0c900000100"         /* jmp_exec_none */
 #define T_ZERO12    "000000000000000000000000"
+#define T_ZERO14    "0000000000000000000000000000"
 
 /* libLLVM 32023's encoder (GPUCompiler.framework, macOS 26A434) with the
  * operands below: wait none, the hint bits at their defaults */
@@ -2136,16 +2137,26 @@ a3_fcc(enum agx_fcond c)
 }
 
 /* cmp: cc = A cond B, inverted by invert (cmpselcc4: 32 + cond, 48 + the
- * inverted cond) */
+ * inverted cond). The 10-byte form lacks bits of the compared values (an
+ * abs on A); the 14-byte form has them, as cmpsel's. */
 static void
 a3_cmp(struct a3 *a, const agx_instr *I, bool fl, unsigned cond, bool invert,
        unsigned cc, struct util_dynarray *emission)
 {
-   a3_begin(a, I, AGX3_CMPCC10, T_ZERO10);
-   a3_set(a, CMP_CC, (invert ? 48 : 32) + cond);
-   a3_set(a, CMP_D, cc);
-   a3_set(a, CMP_A, a3_src(a, CMP_A, I->src[0], !fl));
-   a3_set(a, CMP_B, a3_src(a, CMP_B, I->src[1], !fl));
+   for (unsigned len = 10;; len = 14) {
+      uint8_t out[AGX3_MAX_BYTES];
+
+      a3_begin(a, I, len == 10 ? AGX3_CMPCC10 : AGX3_CMPCC14,
+               len == 10 ? T_ZERO10 : T_ZERO14);
+      a3_set(a, CMP_CC, (invert ? 48 : 32) + cond);
+      a3_set(a, CMP_D, cc);
+      a3_set(a, CMP_A, a3_src(a, CMP_A, I->src[0], !fl));
+      a3_set(a, CMP_B, a3_src(a, CMP_B, I->src[1], !fl));
+
+      if (len == 14 || a3_check(a, out))
+         break;
+   }
+
    a3_emit(a, emission);
 }
 
