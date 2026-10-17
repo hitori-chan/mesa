@@ -720,6 +720,8 @@ a3_memshift(const struct a3 *a, unsigned bytes)
 #define T_SIG_PIX   "0702540c0000"                 /* signal_pix 12 */
 #define T_LDCF      "1f0354000002"                 /* ldcf 2, r0, 0 */
 #define T_ITER      "2f055400020000021000"         /* iter r0, cf0, center */
+#define T_ITER_COORDS "2f055404030202022000"       /* iter $r2, cf1, ^r2 */
+#define T_ITRCOORDS "af04540403080a03"             /* itrcoords r2, $r2, sample */
 #define T_ZS_EMIT   "d70454000003"                 /* zs_emit ^cr0, 0, z */
 #define T_MOVMSK    "570454000000"                 /* movmsk ^cr0, 0 */
 #define T_PACK_IMGWIR "9705540400080000d0401000"   /* pack_imgwir cr2, 0, u2l, 0, 0, 4 */
@@ -810,6 +812,13 @@ enum {
    ITER_CF = 1,
    ITER_MODE = 2,
    ITER_PERSP = 3,
+   ITER_COORDS_DST = 0,
+   ITER_COORDS_CF = 1,
+   ITER_COORDS_CRD = 2,
+   ITRCOORDS_DST = 0,
+   ITRCOORDS_SRC = 1,
+   ITRCOORDS_SAMPLE = 2,
+   ITRCOORDS_DCACHE = 3,
    ZS_CR = 0,
    ZS_G = 1,
    ZS_MODE = 2,
@@ -1826,9 +1835,27 @@ a3_iter(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
          a3_fail(a, "iter at a dynamic sample (G15: itrcoords)");
       mode = 4 | sample.value;
       break;
+   case AGX_INTERPOLATION_COORDS:
+      /* At the coordinates itrcoords wrote to the register sample */
+      if (I->perspective)
+         a3_fail(a, "projected iter at coordinates");
+
+      for (unsigned i = 0; i < I->channels; i++) {
+         agx_index d = dest;
+         d.value += i * (dest.size == AGX_SIZE_32 ? 2 : 1);
+
+         a3_begin(a, I, AGX3_ITER_COORDS, T_ITER_COORDS);
+         a3_set(a, ITER_COORDS_DST, a3_reg(a, ITER_COORDS_DST, d, 0, 0, 0));
+         a3_set(a, ITER_COORDS_CF,
+                a3_kind_value(a, ITER_COORDS_CF, A3_CF, cf.value + i, 0));
+         a3_set(a, ITER_COORDS_CRD, a3_reg(a, ITER_COORDS_CRD, sample, 0, 0, 0));
+         a3_emit(a, emission);
+      }
+      return;
    default:
       a3_fail(a, "iter at the centroid (G15: itrcoords)");
    }
+
 
    for (unsigned i = 0; i < I->channels; i++) {
       agx_index d = dest;
@@ -1841,6 +1868,38 @@ a3_iter(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
       a3_set(a, ITER_PERSP, I->perspective);
       a3_emit(a, emission);
    }
+}
+
+/* itrcoords: the coordinates of a sample by its index (bit 57 set), or of the
+ * centroid of the coverage and the sample mask input (bit 57 clear), from a
+ * 32-bit register: the index in its low half, or the two masks (AGX3.xml).
+ * The compiler builds the 32-bit source as a vector of two 16-bit halves,
+ * which register allocation aligns to a 32-bit register. Synchronous like
+ * iter. */
+static void
+a3_itrcoords(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
+{
+   agx_index src = I->src[0];
+
+   if (I->interpolation != AGX_INTERPOLATION_SAMPLE &&
+       I->interpolation != AGX_INTERPOLATION_CENTROID)
+      a3_fail(a, "itrcoords of a location other than a sample or centroid");
+
+   if (src.type == AGX_INDEX_REGISTER && src.size == AGX_SIZE_16 &&
+       agx_channels(src) == 2 && !(src.value & 1)) {
+      src.size = AGX_SIZE_32;
+      src.channels_m1 = 0;
+   }
+
+   if (src.type != AGX_INDEX_REGISTER || src.size != AGX_SIZE_32)
+      a3_fail(a, "itrcoords of a source other than a 32-bit register");
+
+   a3_begin(a, I, AGX3_ITRCOORDS, T_ITRCOORDS);
+   a3_set(a, ITRCOORDS_DST, a3_reg(a, ITRCOORDS_DST, I->dest[0], 0, 0, 0));
+   a3_set(a, ITRCOORDS_SRC, a3_reg(a, ITRCOORDS_SRC, src, 0, 0, 0));
+   a3_set(a, ITRCOORDS_SAMPLE, I->interpolation == AGX_INTERPOLATION_SAMPLE);
+   a3_set(a, ITRCOORDS_DCACHE, 0);
+   a3_emit(a, emission);
 }
 
 /* zs_emit (depthf): from cr0 (and cr1), written in group 0. G15's has no
@@ -2421,6 +2480,10 @@ agx3_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
    case AGX_OPCODE_ITER:
    case AGX_OPCODE_ITERPROJ:
       a3_iter(&a, I, emission);
+      return;
+
+   case AGX_OPCODE_ITRCOORDS:
+      a3_itrcoords(&a, I, emission);
       return;
 
    case AGX_OPCODE_ZS_EMIT:

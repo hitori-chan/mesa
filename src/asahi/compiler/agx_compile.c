@@ -658,6 +658,37 @@ agx_emit_load_vary(agx_builder *b, agx_index dest, nir_intrinsic_instr *instr)
    agx_index sample_index = agx_zero();
    enum agx_interpolation interp = agx_interp_for_bary(bary, &sample_index);
 
+   /* A constant sample index is an immediate for G15's iter (samples 0-3) */
+   if (b->shader->key->dev.gpu_generation >= 15 &&
+       interp == AGX_INTERPOLATION_SAMPLE && nir_src_is_const(bary->src[0]))
+      sample_index = agx_immediate(nir_src_as_uint(bary->src[0]));
+
+   /* G15's iter takes a pixel location (the centre or samples 0-3) or the
+    * coordinates itrcoords computes from a 32-bit register: a sample index
+    * in its low half, or for the centroid the coverage and the sample mask
+    * input, the operands of Apple's coords.centroid (spec: draws.md,
+    * Multisampling). G15 has no readable sample mask input: the coverage
+    * stands in for it. */
+   if (b->shader->key->dev.gpu_generation >= 15 &&
+       (interp == AGX_INTERPOLATION_CENTROID ||
+        (interp == AGX_INTERPOLATION_SAMPLE &&
+         (sample_index.type != AGX_INDEX_IMMEDIATE ||
+          sample_index.value > 3)))) {
+      agx_index src = sample_index;
+      if (interp == AGX_INTERPOLATION_CENTROID) {
+         agx_index cvg = agx_get_sr_coverage(b, 16, AGX_SR_COVERAGE_MASK);
+         src = agx_vec2(b, cvg, cvg);
+      } else if (src.type == AGX_INDEX_IMMEDIATE) {
+         src = agx_mov_imm(b, 32, src.value);
+      } else if (src.size == AGX_SIZE_16) {
+         src = agx_vec2(b, src, agx_zero());
+      }
+
+      sample_index = agx_temp(b->shader, AGX_SIZE_32);
+      agx_itrcoords_to(b, sample_index, src, interp);
+      interp = AGX_INTERPOLATION_COORDS;
+   }
+
    bool perspective =
       nir_intrinsic_interp_mode(bary) != INTERP_MODE_NOPERSPECTIVE;
 

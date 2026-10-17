@@ -161,6 +161,8 @@ agx_optimizer_inline_imm(agx_instr **defs, agx_instr *I, bool g15)
 
       if (I->op == AGX_OPCODE_ST_TILE && s == 0)
          continue;
+      if (I->op == AGX_OPCODE_ITRCOORDS)
+         continue;
       if (I->op == AGX_OPCODE_ZS_EMIT && s != 0)
          continue;
       if (I->op == AGX_OPCODE_TEXTURE_SAMPLE && s != 4)
@@ -353,6 +355,10 @@ agx_optimizer_copyprop(agx_context *ctx, agx_instr **defs, agx_instr *I)
 
       /* Immediate inlining happens elsewhere */
       if (def->src[0].type == AGX_INDEX_IMMEDIATE)
+         continue;
+
+      /* G15's itrcoords is packed from a GPR only */
+      if (I->op == AGX_OPCODE_ITRCOORDS)
          continue;
 
       /* ALU instructions cannot take 64-bit */
