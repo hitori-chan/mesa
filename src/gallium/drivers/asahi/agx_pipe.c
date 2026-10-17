@@ -1112,6 +1112,16 @@ agx_clear(struct pipe_context *pctx, unsigned buffers,
       union pipe_color_union clamped =
          util_clamp_color(batch->key.cbufs[rt].format, color);
 
+      /* An X channel holds 1, as the tilebuffer store writes it */
+      const struct util_format_description *desc =
+         util_format_description(batch->key.cbufs[rt].format);
+      if (desc->nr_channels == 4 && desc->swizzle[3] == PIPE_SWIZZLE_1) {
+         if (util_format_is_pure_integer(batch->key.cbufs[rt].format))
+            clamped.ui[3] = 1;
+         else
+            clamped.f[3] = 1.0f;
+      }
+
       batch->uploaded_clear_color[rt] = agx_pool_upload_aligned(
          &batch->pool, clamped.f, sizeof(clamped.f), 16);
    }
