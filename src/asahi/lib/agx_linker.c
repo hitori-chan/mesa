@@ -93,12 +93,15 @@ agx_fast_link(struct agx_linked_shader *linked, struct agx_device *dev,
         disable_tri_merging = false, tag_write_disable = true;
    bool g15 = dev->params.gpu_generation >= 15;
 
-   if (g15 && nr_samples_shaded) {
-      fprintf(stderr, "G15: the sample shading loop is G13 code\n");
-      assert(0);
-   }
+   /* G15: the loop header and footer in G15 instructions (agx_pack3.c) */
+   struct util_dynarray loop_header;
+   util_dynarray_init(&loop_header, NULL);
+   if (g15 && nr_samples_shaded)
+      agx3_emit_sample_loop_header(&loop_header);
 
-   if (nr_samples_shaded) {
+   if (g15 && nr_samples_shaded) {
+      size += loop_header.size;
+   } else if (nr_samples_shaded) {
       size += sizeof(sample_loop_header);
 
       if (nr_samples_shaded > 1)
@@ -131,14 +134,26 @@ agx_fast_link(struct agx_linked_shader *linked, struct agx_device *dev,
    assert(size > 0 && "must stop");
 
    /* G15: the program releases the fences it waited on at its end, before
-    * the last part's stop (agx3_emit_stop's 4 bytes)
+    * the last part's stop (agx3_emit_stop's 4 bytes). In a sample loop the
+    * parts have no stop: the loop's footer and the trailer end the program.
     */
    struct util_dynarray trailer;
    util_dynarray_init(&trailer, NULL);
-   if (g15 && linked->pix_wait_mask) {
-      agx3_emit_signal_pix(&trailer, linked->pix_wait_mask);
+   if (g15 && (linked->pix_wait_mask || nr_samples_shaded)) {
+      if (linked->pix_wait_mask)
+         agx3_emit_signal_pix(&trailer, linked->pix_wait_mask);
       agx3_emit_stop(&trailer);
-      size = size - 4 + trailer.size;
+      size += trailer.size;
+      if (!nr_samples_shaded)
+         size -= 4;
+   }
+
+   /* The footer's size does not depend on its branch's target */
+   struct util_dynarray loop_footer;
+   util_dynarray_init(&loop_footer, NULL);
+   if (g15 && nr_samples_shaded > 1) {
+      agx3_emit_sample_loop_footer(&loop_footer, nr_samples_shaded, 0, 0);
+      size += loop_footer.size;
    }
 
    linked->bo = agx_bo_create(dev, size, 0, AGX_BO_EXEC | AGX_BO_LOW_VA,
@@ -154,7 +169,10 @@ agx_fast_link(struct agx_linked_shader *linked, struct agx_device *dev,
       offset += sz;
    }
 
-   if (nr_samples_shaded) {
+   if (g15 && nr_samples_shaded) {
+      memcpy(linked_map + offset, loop_header.data, loop_header.size);
+      offset += loop_header.size;
+   } else if (nr_samples_shaded) {
       memcpy(linked_map + offset, sample_loop_header,
              sizeof(sample_loop_header));
       offset += sizeof(sample_loop_header);
@@ -173,8 +191,8 @@ agx_fast_link(struct agx_linked_shader *linked, struct agx_device *dev,
       offset += sz;
 
       /* The last part ends the program: replace its stop (G15's, 4 bytes) */
-      if (trailer.size && (i == ARRAY_SIZE(parts) - 1 ||
-                           !parts[i + 1])) {
+      if (trailer.size && !nr_samples_shaded &&
+          (i == ARRAY_SIZE(parts) - 1 || !parts[i + 1])) {
          assert(!memcmp(linked_map + offset - 4, "\x0e\0\0\0", 4));
          offset -= 4;
          memcpy(linked_map + offset, trailer.data, trailer.size);
@@ -182,7 +200,20 @@ agx_fast_link(struct agx_linked_shader *linked, struct agx_device *dev,
       }
    }
 
-   if (nr_samples_shaded > 1) {
+   if (g15 && nr_samples_shaded) {
+      if (nr_samples_shaded > 1) {
+         unsigned footer_size = loop_footer.size;
+         util_dynarray_clear(&loop_footer);
+         agx3_emit_sample_loop_footer(&loop_footer, nr_samples_shaded, offset,
+                                      sample_loop_begin);
+         assert(loop_footer.size == footer_size);
+         memcpy(linked_map + offset, loop_footer.data, loop_footer.size);
+         offset += loop_footer.size;
+      }
+
+      memcpy(linked_map + offset, trailer.data, trailer.size);
+      offset += trailer.size;
+   } else if (nr_samples_shaded > 1) {
       assert(sample_loop_footer[SAMPLE_LOOP_FOOTER_COUNT_PATCH_OFFS] == 0);
 
       /* Make a stack copy of the footer so we can efficiently patch it */
@@ -211,6 +242,8 @@ agx_fast_link(struct agx_linked_shader *linked, struct agx_device *dev,
 
    assert(offset == size);
    util_dynarray_fini(&trailer);
+   util_dynarray_fini(&loop_header);
+   util_dynarray_fini(&loop_footer);
    linked->main_size = size;
 
    agx_pack(&linked->shader, USC_SHADER, cfg) {
