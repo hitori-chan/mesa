@@ -706,6 +706,110 @@ agx_nir_lower_texture_early(nir_shader *s, bool support_lod_bias)
    return progress;
 }
 
+/*
+ * Select the face of a cube direction and project the direction onto it, per
+ * the GL rules (GL 4.6 table 8.19): returns the face-local (s, t) in [0, 1] and
+ * the face index in *face. On a tie the major axis is z, then y, then x.
+ */
+static nir_def *
+cube_face_coord(nir_builder *b, nir_def *dir, nir_def **face)
+{
+   nir_def *x = nir_channel(b, dir, 0);
+   nir_def *y = nir_channel(b, dir, 1);
+   nir_def *z = nir_channel(b, dir, 2);
+   nir_def *ax = nir_fabs(b, x), *ay = nir_fabs(b, y), *az = nir_fabs(b, z);
+
+   nir_def *is_z = nir_fge(b, az, nir_fmax(b, ax, ay));
+   nir_def *is_y = nir_iand(b, nir_inot(b, is_z), nir_fge(b, ay, ax));
+
+   nir_def *ma = nir_bcsel(b, is_z, z, nir_bcsel(b, is_y, y, x));
+   nir_def *neg = nir_flt(b, ma, nir_imm_float(b, 0.0));
+
+   /* +x (-z, -y), -x (z, -y), +y (x, z), -y (x, -z), +z (x, -y), -z (-x, -y) */
+   nir_def *sc = nir_bcsel(b, nir_ior(b, is_z, is_y), x, nir_fneg(b, z));
+   sc = nir_bcsel(b, nir_iand(b, neg, nir_inot(b, is_y)), nir_fneg(b, sc), sc);
+
+   nir_def *tc_y = nir_bcsel(b, neg, nir_fneg(b, z), z);
+   nir_def *tc = nir_bcsel(b, is_y, tc_y, nir_fneg(b, y));
+
+   nir_def *half_rcp = nir_fmul_imm(b, nir_frcp(b, nir_fabs(b, ma)), 0.5);
+   nir_def *s = nir_ffma(b, sc, half_rcp, nir_imm_float(b, 0.5));
+   nir_def *t = nir_ffma(b, tc, half_rcp, nir_imm_float(b, 0.5));
+
+   nir_def *axis = nir_bcsel(b, is_z, nir_imm_int(b, 4),
+                             nir_bcsel(b, is_y, nir_imm_int(b, 2),
+                                       nir_imm_int(b, 0)));
+   *face = nir_iadd(b, axis, nir_b2i32(b, neg));
+   return nir_vec2(b, s, t);
+}
+
+static bool
+lower_cube_g15(nir_builder *b, nir_tex_instr *tex, UNUSED void *data)
+{
+   if (tex->sampler_dim != GLSL_SAMPLER_DIM_CUBE)
+      return false;
+
+   /* The descriptor holds 6 layers per cube */
+   if (tex->op == nir_texop_txs) {
+      if (!tex->is_array)
+         return false;
+
+      b->cursor = nir_after_instr(&tex->instr);
+      nir_def *cubes = nir_udiv_imm(b, nir_channel(b, &tex->def, 2), 6);
+      nir_def_rewrite_uses_after(&tex->def,
+                                 nir_vector_insert_imm(b, &tex->def, cubes, 2));
+      return true;
+   }
+
+   /* txd is a txl here (lower_txd_cube_map); LOD queries keep the cube */
+   if (tex->op != nir_texop_tex && tex->op != nir_texop_txb &&
+       tex->op != nir_texop_txl && tex->op != nir_texop_tg4)
+      return false;
+
+   b->cursor = nir_before_instr(&tex->instr);
+   nir_def *coord = nir_f2fN(b, nir_steal_tex_src(tex, nir_tex_src_coord), 32);
+   nir_def *face;
+   nir_def *st = cube_face_coord(b, coord, &face);
+   bool array = tex->is_array;
+
+   tex->sampler_dim = GLSL_SAMPLER_DIM_2D;
+   tex->is_array = true;
+   tex->coord_components = 3;
+
+   /* The layer is clamped here, by cube: the face is always in range */
+   tex->backend_flags |= AGX_TEXTURE_FLAG_NO_CLAMP;
+
+   nir_def *layer = face;
+   if (array) {
+      nir_def *cube = nir_fround_even(b, nir_channel(b, coord, 3));
+      cube = nir_f2u32(b, nir_fmax_imm(b, cube, 0.0));
+
+      nir_def *faces = nir_channel(b, nir_get_texture_size(b, tex), 2);
+      nir_def *last = nir_iadd_imm(b, nir_udiv_imm(b, faces, 6), -1);
+      cube = nir_umin(b, cube, last);
+      layer = nir_iadd(b, nir_imul_imm(b, cube, 6), face);
+   }
+
+   nir_def *new_coord = nir_vec3(b, nir_channel(b, st, 0),
+                                 nir_channel(b, st, 1), nir_u2f32(b, layer));
+   nir_tex_instr_add_src(tex, nir_tex_src_coord, new_coord);
+   return true;
+}
+
+/*
+ * G15 samples a cube as a 2D array of its faces, whose descriptor
+ * agx_pack_texture_g15 packs: the hardware's cube mode reads a face-local
+ * (s, t) and its face operand is not known. Filtering stops at the face edges
+ * (not seamless). Runs before agx_nir_lower_texture, whose image size queries
+ * divide by 6 themselves.
+ */
+bool
+agx_nir_lower_cube_g15(nir_shader *s)
+{
+   return nir_shader_tex_pass(s, lower_cube_g15, nir_metadata_control_flow,
+                              NULL);
+}
+
 bool
 agx_nir_lower_texture(nir_shader *s)
 {

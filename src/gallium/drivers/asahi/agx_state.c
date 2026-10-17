@@ -714,9 +714,13 @@ agx_pack_texture_g15(void *out, struct agx_resource *rsrc,
       return;
    }
 
+   /* A cube is a 2D array of its faces (agx_nir_lower_cube_g15) */
+   bool cube = target_is_cube(state->target);
+
    agx_pack(out, TEXTURE_G15, cfg) {
-      cfg.dimension = agx_translate_tex_dim(state->target,
-                                            util_res_sample_count(&rsrc->base));
+      cfg.dimension = cube ? AGX_TEXTURE_DIMENSION_2D_ARRAY
+                           : agx_translate_tex_dim(
+                                state->target, util_res_sample_count(&rsrc->base));
       cfg.layout = agx_translate_layout(rsrc->layout.tiling);
       cfg.channels = ail_pixel_format[format].channels;
       cfg.type = ail_pixel_format[format].type;
@@ -736,11 +740,7 @@ agx_pack_texture_g15(void *out, struct agx_resource *rsrc,
       /* The raw VA: G15 subtracts nothing (texture.md) */
       cfg.address = agx_map_texture_gpu(rsrc, first_layer);
 
-      if (state->target == PIPE_TEXTURE_3D) {
-         cfg.depth = rsrc->base.depth0;
-      } else {
-         cfg.depth = target_is_cube(state->target) ? layers / 6 : layers;
-      }
+      cfg.depth = state->target == PIPE_TEXTURE_3D ? rsrc->base.depth0 : layers;
 
       if (rsrc->layout.tiling == AIL_TILING_LINEAR)
          cfg.stride = ail_get_linear_stride_B(&rsrc->layout, 0) - 16;
@@ -1953,6 +1953,8 @@ agx_shader_initialize(struct agx_device *dev, struct agx_uncompiled_shader *so,
 
    /* Similarly, we need to do early texture lowering before bindings */
    NIR_PASS(_, nir, agx_nir_lower_texture_early, support_lod_bias);
+   if (dev->params.gpu_generation >= 15)
+      NIR_PASS(_, nir, agx_nir_lower_cube_g15);
 
    /* We need to lower binding tables before calling agx_preprocess_nir, since
     * that does texture lowering that needs to know the binding model.
