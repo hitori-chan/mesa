@@ -805,10 +805,11 @@ hk_dispatch_precomp(struct hk_cmd_buffer *cmd, struct agx_grid grid,
 {
    struct hk_device *dev = hk_cmd_buffer_device(cmd);
 
-   /* libagx's kernels are G13 code with G13 USC words: no G15 entry program
-    * runs them. Launching the words as one makes the GPU fault. */
+   /* libagx's G15 kernels need an entry program built from their USC words
+    * (Gallium's agx_launch_precomp), which this path doesn't build yet.
+    * Launching the words as one makes the GPU fault. */
    if (dev->dev.params.gpu_generation >= 15) {
-      fprintf(stderr, "G15: libagx kernel %u is not built for G15, skipped\n",
+      fprintf(stderr, "G15: libagx kernel %u has no entry program, skipped\n",
               idx);
       return;
    }
