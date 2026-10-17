@@ -658,6 +658,37 @@ agx_emit_load_vary(agx_builder *b, agx_index dest, nir_intrinsic_instr *instr)
    agx_index sample_index = agx_zero();
    enum agx_interpolation interp = agx_interp_for_bary(bary, &sample_index);
 
+   /* A constant sample index is an immediate for G15's iter (samples 0-3) */
+   if (b->shader->key->dev.gpu_generation >= 15 &&
+       interp == AGX_INTERPOLATION_SAMPLE && nir_src_is_const(bary->src[0]))
+      sample_index = agx_immediate(nir_src_as_uint(bary->src[0]));
+
+   /* G15's iter takes a pixel location (the centre or samples 0-3) or the
+    * coordinates itrcoords computes from a 32-bit register: a sample index
+    * in its low half, or for the centroid the coverage and the sample mask
+    * input, the operands of Apple's coords.centroid (spec: draws.md,
+    * Multisampling). G15 has no readable sample mask input: the coverage
+    * stands in for it. */
+   if (b->shader->key->dev.gpu_generation >= 15 &&
+       (interp == AGX_INTERPOLATION_CENTROID ||
+        (interp == AGX_INTERPOLATION_SAMPLE &&
+         (sample_index.type != AGX_INDEX_IMMEDIATE ||
+          sample_index.value > 3)))) {
+      agx_index src = sample_index;
+      if (interp == AGX_INTERPOLATION_CENTROID) {
+         agx_index cvg = agx_get_sr_coverage(b, 16, AGX_SR_COVERAGE_MASK);
+         src = agx_vec2(b, cvg, cvg);
+      } else if (src.type == AGX_INDEX_IMMEDIATE) {
+         src = agx_mov_imm(b, 32, src.value);
+      } else if (src.size == AGX_SIZE_16) {
+         src = agx_vec2(b, src, agx_zero());
+      }
+
+      sample_index = agx_temp(b->shader, AGX_SIZE_32);
+      agx_itrcoords_to(b, sample_index, src, interp);
+      interp = AGX_INTERPOLATION_COORDS;
+   }
+
    bool perspective =
       nir_intrinsic_interp_mode(bary) != INTERP_MODE_NOPERSPECTIVE;
 
@@ -1302,17 +1333,18 @@ agx_tex_dim(enum glsl_sampler_dim dim, bool array)
  * uniforms, one per render target (the IR's index), that the entry program
  * loads; the offset is the render target's offset in the tilebuffer.
  *
- * Only the single-sample, non-layered 2D form with implicit coordinates and
- * a constant render target is built. What imgwblk's layer and sample operands
- * hold is not known: the other forms keep G13's operands, which the packer
- * rejects.
+ * Only the non-layered 2D forms (one sample or multisampled) with implicit
+ * coordinates and a constant render target are built. What imgwblk's layer
+ * operand holds is not known: the other forms keep G13's operands, which the
+ * packer rejects.
  */
 static bool
 agx_block_image_store_g15_supported(const nir_intrinsic_instr *instr)
 {
    return instr->intrinsic == nir_intrinsic_image_store_block_agx &&
           nir_src_is_const(instr->src[0]) &&
-          nir_intrinsic_image_dim(instr) == GLSL_SAMPLER_DIM_2D &&
+          (nir_intrinsic_image_dim(instr) == GLSL_SAMPLER_DIM_2D ||
+           nir_intrinsic_image_dim(instr) == GLSL_SAMPLER_DIM_MS) &&
           !nir_intrinsic_image_array(instr) &&
           !nir_intrinsic_explicit_coord(instr);
 }
@@ -1343,9 +1375,12 @@ agx_emit_block_image_store_g15(agx_builder *b, nir_intrinsic_instr *instr)
 
    agx_index coords = agx_vec2(b, x, y);
 
+   bool ms = nir_intrinsic_image_dim(instr) == GLSL_SAMPLER_DIM_MS;
+
    return agx_block_image_store(
       b, agx_uniform(4 * rt, AGX_SIZE_64), agx_immediate(rt), offset, coords,
-      agx_format_for_pipe(nir_intrinsic_format(instr)), AGX_DIM_2D, true);
+      agx_format_for_pipe(nir_intrinsic_format(instr)),
+      ms ? AGX_DIM_2D_MS : AGX_DIM_2D, true);
 }
 
 static agx_instr *
@@ -1905,9 +1940,14 @@ agx_emit_intrinsic(agx_builder *b, nir_intrinsic_instr *instr)
       return agx_get_sr_to(b, dst, AGX_SR_SAMPLES_LOG2);
 
    case nir_intrinsic_load_sample_mask_in:
-      return agx_get_sr_to(b, dst, AGX_SR_INPUT_SAMPLE_MASK);
-
    case nir_intrinsic_load_sample_mask:
+      /* G15 has no readable sample mask input (draws.md, Multisampling): the
+       * coverage (sr66, which Apple's per-sample shading reads) stands in
+       * for it */
+      if (instr->intrinsic == nir_intrinsic_load_sample_mask_in &&
+          b->shader->key->dev.gpu_generation < 15)
+         return agx_get_sr_to(b, dst, AGX_SR_INPUT_SAMPLE_MASK);
+
       return agx_get_sr_coverage_to(b, dst, AGX_SR_COVERAGE_MASK);
 
    case nir_intrinsic_load_helper_invocation:

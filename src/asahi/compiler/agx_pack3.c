@@ -557,6 +557,10 @@ a3_sr(const struct a3 *a, enum agx_sr sr)
       return 23;
    case AGX_SR_BACKFACING:
       return 69;
+   /* SR_CVGINFO, the pixel's sample coverage: Apple's per-sample shading
+    * masks its tile stores with its bits (draws.md, Multisampling) */
+   case AGX_SR_COVERAGE_MASK:
+      return 66;
    /* demo15's vertex shader reads sr93 (VERTEXID in libLLVM's register
     * table) for its vertex; the instance ID is sr88 (INSTID, not verified
     * on the hardware). Whether sr93 includes the base vertex is not known. */
@@ -717,6 +721,8 @@ a3_memshift(const struct a3 *a, unsigned bytes)
 #define T_SIG_PIX   "0702540c0000"                 /* signal_pix 12 */
 #define T_LDCF      "1f0354000002"                 /* ldcf 2, r0, 0 */
 #define T_ITER      "2f055400020000021000"         /* iter r0, cf0, center */
+#define T_ITER_COORDS "2f055404030202022000"       /* iter $r2, cf1, ^r2 */
+#define T_ITRCOORDS "af04540403080a03"             /* itrcoords r2, $r2, sample */
 #define T_ZS_EMIT   "d70454000003"                 /* zs_emit ^cr0, 0, z */
 #define T_MOVMSK    "570454000000"                 /* movmsk ^cr0, 0 */
 #define T_PACK_IMGWIR "9705540400080000d0401000"   /* pack_imgwir cr2, 0, u2l, 0, 0, 4 */
@@ -810,6 +816,13 @@ enum {
    ITER_CF = 1,
    ITER_MODE = 2,
    ITER_PERSP = 3,
+   ITER_COORDS_DST = 0,
+   ITER_COORDS_CF = 1,
+   ITER_COORDS_CRD = 2,
+   ITRCOORDS_DST = 0,
+   ITRCOORDS_SRC = 1,
+   ITRCOORDS_SAMPLE = 2,
+   ITRCOORDS_DCACHE = 3,
    ZS_CR = 0,
    ZS_G = 1,
    ZS_MODE = 2,
@@ -1840,9 +1853,27 @@ a3_iter(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
          a3_fail(a, "iter at a dynamic sample (G15: itrcoords)");
       mode = 4 | sample.value;
       break;
+   case AGX_INTERPOLATION_COORDS:
+      /* At the coordinates itrcoords wrote to the register sample */
+      if (I->perspective)
+         a3_fail(a, "projected iter at coordinates");
+
+      for (unsigned i = 0; i < I->channels; i++) {
+         agx_index d = dest;
+         d.value += i * (dest.size == AGX_SIZE_32 ? 2 : 1);
+
+         a3_begin(a, I, AGX3_ITER_COORDS, T_ITER_COORDS);
+         a3_set(a, ITER_COORDS_DST, a3_reg(a, ITER_COORDS_DST, d, 0, 0, 0));
+         a3_set(a, ITER_COORDS_CF,
+                a3_kind_value(a, ITER_COORDS_CF, A3_CF, cf.value + i, 0));
+         a3_set(a, ITER_COORDS_CRD, a3_reg(a, ITER_COORDS_CRD, sample, 0, 0, 0));
+         a3_emit(a, emission);
+      }
+      return;
    default:
       a3_fail(a, "iter at the centroid (G15: itrcoords)");
    }
+
 
    for (unsigned i = 0; i < I->channels; i++) {
       agx_index d = dest;
@@ -1855,6 +1886,38 @@ a3_iter(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
       a3_set(a, ITER_PERSP, I->perspective);
       a3_emit(a, emission);
    }
+}
+
+/* itrcoords: the coordinates of a sample by its index (bit 57 set), or of the
+ * centroid of the coverage and the sample mask input (bit 57 clear), from a
+ * 32-bit register: the index in its low half, or the two masks (AGX3.xml).
+ * The compiler builds the 32-bit source as a vector of two 16-bit halves,
+ * which register allocation aligns to a 32-bit register. Synchronous like
+ * iter. */
+static void
+a3_itrcoords(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
+{
+   agx_index src = I->src[0];
+
+   if (I->interpolation != AGX_INTERPOLATION_SAMPLE &&
+       I->interpolation != AGX_INTERPOLATION_CENTROID)
+      a3_fail(a, "itrcoords of a location other than a sample or centroid");
+
+   if (src.type == AGX_INDEX_REGISTER && src.size == AGX_SIZE_16 &&
+       agx_channels(src) == 2 && !(src.value & 1)) {
+      src.size = AGX_SIZE_32;
+      src.channels_m1 = 0;
+   }
+
+   if (src.type != AGX_INDEX_REGISTER || src.size != AGX_SIZE_32)
+      a3_fail(a, "itrcoords of a source other than a 32-bit register");
+
+   a3_begin(a, I, AGX3_ITRCOORDS, T_ITRCOORDS);
+   a3_set(a, ITRCOORDS_DST, a3_reg(a, ITRCOORDS_DST, I->dest[0], 0, 0, 0));
+   a3_set(a, ITRCOORDS_SRC, a3_reg(a, ITRCOORDS_SRC, src, 0, 0, 0));
+   a3_set(a, ITRCOORDS_SAMPLE, I->interpolation == AGX_INTERPOLATION_SAMPLE);
+   a3_set(a, ITRCOORDS_DCACHE, 0);
+   a3_emit(a, emission);
 }
 
 /* zs_emit (depthf): from cr0 (and cr1), written in group 0. G15's has no
@@ -1914,9 +1977,10 @@ a3_sample_mask(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
  * pack_imgwir's first source is the render target's offset in the tilebuffer
  * in bytes (boot #406: a second target at 4 comes out right with it, and
  * every offset in imgwblk's own operand reads another descriptor); its
- * other two and the flags are not known, the one supported form, 2D with one
- * sample and no layer, takes demo15's: zero sources, the layout it uses and
- * its flags. imgwblk's own operand stays 0, each render target has its own
+ * other two are not known, the supported forms, 2D with no layer, take
+ * demo15's: zero sources and the layout it uses (Apple's multisampled pass
+ * too), with the flags of the image type. imgwblk's own operand stays 0,
+ * each render target has its own
  * descriptor pointer. A following block write overwrites cr2 before the
  * earlier one has read it, so each is followed by a wait (boots #404, #406:
  * without it the two swap their data). The coordinates move through mov to
@@ -1933,10 +1997,9 @@ a3_block_image_store(struct a3 *a, const agx_instr *I,
    if (base.type != AGX_INDEX_UNIFORM || base.size != AGX_SIZE_64 ||
        coords.type != AGX_INDEX_REGISTER || coords.size != AGX_SIZE_32 ||
        agx_channels(coords) != 2 || !I->explicit_coords ||
-       I->dim != AGX_DIM_2D)
-      a3_fail(a, "block_image_store of a layered, multisampled or bindless "
-                 "image (G15: imgwblk's layer and sample operands are not "
-                 "known)");
+       (I->dim != AGX_DIM_2D && I->dim != AGX_DIM_2D_MS))
+      a3_fail(a, "block_image_store of a layered or bindless image (G15: "
+                 "imgwblk's layer operand is not known)");
 
    agx_index x = agx_register(coords.value, AGX_SIZE_32);
    agx_index y = agx_register(coords.value + 2, AGX_SIZE_32);
@@ -1959,6 +2022,10 @@ a3_block_image_store(struct a3 *a, const agx_instr *I,
    a3_set(a, IMGWBLK_G, 0);
    a3_set(a, IMGWBLK_PTR, a3_membase(a, IMGWBLK_PTR, base));
    a3_set(a, IMGWBLK_OFFSET, a3_imm(a, IMGWBLK_OFFSET, 0, false));
+   /* The image type in the flags (texture.md): 2D 0x1d6a, 2D
+    * multisampled 0x1c8a, the dimension's fields only (not verified for the
+    * multisampled form) */
+   a3_set(a, IMGWBLK_FLAGS, I->dim == AGX_DIM_2D_MS ? 0x1c8a : 0x1d6a);
    a3_set(a, IMGWBLK_WAIT, BITFIELD_BIT(0));
    a3_emit(a, emission);
 
@@ -2526,6 +2593,10 @@ agx3_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
       a3_iter(&a, I, emission);
       return;
 
+   case AGX_OPCODE_ITRCOORDS:
+      a3_itrcoords(&a, I, emission);
+      return;
+
    case AGX_OPCODE_ZS_EMIT:
       a3_zs_emit(&a, I, emission);
       return;
@@ -2621,6 +2692,76 @@ agx3_emit_signal_pix(struct util_dynarray *out, unsigned mask)
 {
    agx_instr I = {.op = AGX_OPCODE_SIGNAL_PIX, .writeout = mask};
    agx3_pack_instr(out, NULL, &I);
+}
+
+/*
+ * The sample loop of agx_fast_link, G13's sample_loop_header and
+ * sample_loop_footer in G15 instructions: r1l (AGX_ABI_FIN_SAMPLE_MASK) holds
+ * the sample bit the loop body shades. The loop is the IR's top-level loop
+ * (emit_loop): no push before it, a break on a condition code (G15 packs the
+ * IR's break_if as break, agx_opt_break_if's nest 1), jmp_exec_any back to the
+ * body and pop_exec 1 after it.
+ */
+void
+agx3_emit_sample_loop_header(struct util_dynarray *out)
+{
+   agx_index r1l = agx_register(2, AGX_SIZE_16);
+   agx_instr I = {.op = AGX_OPCODE_MOV_IMM, .imm = 1};
+   I.dest = &r1l;
+   agx3_pack_instr(out, NULL, &I);
+}
+
+/* The footer at program offset footer_offset; the loop body starts at
+ * loop_begin. nr_samples > 1. */
+void
+agx3_emit_sample_loop_footer(struct util_dynarray *out, unsigned nr_samples,
+                             unsigned footer_offset, unsigned loop_begin)
+{
+   agx_index r1l = agx_register(2, AGX_SIZE_16);
+
+   /* r1l <<= 1 */
+   {
+      agx_index srcs[2] = {agx_zero(), r1l};
+      agx_instr I = {.op = AGX_OPCODE_IADD, .shift = 1};
+      I.dest = &r1l;
+      I.src = srcs;
+      agx3_pack_instr(out, NULL, &I);
+   }
+
+   /* Break the threads past the last sample: !(r1l < 1 << nr_samples) */
+   {
+      agx_index srcs[2] = {r1l, agx_immediate(1 << nr_samples)};
+      agx_instr I = {
+         .op = AGX_OPCODE_BREAK_IF_ICMP,
+         .icond = AGX_ICOND_ULT,
+         .invert_cond = true,
+         .nest = 1,
+      };
+      I.src = srcs;
+      agx3_pack_instr(out, NULL, &I);
+   }
+
+   /* jmp_exec_any to the loop body, patched as agx3_fixup_branches does */
+   {
+      struct a3 a = {0};
+      agx_instr I = {.op = AGX_OPCODE_JMP_EXEC_ANY};
+      unsigned at = out->size;
+
+      a3_begin(&a, &I, AGX3_JMP_EXEC_ANY, T_JMP);
+      a3_set(&a, JMP_TARGET, 0);
+      a3_emit(&a, out);
+
+      uint8_t *p = (uint8_t *)out->data + at;
+      int64_t bytes = (int64_t)loop_begin - (int64_t)(footer_offset + at);
+      uint64_t v = ((uint64_t)(bytes >> 1) & BITFIELD64_MASK(47)) << 1;
+      for (unsigned i = 0; i < 6; i++)
+         p[3 + i] = v >> (8 * i);
+   }
+
+   {
+      agx_instr I = {.op = AGX_OPCODE_POP_EXEC, .nest = 1};
+      agx3_pack_instr(out, NULL, &I);
+   }
 }
 
 /* The length of the AGX3 instruction at code, 0 if none matches */

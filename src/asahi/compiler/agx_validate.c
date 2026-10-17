@@ -340,10 +340,18 @@ agx_read_registers(const agx_instr *I, unsigned s)
       }
 
    case AGX_OPCODE_BLOCK_IMAGE_STORE:
-      if (s == 3 && I->explicit_coords)
+      /* G15's block write of a multisampled tile takes x and y only: it
+       * writes every sample */
+      if (s == 3 && I->explicit_coords && I->dim == AGX_DIM_2D_MS)
+         return 2 * agx_size_align_16(I->src[3].size);
+      else if (s == 3 && I->explicit_coords)
          return agx_coordinate_registers(I, I->src[3].size);
       else
          return size;
+
+   case AGX_OPCODE_ITRCOORDS:
+      /* One 32-bit register, built as two 16-bit halves or one 32-bit value */
+      return agx_index_size_16(I->src[0]);
 
    case AGX_OPCODE_ATOMIC:
    case AGX_OPCODE_LOCAL_ATOMIC:
