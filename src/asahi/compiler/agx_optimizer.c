@@ -150,6 +150,20 @@ agx_optimizer_inline_imm(agx_instr **defs, agx_instr *I, bool g15)
 
       bool float_src = agx_is_float_src(I, s);
 
+      /* G15 takes a constant texel offset as F42's 12-bit immediate, the
+       * nibbles of Mesa's packed offset */
+      if (g15 && s == 5 &&
+          (I->op == AGX_OPCODE_TEXTURE_SAMPLE ||
+           I->op == AGX_OPCODE_TEXTURE_LOAD)) {
+         if (I->offset && !I->shadow && def->imm < 4096) {
+            /* the 32-bit word it stands for */
+            I->src[s] = agx_immediate(def->imm);
+            I->src[s].size = AGX_SIZE_32;
+         }
+
+         continue;
+      }
+
       /* G15 fetches at the level F28's immediate gives: an integer, and the
        * level is the one source of a fetch that can be an immediate */
       if (I->op == AGX_OPCODE_TEXTURE_LOAD) {
