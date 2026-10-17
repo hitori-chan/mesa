@@ -1033,6 +1033,39 @@ lower_derivatives_g15(nir_builder *b, nir_intrinsic_instr *intr, void *data)
 }
 
 /*
+ * G15 has no bit interleave (none among libLLVM 32023's AGX3 instructions):
+ * spread each 16-bit source over every other bit with shifts and masks.
+ */
+static nir_def *
+spread_bits_g15(nir_builder *b, nir_def *x)
+{
+   static const uint32_t masks[] = {0x00ff00ff, 0x0f0f0f0f, 0x33333333,
+                                    0x55555555};
+
+   x = nir_iand_imm(b, nir_u2u32(b, x), 0xffff);
+
+   for (unsigned i = 0; i < ARRAY_SIZE(masks); ++i)
+      x = nir_iand_imm(b, nir_ior(b, x, nir_ishl_imm(b, x, 8 >> i)), masks[i]);
+
+   return x;
+}
+
+static bool
+lower_interleave_g15(nir_builder *b, nir_alu_instr *alu, void *data)
+{
+   if (alu->op != nir_op_interleave)
+      return false;
+
+   b->cursor = nir_before_instr(&alu->instr);
+
+   nir_def *x = spread_bits_g15(b, nir_ssa_for_alu_src(b, alu, 0));
+   nir_def *y = spread_bits_g15(b, nir_ssa_for_alu_src(b, alu, 1));
+
+   nir_def_replace(&alu->def, nir_ior(b, x, nir_ishl_imm(b, y, 1)));
+   return true;
+}
+
+/*
  * G15 fetches at a constant level only (F28's immediate): a fetch at a level
  * in a register becomes a chain of fetches, one for each level the texture
  * can have, of which the matching one runs.
@@ -4177,6 +4210,10 @@ agx_compile_shader_nir(nir_shader *nir, struct agx_shader_key *key,
    /* The generic preprocessing left the reductions and scans G13 has */
    if (key->dev.gpu_generation >= 15)
       NIR_PASS(_, nir, agx_nir_lower_subgroups, true);
+
+   if (key->dev.gpu_generation >= 15)
+      NIR_PASS(_, nir, nir_shader_alu_pass, lower_interleave_g15,
+               nir_metadata_control_flow, NULL);
 
    /* Late sysval lowering creates large loads. Load lowering creates unpacks */
    nir_lower_mem_access_bit_sizes_options lower_mem_access_options = {
