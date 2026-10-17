@@ -855,14 +855,50 @@ agx_emit_load(agx_builder *b, agx_index dest, nir_intrinsic_instr *instr)
 
    assert(shift <= 3);
 
+   unsigned nr = instr->def.num_components;
+   bool sign_extend = nir_intrinsic_sign_extend(instr);
+
+   /* G15's device_load packs i8 data two bytes to a 16-bit register (AGX3.xml
+    * memreg), where G13's zero-extends each component to its register. Such a
+    * load is one load per component into the low half of the component's
+    * register, masked.
+    */
+   if (b->shader->key->dev.gpu_generation >= 15 && fmt == AGX_FORMAT_I8) {
+      agx_index comps[4];
+      unsigned mask = 0xff;
+
+      assert(nr <= 4);
+      for (unsigned c = 0; c < nr; ++c) {
+         agx_index idx = offset;
+         unsigned idx_shift = shift;
+
+         /* Component c is at element (offset << shift) + c */
+         if (c > 0 && offset.type == AGX_INDEX_IMMEDIATE) {
+            idx = agx_immediate((offset.value << shift) + c);
+            idx_shift = 0;
+         } else if (c > 0) {
+            idx = agx_iadd(b, agx_immediate(c), offset, shift);
+            idx_shift = 0;
+         }
+
+         agx_index tmp = agx_temp(b->shader, dest.size);
+         agx_device_load_to(b, tmp, addr, sign_extend ? idx : agx_abs(idx),
+                            fmt, 0x1, idx_shift, nir_is_coherent(instr));
+         comps[c] = agx_and(b, tmp, agx_immediate(mask));
+      }
+
+      agx_emit_collect_to(b, dest, nr, comps);
+      agx_emit_cached_split(b, dest, nr);
+      return;
+   }
+
    /* Zero-extend offset if we're not sign-extending */
-   if (!nir_intrinsic_sign_extend(instr))
+   if (!sign_extend)
       offset = agx_abs(offset);
 
-   agx_device_load_to(b, dest, addr, offset, fmt,
-                      BITFIELD_MASK(instr->def.num_components), shift,
+   agx_device_load_to(b, dest, addr, offset, fmt, BITFIELD_MASK(nr), shift,
                       nir_is_coherent(instr));
-   agx_emit_cached_split(b, dest, instr->def.num_components);
+   agx_emit_cached_split(b, dest, nr);
 }
 
 static void
