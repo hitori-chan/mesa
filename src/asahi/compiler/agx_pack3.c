@@ -2512,6 +2512,76 @@ agx3_emit_signal_pix(struct util_dynarray *out, unsigned mask)
    agx3_pack_instr(out, NULL, &I);
 }
 
+/*
+ * The sample loop of agx_fast_link, G13's sample_loop_header and
+ * sample_loop_footer in G15 instructions: r1l (AGX_ABI_FIN_SAMPLE_MASK) holds
+ * the sample bit the loop body shades. The loop is the IR's top-level loop
+ * (emit_loop): no push before it, a break on a condition code (G15 packs the
+ * IR's break_if as break, agx_opt_break_if's nest 1), jmp_exec_any back to the
+ * body and pop_exec 1 after it.
+ */
+void
+agx3_emit_sample_loop_header(struct util_dynarray *out)
+{
+   agx_index r1l = agx_register(2, AGX_SIZE_16);
+   agx_instr I = {.op = AGX_OPCODE_MOV_IMM, .imm = 1};
+   I.dest = &r1l;
+   agx3_pack_instr(out, NULL, &I);
+}
+
+/* The footer at program offset footer_offset; the loop body starts at
+ * loop_begin. nr_samples > 1. */
+void
+agx3_emit_sample_loop_footer(struct util_dynarray *out, unsigned nr_samples,
+                             unsigned footer_offset, unsigned loop_begin)
+{
+   agx_index r1l = agx_register(2, AGX_SIZE_16);
+
+   /* r1l <<= 1 */
+   {
+      agx_index srcs[2] = {agx_zero(), r1l};
+      agx_instr I = {.op = AGX_OPCODE_IADD, .shift = 1};
+      I.dest = &r1l;
+      I.src = srcs;
+      agx3_pack_instr(out, NULL, &I);
+   }
+
+   /* Break the threads past the last sample: !(r1l < 1 << nr_samples) */
+   {
+      agx_index srcs[2] = {r1l, agx_immediate(1 << nr_samples)};
+      agx_instr I = {
+         .op = AGX_OPCODE_BREAK_IF_ICMP,
+         .icond = AGX_ICOND_ULT,
+         .invert_cond = true,
+         .nest = 1,
+      };
+      I.src = srcs;
+      agx3_pack_instr(out, NULL, &I);
+   }
+
+   /* jmp_exec_any to the loop body, patched as agx3_fixup_branches does */
+   {
+      struct a3 a = {0};
+      agx_instr I = {.op = AGX_OPCODE_JMP_EXEC_ANY};
+      unsigned at = out->size;
+
+      a3_begin(&a, &I, AGX3_JMP_EXEC_ANY, T_JMP);
+      a3_set(&a, JMP_TARGET, 0);
+      a3_emit(&a, out);
+
+      uint8_t *p = (uint8_t *)out->data + at;
+      int64_t bytes = (int64_t)loop_begin - (int64_t)(footer_offset + at);
+      uint64_t v = ((uint64_t)(bytes >> 1) & BITFIELD64_MASK(47)) << 1;
+      for (unsigned i = 0; i < 6; i++)
+         p[3 + i] = v >> (8 * i);
+   }
+
+   {
+      agx_instr I = {.op = AGX_OPCODE_POP_EXEC, .nest = 1};
+      agx3_pack_instr(out, NULL, &I);
+   }
+}
+
 /* The length of the AGX3 instruction at code, 0 if none matches */
 unsigned
 agx3_instr_length(const uint8_t *code)
