@@ -796,6 +796,7 @@ enum {
    GET_STACK_SRC = 3,
    GET_STACK_WAIT = 4,
    BARRIER_FLAGS = 0,
+   BARRIER_WAIT = 1,
    ST_VAR_CR = 0,
    ST_VAR_SLOT = 1,
    ST_VAR_G = 2,
@@ -1563,11 +1564,17 @@ agx3_stack_size(const agx_instr *I)
  * barrier = a device memory acq_rel fence at threadgroup scope, the first
  * of the device-scope sequence (unknown_barrier_1) the same at device
  * scope, the rest of it nothing; image barriers 1 and 3 a texture release
- * and acquire, 2 and 4 nothing. Not verified on the hardware. */
+ * and acquire, 2 and 4 nothing; flush_memory_to_texture (device memory
+ * written by atomics, then read as a texture) an acq_rel fence of device and
+ * texture memory at device scope. The texture fences carry bit 10, as
+ * Apple's do with texture writes not L2-persistent (imgwci bit 107, which
+ * a3_image_write sets), and the release waits for the image writes' group
+ * (every imgwci delivers in group 0), as Apple's release waits for its
+ * imgwci's: the corpus's 0x650 and 0x6D0. Not verified on the hardware. */
 static void
 a3_barrier(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
 {
-   unsigned flags;
+   unsigned flags, wait = 0;
 
    switch (I->op) {
    case AGX_OPCODE_THREADGROUP_BARRIER:
@@ -1580,10 +1587,14 @@ a3_barrier(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
       flags = 0x684;
       break;
    case AGX_OPCODE_IMAGE_BARRIER_1:
-      flags = 0x250;
+      flags = 0x650;
+      wait = BITFIELD_BIT(0);
       break;
    case AGX_OPCODE_IMAGE_BARRIER_3:
-      flags = 0x2d0;
+      flags = 0x6d0;
+      break;
+   case AGX_OPCODE_FLUSH_MEMORY_TO_TEXTURE:
+      flags = 0x694;
       break;
    case AGX_OPCODE_MEMORY_BARRIER_2:
    case AGX_OPCODE_MEMORY_BARRIER_3:
@@ -1599,6 +1610,7 @@ a3_barrier(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
 
    a3_begin(a, I, AGX3_BARRIER, T_BARRIER);
    a3_set(a, BARRIER_FLAGS, flags);
+   a3_set(a, BARRIER_WAIT, wait);
    a3_emit(a, emission);
 }
 
