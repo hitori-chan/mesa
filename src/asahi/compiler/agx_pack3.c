@@ -1527,7 +1527,9 @@ agx3_stack_size(const agx_instr *I)
  * barrier = a device memory acq_rel fence at threadgroup scope, the first
  * of the device-scope sequence (unknown_barrier_1) the same at device
  * scope, the rest of it nothing; image barriers 1 and 3 a texture release
- * and acquire, 2 and 4 nothing. Not verified on the hardware. */
+ * and acquire, 2 and 4 nothing; flush_memory_to_texture (device memory
+ * written by atomics, then read as a texture) an acq_rel fence of device and
+ * texture memory at device scope. Not verified on the hardware. */
 static void
 a3_barrier(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
 {
@@ -1548,6 +1550,9 @@ a3_barrier(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
       break;
    case AGX_OPCODE_IMAGE_BARRIER_3:
       flags = 0x2d0;
+      break;
+   case AGX_OPCODE_FLUSH_MEMORY_TO_TEXTURE:
+      flags = 0x694;
       break;
    case AGX_OPCODE_MEMORY_BARRIER_2:
    case AGX_OPCODE_MEMORY_BARRIER_3:
