@@ -1253,8 +1253,10 @@ target_is_array(enum pipe_texture_target target)
 /*
  * G15's PBE descriptor (cmdbuf.xml's "PBE G15"; Honeykrisp's pack_pbe_g15).
  * Only what Apple's encoder and demo15 settle is packed: uncompressed images
- * without multisampling, 2D, linear with one layer or twiddled. The rest fails
- * here rather than reaching the hardware as a G13 descriptor.
+ * without multisampling, 2D, linear with one layer or twiddled, and buffers
+ * as linear 2D images AGX_TEXTURE_BUFFER_WIDTH texels wide like their
+ * textures (not verified on G15). The rest fails here rather than reaching
+ * the hardware as a G13 descriptor.
  */
 static void
 agx_pack_pbe_g15(struct agx_pbe_packed *out, struct agx_resource *tex,
@@ -1267,18 +1269,21 @@ agx_pack_pbe_g15(struct agx_pbe_packed *out, struct agx_resource *tex,
    bool is_buffer = (tex->base.target == PIPE_BUFFER);
    unsigned layers = is_buffer ? 1 : view->u.tex.last_layer - layer + 1;
 
-   if (is_buffer || tex->layout.compressed ||
-       util_res_sample_count(&tex->base) > 1 || target == PIPE_TEXTURE_3D ||
+   if (tex->layout.compressed || util_res_sample_count(&tex->base) > 1 ||
+       target == PIPE_TEXTURE_3D ||
        (tex->layout.tiling == AIL_TILING_LINEAR && layers > 1)) {
-      fprintf(stderr, "G15: PBE of a buffer, compressed, multisampled, 3D or "
+      fprintf(stderr, "G15: PBE of a compressed, multisampled, 3D or "
                       "linear layered image is not supported yet\n");
       assert(0);
    }
 
    agx_pack(out, PBE_G15, cfg) {
       cfg.dimension =
-         agx_translate_tex_dim(target, util_res_sample_count(&tex->base));
-      cfg.layout = agx_translate_layout(tex->layout.tiling);
+         is_buffer ? AGX_TEXTURE_DIMENSION_2D
+                   : agx_translate_tex_dim(target,
+                                           util_res_sample_count(&tex->base));
+      cfg.layout = is_buffer ? AGX_LAYOUT_LINEAR
+                             : agx_translate_layout(tex->layout.tiling);
       cfg.channels = ail_pixel_format[view->format].channels;
       cfg.type = ail_pixel_format[view->format].type;
 
@@ -1305,7 +1310,20 @@ agx_pack_pbe_g15(struct agx_pbe_packed *out, struct agx_resource *tex,
       cfg.height = view->resource->height0;
       cfg.mipmapped = tex->mipmapped;
 
-      if (tex->layout.tiling == AIL_TILING_LINEAR) {
+      if (is_buffer) {
+         unsigned size_el =
+            agx_texture_buffer_size_el(view->format, view->u.buf.size);
+         unsigned stride_B =
+            AGX_TEXTURE_BUFFER_WIDTH * util_format_get_blocksize(view->format);
+
+         /* The offset is aligned to 64 B (texture_buffer_offset_alignment);
+          * libagx_buffer_image_offset adds word 4, left 0 */
+         cfg.buffer = agx_pbe_addr(
+            tex, agx_map_texture_gpu(tex, 0) + view->u.buf.offset);
+         cfg.width = AGX_TEXTURE_BUFFER_WIDTH;
+         cfg.height = MAX2(DIV_ROUND_UP(size_el, cfg.width), 1);
+         cfg.stride = (stride_B >> 4) - 1;
+      } else if (tex->layout.tiling == AIL_TILING_LINEAR) {
          /* In 16-byte units, minus 1 (demo15's 0xF for a 256 B stride) */
          assert((ail_get_linear_stride_B(&tex->layout, level) & 15) == 0);
          cfg.stride = (ail_get_linear_stride_B(&tex->layout, level) >> 4) - 1;
