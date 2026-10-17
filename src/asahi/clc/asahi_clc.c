@@ -22,10 +22,19 @@
 #include <string.h>
 #include <unistd.h>
 #include "util/macros.h"
-#include "util/u_debug.h"
 #include <sys/mman.h>
 
-const char *targets[] = {"g13g", "g13x"};
+const char *targets[] = {"g13g", "g13x", "g15"};
+
+/* Kernels G15 has no build of: the helper program's doorbells, stack
+ * mappings and core ID, and decompression's image loads (G15 has neither the
+ * helper nor compression yet). Their entries are NULL. */
+static bool
+skip_for_target(const nir_function *func, const char *target)
+{
+   return !strcmp(target, "g15") && (!strcmp(func->name, "libagx_helper") ||
+                                     !strcmp(func->name, "libagx_decompress"));
+}
 
 #define foreach_target(target)                                                 \
    for (const char **target = &targets[0];                                     \
@@ -337,6 +346,12 @@ main(int argc, char **argv)
             if (strcmp(*target, remap_variant(libfunc, v, *target)))
                continue;
 
+            if (skip_for_target(libfunc, *target)) {
+               fprintf(fp_c, "#define %s_%u_%s NULL\n", libfunc->name, v,
+                       *target);
+               continue;
+            }
+
             struct agx_shader_part compiled;
             bool is_helper = !strcmp(libfunc->name, "libagx_helper");
             struct agx_shader_key key = {
@@ -357,9 +372,8 @@ main(int argc, char **argv)
                   u_tristate_make(!strcmp(*target, "g13x"));
             }
 
-            /* ASAHI_CLC_GEN=15: compile for G15 instead (with AGX3_SURVEY=1,
-             * a survey of what the G15 packer lacks) */
-            key.dev.gpu_generation = debug_get_num_option("ASAHI_CLC_GEN", 0);
+            if (!strcmp(*target, "g15"))
+               key.dev.gpu_generation = 15;
 
             nir_shader *clone = nir_shader_clone(NULL, s);
             agx_compile_shader_nir(clone, &key, &compiled);
