@@ -243,6 +243,10 @@ void agx3_emit_uniform_store(struct util_dynarray *out, unsigned uniform,
                              unsigned src);
 void agx3_emit_stop(struct util_dynarray *out);
 void agx3_emit_signal_pix(struct util_dynarray *out, unsigned mask);
+void agx3_emit_sample_loop_header(struct util_dynarray *out);
+void agx3_emit_sample_loop_footer(struct util_dynarray *out,
+                                  unsigned nr_samples, unsigned footer_offset,
+                                  unsigned loop_begin);
 unsigned agx3_instr_length(const uint8_t *code);
 
 struct agx_shader_part {
