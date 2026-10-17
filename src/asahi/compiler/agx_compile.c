@@ -1069,6 +1069,39 @@ lower_derivatives_g15(nir_builder *b, nir_intrinsic_instr *intr, void *data)
 }
 
 /*
+ * G15 has no bit interleave (none among libLLVM 32023's AGX3 instructions):
+ * spread each 16-bit source over every other bit with shifts and masks.
+ */
+static nir_def *
+spread_bits_g15(nir_builder *b, nir_def *x)
+{
+   static const uint32_t masks[] = {0x00ff00ff, 0x0f0f0f0f, 0x33333333,
+                                    0x55555555};
+
+   x = nir_iand_imm(b, nir_u2u32(b, x), 0xffff);
+
+   for (unsigned i = 0; i < ARRAY_SIZE(masks); ++i)
+      x = nir_iand_imm(b, nir_ior(b, x, nir_ishl_imm(b, x, 8 >> i)), masks[i]);
+
+   return x;
+}
+
+static bool
+lower_interleave_g15(nir_builder *b, nir_alu_instr *alu, void *data)
+{
+   if (alu->op != nir_op_interleave)
+      return false;
+
+   b->cursor = nir_before_instr(&alu->instr);
+
+   nir_def *x = spread_bits_g15(b, nir_ssa_for_alu_src(b, alu, 0));
+   nir_def *y = spread_bits_g15(b, nir_ssa_for_alu_src(b, alu, 1));
+
+   nir_def_replace(&alu->def, nir_ior(b, x, nir_ishl_imm(b, y, 1)));
+   return true;
+}
+
+/*
  * G15 fetches at a constant level only (F28's immediate): a fetch at a level
  * in a register becomes a chain of fetches, one for each level the texture
  * can have, of which the matching one runs.
@@ -1350,8 +1383,9 @@ agx_emit_block_image_store(agx_builder *b, nir_intrinsic_instr *instr)
    if (instr->intrinsic == nir_intrinsic_bindless_image_store_block_agx) {
       index = agx_translate_bindless_handle(b, &instr->src[0], &base);
 
+      /* G15 takes a constant index as an immediate */
       assert(base.size == AGX_SIZE_64);
-      assert(index.size == AGX_SIZE_32);
+      assert(index.size == AGX_SIZE_32 || index.type == AGX_INDEX_IMMEDIATE);
    } else {
       base = agx_zero();
       index = agx_src_index(&instr->src[0]);
@@ -1677,8 +1711,9 @@ agx_emit_image_store(agx_builder *b, nir_intrinsic_instr *instr)
    if (instr->intrinsic == nir_intrinsic_bindless_image_store) {
       index = agx_translate_bindless_handle(b, &instr->src[0], &base);
 
+      /* G15 takes a constant index as an immediate */
       assert(base.size == AGX_SIZE_64);
-      assert(index.size == AGX_SIZE_32);
+      assert(index.size == AGX_SIZE_32 || index.type == AGX_INDEX_IMMEDIATE);
    } else {
       base = agx_zero();
       index = agx_src_index(&instr->src[0]);
@@ -3395,7 +3430,7 @@ agx_optimize_nir(nir_shader *nir, bool soft_fault, uint16_t *preamble_size,
 
    NIR_PASS(progress, nir, nir_opt_uniform_subgroup, &subgroups_options);
    if (progress) {
-      NIR_PASS(_, nir, agx_nir_lower_subgroups);
+      NIR_PASS(_, nir, agx_nir_lower_subgroups, g15);
    }
 
    /* The above create operations that need lowering/optimizing */
@@ -4108,7 +4143,7 @@ agx_preprocess_nir(nir_shader *nir)
    NIR_PASS(_, nir, agx_lower_sincos);
    NIR_PASS(_, nir, nir_shader_intrinsics_pass, agx_lower_front_face,
             nir_metadata_control_flow, NULL);
-   NIR_PASS(_, nir, agx_nir_lower_subgroups);
+   NIR_PASS(_, nir, agx_nir_lower_subgroups, false);
    NIR_PASS(_, nir, nir_lower_all_phis_to_scalar);
 
    /* After lowering, run through the standard suite of NIR optimizations. We
@@ -4206,6 +4241,14 @@ agx_compile_shader_nir(nir_shader *nir, struct agx_shader_key *key,
 
    if (key->dev.gpu_generation >= 15)
       NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_derivatives_g15,
+               nir_metadata_control_flow, NULL);
+
+   /* The generic preprocessing left the reductions and scans G13 has */
+   if (key->dev.gpu_generation >= 15)
+      NIR_PASS(_, nir, agx_nir_lower_subgroups, true);
+
+   if (key->dev.gpu_generation >= 15)
+      NIR_PASS(_, nir, nir_shader_alu_pass, lower_interleave_g15,
                nir_metadata_control_flow, NULL);
 
    /* Late sysval lowering creates large loads. Load lowering creates unpacks */

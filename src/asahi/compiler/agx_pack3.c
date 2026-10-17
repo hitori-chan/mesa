@@ -699,6 +699,7 @@ a3_memshift(const struct a3 *a, unsigned bytes)
 #define T_POP_EXEC  "0f0604010000"                 /* pop_exec 1 */
 #define T_JMP       "0f015402a0c900000100"         /* jmp_exec_none */
 #define T_ZERO12    "000000000000000000000000"
+#define T_ZERO14    "0000000000000000000000000000"
 
 /* libLLVM 32023's encoder (GPUCompiler.framework, macOS 26A434) with the
  * operands below: wait none, the hint bits at their defaults */
@@ -720,6 +721,9 @@ a3_memshift(const struct a3 *a, unsigned bytes)
 #define T_MOVMSK    "570454000000"                 /* movmsk ^cr0, 0 */
 #define T_PACK_IMGWIR "9705540400080000d0401000"   /* pack_imgwir cr2, 0, u2l, 0, 0, 4 */
 #define T_IMGWBLK   "5710540000000080a8750000"     /* block_image_store ^cr0, 0, du0, 0, 7530 */
+/* Apple's rw.write() of the imgw capture (macOS 27.0.1): image_write ^cr8,
+ * group 0, du2, index 1, level 0, xyzw, wait 0 */
+#define T_IMGW      "d71054102040000100040000883a0900"
 
 /* Apple's texture instructions (the 2026-10-16 capture's kernels and the
  * QuartzCore corpus, texture.md) */
@@ -826,6 +830,13 @@ enum {
    IMGWBLK_OFFSET = 3,
    IMGWBLK_FLAGS = 4,
    IMGWBLK_WAIT = 7,
+   IMGW_CR = 0,
+   IMGW_G = 1,
+   IMGW_BASE = 2,
+   IMGW_INDEX = 3,
+   IMGW_LOD = 4,
+   IMGW_DATA = 5,
+   IMGW_WAIT = 6,
    TEX_G0 = 0,
    TEX_G1 = 1,
    TEX_MASK = 2,
@@ -1484,6 +1495,8 @@ agx3_cr_count(const agx_instr *I)
    case AGX_OPCODE_ZS_EMIT:
    case AGX_OPCODE_BLOCK_IMAGE_STORE:
       return 2;
+   case AGX_OPCODE_IMAGE_WRITE:
+      return 8;
    case AGX_OPCODE_ST_VARY:
       return I->src[0].type == AGX_INDEX_IMMEDIATE ? (I->src[0].value & 7) + 1
                                                    : 1;
@@ -1514,7 +1527,9 @@ agx3_stack_size(const agx_instr *I)
  * barrier = a device memory acq_rel fence at threadgroup scope, the first
  * of the device-scope sequence (unknown_barrier_1) the same at device
  * scope, the rest of it nothing; image barriers 1 and 3 a texture release
- * and acquire, 2 and 4 nothing. Not verified on the hardware. */
+ * and acquire, 2 and 4 nothing; flush_memory_to_texture (device memory
+ * written by atomics, then read as a texture) an acq_rel fence of device and
+ * texture memory at device scope. Not verified on the hardware. */
 static void
 a3_barrier(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
 {
@@ -1535,6 +1550,9 @@ a3_barrier(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
       break;
    case AGX_OPCODE_IMAGE_BARRIER_3:
       flags = 0x2d0;
+      break;
+   case AGX_OPCODE_FLUSH_MEMORY_TO_TEXTURE:
+      flags = 0x694;
       break;
    case AGX_OPCODE_MEMORY_BARRIER_2:
    case AGX_OPCODE_MEMORY_BARRIER_3:
@@ -1947,6 +1965,83 @@ a3_block_image_store(struct a3 *a, const agx_instr *I,
    a3_wait(a, I, 0, emission);
 }
 
+/* image_write (imgwci): the PBE descriptor is entry index of the 32 B array
+ * at the IR's bindless base (a 64-bit uniform or register pair), the index an
+ * immediate or a register. The coordinates and the data go to a tuple of
+ * eight 32-bit coordinate registers, written in group 0, which the
+ * instruction waits for and frees: x, y, data x, data y, z, layer, data z,
+ * data w (Apple's code puts the data in slots 2, 3, 6 and 7 after x and y in
+ * 0 and 1; which of 4 and 5 takes a 3D image's z and an array's layer is not
+ * verified: AGX3_IMGW_Z and AGX3_IMGW_LAYER override them). The level is
+ * the instruction's immediate; all four data components are given. */
+static unsigned a3_imgw_z = 4, a3_imgw_layer = 5;
+
+static void
+a3_image_write(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
+{
+   static const enum agx3_instr instr[] = {
+      [AGX_DIM_1D] = AGX3_IMAGE_WRITE_1D,
+      [AGX_DIM_1D_ARRAY] = AGX3_IMAGE_WRITE_1D_ARRAY,
+      [AGX_DIM_2D] = AGX3_IMAGE_WRITE,
+      [AGX_DIM_2D_ARRAY] = AGX3_IMAGE_WRITE_2D_ARRAY,
+      [AGX_DIM_2D_MS] = A3_NONE,
+      [AGX_DIM_3D] = AGX3_IMAGE_WRITE_3D,
+      [AGX_DIM_CUBE] = AGX3_IMAGE_WRITE_CUBE,
+      [AGX_DIM_CUBE_ARRAY] = AGX3_IMAGE_WRITE_CUBE_ARRAY,
+      [AGX_DIM_2D_MS_ARRAY] = A3_NONE,
+   };
+   agx_index data = I->src[0], coords = I->src[1], lod = I->src[2];
+   agx_index base = I->src[3], index = I->src[4];
+
+   if (I->dim >= ARRAY_SIZE(instr) || instr[I->dim] == A3_NONE)
+      a3_fail(a, "image write to a multisampled image (lowered on G13)");
+   if (lod.type != AGX_INDEX_IMMEDIATE || lod.value >= 4096)
+      a3_fail(a, "image write at a level that is not an immediate");
+   if (data.size != AGX_SIZE_32 || coords.size != AGX_SIZE_32)
+      a3_fail(a, "image write of 16-bit data or coordinates");
+
+   bool array = I->dim == AGX_DIM_1D_ARRAY || I->dim == AGX_DIM_2D_ARRAY ||
+                I->dim == AGX_DIM_CUBE_ARRAY;
+   unsigned ncoords = coords.channels_m1 + 1;
+
+   for (unsigned c = 0; c < ncoords; ++c) {
+      unsigned slot = c < 2                       ? c
+                      : (array && c == ncoords - 1) ? a3_imgw_layer
+                                                    : a3_imgw_z;
+      agx_index v = coords;
+      v.value += 2 * c;
+      v.channels_m1 = 0;
+      a3_mov_cr(a, I, slot, v, emission);
+   }
+
+   static const uint8_t data_slot[4] = {2, 3, 6, 7};
+   for (unsigned c = 0; c < 4; ++c) {
+      agx_index v = data;
+      v.value += 2 * c;
+      v.channels_m1 = 0;
+      a3_mov_cr(a, I, data_slot[c], v, emission);
+   }
+
+   a3_begin(a, I, instr[I->dim], T_IMGW);
+   a3_set(a, IMGW_CR, a3_kind_value(a, IMGW_CR, A3_CR, 0, BITFIELD_BIT(A3_LU)));
+   a3_set(a, IMGW_G, 0);
+   a3_set(a, IMGW_BASE, a3_membase(a, IMGW_BASE, base));
+
+   if (index.type == AGX_INDEX_IMMEDIATE) {
+      a3_set(a, IMGW_INDEX, a3_imm(a, IMGW_INDEX, index.value, false));
+   } else {
+      if (index.size == AGX_SIZE_64)
+         a3_fail(a, "image index is 64-bit");
+      index.abs = index.neg = false;
+      a3_set(a, IMGW_INDEX, a3_reg(a, IMGW_INDEX, index, 0, 0, 0));
+   }
+
+   a3_set(a, IMGW_LOD, lod.value);
+   a3_set(a, IMGW_DATA, 4);
+   a3_set(a, IMGW_WAIT, BITFIELD_BIT(0));
+   a3_emit(a, emission);
+}
+
 /* icmp_ballot/fcmp_ballot (and the quad forms): cc, dest, t/v, A, B. The
  * inverted conditions are the condition + 8. G15 has no NaN-aware ballot
  * compare (G13's LTN and GTN). */
@@ -2047,16 +2142,26 @@ a3_fcc(enum agx_fcond c)
 }
 
 /* cmp: cc = A cond B, inverted by invert (cmpselcc4: 32 + cond, 48 + the
- * inverted cond) */
+ * inverted cond). The 10-byte form lacks bits of the compared values (an
+ * abs on A); the 14-byte form has them, as cmpsel's. */
 static void
 a3_cmp(struct a3 *a, const agx_instr *I, bool fl, unsigned cond, bool invert,
        unsigned cc, struct util_dynarray *emission)
 {
-   a3_begin(a, I, AGX3_CMPCC10, T_ZERO10);
-   a3_set(a, CMP_CC, (invert ? 48 : 32) + cond);
-   a3_set(a, CMP_D, cc);
-   a3_set(a, CMP_A, a3_src(a, CMP_A, I->src[0], !fl));
-   a3_set(a, CMP_B, a3_src(a, CMP_B, I->src[1], !fl));
+   for (unsigned len = 10;; len = 14) {
+      uint8_t out[AGX3_MAX_BYTES];
+
+      a3_begin(a, I, len == 10 ? AGX3_CMPCC10 : AGX3_CMPCC14,
+               len == 10 ? T_ZERO10 : T_ZERO14);
+      a3_set(a, CMP_CC, (invert ? 48 : 32) + cond);
+      a3_set(a, CMP_D, cc);
+      a3_set(a, CMP_A, a3_src(a, CMP_A, I->src[0], !fl));
+      a3_set(a, CMP_B, a3_src(a, CMP_B, I->src[1], !fl));
+
+      if (len == 14 || a3_check(a, out))
+         break;
+   }
+
    a3_emit(a, emission);
 }
 
@@ -2149,6 +2254,8 @@ agx3_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
       assert(!strcmp(agx3_kind_names[A3_SS], "ss"));
       a3_survey_on = debug_get_bool_option("AGX3_SURVEY", false);
       a3_debug = debug_get_bool_option("AGX3_DEBUG", false);
+      a3_imgw_z = debug_get_num_option("AGX3_IMGW_Z", 4);
+      a3_imgw_layer = debug_get_num_option("AGX3_IMGW_LAYER", 5);
       if (a3_survey_on)
          atexit(a3_survey_print);
    }
@@ -2429,6 +2536,10 @@ agx3_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
 
    case AGX_OPCODE_BLOCK_IMAGE_STORE:
       a3_block_image_store(&a, I, emission);
+      return;
+
+   case AGX_OPCODE_IMAGE_WRITE:
+      a3_image_write(&a, I, emission);
       return;
 
    case AGX_OPCODE_STOP:

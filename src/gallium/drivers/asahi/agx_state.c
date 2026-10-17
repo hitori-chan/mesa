@@ -1253,8 +1253,11 @@ target_is_array(enum pipe_texture_target target)
 /*
  * G15's PBE descriptor (cmdbuf.xml's "PBE G15"; Honeykrisp's pack_pbe_g15).
  * Only what Apple's encoder and demo15 settle is packed: uncompressed images
- * without multisampling, 2D, linear with one layer or twiddled. The rest fails
- * here rather than reaching the hardware as a G13 descriptor.
+ * without multisampling, linear with one layer or twiddled; buffers as linear
+ * 2D images AGX_TEXTURE_BUFFER_WIDTH texels wide like their textures, and 3D
+ * images with their depth in the layer count, as the texture's depth field
+ * (both not verified on G15). The rest fails here rather than reaching the
+ * hardware as a G13 descriptor.
  */
 static void
 agx_pack_pbe_g15(struct agx_pbe_packed *out, struct agx_resource *tex,
@@ -1267,18 +1270,20 @@ agx_pack_pbe_g15(struct agx_pbe_packed *out, struct agx_resource *tex,
    bool is_buffer = (tex->base.target == PIPE_BUFFER);
    unsigned layers = is_buffer ? 1 : view->u.tex.last_layer - layer + 1;
 
-   if (is_buffer || tex->layout.compressed ||
-       util_res_sample_count(&tex->base) > 1 || target == PIPE_TEXTURE_3D ||
+   if (tex->layout.compressed || util_res_sample_count(&tex->base) > 1 ||
        (tex->layout.tiling == AIL_TILING_LINEAR && layers > 1)) {
-      fprintf(stderr, "G15: PBE of a buffer, compressed, multisampled, 3D or "
-                      "linear layered image is not supported yet\n");
+      fprintf(stderr, "G15: PBE of a compressed, multisampled or linear "
+                      "layered image is not supported yet\n");
       assert(0);
    }
 
    agx_pack(out, PBE_G15, cfg) {
       cfg.dimension =
-         agx_translate_tex_dim(target, util_res_sample_count(&tex->base));
-      cfg.layout = agx_translate_layout(tex->layout.tiling);
+         is_buffer ? AGX_TEXTURE_DIMENSION_2D
+                   : agx_translate_tex_dim(target,
+                                           util_res_sample_count(&tex->base));
+      cfg.layout = is_buffer ? AGX_LAYOUT_LINEAR
+                             : agx_translate_layout(tex->layout.tiling);
       cfg.channels = ail_pixel_format[view->format].channels;
       cfg.type = ail_pixel_format[view->format].type;
 
@@ -1305,7 +1310,20 @@ agx_pack_pbe_g15(struct agx_pbe_packed *out, struct agx_resource *tex,
       cfg.height = view->resource->height0;
       cfg.mipmapped = tex->mipmapped;
 
-      if (tex->layout.tiling == AIL_TILING_LINEAR) {
+      if (is_buffer) {
+         unsigned size_el =
+            agx_texture_buffer_size_el(view->format, view->u.buf.size);
+         unsigned stride_B =
+            AGX_TEXTURE_BUFFER_WIDTH * util_format_get_blocksize(view->format);
+
+         /* The offset is aligned to 64 B (texture_buffer_offset_alignment);
+          * libagx_buffer_image_offset adds word 4, left 0 */
+         cfg.buffer = agx_pbe_addr(
+            tex, agx_map_texture_gpu(tex, 0) + view->u.buf.offset);
+         cfg.width = AGX_TEXTURE_BUFFER_WIDTH;
+         cfg.height = MAX2(DIV_ROUND_UP(size_el, cfg.width), 1);
+         cfg.stride = (stride_B >> 4) - 1;
+      } else if (tex->layout.tiling == AIL_TILING_LINEAR) {
          /* In 16-byte units, minus 1 (demo15's 0xF for a 256 B stride) */
          assert((ail_get_linear_stride_B(&tex->layout, level) & 15) == 0);
          cfg.stride = (ail_get_linear_stride_B(&tex->layout, level) >> 4) - 1;
@@ -3322,25 +3340,39 @@ agx_build_pipeline(struct agx_batch *batch, struct agx_compiled_shader *cs,
 }
 
 /*
- * G15: the direct launch block (spec: metal-compute.md; hk_cdm_launch_g15). The
- * launch points at the entry program, a full VA.
+ * G15: the launch block (spec: metal-compute.md; hk_cdm_launch_g15). The
+ * launch points at the entry program, a full VA. The mode is G13's (word 0
+ * bits 28:27): an indirect global launch reads the threadgroup counts at the
+ * VA, as Metal's dispatchThreadgroupsWithIndirectBuffer does; an indirect
+ * local one the threadgroup size as well. Indirect launches are not verified
+ * on the hardware.
  */
 static uint32_t *
 agx_cdm_launch_g15(uint32_t *out, struct agx_device *dev, struct agx_grid grid,
                    struct agx_workgroup wg, uint32_t usc)
 {
-   bool multi = grid.count[1] > 1 || grid.count[2] > 1;
+   bool indirect = agx_is_indirect(grid);
+   bool multi = indirect || grid.count[1] > 1 || grid.count[2] > 1;
 
-   *(out++) = multi ? BITFIELD_BIT(19) : 0;
+   *(out++) = (multi ? BITFIELD_BIT(19) : 0) | (grid.mode << 27);
    agx_g15_pipeline(out, dev->shader_base + usc);
    out += AGX_G15_PIPELINE_LENGTH / 4;
    *(out++) = 0x40000001;
-   *(out++) = grid.count[0];
-   *(out++) = grid.count[1];
-   *(out++) = grid.count[2];
-   *(out++) = wg.x & BITFIELD_MASK(11);
-   *(out++) = wg.y & BITFIELD_MASK(11);
-   *(out++) = wg.z & BITFIELD_MASK(11);
+
+   if (indirect) {
+      *(out++) = (grid.ptr >> 32) & BITFIELD_MASK(16);
+      *(out++) = grid.ptr;
+   } else {
+      *(out++) = grid.count[0];
+      *(out++) = grid.count[1];
+      *(out++) = grid.count[2];
+   }
+
+   if (grid.mode != AGX_CDM_MODE_INDIRECT_LOCAL) {
+      *(out++) = wg.x & BITFIELD_MASK(11);
+      *(out++) = wg.y & BITFIELD_MASK(11);
+      *(out++) = wg.z & BITFIELD_MASK(11);
+   }
 
    /* G15C: Metal's barrier after a launch */
    *(out++) = 0x60000160;
@@ -3359,10 +3391,8 @@ agx_launch_internal(struct agx_batch *batch, struct agx_grid grid,
    uint32_t *out = (uint32_t *)batch->cdm.current;
 
    if (dev->params.gpu_generation >= 15) {
-      if (!usc || agx_is_indirect(grid)) {
-         fprintf(
-            stderr, "G15: dispatch skipped (%s)\n",
-            usc ? "indirect dispatch not supported yet" : "no entry program");
+      if (!usc) {
+         fprintf(stderr, "G15: dispatch skipped (no entry program)\n");
       } else {
          out = agx_cdm_launch_g15(out, dev, grid, wg, usc);
       }
@@ -3395,17 +3425,14 @@ agx_launch_precomp(struct agx_batch *batch, struct agx_grid grid,
                    void *args, size_t arg_size)
 {
    struct agx_device *dev = agx_device(batch->ctx->base.screen);
-
-   /* libagx's kernels have no G15 build yet (they would run as G13 code) */
-   if (dev->params.gpu_generation >= 15) {
-      fprintf(stderr,
-              "G15: libagx kernel %u has no G15 build, dispatch skipped\n",
-              program);
-      return;
-   }
-
    struct agx_precompiled_shader *cs =
       agx_get_precompiled(&batch->ctx->bg_eot, program);
+
+   if (!cs) {
+      fprintf(stderr, "G15: libagx kernel %u has no G15 build, dispatch "
+                      "skipped\n", program);
+      return;
+   }
 
    struct agx_ptr t =
       agx_pool_alloc_aligned(&batch->pipeline_pool, agx_usc_size(15), 64);
@@ -3415,6 +3442,23 @@ agx_launch_precomp(struct agx_batch *batch, struct agx_grid grid,
 
    uint32_t usc = agx_usc_addr(dev, t.gpu);
    agx_usc_words_precomp(t.cpu, &cs->b, uploaded_data, arg_size);
+
+   /* G15 launches the kernel's entry program, built from the words */
+   if (dev->params.gpu_generation >= 15) {
+      const uint32_t *bin = dev->libagx_programs[program];
+      const struct agx_precompiled_kernel_info *info = (const void *)bin;
+      struct agx_esl_code code = {
+         .va = cs->ptr,
+         .cpu = (const uint8_t *)bin + sizeof(*info),
+         .size = info->binary_size,
+         .main_size = info->main_size,
+         .stack_size = info->stack_size,
+         .cr_count = info->cr_count,
+      };
+
+      uint64_t esl = agx_upload_esl(batch, t.cpu, &code, AGX_ESL_COMPUTE);
+      usc = esl ? agx_usc_addr(dev, esl) : 0;
+   }
 
    agx_batch_add_bo(batch, cs->bo);
    agx_launch_internal(batch, grid, cs->b.workgroup, cs->b.launch,

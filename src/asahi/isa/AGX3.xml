@@ -2565,6 +2565,42 @@
     </case>
   </encoding>
 
+  <!--
+   image_write's texture index (instruction bits 56:71, 119, 120): a 16-bit
+   immediate (16:17 clear); a uniform (17 set; 0:8 the uniform, 13 32-bit);
+   a register (16 set; 0:7 the register, 8 lu, 10 cache, 13 32-bit)
+  -->
+  <encoding name="imgidx">
+    <case>
+      <exact bit="16:17">00</exact>
+      <immediate name="imm" bit="0:15"/>
+    </case>
+    <case>
+      <exact bit="9:17">100010000</exact>
+      <immediate name="uniform" bit="1:8" shift="1"/>
+      <property name="size32"/>
+      <carry bit="0"/>
+    </case>
+    <case>
+      <exact bit="9:17">100000000</exact>
+      <immediate name="uniform" bit="0:8"/>
+    </case>
+    <case>
+      <exact bit="9 11:17">01001000</exact>
+      <immediate name="reg" bit="1:7" shift="1"/>
+      <modifier name="lu" bit="8"/>
+      <modifier name="cache" bit="10"/>
+      <property name="size32"/>
+      <carry bit="0"/>
+    </case>
+    <case>
+      <exact bit="9 11:17">01000000</exact>
+      <immediate name="reg" bit="0:7"/>
+      <modifier name="lu" bit="8"/>
+      <modifier name="cache" bit="10"/>
+    </case>
+  </encoding>
+
   <!-- mov_imm, 7-bit immediate -->
   <ins name="mov_imm7" display="mov_imm" length="2">
     <exact bit="0:2 15">0100</exact>
@@ -3274,6 +3310,49 @@
     <modifier name="wait" bit="12:17" kind="wait"/>
     <modifier name="unk" bit="18 20 22" kind="expect3"/>
   </ins>
+
+  <!--
+   image_write (imgwci): one texel to the image whose PBE descriptor is entry
+   index of the 32 B array at a uniform or register pair (libLLVM 32023's
+   imgwci tree and MC lowering handler sub_250904F34, texture.md). The
+   coordinates and the data are a tuple of eight 32-bit coordinate registers
+   from cr: x, y, data x, data y, then z, the layer, data z, data w (the
+   z and layer slots are not verified). g is the group of their producers.
+   The level is the 12-bit immediate (a uniform or none are other forms);
+   data says which data components are given (Apple's codes: 4 all four, 3
+   xyz with w = 1, 7 x broadcast; the others are listed in texture.md). The
+   q bits are what Apple's 27.0.1 compiler sets for an image write (its
+   flags operand); bit 108 is clear in the QuartzCore corpus. The dimension
+   variants are bits 74:75 and 46 (clear: an array whose layer is in cr);
+   an array layer, a cube face or a level as an immediate are other forms.
+  -->
+  <group name="image_write" length="16">
+    <exact bit="0:10 47 106 114:118">000100000011010111</exact>
+    <exact bit="46 74:75">mode</exact>
+    <src kind="crsrc" bit="24:36 99"/>
+    <immediate name="g" bit="96:98"/>
+    <src kind="membase" bit="37:43 113"/>
+    <src kind="imgidx" bit="56:71 119 120"/>
+    <immediate name="lod" bit="84:95"/>
+    <immediate name="data" bit="110:112"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+    <modifier name="pcache" bit="100" display="pcache"/>
+    <modifier name="plu" bit="101" display="plu"/>
+    <immediate name="q102" bit="102"/>
+    <immediate name="q103" bit="103"/>
+    <immediate name="q104" bit="104:105"/>
+    <immediate name="q107" bit="107"/>
+    <immediate name="q108" bit="108"/>
+    <immediate name="q109" bit="109"/>
+    <ins name="image_write_1d" display="image_write_1d" mode="001"/>
+    <ins name="image_write" display="image_write" mode="011"/>
+    <ins name="image_write_3d" display="image_write_3d" mode="101"/>
+    <ins name="image_write_cube" display="image_write_cube" mode="111"/>
+    <ins name="image_write_1d_array" display="image_write_1d_array" mode="000"/>
+    <ins name="image_write_2d_array" display="image_write_2d_array" mode="010"/>
+    <ins name="image_write_cube_array" display="image_write_cube_array" mode="100"/>
+  </group>
 
   <!-- IAddInstructionDesc -->
   <group name="iadd" length="10">
