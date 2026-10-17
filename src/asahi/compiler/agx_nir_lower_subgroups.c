@@ -168,12 +168,20 @@ lower(nir_builder *b, nir_intrinsic_instr *intr, void *data)
 }
 
 static bool
-lower_subgroup_filter(const nir_intrinsic_instr *intr, UNUSED const void *data)
+lower_subgroup_filter(const nir_intrinsic_instr *intr, const void *data)
 {
+   const bool *g15 = data;
+
    /* Use default behaviour for everything but scans */
    if (intr->intrinsic != nir_intrinsic_exclusive_scan &&
        intr->intrinsic != nir_intrinsic_inclusive_scan &&
        intr->intrinsic != nir_intrinsic_reduce)
+      return true;
+
+   /* G15's reductions write a stack, coordinate or uniform register (libLLVM
+    * 32023's sRed and qRed trees), its scans are not known: shuffles instead
+    */
+   if (*g15)
       return true;
 
    if (intr->def.num_components > 1 || intr->def.bit_size == 1)
@@ -209,11 +217,12 @@ lower_subgroup_filter(const nir_intrinsic_instr *intr, UNUSED const void *data)
 }
 
 bool
-agx_nir_lower_subgroups(nir_shader *s)
+agx_nir_lower_subgroups(nir_shader *s, bool g15)
 {
    /* First, do as much common lowering as we can */
    nir_lower_subgroups_options opts = {
       .filter = lower_subgroup_filter,
+      .filter_data = &g15,
       .lower_read_first_invocation = true,
       .lower_inverse_ballot = true,
       .lower_to_scalar = true,
