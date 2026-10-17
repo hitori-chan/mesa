@@ -455,6 +455,27 @@ lay_out_uniforms(struct agx_compiled_shader *shader, struct state *state,
          };
       }
 
+      /* G15: the stage table's texture and sampler bases at u0:u3, where
+       * the texture instructions can name them whatever follows */
+      for (unsigned t = AGX_SYSVAL_TABLE_VS; g15 && t < AGX_NUM_SYSVAL_TABLES;
+           ++t) {
+         struct agx_stage_uniforms *s = NULL;
+         unsigned start = (uintptr_t)&s->texture_base / 2;
+         unsigned end = ((uintptr_t)&s->sampler_base + 8) / 2;
+
+         if (!BITSET_TEST_RANGE(state->tables[t].pushed, start, end - 1))
+            continue;
+
+         shader->push[shader->push_range_count++] = (struct agx_push_range){
+            .uniform = AGX_ABI_VUNI_TABLES,
+            .table = t,
+            .offset = start * 2,
+            .length = end - start,
+         };
+
+         BITSET_CLEAR_RANGE(state->tables[t].pushed, start, end - 1);
+      }
+
       uniform = AGX_ABI_VUNI_COUNT_GL(count, sw);
    } else if (state->stage == MESA_SHADER_FRAGMENT) {
       struct agx_draw_uniforms *u = NULL;
