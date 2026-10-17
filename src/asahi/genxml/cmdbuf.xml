@@ -986,6 +986,13 @@
     <field name="Size" size="32" start="0" type="uint" modifier="shr(2)"/>
   </struct>
 
+  <!-- G15: an indexed draw ends with the index buffer address's bits 47:40
+       (Apple's G15 drawIndexedPrimitives writes it after the size; G13X's
+       does not) -->
+  <struct name="Index List: Buffer top" size="4">
+    <field name="Buffer top" size="8" start="0" type="hex"/>
+  </struct>
+
   <struct name="Index List: Indirect buffer" size="8">
     <field name="Address hi" size="8" start="0" type="hex"/>
     <field name="Address lo" size="32" start="32" type="hex"/>
