@@ -1834,9 +1834,14 @@ agx_emit_intrinsic(agx_builder *b, nir_intrinsic_instr *instr)
       return agx_get_sr_to(b, dst, AGX_SR_SAMPLES_LOG2);
 
    case nir_intrinsic_load_sample_mask_in:
-      return agx_get_sr_to(b, dst, AGX_SR_INPUT_SAMPLE_MASK);
-
    case nir_intrinsic_load_sample_mask:
+      /* G15 has no readable sample mask input (draws.md, Multisampling): the
+       * coverage (sr66, which Apple's per-sample shading reads) stands in
+       * for it */
+      if (instr->intrinsic == nir_intrinsic_load_sample_mask_in &&
+          b->shader->key->dev.gpu_generation < 15)
+         return agx_get_sr_to(b, dst, AGX_SR_INPUT_SAMPLE_MASK);
+
       return agx_get_sr_coverage_to(b, dst, AGX_SR_COVERAGE_MASK);
 
    case nir_intrinsic_load_helper_invocation:

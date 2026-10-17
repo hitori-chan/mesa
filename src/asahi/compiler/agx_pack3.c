@@ -557,6 +557,10 @@ a3_sr(const struct a3 *a, enum agx_sr sr)
       return 23;
    case AGX_SR_BACKFACING:
       return 69;
+   /* SR_CVGINFO, the pixel's sample coverage: Apple's per-sample shading
+    * masks its tile stores with its bits (draws.md, Multisampling) */
+   case AGX_SR_COVERAGE_MASK:
+      return 66;
    /* demo15's vertex shader reads sr93 (VERTEXID in libLLVM's register
     * table) for its vertex; the instance ID is sr88 (INSTID, not verified
     * on the hardware). Whether sr93 includes the base vertex is not known. */
