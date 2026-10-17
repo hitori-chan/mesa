@@ -5688,7 +5688,8 @@ agx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
          AGX_VDM_STATE_VERTEX_UNKNOWN_LENGTH + 4 /* padding */ +
          AGX_INDEX_LIST_LENGTH + AGX_INDEX_LIST_BUFFER_LO_LENGTH +
          AGX_INDEX_LIST_COUNT_LENGTH + AGX_INDEX_LIST_INSTANCES_LENGTH +
-         AGX_INDEX_LIST_START_LENGTH + AGX_INDEX_LIST_BUFFER_SIZE_LENGTH);
+         AGX_INDEX_LIST_START_LENGTH + AGX_INDEX_LIST_BUFFER_SIZE_LENGTH +
+         AGX_INDEX_LIST_BUFFER_TOP_LENGTH);
 
    uint8_t *out = agx_encode_state(batch, batch->vdm.current);
 
@@ -5719,19 +5720,14 @@ agx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
          draw.index_bias = draws->index_bias;
    }
 
-   /* G15: the VDM reads the index buffer and indirect draw pointers in its
-    * 40-bit form too (assumed from the stream's other pointers, not verified)
+   /* G15: unlike the stream's other pointers, the index buffer and indirect
+    * draw pointers are full VAs (Apple's G15 drawIndexedPrimitives; the index
+    * fetch faults at VA - 64 GiB otherwise), the index buffer's bits 47:40 in
+    * a word of their own (agx_vdm_draw).
     */
    struct agx_device *dev = agx_device(ctx->base.screen);
-   if (dev->params.gpu_generation >= 15) {
-      if (draw.indexed)
-         draw.index_buffer = agx_vdm_va(dev, draw.index_buffer);
 
-      if (indirect)
-         draw.b.ptr = agx_vdm_va(dev, draw.b.ptr);
-   }
-
-   out = (void *)agx_vdm_draw((uint32_t *)out, 0 /* ignored for now */, draw,
+   out = (void *)agx_vdm_draw((uint32_t *)out, dev->chip, draw,
                               agx_primitive_for_pipe(info->mode));
 
    /* Barrier transform feedback writes on themselves for consistency.
