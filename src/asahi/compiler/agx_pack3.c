@@ -863,6 +863,11 @@ enum {
    TEX_USMP = 11,
    TEX_UTEX = 12,
    TEX_LOD = 13,
+   TEX_Q3 = 13,
+   TEX_OFFSET = 14,
+   TEX_MODE = 15,
+   /* a gather's component sits where the others' mask does */
+   TEX_COMPONENT = TEX_MASK,
 };
 
 /* An ALU instruction: the destination, the sources in IR order at the
@@ -1367,6 +1372,64 @@ static const enum agx3_instr a3_tex_load_nolod[] = {
    [AGX_DIM_2D_MS_ARRAY] = AGX3_TEXTURE_LOAD_NOLOD_2D_MS_ARRAY,
 };
 
+/* With F42's constant texel offset (auto LOD, level 0, a fetch's level) */
+static const enum agx3_instr a3_tex_offset[] = {
+   [AGX_DIM_2D] = AGX3_TEXTURE_SAMPLE_OFFSET,
+   [AGX_DIM_2D_ARRAY] = AGX3_TEXTURE_SAMPLE_OFFSET_2D_ARRAY,
+   [AGX_DIM_3D] = AGX3_TEXTURE_SAMPLE_OFFSET_3D,
+};
+
+static const enum agx3_instr a3_tex_l0_offset[] = {
+   [AGX_DIM_2D] = AGX3_TEXTURE_SAMPLE_L0_OFFSET,
+   [AGX_DIM_2D_ARRAY] = AGX3_TEXTURE_SAMPLE_L0_OFFSET_2D_ARRAY,
+   [AGX_DIM_3D] = AGX3_TEXTURE_SAMPLE_L0_OFFSET_3D,
+};
+
+static const enum agx3_instr a3_tex_load_offset[] = {
+   [AGX_DIM_2D] = AGX3_TEXTURE_LOAD_OFFSET,
+   [AGX_DIM_2D_ARRAY] = AGX3_TEXTURE_LOAD_OFFSET_2D_ARRAY,
+   [AGX_DIM_3D] = AGX3_TEXTURE_LOAD_OFFSET_3D,
+};
+
+/* Gathers, at the automatic LOD (Apple's gather has no LOD operand) */
+static const enum agx3_instr a3_tex_gather[] = {
+   [AGX_DIM_2D] = AGX3_TEXTURE_GATHER,
+   [AGX_DIM_2D_ARRAY] = AGX3_TEXTURE_GATHER_2D_ARRAY,
+};
+
+static const enum agx3_instr a3_tex_gather_offset[] = {
+   [AGX_DIM_2D] = AGX3_TEXTURE_GATHER_OFFSET,
+   [AGX_DIM_2D_ARRAY] = AGX3_TEXTURE_GATHER_OFFSET_2D_ARRAY,
+};
+
+/* Depth comparisons: the mode codes (bits 48:63) of texture_sample_mode and
+ * texture_gather_mode, from the encoder tree (f143; no 3D form) */
+struct a3_cmp_mode {
+   uint16_t auto_lod, level0, auto_offset, level0_offset;
+};
+
+static const struct a3_cmp_mode a3_tex_cmp[] = {
+   [AGX_DIM_2D] = {32, 41, 545, 571},
+   [AGX_DIM_2D_ARRAY] = {1056, 297, 801, 635},
+};
+
+/* An instruction of one of the tables above, A3_NONE for a dimension it
+ * leaves out (a designated initialiser leaves those 0, a real instruction) */
+static enum agx3_instr
+a3_tex_pick(const enum agx3_instr *table, enum agx_dim dim)
+{
+   switch (dim) {
+   case AGX_DIM_2D:
+   case AGX_DIM_2D_ARRAY:
+   case AGX_DIM_3D:
+      if (table == a3_tex_gather || table == a3_tex_gather_offset)
+         return dim == AGX_DIM_3D ? A3_NONE : table[dim];
+      return table[dim];
+   default:
+      return A3_NONE;
+   }
+}
+
 /* The IR's coordinate vector, G13's layout: the spatial coordinates (a
  * cube's direction), then for an array or a multisampled texture one 32-bit
  * word holding the layer, or the sample index in its low half and the layer
@@ -1409,9 +1472,11 @@ a3_tex_slot(const agx_instr *I, unsigned c)
  * one 32-bit slot each (a3_tex_slot), in group 0, which the instruction
  * waits for; the result arrives in group A3_SYNC_G and is waited for at
  * once. Done: every dimension, automatic LOD (fragment shaders) and level 0,
- * a fetch at a constant level, immediate or register indices. A cube reads
- * face 0 whatever the direction: where the face goes is not known
- * (texture.md). */
+ * a fetch at a constant level, immediate or register indices, constant
+ * offsets and gathers (the encoder tree's forms, not verified), 2D and 2D
+ * array depth compares without an offset (the reference in cr2). Gallium
+ * samples a cube as a 2D array (agx_nir_lower_cube_g15): cube mode's face
+ * operand is not known (texture.md). */
 static void
 a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
 {
@@ -1424,8 +1489,18 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
       a3_fail(a, "image load not supported yet");
    if (I->dim >= ARRAY_SIZE(a3_tex_auto))
       a3_fail(a, "texture dimension");
-   if (I->offset || I->shadow || I->query_lod || I->gather || I->sparse)
-      a3_fail(a, "texture offset, compare, query, gather or sparse");
+   if (I->query_lod || I->sparse)
+      a3_fail(a, "texture query or sparse");
+   if (I->shadow && I->dim != AGX_DIM_2D && I->dim != AGX_DIM_2D_ARRAY)
+      a3_fail(a, "texture compare other than 2D or 2D array");
+   if (I->shadow && I->offset)
+      a3_fail(a, "texture compare with an offset");
+
+   /* A constant offset is F42's immediate (agx_optimizer inlines it) */
+   bool gather = I->gather != AGX_GATHER_NONE;
+   agx_index offset = I->src[5];
+   if (I->offset && offset.type != AGX_INDEX_IMMEDIATE)
+      a3_fail(a, "texture offset in a register");
    /* A fetch's level is F28's 12-bit immediate (Apple's loads have 0) */
    bool imm_level = load && I->lod_mode == AGX_LOD_MODE_LOD_MIN &&
                     lod.type == AGX_INDEX_IMMEDIATE && lod.value < 4096;
@@ -1434,6 +1509,8 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
 
    if (!auto_lod && !imm_level && !level0)
       a3_fail(a, "texture LOD other than automatic or level 0");
+   if (gather && load)
+      a3_fail(a, "gather of a fetch");
    if (load && auto_lod)
       a3_fail(a, "texture_load with an automatic LOD");
    if (coords.size != AGX_SIZE_32 || a3_tex_coords(I) > 4)
@@ -1442,7 +1519,18 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
       a3_fail(a, "texture result mask");
 
    enum agx3_instr instr;
-   if (load) {
+   const char *tmpl = load ? T_TEX_LOAD : auto_lod ? T_TEX_AUTO : T_TEX_L0;
+   if (gather) {
+      /* whatever the stage: a gather reads one level */
+      instr = a3_tex_pick(I->offset ? a3_tex_gather_offset : a3_tex_gather,
+                          I->dim);
+      tmpl = T_TEX_AUTO;
+   } else if (I->offset) {
+      instr = a3_tex_pick(load       ? a3_tex_load_offset
+                          : auto_lod ? a3_tex_offset
+                                     : a3_tex_l0_offset,
+                          I->dim);
+   } else if (load) {
       /* A dimension without levels fetches without F28 */
       instr = a3_tex_load[I->dim];
       if (instr == A3_NONE) {
@@ -1454,8 +1542,17 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
       instr = auto_lod ? a3_tex_auto[I->dim] : a3_tex_l0[I->dim];
    }
 
+   unsigned cmp_mode = 0;
+   if (I->shadow) {
+      const struct a3_cmp_mode *m = &a3_tex_cmp[I->dim];
+      cmp_mode = (auto_lod || gather) ? m->auto_lod : m->level0;
+      instr = gather ? AGX3_TEXTURE_GATHER_MODE : AGX3_TEXTURE_SAMPLE_MODE;
+      if (load)
+         a3_fail(a, "texture compare of a fetch");
+   }
+
    if (instr == A3_NONE)
-      a3_fail(a, "explicit level 0 of a texture without levels");
+      a3_fail(a, "texture form not in the encoder tree for this dimension");
 
    bool has_lod = load && a3_tex_load[I->dim] != A3_NONE;
 
@@ -1466,15 +1563,26 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
       a3_mov_cr(a, I, a3_tex_slot(I, c), v, emission);
    }
 
-   a3_begin(a, I, instr,
-            load       ? T_TEX_LOAD
-            : auto_lod ? T_TEX_AUTO
-                       : T_TEX_L0);
+   /* The depth reference goes to cr2, the slot a 2D or 2D array read leaves
+    * free (texture.md: a 2D sweep on the hardware, 2026-10-18) */
+   if (I->shadow) {
+      agx_index ref = I->src[5];
+      ref.channels_m1 = 0;
+      a3_mov_cr(a, I, 2, ref, emission);
+   }
+
+   a3_begin(a, I, instr, tmpl);
    a3_set(a, TEX_G0, A3_SYNC_G);
    a3_set(a, TEX_G1, A3_SYNC_G);
-   a3_set(a, TEX_MASK, a3_tex_mask[I->mask]);
-   a3_set(a, TEX_DST,
-          a3_reg(a, TEX_DST, I->dest[0], 0, 0, a3_tex_mask[I->mask]));
+   if (gather) {
+      /* four values of one component (AGX_GATHER_R, _G, _B, _A) */
+      a3_set(a, TEX_COMPONENT, I->gather >> 1);
+      a3_set(a, TEX_DST, a3_reg(a, TEX_DST, I->dest[0], 0, 0, a3_tex_mask[0xf]));
+   } else {
+      a3_set(a, TEX_MASK, a3_tex_mask[I->mask]);
+      a3_set(a, TEX_DST,
+             a3_reg(a, TEX_DST, I->dest[0], 0, 0, a3_tex_mask[I->mask]));
+   }
    a3_set(a, TEX_TS, a3_tex_index(a, TEX_TS, A3_TS, texture));
    a3_set(a, TEX_CR, a3_kind_value(a, TEX_CR, A3_CR, 0, 0));
    a3_set(a, TEX_Q1, 1);
@@ -1487,6 +1595,10 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
    /* a fetch's level is F28's 12-bit immediate */
    if (has_lod)
       a3_set(a, TEX_LOD, imm_level ? lod.value : 0);
+   if (I->offset)
+      a3_set(a, TEX_OFFSET, offset.value);
+   if (I->shadow)
+      a3_set(a, TEX_MODE, cmp_mode);
 
    a3_emit(a, emission);
 
@@ -1503,7 +1615,7 @@ agx3_cr_count(const agx_instr *I)
    switch (I->op) {
    case AGX_OPCODE_TEXTURE_SAMPLE:
    case AGX_OPCODE_TEXTURE_LOAD:
-      return MAX2(a3_tex_slot(I, a3_tex_coords(I) - 1) + 1, 2);
+      return MAX2(a3_tex_slot(I, a3_tex_coords(I) - 1) + 1, I->shadow ? 3 : 2);
    case AGX_OPCODE_IMAGE_LOAD:
    case AGX_OPCODE_ZS_EMIT:
    case AGX_OPCODE_BLOCK_IMAGE_STORE:

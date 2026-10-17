@@ -2731,6 +2731,60 @@
    textures have no level). The 2D forms are Apple's; the others are the
    tree's (not verified on the hardware but where texture.md says so).
   -->
+  <!-- before the sample groups: a gather is a sample with bit 26 (their cr field) set -->
+  <group name="texture_gather" length="14/20">
+    <exact bit="0:2">101</exact>
+    <exact bit="48:63">mode</exact>
+    <exact bit="84">1</exact>
+    <exact bit="26">1</exact>
+    <exact bit="37">0</exact>
+    <exact bit="86">0</exact>
+    <modifier name="length" bit="73"/>
+    <immediate name="g0" bit="45:47"/>
+    <immediate name="g1" bit="42:44"/>
+    <immediate name="component" bit="27:28"/>
+    <dest kind="texreg" bit="3 4:7 22:23 15 =11 =1 =0"/>
+    <src kind="ts" bit="71 11:14 68:70 87"/>
+    <src kind="cr" bit="8:10 24:25 =0"/>
+    <immediate name="q1" bit="29"/>
+    <immediate name="q2" bit="31"/>
+    <modifier name="wait" bit="39:41" kind="wait1"/>
+    <modifier name="unk" bit="18:19 36" kind="expect3"/>
+    <src kind="ss" bit="72 32:35 65:67 88"/>
+    <immediate name="usmp" bit="96:99"/>
+    <immediate name="utex" bit="100:103"/>
+    <immediate name="q3" bit="64"/>
+    <ins name="texture_gather" display="texture_gather" mode="0000000000000000"/>
+    <ins name="texture_gather_2d_array" display="texture_gather_2d_array" mode="0000010000000000"/>
+  </group>
+
+  <group name="texture_gather_offset" length="14/20">
+    <exact bit="0:2">101</exact>
+    <exact bit="48:63">mode</exact>
+    <exact bit="84">1</exact>
+    <exact bit="26">1</exact>
+    <exact bit="37">0</exact>
+    <exact bit="86">0</exact>
+    <modifier name="length" bit="73"/>
+    <immediate name="g0" bit="45:47"/>
+    <immediate name="g1" bit="42:44"/>
+    <immediate name="component" bit="27:28"/>
+    <dest kind="texreg" bit="3 4:7 22:23 15 =11 =1 =0"/>
+    <src kind="ts" bit="71 11:14 68:70 87"/>
+    <src kind="cr" bit="8:10 24:25 =0"/>
+    <immediate name="q1" bit="29"/>
+    <immediate name="q2" bit="31"/>
+    <modifier name="wait" bit="39:41" kind="wait1"/>
+    <modifier name="unk" bit="18:19 36" kind="expect3"/>
+    <src kind="ss" bit="72 32:35 65:67 88"/>
+    <immediate name="usmp" bit="96:99"/>
+    <immediate name="utex" bit="100:103"/>
+    <immediate name="q3" bit="64"/>
+    <immediate name="offset" bit="75:79 105:110 21"/>
+    <ins name="texture_gather_offset" display="texture_gather" mode="0000001000000001"/>
+    <ins name="texture_gather_offset_2d_array" display="texture_gather_2d_array" mode="0000001100000001"/>
+  </group>
+
   <group name="texture_sample" length="14/20">
     <exact bit="0:2">101</exact>
     <exact bit="48:56">mode</exact>
@@ -2840,6 +2894,143 @@
     <ins name="texture_load_nolod_cube" display="texture_load_cube" mode="0001000010000000"/>
     <ins name="texture_load_nolod_cube_array" display="texture_load_cube_array" mode="0001000010100000"/>
   </group>
+
+  <!--
+   Constant texel offsets and gathers (texture.md, from libLLVM 32023's smp
+   tree: the offset kind f141, gather f144 and its component f145; not
+   verified on the hardware). The offset is F42's 12-bit immediate, three
+   signed nibbles x, y, z (Mesa's packed offset); it adds to the mode code.
+   A gather sets bit 26 and takes the component in the mask's bits 27:28
+   (bits 37 and 86 clear): four values of one component.
+  -->
+  <group name="texture_sample_offset" length="14/20">
+    <exact bit="0:2">101</exact>
+    <exact bit="48:63">mode</exact>
+    <exact bit="84">1</exact>
+    <modifier name="length" bit="73"/>
+    <immediate name="g0" bit="45:47"/>
+    <immediate name="g1" bit="42:44"/>
+    <modifier name="mask" bit="27:28 37 86" kind="texture_sample_mask"/>
+    <dest kind="texreg" bit="3 4:7 22:23 15 27:28 37 86"/>
+    <src kind="ts" bit="71 11:14 68:70 87"/>
+    <src kind="cr" bit="8:10 24:26"/>
+    <immediate name="q1" bit="29"/>
+    <immediate name="q2" bit="31"/>
+    <modifier name="wait" bit="39:41" kind="wait1"/>
+    <modifier name="unk" bit="18:19 36" kind="expect3"/>
+    <src kind="ss" bit="72 32:35 65:67 88"/>
+    <immediate name="usmp" bit="96:99"/>
+    <immediate name="utex" bit="100:103"/>
+    <immediate name="q3" bit="64"/>
+    <immediate name="offset" bit="75:79 105:110 21"/>
+    <ins name="texture_sample_offset" display="texture_sample" mode="0000001000000001"/>
+    <ins name="texture_sample_offset_2d_array" display="texture_sample_2d_array" mode="0000001100000001"/>
+    <ins name="texture_sample_offset_3d" display="texture_sample_3d" mode="0000001010010001"/>
+  </group>
+
+  <group name="texture_sample_l0_offset" length="14/20">
+    <exact bit="0:2">101</exact>
+    <exact bit="48:58">mode</exact>
+    <exact bit="84">1</exact>
+    <modifier name="length" bit="73"/>
+    <immediate name="g0" bit="45:47"/>
+    <immediate name="g1" bit="42:44"/>
+    <modifier name="mask" bit="27:28 37 86" kind="texture_sample_mask"/>
+    <dest kind="texreg" bit="3 4:7 22:23 15 27:28 37 86"/>
+    <src kind="ts" bit="71 11:14 68:70 87"/>
+    <src kind="cr" bit="8:10 24:26"/>
+    <immediate name="q1" bit="29"/>
+    <immediate name="q2" bit="31"/>
+    <modifier name="wait" bit="39:41" kind="wait1"/>
+    <modifier name="unk" bit="18:19 36" kind="expect3"/>
+    <src kind="ss" bit="72 32:35 65:67 88"/>
+    <immediate name="usmp" bit="96:99"/>
+    <immediate name="utex" bit="100:103"/>
+    <immediate name="q3" bit="64"/>
+    <immediate name="offset" bit="75:79 105:110 21"/>
+    <ins name="texture_sample_l0_offset" display="texture_sample" mode="01000011011"/>
+    <ins name="texture_sample_l0_offset_2d_array" display="texture_sample_2d_array" mode="01001011011"/>
+    <ins name="texture_sample_l0_offset_3d" display="texture_sample_3d" mode="01110010101"/>
+  </group>
+
+  <group name="texture_load_offset" length="14/20">
+    <exact bit="0:2">101</exact>
+    <exact bit="48:58">mode</exact>
+    <exact bit="84">0</exact>
+    <modifier name="length" bit="73"/>
+    <immediate name="g0" bit="45:47"/>
+    <immediate name="g1" bit="42:44"/>
+    <modifier name="mask" bit="27:28 37 86" kind="texture_load_mask"/>
+    <dest kind="texreg" bit="3 4:7 22:23 15 27:28 37 86"/>
+    <src kind="ts" bit="71 11:14 68:70 87"/>
+    <src kind="cr" bit="8:10 24:26"/>
+    <immediate name="q1" bit="29"/>
+    <immediate name="q2" bit="31"/>
+    <modifier name="wait" bit="39:41" kind="wait1"/>
+    <modifier name="unk" bit="18:19 36" kind="expect3"/>
+    <src kind="ss" bit="72 32:35 65:67 88"/>
+    <immediate name="usmp" bit="96:99"/>
+    <immediate name="utex" bit="100:103"/>
+    <immediate name="lod" bit="59:63 89:94 20"/>
+    <immediate name="offset" bit="75:79 105:110 21"/>
+    <ins name="texture_load_offset" display="texture_load" mode="01000000011"/>
+    <ins name="texture_load_offset_2d_array" display="texture_load_2d_array" mode="01001000011"/>
+    <ins name="texture_load_offset_3d" display="texture_load_3d" mode="01110000011"/>
+  </group>
+
+  <!--
+   Depth comparisons, and the sample forms the groups above leave out: bits
+   48:63 as a number (Mesa's packer takes them from a table of the encoder
+   tree's codes; with F28 present, its immediate 0 in bits 59:63). The
+   comparison (f143) is a mode code of its own per LOD form and dimension,
+   no 3D form. Last, so that the named forms disassemble first.
+  -->
+  <ins name="texture_gather_mode" display="texture_gather" length="14/20">
+    <exact bit="0:2">101</exact>
+    <exact bit="84">1</exact>
+    <exact bit="26">1</exact>
+    <exact bit="37">0</exact>
+    <exact bit="86">0</exact>
+    <modifier name="length" bit="73"/>
+    <immediate name="g0" bit="45:47"/>
+    <immediate name="g1" bit="42:44"/>
+    <immediate name="component" bit="27:28"/>
+    <dest kind="texreg" bit="3 4:7 22:23 15 =11 =1 =0"/>
+    <src kind="ts" bit="71 11:14 68:70 87"/>
+    <src kind="cr" bit="8:10 24:25 =0"/>
+    <immediate name="q1" bit="29"/>
+    <immediate name="q2" bit="31"/>
+    <modifier name="wait" bit="39:41" kind="wait1"/>
+    <modifier name="unk" bit="18:19 36" kind="expect3"/>
+    <src kind="ss" bit="72 32:35 65:67 88"/>
+    <immediate name="usmp" bit="96:99"/>
+    <immediate name="utex" bit="100:103"/>
+    <immediate name="q3" bit="64"/>
+    <immediate name="offset" bit="75:79 105:110 21"/>
+    <immediate name="mode" bit="48:63"/>
+  </ins>
+
+  <ins name="texture_sample_mode" display="texture_sample" length="14/20">
+    <exact bit="0:2">101</exact>
+    <exact bit="84">1</exact>
+    <modifier name="length" bit="73"/>
+    <immediate name="g0" bit="45:47"/>
+    <immediate name="g1" bit="42:44"/>
+    <modifier name="mask" bit="27:28 37 86" kind="texture_sample_mask"/>
+    <dest kind="texreg" bit="3 4:7 22:23 15 27:28 37 86"/>
+    <src kind="ts" bit="71 11:14 68:70 87"/>
+    <src kind="cr" bit="8:10 24:26"/>
+    <immediate name="q1" bit="29"/>
+    <immediate name="q2" bit="31"/>
+    <modifier name="wait" bit="39:41" kind="wait1"/>
+    <modifier name="unk" bit="18:19 36" kind="expect3"/>
+    <src kind="ss" bit="72 32:35 65:67 88"/>
+    <immediate name="usmp" bit="96:99"/>
+    <immediate name="utex" bit="100:103"/>
+    <immediate name="q3" bit="64"/>
+    <immediate name="offset" bit="75:79 105:110 21"/>
+    <immediate name="mode" bit="48:63"/>
+  </ins>
 
   <!-- bitop_unary, op 1 -->
   <ins name="mov" display="mov" length="4">

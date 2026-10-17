@@ -96,6 +96,16 @@ agx_validate_sources(agx_instr *I)
          agx_validate_assert(!src.cache);
          agx_validate_assert(!src.discard);
 
+         /* G15's constant texel offset: F42's 12-bit immediate standing for
+          * the packed 32-bit word (agx_optimizer) */
+         if ((I->op == AGX_OPCODE_TEXTURE_SAMPLE ||
+              I->op == AGX_OPCODE_TEXTURE_LOAD) &&
+             s == 5) {
+            agx_validate_assert(src.size == AGX_SIZE_32);
+            agx_validate_assert(src.value < (1 << 12));
+            continue;
+         }
+
          bool ldst = agx_allows_16bit_immediate(I);
 
          /* Immediates are encoded as 8-bit (16-bit for memory load/store). For
