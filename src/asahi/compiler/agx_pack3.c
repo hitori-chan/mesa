@@ -493,8 +493,20 @@ static void
 a3_emit(struct a3 *a, struct util_dynarray *emission)
 {
    uint8_t out[AGX3_MAX_BYTES];
+   bool ok = a3_check(a, out);
 
-   if (!a3_check(a, out))
+   /* A multi-length encoding's longer forms hold operand bits the template's
+    * length cannot (ffma10's abs on its second source is bit 81 of the 12-byte
+    * form), so fall back to them. */
+   for (unsigned i = 0; !ok && a->spec->has_length && i < a->spec->nlengths;
+        i++) {
+      if (a->spec->lengths[i] > a->length) {
+         a->length = a->spec->lengths[i];
+         ok = a3_check(a, out);
+      }
+   }
+
+   if (!ok)
       a3_fail(a, "the operands do not fit the encoding");
 
    memcpy(util_dynarray_grow_bytes(emission, 1, a->length), out, a->length);
