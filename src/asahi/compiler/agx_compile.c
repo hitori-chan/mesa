@@ -3361,7 +3361,7 @@ agx_optimize_nir(nir_shader *nir, bool soft_fault, uint16_t *preamble_size,
 
    NIR_PASS(progress, nir, nir_opt_uniform_subgroup, &subgroups_options);
    if (progress) {
-      NIR_PASS(_, nir, agx_nir_lower_subgroups);
+      NIR_PASS(_, nir, agx_nir_lower_subgroups, g15);
    }
 
    /* The above create operations that need lowering/optimizing */
@@ -4074,7 +4074,7 @@ agx_preprocess_nir(nir_shader *nir)
    NIR_PASS(_, nir, agx_lower_sincos);
    NIR_PASS(_, nir, nir_shader_intrinsics_pass, agx_lower_front_face,
             nir_metadata_control_flow, NULL);
-   NIR_PASS(_, nir, agx_nir_lower_subgroups);
+   NIR_PASS(_, nir, agx_nir_lower_subgroups, false);
    NIR_PASS(_, nir, nir_lower_all_phis_to_scalar);
 
    /* After lowering, run through the standard suite of NIR optimizations. We
@@ -4173,6 +4173,10 @@ agx_compile_shader_nir(nir_shader *nir, struct agx_shader_key *key,
    if (key->dev.gpu_generation >= 15)
       NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_derivatives_g15,
                nir_metadata_control_flow, NULL);
+
+   /* The generic preprocessing left the reductions and scans G13 has */
+   if (key->dev.gpu_generation >= 15)
+      NIR_PASS(_, nir, agx_nir_lower_subgroups, true);
 
    /* Late sysval lowering creates large loads. Load lowering creates unpacks */
    nir_lower_mem_access_bit_sizes_options lower_mem_access_options = {
