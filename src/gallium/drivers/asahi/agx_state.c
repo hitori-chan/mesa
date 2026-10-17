@@ -3413,17 +3413,14 @@ agx_launch_precomp(struct agx_batch *batch, struct agx_grid grid,
                    void *args, size_t arg_size)
 {
    struct agx_device *dev = agx_device(batch->ctx->base.screen);
-
-   /* libagx's kernels have no G15 build yet (they would run as G13 code) */
-   if (dev->params.gpu_generation >= 15) {
-      fprintf(stderr,
-              "G15: libagx kernel %u has no G15 build, dispatch skipped\n",
-              program);
-      return;
-   }
-
    struct agx_precompiled_shader *cs =
       agx_get_precompiled(&batch->ctx->bg_eot, program);
+
+   if (!cs) {
+      fprintf(stderr, "G15: libagx kernel %u has no G15 build, dispatch "
+                      "skipped\n", program);
+      return;
+   }
 
    struct agx_ptr t =
       agx_pool_alloc_aligned(&batch->pipeline_pool, agx_usc_size(15), 64);
@@ -3433,6 +3430,23 @@ agx_launch_precomp(struct agx_batch *batch, struct agx_grid grid,
 
    uint32_t usc = agx_usc_addr(dev, t.gpu);
    agx_usc_words_precomp(t.cpu, &cs->b, uploaded_data, arg_size);
+
+   /* G15 launches the kernel's entry program, built from the words */
+   if (dev->params.gpu_generation >= 15) {
+      const uint32_t *bin = dev->libagx_programs[program];
+      const struct agx_precompiled_kernel_info *info = (const void *)bin;
+      struct agx_esl_code code = {
+         .va = cs->ptr,
+         .cpu = (const uint8_t *)bin + sizeof(*info),
+         .size = info->binary_size,
+         .main_size = info->main_size,
+         .stack_size = info->stack_size,
+         .cr_count = info->cr_count,
+      };
+
+      uint64_t esl = agx_upload_esl(batch, t.cpu, &code, AGX_ESL_COMPUTE);
+      usc = esl ? agx_usc_addr(dev, esl) : 0;
+   }
 
    agx_batch_add_bo(batch, cs->bo);
    agx_launch_internal(batch, grid, cs->b.workgroup, cs->b.launch,
