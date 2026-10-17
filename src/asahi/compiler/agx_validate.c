@@ -345,6 +345,10 @@ agx_read_registers(const agx_instr *I, unsigned s)
       else
          return size;
 
+   case AGX_OPCODE_ITRCOORDS:
+      /* One 32-bit register, built as two 16-bit halves or one 32-bit value */
+      return agx_index_size_16(I->src[0]);
+
    case AGX_OPCODE_ATOMIC:
    case AGX_OPCODE_LOCAL_ATOMIC:
       if (s == 0 && I->atomic_opc == AGX_ATOMIC_OPC_CMPXCHG)
