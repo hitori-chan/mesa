@@ -408,7 +408,7 @@ typedef struct {
    bool explicit_coords : 1;
 
    /* TODO: Handle iter ops more efficient */
-   enum agx_interpolation interpolation : 2;
+   enum agx_interpolation interpolation : 3;
 
    /* G15's flag on the iteration of W's coefficients */
    bool perspective : 1;
@@ -430,7 +430,7 @@ typedef struct {
    bool saturate : 1;
    unsigned mask : 4;
 
-   unsigned padding : 7;
+   unsigned padding : 6;
 } agx_instr;
 
 static inline void
