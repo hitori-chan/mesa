@@ -684,7 +684,10 @@ agx_open_device(void *memctx, struct agx_device *dev)
 
    glsl_type_singleton_init_or_ref();
 
-   if (agx_gather_device_key(dev).needs_g13x_coherency == U_TRISTATE_YES) {
+   if (dev->params.gpu_generation >= 15) {
+      dev->libagx_programs = libagx_g15;
+   } else if (agx_gather_device_key(dev).needs_g13x_coherency ==
+              U_TRISTATE_YES) {
       dev->libagx_programs = libagx_g13x;
    } else {
       dev->libagx_programs = libagx_g13g;

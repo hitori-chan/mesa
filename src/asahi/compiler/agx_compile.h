@@ -190,6 +190,10 @@ struct agx_precompiled_kernel_info {
    uint16_t local_size;
    uint16_t imageblock_stride;
    bool uses_txf;
+
+   /* G15's entry program (lib/agx_esl.c) */
+   uint32_t stack_size;
+   uint16_t cr_count;
 };
 
 static inline struct agx_precompiled_kernel_info
@@ -212,6 +216,8 @@ agx_compact_kernel_info(struct agx_shader_info *info)
       .local_size = info->local_size,
       .imageblock_stride = info->imageblock_stride,
       .uses_txf = info->uses_txf,
+      .stack_size = info->stack_size,
+      .cr_count = info->cr_count,
    };
 }
 

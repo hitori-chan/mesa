@@ -288,11 +288,16 @@ agx_get_precompiled_locked(struct agx_bg_eot_cache *cache, unsigned program)
    if (cache->precomp[program])
       return cache->precomp[program];
 
+   const uint32_t *bin = cache->dev->libagx_programs[program];
+
+   /* A kernel the target has no build of (asahi_clc's skip_for_target) */
+   if (!bin)
+      return NULL;
+
    /* Otherwise, we need to upload. */
    struct agx_precompiled_shader *p =
       ralloc(cache->ht, struct agx_precompiled_shader);
 
-   const uint32_t *bin = cache->dev->libagx_programs[program];
    const struct agx_precompiled_kernel_info *info = (void *)bin;
    const void *binary = (const uint8_t *)bin + sizeof(*info);
 
@@ -319,7 +324,8 @@ agx_get_precompiled_locked(struct agx_bg_eot_cache *cache, unsigned program)
 
    agx_usc_immediates(&b, &info->rodata, p->ptr);
 
-   if (info->uses_txf)
+   /* G15 has no sampler state registers */
+   if (info->uses_txf && cache->dev->params.gpu_generation < 15)
       agx_usc_push_packed(&b, SAMPLER, cache->dev->txf_sampler);
 
    agx_usc_shared(&b, info->local_size, info->imageblock_stride, 0);
@@ -377,5 +383,5 @@ agx_helper_program(struct agx_bg_eot_cache *cache)
    struct agx_precompiled_shader *pc =
       agx_get_precompiled(cache, LIBAGX_HELPER);
 
-   return pc->ptr | 1;
+   return pc ? (pc->ptr | 1) : 0;
 }
