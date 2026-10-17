@@ -327,6 +327,12 @@ agx_vdm_draw(GLOBAL uint32_t *out, enum agx_chip chip, struct agx_draw draw,
       agx_push(out, INDEX_LIST_BUFFER_SIZE, cfg) {
          cfg.size = align(agx_draw_index_range_B(draw), 4);
       }
+
+      if (chip >= AGX_CHIP_G15G) {
+         agx_push(out, INDEX_LIST_BUFFER_TOP, cfg) {
+            cfg.buffer_top = ib >> 40;
+         }
+      }
    }
 
    return out;
@@ -348,6 +354,9 @@ agx_vdm_draw_size(enum agx_chip chip, struct agx_draw draw)
    if (draw.indexed) {
       size += AGX_INDEX_LIST_BUFFER_LO_LENGTH;
       size += AGX_INDEX_LIST_BUFFER_SIZE_LENGTH;
+
+      if (chip >= AGX_CHIP_G15G)
+         size += AGX_INDEX_LIST_BUFFER_TOP_LENGTH;
    }
 
    return size;
