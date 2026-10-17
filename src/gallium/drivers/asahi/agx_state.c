@@ -667,11 +667,51 @@ agx_pack_texture_g15(void *out, struct agx_resource *rsrc,
    unsigned layers =
       is_buffer ? 1 : state->u.tex.last_layer - state->u.tex.first_layer + 1;
 
-   if (is_buffer || rsrc->layout.compressed || rsrc->base.nr_samples > 1 ||
+   if (rsrc->layout.compressed || rsrc->base.nr_samples > 1 ||
        (rsrc->layout.tiling == AIL_TILING_LINEAR && layers > 1)) {
-      fprintf(stderr, "G15: texture of a buffer, compressed, multisampled or "
-                      "linear layered image is not supported yet\n");
+      fprintf(stderr, "G15: texture of a compressed, multisampled or linear "
+                      "layered image is not supported yet\n");
       assert(0);
+   }
+
+   /* A buffer is a linear 2D texture AGX_TEXTURE_BUFFER_WIDTH texels wide, as
+    * on G13 (not verified on G15) */
+   if (is_buffer) {
+      unsigned size_el = agx_texture_buffer_size_el(format, state->u.buf.size);
+      uint64_t address = agx_map_texture_gpu(rsrc, 0) + state->u.buf.offset;
+
+      agx_pack(out, TEXTURE_G15, cfg) {
+         cfg.dimension = AGX_TEXTURE_DIMENSION_2D;
+         cfg.layout = AGX_LAYOUT_LINEAR;
+         cfg.channels = ail_pixel_format[format].channels;
+         cfg.type = ail_pixel_format[format].type;
+         cfg.swizzle_r = agx_channel_from_pipe(swizzle[0]);
+         cfg.swizzle_g = agx_channel_from_pipe(swizzle[1]);
+         cfg.swizzle_b = agx_channel_from_pipe(swizzle[2]);
+         cfg.swizzle_a = agx_channel_from_pipe(swizzle[3]);
+         cfg.width = AGX_TEXTURE_BUFFER_WIDTH;
+         cfg.height = MAX2(DIV_ROUND_UP(size_el, cfg.width), 1);
+         cfg.srgb = (desc->colorspace == UTIL_FORMAT_COLORSPACE_SRGB);
+         cfg.address = address;
+         cfg.stride = (cfg.width * util_format_get_blocksize(format)) - 16;
+      }
+
+      /* libagx's buffer lowering reads G13's layout: the size and offset in
+       * the software words 4 and 5, which G15 reads only when extended, and
+       * the address of an emulated RGB32 buffer in G13's address field (the
+       * hardware fetches such a texture only out of bounds) */
+      uint32_t *w = out;
+      w[4] = size_el;
+      w[5] = 0;
+
+      if (ail_pixel_format[format].channels ==
+          AGX_CHANNELS_R32G32B32_EMULATED) {
+         uint64_t *q = out;
+         q[1] &= ~BITFIELD64_RANGE(2, 36);
+         q[1] |= ((address >> 4) & BITFIELD64_MASK(36)) << 2;
+      }
+
+      return;
    }
 
    agx_pack(out, TEXTURE_G15, cfg) {
@@ -1982,6 +2022,8 @@ agx_shader_initialize(struct agx_device *dev, struct agx_uncompiled_shader *so,
       });
 
    NIR_PASS(_, nir, agx_nir_lower_texture);
+   if (dev->params.gpu_generation >= 15)
+      NIR_PASS(_, nir, agx_nir_lower_txf_samplers_g15);
    NIR_PASS(_, nir, nir_lower_ssbo, NULL);
 
    agx_preprocess_nir(nir);

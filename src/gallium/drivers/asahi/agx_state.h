@@ -1059,6 +1059,8 @@ bool agx_nir_layout_uniforms(nir_shader *shader,
 bool agx_nir_lower_bindings(nir_shader *shader, bool *uses_bindless_samplers,
                             bool g15);
 
+bool agx_nir_lower_txf_samplers_g15(nir_shader *shader);
+
 bool agx_batch_is_active(struct agx_batch *batch);
 bool agx_batch_is_submitted(struct agx_batch *batch);
 

@@ -179,6 +179,28 @@ lower(nir_builder *b, nir_instr *instr, void *data)
    return true;
 }
 
+static bool
+lower_txf_sampler_g15(nir_builder *b, nir_instr *instr, UNUSED void *data)
+{
+   if (instr->type != nir_instr_type_tex)
+      return false;
+
+   b->cursor = nir_before_instr(instr);
+   return lower_sampler_g15(b, nir_instr_as_tex(instr));
+}
+
+/*
+ * G15: agx_nir_lower_texture rewrites a buffer texture's fetch as a 2D fetch
+ * without its sampler (G13 has a txf sampler state register); give it the
+ * table's txf sampler again.
+ */
+bool
+agx_nir_lower_txf_samplers_g15(nir_shader *shader)
+{
+   return nir_shader_instructions_pass(shader, lower_txf_sampler_g15,
+                                       nir_metadata_control_flow, NULL);
+}
+
 bool
 agx_nir_lower_bindings(nir_shader *shader, bool *uses_bindless_samplers,
                        bool g15)
