@@ -518,6 +518,11 @@ pack_pbe_g15(struct hk_device *dev, struct hk_image_view *view,
             cfg.swizzle_a = i;
       }
 
+      /* An X channel takes the alpha, which the tilebuffer store sets to 1 */
+      if (desc->nr_channels == 4 &&
+          desc->channel[3].type == UTIL_FORMAT_TYPE_VOID)
+         cfg.swizzle_a = AGX_CHANNEL_A;
+
       cfg.buffer = base_addr + ail_get_layer_offset_B(layout, layer);
       cfg.width = layout->width_px;
       cfg.height = layout->height_px;

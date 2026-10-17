@@ -1255,6 +1255,11 @@ agx_pack_pbe_g15(struct agx_pbe_packed *out, struct agx_resource *tex,
             cfg.swizzle_a = i;
       }
 
+      /* An X channel takes the alpha, which the tilebuffer store sets to 1 */
+      if (desc->nr_channels == 4 &&
+          desc->channel[3].type == UTIL_FORMAT_TYPE_VOID)
+         cfg.swizzle_a = AGX_CHANNEL_A;
+
       cfg.buffer = agx_pbe_addr(tex, agx_map_texture_gpu(tex, layer));
       cfg.width = view->resource->width0;
       cfg.height = view->resource->height0;
