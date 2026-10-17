@@ -173,6 +173,8 @@ INTERPOLATION = enum("interpolation", {
     2: 'centroid',
     # We translate sample -> sample_register at pack time for simplicity
     3: 'sample_register',
+    # G15: at the coordinates in the second source (itrcoords' result)
+    4: 'coords',
 })
 
 SIMD_OP = enum("simd_op", {
@@ -383,6 +385,10 @@ op("iter", (0x21, 8, _), srcs = 2, imms = [CHANNELS, INTERPOLATION, PERSPECTIVE]
 # Sources are the coeffient register for the varying, the coefficient register
 # for W, and the sample index (if applicable)
 op("iterproj", (0x21, 8, _), srcs = 3, imms = [CHANNELS, INTERPOLATION])
+
+# G15: the interpolation coordinates (a 32-bit register) of a sample by its
+# index or of the centroid, from a 32-bit register (agx_pack3.c)
+op("itrcoords", _, srcs = 1, imms = [INTERPOLATION])
 
 op("ldcf", (0xA1, 8, _), srcs = 1, imms = [CHANNELS])
 op("st_vary", None, dests = 0, srcs = 2, can_eliminate = False)
