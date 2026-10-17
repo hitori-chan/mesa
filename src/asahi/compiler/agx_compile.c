@@ -1264,17 +1264,18 @@ agx_tex_dim(enum glsl_sampler_dim dim, bool array)
  * uniforms, one per render target (the IR's index), that the entry program
  * loads; the offset is the render target's offset in the tilebuffer.
  *
- * Only the single-sample, non-layered 2D form with implicit coordinates and
- * a constant render target is built. What imgwblk's layer and sample operands
- * hold is not known: the other forms keep G13's operands, which the packer
- * rejects.
+ * Only the non-layered 2D forms (one sample or multisampled) with implicit
+ * coordinates and a constant render target are built. What imgwblk's layer
+ * operand holds is not known: the other forms keep G13's operands, which the
+ * packer rejects.
  */
 static bool
 agx_block_image_store_g15_supported(const nir_intrinsic_instr *instr)
 {
    return instr->intrinsic == nir_intrinsic_image_store_block_agx &&
           nir_src_is_const(instr->src[0]) &&
-          nir_intrinsic_image_dim(instr) == GLSL_SAMPLER_DIM_2D &&
+          (nir_intrinsic_image_dim(instr) == GLSL_SAMPLER_DIM_2D ||
+           nir_intrinsic_image_dim(instr) == GLSL_SAMPLER_DIM_MS) &&
           !nir_intrinsic_image_array(instr) &&
           !nir_intrinsic_explicit_coord(instr);
 }
@@ -1305,9 +1306,12 @@ agx_emit_block_image_store_g15(agx_builder *b, nir_intrinsic_instr *instr)
 
    agx_index coords = agx_vec2(b, x, y);
 
+   bool ms = nir_intrinsic_image_dim(instr) == GLSL_SAMPLER_DIM_MS;
+
    return agx_block_image_store(
       b, agx_uniform(4 * rt, AGX_SIZE_64), agx_immediate(rt), offset, coords,
-      agx_format_for_pipe(nir_intrinsic_format(instr)), AGX_DIM_2D, true);
+      agx_format_for_pipe(nir_intrinsic_format(instr)),
+      ms ? AGX_DIM_2D_MS : AGX_DIM_2D, true);
 }
 
 static agx_instr *

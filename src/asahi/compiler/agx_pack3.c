@@ -1959,9 +1959,10 @@ a3_sample_mask(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
  * pack_imgwir's first source is the render target's offset in the tilebuffer
  * in bytes (boot #406: a second target at 4 comes out right with it, and
  * every offset in imgwblk's own operand reads another descriptor); its
- * other two and the flags are not known, the one supported form, 2D with one
- * sample and no layer, takes demo15's: zero sources, the layout it uses and
- * its flags. imgwblk's own operand stays 0, each render target has its own
+ * other two are not known, the supported forms, 2D with no layer, take
+ * demo15's: zero sources and the layout it uses (Apple's multisampled pass
+ * too), with the flags of the image type. imgwblk's own operand stays 0,
+ * each render target has its own
  * descriptor pointer. A following block write overwrites cr2 before the
  * earlier one has read it, so each is followed by a wait (boots #404, #406:
  * without it the two swap their data). The coordinates move through mov to
@@ -1978,10 +1979,9 @@ a3_block_image_store(struct a3 *a, const agx_instr *I,
    if (base.type != AGX_INDEX_UNIFORM || base.size != AGX_SIZE_64 ||
        coords.type != AGX_INDEX_REGISTER || coords.size != AGX_SIZE_32 ||
        agx_channels(coords) != 2 || !I->explicit_coords ||
-       I->dim != AGX_DIM_2D)
-      a3_fail(a, "block_image_store of a layered, multisampled or bindless "
-                 "image (G15: imgwblk's layer and sample operands are not "
-                 "known)");
+       (I->dim != AGX_DIM_2D && I->dim != AGX_DIM_2D_MS))
+      a3_fail(a, "block_image_store of a layered or bindless image (G15: "
+                 "imgwblk's layer operand is not known)");
 
    agx_index x = agx_register(coords.value, AGX_SIZE_32);
    agx_index y = agx_register(coords.value + 2, AGX_SIZE_32);
@@ -2004,6 +2004,10 @@ a3_block_image_store(struct a3 *a, const agx_instr *I,
    a3_set(a, IMGWBLK_G, 0);
    a3_set(a, IMGWBLK_PTR, a3_membase(a, IMGWBLK_PTR, base));
    a3_set(a, IMGWBLK_OFFSET, a3_imm(a, IMGWBLK_OFFSET, 0, false));
+   /* The image type in the flags (texture.md): 2D 0x1d6a, 2D
+    * multisampled 0x1c8a, the dimension's fields only (not verified for the
+    * multisampled form) */
+   a3_set(a, IMGWBLK_FLAGS, I->dim == AGX_DIM_2D_MS ? 0x1c8a : 0x1d6a);
    a3_set(a, IMGWBLK_WAIT, BITFIELD_BIT(0));
    a3_emit(a, emission);
 
