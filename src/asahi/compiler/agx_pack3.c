@@ -672,34 +672,37 @@ a3_memshift(const struct a3 *a, unsigned bytes)
 #define T_BFI       "270054000200001090100800"     /* bfi r0, r1, 0, 0 */
 #define T_MOV       "0b020100"                     /* mov r0, r1 */
 #define T_LOAD      "67005400061f2000570100404000" /* device_load 5, ... */
-#define T_STORE     "e7005400020000001100009008" "00"
-#define T_WAIT      "0604"                         /* wait 0 */
-#define T_STOP      "0e000000"
-#define T_BITOP     "0b030605000800000000"         /* andn1 r0, r1, r2 */
-#define T_CMPSEL    "02030305020605000008"         /* cmpsel ult, r0..r4 */
-#define T_CMPSEL14  T_CMPSEL "00000000"
-#define T_IMADD     "9f00540002041030d0212a00"     /* imadd r0, r1, r2, r3 */
-#define T_IADD64    "9f015400020820501105"         /* iadd dr0, dr2, dr4 */
-#define T_IADD_SH   "9f0154000200f8c81004"         /* iadd r0, 0, r0, lsl 1 */
-#define T_BFEIL     "a70054000200001090100800"     /* bfeil r0, r1, 0, 0 */
-#define T_ASR       "a7015400020408182200"         /* asr r0, r1, r2 */
-#define T_IUNOP     "2705540002044c04"             /* popcount r0, r1 */
-#define T_F2I       "27075400020494480300"         /* convert f_to_s32 */
-#define T_I2F       "a707540002048c20"             /* convert u32_to_f */
-#define T_FUNOP     "2f005400020490400200"         /* floor r0, r1 */
-#define T_FADD      "01000400020000000000"         /* fadd (10 B) */
-#define T_FFMA      "01000600020000000000"         /* ffma (10 B) */
-#define T_ZERO10    "00000000000000000000"
-#define T_ICMP_BAL  "1707540002041038a202"         /* icmp_ballot ieq */
-#define T_FCMP_BAL  "97075400020410a888840000"     /* fcmp_ballot flt */
-#define T_SHUFFLE   "c70454000204022c0000"         /* simd_shuffle_xor */
-#define T_IF        "0f055401"                     /* if cc0, 1 */
-#define T_ELSE      "0f042401"                     /* else cc0, 1 */
-#define T_WHILE     "8f045405"                     /* while cc1, 1 */
-#define T_BREAK     "8f0554010000"                 /* break cc0, 1 */
-#define T_POP_EXEC  "0f0604010000"                 /* pop_exec 1 */
-#define T_JMP       "0f015402a0c900000100"         /* jmp_exec_none */
-#define T_ZERO12    "000000000000000000000000"
+#define T_STORE                                                                \
+   "e7005400020000001100009008"                                                \
+   "00"
+#define T_WAIT     "0604" /* wait 0 */
+#define T_STOP     "0e000000"
+#define T_BITOP    "0b030605000800000000" /* andn1 r0, r1, r2 */
+#define T_CMPSEL   "02030305020605000008" /* cmpsel ult, r0..r4 */
+#define T_CMPSEL14 T_CMPSEL "00000000"
+#define T_IMADD    "9f00540002041030d0212a00" /* imadd r0, r1, r2, r3 */
+#define T_IADD64   "9f015400020820501105"     /* iadd dr0, dr2, dr4 */
+#define T_IADD_SH  "9f0154000200f8c81004"     /* iadd r0, 0, r0, lsl 1 */
+#define T_BFEIL    "a70054000200001090100800" /* bfeil r0, r1, 0, 0 */
+#define T_ASR      "a7015400020408182200"     /* asr r0, r1, r2 */
+#define T_IUNOP    "2705540002044c04"         /* popcount r0, r1 */
+#define T_F2I      "27075400020494480300"     /* convert f_to_s32 */
+#define T_I2F      "a707540002048c20"         /* convert u32_to_f */
+#define T_FUNOP    "2f005400020490400200"     /* floor r0, r1 */
+#define T_FADD     "01000400020000000000"     /* fadd (10 B) */
+#define T_FFMA     "01000600020000000000"     /* ffma (10 B) */
+#define T_ZERO10   "00000000000000000000"
+#define T_ICMP_BAL "1707540002041038a202"     /* icmp_ballot ieq */
+#define T_FCMP_BAL "97075400020410a888840000" /* fcmp_ballot flt */
+#define T_SHUFFLE  "c70454000204022c0000"     /* simd_shuffle_xor */
+#define T_IF       "0f055401"                 /* if cc0, 1 */
+#define T_ELSE     "0f042401"                 /* else cc0, 1 */
+#define T_WHILE    "8f045405"                 /* while cc1, 1 */
+#define T_BREAK    "8f0554010000"             /* break cc0, 1 */
+#define T_POP_EXEC "0f0604010000"             /* pop_exec 1 */
+#define T_JMP      "0f015402a0c900000100"     /* jmp_exec_none */
+#define T_ZERO12   "000000000000000000000000"
+#define T_ZERO14   "0000000000000000000000000000"
 
 /* libLLVM 32023's encoder (GPUCompiler.framework, macOS 26A434) with the
  * operands below: wait none, the hint bits at their defaults */
@@ -2184,16 +2187,26 @@ a3_fcc(enum agx_fcond c)
 }
 
 /* cmp: cc = A cond B, inverted by invert (cmpselcc4: 32 + cond, 48 + the
- * inverted cond) */
+ * inverted cond). The 10-byte form lacks bits of the compared values (an
+ * abs on A); the 14-byte form has them, as cmpsel's. */
 static void
 a3_cmp(struct a3 *a, const agx_instr *I, bool fl, unsigned cond, bool invert,
        unsigned cc, struct util_dynarray *emission)
 {
-   a3_begin(a, I, AGX3_CMPCC10, T_ZERO10);
-   a3_set(a, CMP_CC, (invert ? 48 : 32) + cond);
-   a3_set(a, CMP_D, cc);
-   a3_set(a, CMP_A, a3_src(a, CMP_A, I->src[0], !fl));
-   a3_set(a, CMP_B, a3_src(a, CMP_B, I->src[1], !fl));
+   for (unsigned len = 10;; len = 14) {
+      uint8_t out[AGX3_MAX_BYTES];
+
+      a3_begin(a, I, len == 10 ? AGX3_CMPCC10 : AGX3_CMPCC14,
+               len == 10 ? T_ZERO10 : T_ZERO14);
+      a3_set(a, CMP_CC, (invert ? 48 : 32) + cond);
+      a3_set(a, CMP_D, cc);
+      a3_set(a, CMP_A, a3_src(a, CMP_A, I->src[0], !fl));
+      a3_set(a, CMP_B, a3_src(a, CMP_B, I->src[1], !fl));
+
+      if (len == 14 || a3_check(a, out))
+         break;
+   }
+
    a3_emit(a, emission);
 }
 
