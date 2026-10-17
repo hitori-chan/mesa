@@ -113,8 +113,7 @@ static agx_index
 agx_cached_sr(agx_context *ctx, agx_index *cache, enum agx_sr sr)
 {
    if (agx_is_null(*cache)) {
-      agx_builder b =
-         agx_init_builder(ctx, agx_before_block(agx_start_block(ctx)));
+      agx_builder b = agx_init_builder(ctx, agx_before_function(ctx));
       *cache = agx_get_sr(&b, 32, sr);
    }
 
