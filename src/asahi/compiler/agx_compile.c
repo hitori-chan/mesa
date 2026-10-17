@@ -1314,8 +1314,9 @@ agx_emit_block_image_store(agx_builder *b, nir_intrinsic_instr *instr)
    if (instr->intrinsic == nir_intrinsic_bindless_image_store_block_agx) {
       index = agx_translate_bindless_handle(b, &instr->src[0], &base);
 
+      /* G15 takes a constant index as an immediate */
       assert(base.size == AGX_SIZE_64);
-      assert(index.size == AGX_SIZE_32);
+      assert(index.size == AGX_SIZE_32 || index.type == AGX_INDEX_IMMEDIATE);
    } else {
       base = agx_zero();
       index = agx_src_index(&instr->src[0]);
@@ -1641,8 +1642,9 @@ agx_emit_image_store(agx_builder *b, nir_intrinsic_instr *instr)
    if (instr->intrinsic == nir_intrinsic_bindless_image_store) {
       index = agx_translate_bindless_handle(b, &instr->src[0], &base);
 
+      /* G15 takes a constant index as an immediate */
       assert(base.size == AGX_SIZE_64);
-      assert(index.size == AGX_SIZE_32);
+      assert(index.size == AGX_SIZE_32 || index.type == AGX_INDEX_IMMEDIATE);
    } else {
       base = agx_zero();
       index = agx_src_index(&instr->src[0]);
