@@ -665,10 +665,30 @@ hk_reserve_scratch(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
 
 /* G15: the entry program for a USC word list (agx_esl.h) */
 static uint32_t
+hk_upload_esl_code(struct hk_cmd_buffer *cmd, const struct agx_esl_code *code,
+                   enum agx_esl_stage stage, const uint8_t *usc)
+{
+   struct hk_device *dev = hk_cmd_buffer_device(cmd);
+   struct util_dynarray esl;
+   util_dynarray_init(&esl, NULL);
+
+   uint32_t addr = 0;
+   if (agx_esl_from_usc(&esl, usc, dev->dev.shader_base, code, stage)) {
+      struct agx_ptr t = hk_pool_usc_alloc(cmd, esl.size, 64);
+      if (t.cpu) {
+         memcpy(t.cpu, esl.data, esl.size);
+         addr = agx_usc_addr(&dev->dev, t.gpu);
+      }
+   }
+
+   util_dynarray_fini(&esl);
+   return addr;
+}
+
+static uint32_t
 hk_upload_esl(struct hk_cmd_buffer *cmd, struct hk_shader *s,
               struct hk_linked_shader *linked, const uint8_t *usc)
 {
-   struct hk_device *dev = hk_cmd_buffer_device(cmd);
    struct agx_esl_code code = {
       .va = s->bo ? s->bo->va->addr : 0,
       .cpu = s->b.binary,
@@ -680,9 +700,6 @@ hk_upload_esl(struct hk_cmd_buffer *cmd, struct hk_shader *s,
       .pix_wait_mask = linked->b.pix_wait_mask,
    };
 
-   struct util_dynarray esl;
-   util_dynarray_init(&esl, NULL);
-
    /* The hardware stage: geometry and tessellation run as compute kernels
     * and a hardware vertex shader (TODO: their kernels' entry programs) */
    enum agx_esl_stage stage = s->info.stage == MESA_SHADER_FRAGMENT
@@ -691,17 +708,7 @@ hk_upload_esl(struct hk_cmd_buffer *cmd, struct hk_shader *s,
                                  ? AGX_ESL_COMPUTE
                                  : AGX_ESL_VERTEX;
 
-   uint32_t addr = 0;
-   if (agx_esl_from_usc(&esl, usc, dev->dev.shader_base, &code, stage)) {
-      struct agx_ptr t = hk_pool_usc_alloc(cmd, esl.size, 64);
-      if (t.cpu) {
-         memcpy(t.cpu, esl.data, esl.size);
-         addr = agx_usc_addr(&dev->dev, t.gpu);
-      }
-   }
-
-   util_dynarray_fini(&esl);
-   return addr;
+   return hk_upload_esl_code(cmd, &code, stage, usc);
 }
 
 uint32_t
@@ -805,16 +812,13 @@ hk_dispatch_precomp(struct hk_cmd_buffer *cmd, struct agx_grid grid,
 {
    struct hk_device *dev = hk_cmd_buffer_device(cmd);
 
-   /* libagx's G15 kernels need an entry program built from their USC words
-    * (Gallium's agx_launch_precomp), which this path doesn't build yet.
-    * Launching the words as one makes the GPU fault. */
-   if (dev->dev.params.gpu_generation >= 15) {
-      fprintf(stderr, "G15: libagx kernel %u has no entry program, skipped\n",
+   struct agx_precompiled_shader *prog = agx_get_precompiled(&dev->bg_eot, idx);
+
+   if (!prog) {
+      fprintf(stderr, "G15: libagx kernel %u has no G15 build, skipped\n",
               idx);
       return;
    }
-
-   struct agx_precompiled_shader *prog = agx_get_precompiled(&dev->bg_eot, idx);
 
    struct hk_cs **target = (barrier & AGX_POSTGFX)  ? &cmd->current_cs.post_gfx
                            : (barrier & AGX_PREGFX) ? &cmd->current_cs.pre_gfx
@@ -828,9 +832,25 @@ hk_dispatch_precomp(struct hk_cmd_buffer *cmd, struct agx_grid grid,
    uint64_t uploaded_data = hk_pool_upload(cmd, data, data_size, 4);
 
    agx_usc_words_precomp(t.cpu, &prog->b, uploaded_data, data_size);
+   uint32_t usc = agx_usc_addr(&dev->dev, t.gpu);
 
-   hk_dispatch_with_usc_launch(dev, cs, prog->b.launch,
-                               agx_usc_addr(&dev->dev, t.gpu), grid,
+   /* G15 launches the kernel's entry program, built from the words */
+   if (dev->dev.params.gpu_generation >= 15) {
+      const uint32_t *bin = dev->dev.libagx_programs[idx];
+      const struct agx_precompiled_kernel_info *info = (const void *)bin;
+      struct agx_esl_code code = {
+         .va = prog->ptr,
+         .cpu = (const uint8_t *)bin + sizeof(*info),
+         .size = info->binary_size,
+         .main_size = info->main_size,
+         .stack_size = info->stack_size,
+         .cr_count = info->cr_count,
+      };
+
+      usc = hk_upload_esl_code(cmd, &code, AGX_ESL_COMPUTE, t.cpu);
+   }
+
+   hk_dispatch_with_usc_launch(dev, cs, prog->b.launch, usc, grid,
                                prog->b.workgroup);
 }
 
