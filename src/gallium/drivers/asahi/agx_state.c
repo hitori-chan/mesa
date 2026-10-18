@@ -3434,11 +3434,14 @@ agx_cdm_launch_g15(uint32_t *out, struct agx_device *dev, struct agx_grid grid,
       *(out++) = wg.z & BITFIELD_MASK(11);
    }
 
-   /* G15C: Metal's barrier after a launch (0x60000160) with bit 4, which
-    * G13X's barrier sets (agx_cdm_barrier) and Metal's for several AGCs:
-    * without it an image a launch writes reads as stale in the next job's
-    * texture fetches (dEQP-GLES31 image_load_store.2d.store, kernel #272) */
-   *(out++) = 0x60000170;
+   /* G15C: Metal's barrier after a launch (0x60000160) with bits 0, 1 and 4,
+    * which G13's barrier sets (agx_cdm_barrier). Without bit 4 an image a
+    * launch writes reads as stale in the next job's texture fetches
+    * (dEQP-GLES31 image_load_store.2d.store, kernel #272); without bits 0 and
+    * 1 a launch can read what the launch before it has not finished writing,
+    * mostly when other processes keep the GPU busy (transform feedback and
+    * tessellation at --jobs 8). */
+   *(out++) = 0x60000173;
    return out;
 }
 
