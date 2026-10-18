@@ -354,6 +354,8 @@ hk_nir_lower_descriptors(nir_shader *nir,
                          struct vk_descriptor_set_layout *const *set_layouts,
                          bool g15);
 
+bool hk_nir_lower_image_loads_g15(nir_shader *nir);
+
 VkResult hk_compile_shader(struct hk_device *dev,
                            struct vk_shader_compile_info *info,
                            const struct vk_graphics_pipeline_state *state,
