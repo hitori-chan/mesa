@@ -2079,6 +2079,32 @@ a3_sample_mask(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
    a3_emit(a, emission);
 }
 
+/* imgwblk bits 77:79, by the tilebuffer format (smp.md): Metal's driver gives
+ * each render target a tile format index (TextureFormatTable entry +0x20:
+ * 2/3 8-bit snorm/unorm, 4/5 8-bit sint/uint, 6/7 16-bit snorm/unorm, 8/9
+ * 16-bit sint/uint, 10/11 32-bit sint/uint, 12 16-bit float, 14 the packed
+ * 16-bit unorms, 17 32-bit float), from which its end-of-tile program picks
+ * 3, 2, 4, 0, 1, 0, 0 and 1. RGB10A2 and RG11B10F take 3 (probed on the
+ * hardware); RGB9E5 is not known. */
+static unsigned
+a3_imgwblk_format(enum agx_format format)
+{
+   switch (format) {
+   case AGX_FORMAT_I8:
+      return 2;
+   case AGX_FORMAT_I16:
+   case AGX_FORMAT_F16:
+      return 0;
+   case AGX_FORMAT_I32:
+      return 1;
+   case AGX_FORMAT_U16NORM:
+   case AGX_FORMAT_S16NORM:
+      return 4;
+   default:
+      return 3;
+   }
+}
+
 /* block_image_store (imgwblk): the tile to the image a PBE descriptor
  * describes. G15 takes the descriptor's address in a 64-bit uniform (the IR's
  * base, which the entry program loads) and three coordinate registers: x and
@@ -2134,10 +2160,12 @@ a3_block_image_store(struct a3 *a, const agx_instr *I,
    a3_set(a, IMGWBLK_G, 0);
    a3_set(a, IMGWBLK_PTR, a3_membase(a, IMGWBLK_PTR, base));
    a3_set(a, IMGWBLK_OFFSET, a3_imm(a, IMGWBLK_OFFSET, 0, false));
-   /* The image type in the flags (texture.md): 2D 0x1d6a, 2D
-    * multisampled 0x1c8a, the dimension's fields only (not verified for the
-    * multisampled form) */
-   a3_set(a, IMGWBLK_FLAGS, I->dim == AGX_DIM_2D_MS ? 0x1c8a : 0x1d6a);
+   /* The image type in the flags (smp.md): 2D 0x1d6a, 2D multisampled
+    * 0x1c8a, the dimension's fields only (not verified for the multisampled
+    * form); bits 77:79 (flags 11:13) the tile format's class */
+   unsigned flags = I->dim == AGX_DIM_2D_MS ? 0x1c8a : 0x1d6a;
+   flags = (flags & ~(7u << 11)) | (a3_imgwblk_format(I->format) << 11);
+   a3_set(a, IMGWBLK_FLAGS, flags);
    a3_set(a, IMGWBLK_WAIT, BITFIELD_BIT(0));
    a3_emit(a, emission);
 
