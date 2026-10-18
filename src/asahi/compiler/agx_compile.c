@@ -1166,6 +1166,34 @@ lower_ms_index_g15(nir_builder *b, nir_tex_instr *tex, void *data)
 }
 
 /*
+ * G15 takes a texel offset that is not F42's immediate in the LOD word (cr3),
+ * with x at bits 12:15, y at 28:31 and z at 0:3 (libLLVM_32023's pack
+ * sequence for an offset in that word, sub_25092F24C: pack_smpir code 5 at
+ * positions 12 and 28, and at 0 for 3D), around the layer (bits 0:10), the
+ * face or sample index and the LOD (16:27). agx_nir_lower_texture packed G13's
+ * word, x | y << 4 | z << 8; rewrite it. agx_optimizer turns a constant back
+ * into F42's immediate, G13's layout.
+ */
+static bool
+lower_tex_offset_g15(nir_builder *b, nir_tex_instr *tex, void *data)
+{
+   int idx = nir_tex_instr_src_index(tex, nir_tex_src_backend2);
+
+   if (idx < 0 || (tex->backend_flags & AGX_TEXTURE_FLAG_G15_IR_OFFSET))
+      return false;
+
+   b->cursor = nir_before_instr(&tex->instr);
+   nir_def *p = tex->src[idx].src.ssa;
+   nir_def *x = nir_ishl_imm(b, nir_iand_imm(b, p, 0xf), 12);
+   nir_def *y = nir_ishl_imm(b, nir_ubitfield_extract_imm(b, p, 4, 4), 28);
+   nir_def *z = nir_ubitfield_extract_imm(b, p, 8, 4);
+
+   nir_src_rewrite(&tex->src[idx].src, nir_ior(b, nir_ior(b, x, y), z));
+   tex->backend_flags |= AGX_TEXTURE_FLAG_G15_IR_OFFSET;
+   return true;
+}
+
+/*
  * Hardware bindless texture sources are specified as a 64-bit uniform base
  * address summed with a 32-bit register index. We model in NIR with the
  * bindless_image_agx intrinsic.
@@ -4270,6 +4298,10 @@ agx_compile_shader_nir(nir_shader *nir, struct agx_shader_key *key,
 
    if (key->dev.gpu_generation >= 15)
       NIR_PASS(_, nir, nir_shader_tex_pass, lower_ms_index_g15,
+               nir_metadata_control_flow, NULL);
+
+   if (key->dev.gpu_generation >= 15)
+      NIR_PASS(_, nir, nir_shader_tex_pass, lower_tex_offset_g15,
                nir_metadata_control_flow, NULL);
 
    if (key->dev.gpu_generation >= 15)
