@@ -274,6 +274,10 @@ struct agx_fs_epilog_key {
    enum pipe_format rt_formats[8];
    uint8_t nr_samples;
    bool force_small_tile;
+
+   /* G15: texture handles count 32 B entries, spilled render targets are
+    * read by a fetch (agx_tilebuffer_layout::g15) */
+   bool g15;
 };
 
 void agx_nir_vs_prolog(struct nir_builder *b, const void *key_);

@@ -122,9 +122,11 @@ agx_tilebuffer_set_samples(struct agx_tilebuffer_layout *tib,
 {
    assert(tib->nr_samples == 0 && "must not be initialized");
 
+   bool g15 = tib->g15;
    *tib = agx_build_tilebuffer_layout(tib->logical_format,
                                       ARRAY_SIZE(tib->logical_format),
                                       nr_samples, tib->layered);
+   tib->g15 = g15;
 }
 
 enum pipe_format
