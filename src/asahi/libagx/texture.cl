@@ -86,6 +86,69 @@ libagx_texture_levels(constant struct agx_texture_packed *ptr)
       return (d.last_level - d.first_level) + 1;
 }
 
+/* The queries on G15's descriptor: the size fields sit where G13's do, the
+ * levels in the extended word (set with several levels or a first level) and
+ * the sample count at bits 56:57, where G13 keeps its levels. A buffer
+ * texture keeps G13's software size at bytes 16-23.
+ */
+uint3
+libagx_txs_g15(constant struct agx_texture_packed *ptr, uint16_t lod,
+               unsigned nr_comps, bool is_buffer, bool is_1d, bool is_2d,
+               bool is_cube, bool is_array)
+{
+   agx_unpack(NULL, ptr, TEXTURE_G15, d);
+
+   if (d.address == AGX_ZERO_PAGE_ADDRESS)
+      return 0;
+
+   if (is_buffer) {
+      agx_unpack(NULL, ptr, TEXTURE, sw);
+      return sw.buffer_size_sw;
+   }
+
+   uint3 size = (uint3)(d.width, d.height, d.depth);
+   if (d.extended)
+      lod += d.first_level;
+
+   if (is_1d && is_array)
+      size.y = size.z;
+
+   size.x = max(size.x >> lod, 1u);
+
+   if (nr_comps - (uint)is_array >= 2)
+      size.y = max(size.y >> lod, 1u);
+
+   if (nr_comps - (uint)is_array >= 3)
+      size.z = max(size.z >> lod, 1u);
+
+   if (is_cube)
+      size.y = size.x;
+
+   return size;
+}
+
+uint
+libagx_texture_samples_g15(constant struct agx_texture_packed *ptr)
+{
+   agx_unpack(NULL, ptr, TEXTURE_G15, d);
+
+   if (d.address == AGX_ZERO_PAGE_ADDRESS)
+      return 0;
+
+   return (d.samples == AGX_SAMPLE_COUNT_2) ? 2 : 4;
+}
+
+uint
+libagx_texture_levels_g15(constant struct agx_texture_packed *ptr)
+{
+   agx_unpack(NULL, ptr, TEXTURE_G15, d);
+
+   if (d.address == AGX_ZERO_PAGE_ADDRESS)
+      return 0;
+
+   return d.extended ? (d.last_level - d.first_level) + 1 : 1;
+}
+
 /*
  * Fix robustness behaviour of txf with out-of-bounds LOD. The hardware
  * returns the correct out-of-bounds colour for out-of-bounds coordinates,
