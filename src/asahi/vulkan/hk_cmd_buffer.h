@@ -715,11 +715,30 @@ static void
 hk_cmd_buffer_end_graphics(struct hk_cmd_buffer *cmd)
 {
    struct hk_cs *cs = cmd->current_cs.gfx;
+   bool g15 = hk_cmd_buffer_device(cmd)->dev.params.gpu_generation >= 15;
 
-   /* The replacement is a libagx kernel, which has no G15 build yet: G15 keeps
-    * the empty pass and clears through its background program */
-   if (cs && cs->stats.cmds == 0 &&
-       hk_cmd_buffer_device(cmd)->dev.params.gpu_generation < 15) {
+   /* G15 keeps an empty pass and clears through its background program. A
+    * pass with nothing to clear only loads and stores its tiles back: it is
+    * dropped. With a clear, the empty tiles are processed so that the
+    * background program runs. */
+   if (cs && cs->stats.cmds == 0 && g15 && !cs->cr.process_empty_tiles &&
+       !cs->timestamp.end.handle) {
+      const struct hk_rendering_state *render = &cmd->state.gfx.render;
+      bool clears = render->depth_att.clear || render->stencil_att.clear;
+
+      for (unsigned i = 0; i < render->color_att_count; ++i)
+         clears |= render->color_att[i].clear;
+
+      if (clears) {
+         cs->cr.process_empty_tiles = true;
+      } else {
+         list_del(&cs->node);
+         hk_cs_destroy(cs);
+         cs = NULL;
+      }
+   }
+
+   if (cs && cs->stats.cmds == 0 && !g15) {
       hk_optimize_empty_vdm(cmd);
    } else if (cs) {
       /* Scissor and depth bias arrays are staged to dynamic arrays on the
