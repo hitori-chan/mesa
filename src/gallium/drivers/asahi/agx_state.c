@@ -3803,6 +3803,7 @@ agx_build_bg_eot(struct agx_batch *batch, bool store, bool partial_render)
                 (shader->ptr - shader->bo->va->addr),
          .size = shader->info.binary_size,
          .main_size = shader->info.main_size,
+         .stack_size = shader->info.stack_size,
          .cr_count = shader->info.cr_count,
       };
 
