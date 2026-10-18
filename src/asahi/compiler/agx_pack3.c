@@ -2036,12 +2036,14 @@ a3_block_image_store(struct a3 *a, const agx_instr *I,
  * at the IR's bindless base (a 64-bit uniform or register pair), the index an
  * immediate or a register. The coordinates and the data go to a tuple of
  * eight 32-bit coordinate registers, written in group 0, which the
- * instruction waits for and frees: x, y, data x, data y, z, layer, data z,
- * data w (Apple's code puts the data in slots 2, 3, 6 and 7 after x and y in
- * 0 and 1; which of 4 and 5 takes a 3D image's z and an array's layer is not
- * verified: AGX3_IMGW_Z and AGX3_IMGW_LAYER override them). The level is
+ * instruction waits for and frees: x, y, data x, data y, then the
+ * coordinate after y, data z, data w (Apple's code puts the data in slots 2,
+ * 3, 6 and 7 after x and y in 0 and 1). Apple's builder packs a 3D image's z,
+ * or an array's layer clamped to 0x7ff (pack_args' min7ff), as the element
+ * after y, guessed to be slot 4 (not verified: AGX3_IMGW_Z and
+ * AGX3_IMGW_LAYER override it). Cube images are 2D arrays here. The level is
  * the instruction's immediate; all four data components are given. */
-static unsigned a3_imgw_z = 4, a3_imgw_layer = 5;
+static unsigned a3_imgw_z = 4, a3_imgw_layer = 4;
 
 static void
 a3_image_write(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
@@ -2322,7 +2324,7 @@ agx3_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
       a3_survey_on = debug_get_bool_option("AGX3_SURVEY", false);
       a3_debug = debug_get_bool_option("AGX3_DEBUG", false);
       a3_imgw_z = debug_get_num_option("AGX3_IMGW_Z", 4);
-      a3_imgw_layer = debug_get_num_option("AGX3_IMGW_LAYER", 5);
+      a3_imgw_layer = debug_get_num_option("AGX3_IMGW_LAYER", 4);
       if (a3_survey_on)
          atexit(a3_survey_print);
    }
