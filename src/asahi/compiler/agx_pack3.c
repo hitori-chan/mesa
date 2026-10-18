@@ -1596,9 +1596,9 @@ a3_tex_grad_words(const agx_instr *I)
  * level in a register (2D and 2D array samples and 2D fetches run on the
  * hardware), gradients, immediate or register indices, constant offsets and
  * offsets in a register, gathers, 2D and 2D array depth compares (the
- * reference in cr2). Gallium samples a cube as a 2D array
- * (agx_nir_lower_cube_g15): cube mode's face operand is not known
- * (texture.md). */
+ * reference in cr2). Gallium samples every cube in cube array mode, the
+ * face-local (s, t) and the cube and face in the LOD word
+ * (agx_nir_lower_cube_g15). */
 static void
 a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
 {
@@ -1646,7 +1646,9 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
 
    /* The forms with a mode code: compares, a LOD word, gradients and an
     * offset in the LOD word (the code table); the others by name */
-   bool coded = I->shadow || lodw || grad || off_word;
+   bool coded = I->shadow || lodw || grad || off_word ||
+                (gather && (I->dim == AGX_DIM_CUBE ||
+                            I->dim == AGX_DIM_CUBE_ARRAY));
    enum agx3_instr instr = A3_NONE;
    const char *tmpl = load ? T_TEX_LOAD : auto_lod ? T_TEX_AUTO : T_TEX_L0;
    unsigned code = A3_NO_CODE;
