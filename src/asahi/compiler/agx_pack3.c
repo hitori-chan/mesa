@@ -1638,8 +1638,11 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
       a3_fail(a, "texture dimension");
    if (I->query_lod || I->sparse)
       a3_fail(a, "texture query or sparse");
-   if (I->shadow && I->dim != AGX_DIM_2D && I->dim != AGX_DIM_2D_ARRAY)
-      a3_fail(a, "texture compare other than 2D or 2D array");
+   /* A cube is read in cube array mode (agx_nir_lower_cube_g15), whose cr2
+    * (z) is free for the reference as a 2D array's is */
+   if (I->shadow && I->dim != AGX_DIM_2D && I->dim != AGX_DIM_2D_ARRAY &&
+       I->dim != AGX_DIM_CUBE_ARRAY)
+      a3_fail(a, "texture compare other than 2D, 2D array or cube array");
 
    bool gather = I->gather != AGX_GATHER_NONE;
    bool off_word = a3_tex_offset_in_word(I);
