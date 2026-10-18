@@ -321,6 +321,19 @@
   </struct>
 
   <!--
+   For software: what an image atomic's texel address needs of a G15 image
+   (libagx_image_texel_address_g15), in the fourth word of its PBE's 32-byte
+   slot, which the hardware reads only for multisampled and compressed images.
+   G13 keeps these in its PBE's third word, which G15 reads for mip levels.
+  -->
+  <struct name="PBE G15 software" size="8">
+    <field name="Level offset" size="27" start="0" type="uint" modifier="shr(7)"/>
+    <field name="Tile width" size="4" start="27" type="uint" modifier="log2"/>
+    <field name="Tile height" size="4" start="31" type="uint" modifier="log2"/>
+    <field name="Layer stride" size="27" start="35" type="uint" modifier="shr(7)"/>
+  </struct>
+
+  <!--
    G15's texture read state, from Apple's TextureGen4::encodeImageReadState.
    The hardware reads 32 bytes per texture (the table's stride, verified);
    the fourth word only carries compression. Word 0 bits 55:0 are G13's;
