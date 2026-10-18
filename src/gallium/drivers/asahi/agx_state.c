@@ -1365,6 +1365,37 @@ agx_pack_pbe_g15(struct agx_pbe_packed *out, struct agx_resource *tex,
    }
 }
 
+/*
+ * G15: what an image atomic's texel address needs (PBE G15 software), in the
+ * fourth word of the PBE's 32 B slot. A multisampled image has no PBE for
+ * image stores on G15, and a buffer's offset is in the PBE's address.
+ */
+static void
+agx_pack_pbe_g15_software(uint8_t *out, const struct pipe_image_view *view)
+{
+   struct agx_resource *tex = agx_resource(view->resource);
+
+   if (tex->base.target == PIPE_BUFFER ||
+       util_res_sample_count(&tex->base) > 1)
+      return;
+
+   unsigned level = view->u.tex.level;
+
+   agx_pack(out, PBE_G15_SOFTWARE, cfg) {
+      cfg.level_offset = ail_get_level_offset_B(&tex->layout, level);
+      cfg.layer_stride = tex->layout.layer_stride_B;
+
+      if (tex->layout.tiling != AIL_TILING_LINEAR) {
+         struct ail_tile tile_size = tex->layout.tilesize_el[level];
+         cfg.tile_width = tile_size.width_el;
+         cfg.tile_height = tile_size.height_el;
+      } else {
+         cfg.tile_width = 1;
+         cfg.tile_height = 1;
+      }
+   }
+}
+
 static void
 agx_batch_upload_pbe(struct agx_batch *batch, struct agx_pbe_packed *out,
                      struct pipe_image_view *view, bool block_access,
@@ -2066,7 +2097,8 @@ agx_shader_initialize(struct agx_device *dev, struct agx_uncompiled_shader *so,
          .callback = agx_mem_vectorize_cb,
       });
 
-   NIR_PASS(_, nir, agx_nir_lower_texture);
+   NIR_PASS(_, nir, agx_nir_lower_texture_gen,
+            dev->params.gpu_generation >= 15);
    if (dev->params.gpu_generation >= 15)
       NIR_PASS(_, nir, agx_nir_lower_txf_samplers_g15);
    NIR_PASS(_, nir, nir_lower_ssbo, NULL);
@@ -3056,6 +3088,9 @@ agx_upload_textures(struct agx_batch *batch, struct agx_compiled_shader *cs,
       agx_pack_texture(texture, agx_resource(view->resource), view->format,
                        &sampler_view);
       agx_batch_upload_pbe(batch, pbe, view, false, false, false, false);
+
+      if (g15)
+         agx_pack_pbe_g15_software((uint8_t *)pbe + AGX_PBE_LENGTH, view);
    }
 
    if (stage == MESA_SHADER_FRAGMENT &&

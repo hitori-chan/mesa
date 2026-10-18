@@ -214,6 +214,57 @@ libagx_buffer_texel_address(constant const struct agx_pbe_packed *ptr,
    return d.buffer + (uint64_t)(x_el * bytes_per_pixel_B);
 }
 
+/*
+ * G15: the PBE is G15's (the address is the image's VA in the image heap; a
+ * buffer's offset is in it; the level in the extended word) and the software
+ * words sit in the slot's fourth word (PBE G15 software). Not multisampled:
+ * G15 packs no PBE for a multisampled image store.
+ */
+uint64_t
+libagx_image_texel_address_g15(constant const struct agx_pbe_packed *ptr,
+                               uint4 coord, uint sample_idx,
+                               uint bytes_per_sample_B, bool is_1d,
+                               bool is_msaa, bool is_layered,
+                               bool return_index)
+{
+   agx_unpack(NULL, ptr, PBE_G15, d);
+   agx_unpack(NULL, (constant uint8_t *)ptr + 24, PBE_G15_SOFTWARE, sw);
+
+   uint total_px;
+   if (is_1d) {
+      total_px = coord.x;
+   } else {
+      uint level = d.extended ? d.level : 0;
+      uint width_px = max(d.width >> level, 1u);
+      uint aligned_width_px = align(width_px, sw.tile_width);
+
+      total_px = libagx_twiddle_coordinates(
+         convert_ushort2(coord.xy), sw.tile_width, sw.tile_height,
+         aligned_width_px);
+   }
+
+   if (is_layered) {
+      total_px +=
+         coord[is_1d ? 1 : 2] * (sw.layer_stride / bytes_per_sample_B);
+   }
+
+   uint total_sa = total_px + sample_idx;
+
+   if (return_index)
+      return total_sa;
+   else
+      return d.buffer + sw.level_offset + (uint64_t)total_sa * bytes_per_sample_B;
+}
+
+uint64_t
+libagx_buffer_texel_address_g15(constant const struct agx_pbe_packed *ptr,
+                                uint4 coord, uint bytes_per_pixel_B)
+{
+   agx_unpack(NULL, ptr, PBE_G15, d);
+
+   return d.buffer + (uint64_t)(coord.x * bytes_per_pixel_B);
+}
+
 /* Buffer texture lowerings */
 bool
 libagx_texture_is_rgb32(constant struct agx_texture_packed *ptr)

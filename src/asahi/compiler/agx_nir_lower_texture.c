@@ -419,7 +419,7 @@ txs_for_image(nir_builder *b, nir_intrinsic_instr *intr,
 
 static nir_def *
 image_texel_address(nir_builder *b, nir_intrinsic_instr *intr,
-                    bool return_index)
+                    bool return_index, bool g15)
 {
    /* First, calculate the address of the PBE descriptor */
    nir_def *desc_address =
@@ -443,8 +443,17 @@ image_texel_address(nir_builder *b, nir_intrinsic_instr *intr,
 
    if (dim == GLSL_SAMPLER_DIM_BUF && return_index) {
       return nir_channel(b, coord, 0);
+   } else if (dim == GLSL_SAMPLER_DIM_BUF && g15) {
+      return libagx_buffer_texel_address_g15(b, desc_address, coord,
+                                             blocksize_B);
    } else if (dim == GLSL_SAMPLER_DIM_BUF) {
       return libagx_buffer_texel_address(b, desc_address, coord, blocksize_B);
+   } else if (g15) {
+      return libagx_image_texel_address_g15(
+         b, desc_address, coord, nir_u2u32(b, intr->src[2].ssa), blocksize_B,
+         nir_imm_bool(b, dim == GLSL_SAMPLER_DIM_1D),
+         nir_imm_bool(b, dim == GLSL_SAMPLER_DIM_MS), nir_imm_bool(b, layered),
+         nir_imm_bool(b, return_index));
    } else {
       return libagx_image_texel_address(
          b, desc_address, coord, nir_u2u32(b, intr->src[2].ssa), blocksize_B,
@@ -539,8 +548,10 @@ lower_image_load_robustness(nir_builder *b, nir_intrinsic_instr *intr)
 }
 
 static bool
-lower_images(nir_builder *b, nir_intrinsic_instr *intr, UNUSED void *data)
+lower_images(nir_builder *b, nir_intrinsic_instr *intr, void *data)
 {
+   const bool *g15 = data;
+
    b->cursor = nir_before_instr(&intr->instr);
 
    switch (intr->intrinsic) {
@@ -582,7 +593,8 @@ lower_images(nir_builder *b, nir_intrinsic_instr *intr, UNUSED void *data)
       return true;
 
    case nir_intrinsic_bindless_image_texel_address:
-      nir_def_rewrite_uses(&intr->def, image_texel_address(b, intr, false));
+      nir_def_rewrite_uses(&intr->def,
+                           image_texel_address(b, intr, false, *g15));
       return true;
 
    case nir_intrinsic_is_sparse_texels_resident:
@@ -796,8 +808,9 @@ agx_nir_lower_cube_g15(nir_shader *s)
                               NULL);
 }
 
+/* g15: image atomics crawl G15's PBE (libagx_image_texel_address_g15) */
 bool
-agx_nir_lower_texture(nir_shader *s)
+agx_nir_lower_texture_gen(nir_shader *s, bool g15)
 {
    bool progress = false;
 
@@ -821,7 +834,7 @@ agx_nir_lower_texture(nir_shader *s)
    NIR_PASS(progress, s, nir_shader_intrinsics_pass, legalize_image_lod,
             nir_metadata_control_flow, NULL);
    NIR_PASS(progress, s, nir_shader_intrinsics_pass, lower_images,
-            nir_metadata_control_flow, NULL);
+            nir_metadata_control_flow, &g15);
    NIR_PASS(progress, s, nir_legalize_16bit_sampler_srcs, tex_constraints);
 
    /* Fold constants after nir_legalize_16bit_sampler_srcs so we can detect 0 in
@@ -841,6 +854,12 @@ agx_nir_lower_texture(nir_shader *s)
    return progress;
 }
 
+bool
+agx_nir_lower_texture(nir_shader *s)
+{
+   return agx_nir_lower_texture_gen(s, false);
+}
+
 static bool
 lower_multisampled_store(nir_builder *b, nir_intrinsic_instr *intr,
                          UNUSED void *data)
@@ -853,7 +872,8 @@ lower_multisampled_store(nir_builder *b, nir_intrinsic_instr *intr,
    if (nir_intrinsic_image_dim(intr) != GLSL_SAMPLER_DIM_MS)
       return false;
 
-   nir_def *index_px = nir_u2u32(b, image_texel_address(b, intr, true));
+   nir_def *index_px =
+      nir_u2u32(b, image_texel_address(b, intr, true, false));
    nir_def *coord2d = coords_for_buffer_texture(b, index_px);
 
    nir_src_rewrite(&intr->src[1], nir_pad_vector(b, coord2d, 4));
