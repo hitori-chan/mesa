@@ -3734,10 +3734,16 @@ lower_bit_size_callback(const nir_instr *instr, UNUSED void *_)
    return 0;
 }
 
+/* The address of a texture or PBE descriptor, for libagx's descriptor crawls
+ * (buffer offsets, sizes, texel addresses). G13's handle is a byte offset;
+ * G15's counts 32 B entries, as agx_translate_bindless_handle hands it to the
+ * texture and image instructions. */
 static bool
 lower_load_from_texture_handle(nir_builder *b, nir_intrinsic_instr *intr,
                                void *data)
 {
+   const struct agx_shader_key *key = data;
+
    if (intr->intrinsic != nir_intrinsic_load_from_texture_handle_agx)
       return false;
 
@@ -3746,6 +3752,9 @@ lower_load_from_texture_handle(nir_builder *b, nir_intrinsic_instr *intr,
    b->cursor = nir_instr_remove(&intr->instr);
    nir_def *base = nir_load_preamble(b, 1, 64, nir_intrinsic_desc_set(handle));
    nir_def *offset = nir_u2u64(b, handle->src[0].ssa);
+
+   if (key->dev.gpu_generation >= 15)
+      offset = nir_imul_imm(b, offset, 32);
 
    nir_def_rewrite_uses(&intr->def, nir_iadd(b, base, offset));
    return true;
@@ -4335,7 +4344,7 @@ agx_compile_shader_nir(nir_shader *nir, struct agx_shader_key *key,
 
    NIR_PASS(_, nir, nir_opt_constant_folding);
    NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_load_from_texture_handle,
-            nir_metadata_control_flow, NULL);
+            nir_metadata_control_flow, key);
 
    NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_sink_address,
             nir_metadata_control_flow, NULL);
