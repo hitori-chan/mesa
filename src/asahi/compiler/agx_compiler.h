@@ -1054,10 +1054,11 @@ void agx_opt_break_if(agx_context *ctx);
 void agx_opt_jmp_none(agx_context *ctx);
 void agx_pack_binary(agx_context *ctx, struct util_dynarray *emission);
 void agx3_pack_instr(struct util_dynarray *emission,
-                     struct util_dynarray *fixups, const agx_instr *I);
+                     struct util_dynarray *fixups, const agx_instr *I,
+                     unsigned scratch_B);
 void agx3_fixup_branches(struct util_dynarray *emission,
                          struct util_dynarray *fixups);
-unsigned agx3_stack_size(const agx_instr *I);
+unsigned agx3_stack_size(const agx_instr *I, unsigned scratch_B);
 unsigned agx3_cr_count(const agx_instr *I);
 void agx3_assign_vary_crs(agx_context *ctx);
 
