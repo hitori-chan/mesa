@@ -360,7 +360,8 @@ agx_esl_from_usc(struct util_dynarray *out, const uint8_t *usc,
          esl_speclm(out, 0);
       esl_ldshdr(out, main_va, code ? code->main_size : 0);
       if (!(vs && strchr(vs, 't')))
-         esl_spectpr(out, 0, code ? code->cr_count : 0);
+         esl_spectpr(out, code ? code->stack_size : 0,
+                     code ? code->cr_count : 0);
       if (!(vs && strchr(vs, 'c')))
          esl_vertex_config(out);
       break;
@@ -371,7 +372,8 @@ agx_esl_from_usc(struct util_dynarray *out, const uint8_t *usc,
       esl_speclm_imageblock(out, &tile);
       esl_ldshdr(out, main_va, code ? code->main_size : 0);
       if (!getenv("AGX_G15_FS_NOTPR"))
-         esl_spectpr(out, 0, code ? code->cr_count : 0);
+         esl_spectpr(out, code ? code->stack_size : 0,
+                     code ? code->cr_count : 0);
       esl_pixrel(out, code ? code->pix_wait_mask : 0);
       break;
 

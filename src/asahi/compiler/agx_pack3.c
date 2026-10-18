@@ -59,6 +59,9 @@ struct a3 {
    /* The values set, checked against the packed instruction */
    uint64_t want[A3_MAX_OPS];
    uint32_t set;
+
+   /* The shader's scratch in bytes: the thread-private stack below it */
+   unsigned scratch_B;
 };
 
 static unsigned
@@ -736,6 +739,8 @@ a3_memshift(const struct a3 *a, unsigned bytes)
 #define T_ADEV      "6701540000048182000000008003" /* device_atomic add */
 #define T_ADEV_RET  "6701540000048182000600008003" /* ... 3, st0, add */
 #define T_GET_STACK "0c80094300800000"             /* get_stack 2, 2, r0, ^st0 */
+#define T_LDTPS     "6f0054000000112000000000"     /* ldtps 0, i32, x, r0, 0 */
+#define T_STTPS     "ef005400000011080000"         /* sttps i32, x, r0, 0 */
 #define T_BARRIER   "070454610300"                 /* threadgroup_barrier */
 #define T_ST_VAR    "5706540000404800"             /* st_var ^cr0, 0, 0 */
 #define T_ST_TILE   "e70654000000012e00000000"     /* tile_store i32 */
@@ -826,6 +831,10 @@ enum {
    GET_STACK_DST = 2,
    GET_STACK_SRC = 3,
    GET_STACK_WAIT = 4,
+   TPS_G = 0,
+   TPS_REG = 3,
+   TPS_INDEX = 4,
+   TPS_OFFSET = 5,
    BARRIER_FLAGS = 0,
    ST_VAR_CR = 0,
    ST_VAR_SLOT = 1,
@@ -1208,6 +1217,59 @@ a3_local_mem(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
       a3_wait(a, I, A3_SYNC_G, emission);
 }
 
+/* stack_load/stack_store (ldtps/sttps): the thread-private stack, which
+ * the entry program's specTPR sizes (agx3_stack_size). The IR's offset in
+ * bytes is the index (a register or a 16-bit immediate), unscaled: the
+ * index shift stays 0, as in the corpus's ldtps through a byte pointer
+ * (Apple's stack kernel scales an element index by 4 instead). 32-bit data
+ * moves as 16-bit halves, as in every ldtps/sttps of Apple's, so one
+ * instruction moves at most two 32-bit components: NIR splits wider
+ * scratch accesses (mem_access_size_align_cb) and a wider spill, whose
+ * offset is an immediate, is split here. A load delivers in its
+ * scoreboard's group; a store keeps its data register (lu clear).
+ * vkcompute's stk set passes on the hardware. */
+static void
+a3_stack_mem(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
+{
+   bool store = I->op == AGX_OPCODE_STACK_STORE;
+   agx_index reg = store ? I->src[0] : I->dest[0];
+   agx_index offset = I->src[store ? 1 : 0];
+   bool halves = I->format == AGX_FORMAT_I32;
+   unsigned type = a3_mem_type(a, halves ? AGX_FORMAT_I16 : I->format);
+   unsigned comps = util_last_bit(I->mask);
+   unsigned step = halves ? 2 : 4;
+
+   if (I->mask != BITFIELD_MASK(comps))
+      a3_fail(a, "stack access mask is not contiguous");
+
+   for (unsigned c = 0; c < comps; c += step) {
+      unsigned n = MIN2(comps - c, step);
+      agx_index r = reg;
+      r.value += halves ? 2 * c : c;
+
+      a3_begin(a, I, store ? AGX3_STTPS : AGX3_LDTPS,
+               store ? T_STTPS : T_LDTPS);
+      if (!store)
+         a3_set(a, TPS_G, I->scoreboard);
+      a3_set(a, TPS_REG,
+             a3_memreg(a, TPS_REG, r, type,
+                       a3_mem_mask[BITFIELD_MASK(halves ? 2 * n : n)]));
+
+      if (offset.type == AGX_INDEX_IMMEDIATE) {
+         unsigned bytes = c * (halves ? 4 : agx_size_align_16(r.size) * 2);
+         a3_set(a, TPS_INDEX, a3_imm(a, TPS_INDEX, offset.value + bytes, false));
+      } else if (c == 0) {
+         a3_set(a, TPS_INDEX,
+                a3_reg(a, TPS_INDEX, offset, 0, BITFIELD_BIT(A3_SX), 0));
+      } else {
+         a3_fail(a, "wide stack access at a register offset");
+      }
+
+      a3_set(a, TPS_OFFSET, 0);
+      a3_emit(a, emission);
+   }
+}
+
 /* The IR's atomic operations (G13's numbering, which Apple's compiler also
  * uses: the low 4 bits of its memory flags operand) to the hardware's code,
  * Apple's table */
@@ -1266,13 +1328,18 @@ a3_local_atomic(struct a3 *a, const agx_instr *I,
 }
 
 /* atomic (atomicdev). The index counts 32-bit elements. G15 returns a
- * device atomic's result only to a stack register: the result goes to st0
- * in group 2 (the result form's operands are the other form's after g and
- * the destination), get_stack waits for it and copies it to the
- * destination in group 2 (its source tagged with the atomic's group, as
- * Apple's compiler tags a pending source: q), then a wait. The entry
- * program allocates the stack (agx3_stack_size). */
-#define A3_ATOMIC_STACK 0
+ * device atomic's result only to a stack register: the result goes to the
+ * stack word after the shader's scratch in group 2 (the result form's
+ * operands are the other form's after g and the destination), get_stack
+ * waits for it and copies it to the destination in group 2 (its source
+ * tagged with the atomic's group, as Apple's compiler tags a pending
+ * source: q), then a wait. The entry program allocates the stack
+ * (agx3_stack_size). */
+static unsigned
+a3_atomic_stack(unsigned scratch_B)
+{
+   return DIV_ROUND_UP(scratch_B, 4);
+}
 
 static void
 a3_atomic(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
@@ -1283,7 +1350,8 @@ a3_atomic(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
    if (result) {
       a3_begin(a, I, AGX3_DEVICE_ATOMIC_RET, T_ADEV_RET);
       a3_set(a, ADEV_RET_G, A3_SYNC_G + 1);
-      a3_set(a, ADEV_RET_DST, a3_stack(a, ADEV_RET_DST, A3_ATOMIC_STACK, 0));
+      a3_set(a, ADEV_RET_DST,
+             a3_stack(a, ADEV_RET_DST, a3_atomic_stack(a->scratch_B), 0));
    } else {
       a3_begin(a, I, AGX3_DEVICE_ATOMIC, T_ADEV);
    }
@@ -1304,7 +1372,8 @@ a3_atomic(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
    a3_set(a, GET_STACK_Q, A3_SYNC_G);
    a3_set(a, GET_STACK_DST, a3_reg(a, GET_STACK_DST, I->dest[0], 0, 0, 0));
    a3_set(a, GET_STACK_SRC,
-          a3_stack(a, GET_STACK_SRC, A3_ATOMIC_STACK, BITFIELD_BIT(A3_LU)));
+          a3_stack(a, GET_STACK_SRC, a3_atomic_stack(a->scratch_B),
+                   BITFIELD_BIT(A3_LU)));
    a3_set(a, GET_STACK_WAIT, BITFIELD_BIT(A3_SYNC_G));
    a3_emit(a, emission);
 
@@ -1876,15 +1945,21 @@ agx3_cr_count(const agx_instr *I)
    }
 }
 
-/* The stack registers (bytes per thread) the packing of I uses, for the
- * entry program to allocate (specTPR) */
+/* The thread-private stack (bytes per thread) the packing of I uses, for
+ * the entry program to allocate (specTPR): the scratch, then a device
+ * atomic's result word */
 unsigned
-agx3_stack_size(const agx_instr *I)
+agx3_stack_size(const agx_instr *I, unsigned scratch_B)
 {
-   if (I->op == AGX_OPCODE_ATOMIC && !agx_is_null(I->dest[0]))
-      return 4 * (A3_ATOMIC_STACK + 1);
-
-   return 0;
+   switch (I->op) {
+   case AGX_OPCODE_ATOMIC:
+      return agx_is_null(I->dest[0]) ? 0 : 4 * (a3_atomic_stack(scratch_B) + 1);
+   case AGX_OPCODE_STACK_LOAD:
+   case AGX_OPCODE_STACK_STORE:
+      return scratch_B;
+   default:
+      return 0;
+   }
 }
 
 /* Barriers: G15 has one barrier instruction whose flags (AGX3.xml) say
@@ -2769,9 +2844,9 @@ agx3_fixup_branches(struct util_dynarray *emission,
 
 void
 agx3_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
-                const agx_instr *I)
+                const agx_instr *I, unsigned scratch_B)
 {
-   struct a3 a = {.I = I};
+   struct a3 a = {.I = I, .scratch_B = scratch_B};
 
    static bool once;
    if (!once) {
@@ -2925,6 +3000,11 @@ agx3_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
 
    case AGX_OPCODE_LOCAL_ATOMIC:
       a3_local_atomic(&a, I, emission);
+      return;
+
+   case AGX_OPCODE_STACK_LOAD:
+   case AGX_OPCODE_STACK_STORE:
+      a3_stack_mem(&a, I, emission);
       return;
 
    case AGX_OPCODE_TEXTURE_SAMPLE:
@@ -3095,7 +3175,7 @@ agx3_emit_mov_imm(struct util_dynarray *out, unsigned reg, uint32_t imm)
    agx_instr I = {.op = AGX_OPCODE_MOV_IMM, .imm = imm};
    agx_index dst = agx_register(2 * reg, AGX_SIZE_32);
    I.dest = &dst;
-   agx3_pack_instr(out, NULL, &I);
+   agx3_pack_instr(out, NULL, &I, 0);
 }
 
 void
@@ -3116,14 +3196,14 @@ agx3_emit_load(struct util_dynarray *out, unsigned slot, unsigned dst,
       .dest = &d,
       .src = srcs,
    };
-   agx3_pack_instr(out, NULL, &I);
+   agx3_pack_instr(out, NULL, &I, 0);
 }
 
 void
 agx3_emit_wait(struct util_dynarray *out, unsigned slot)
 {
    agx_instr I = {.op = AGX_OPCODE_WAIT, .scoreboard = slot};
-   agx3_pack_instr(out, NULL, &I);
+   agx3_pack_instr(out, NULL, &I, 0);
 }
 
 void
@@ -3135,21 +3215,21 @@ agx3_emit_uniform_store(struct util_dynarray *out, unsigned uniform,
       agx_immediate(2 * uniform),
    };
    agx_instr I = {.op = AGX_OPCODE_UNIFORM_STORE, .src = srcs};
-   agx3_pack_instr(out, NULL, &I);
+   agx3_pack_instr(out, NULL, &I, 0);
 }
 
 void
 agx3_emit_stop(struct util_dynarray *out)
 {
    agx_instr I = {.op = AGX_OPCODE_STOP};
-   agx3_pack_instr(out, NULL, &I);
+   agx3_pack_instr(out, NULL, &I, 0);
 }
 
 void
 agx3_emit_signal_pix(struct util_dynarray *out, unsigned mask)
 {
    agx_instr I = {.op = AGX_OPCODE_SIGNAL_PIX, .writeout = mask};
-   agx3_pack_instr(out, NULL, &I);
+   agx3_pack_instr(out, NULL, &I, 0);
 }
 
 /*
@@ -3166,7 +3246,7 @@ agx3_emit_sample_loop_header(struct util_dynarray *out)
    agx_index r1l = agx_register(2, AGX_SIZE_16);
    agx_instr I = {.op = AGX_OPCODE_MOV_IMM, .imm = 1};
    I.dest = &r1l;
-   agx3_pack_instr(out, NULL, &I);
+   agx3_pack_instr(out, NULL, &I, 0);
 }
 
 /* The footer at program offset footer_offset; the loop body starts at
@@ -3183,7 +3263,7 @@ agx3_emit_sample_loop_footer(struct util_dynarray *out, unsigned nr_samples,
       agx_instr I = {.op = AGX_OPCODE_IADD, .shift = 1};
       I.dest = &r1l;
       I.src = srcs;
-      agx3_pack_instr(out, NULL, &I);
+      agx3_pack_instr(out, NULL, &I, 0);
    }
 
    /* Break the threads past the last sample: !(r1l < 1 << nr_samples) */
@@ -3196,7 +3276,7 @@ agx3_emit_sample_loop_footer(struct util_dynarray *out, unsigned nr_samples,
          .nest = 1,
       };
       I.src = srcs;
-      agx3_pack_instr(out, NULL, &I);
+      agx3_pack_instr(out, NULL, &I, 0);
    }
 
    /* jmp_exec_any to the loop body, patched as agx3_fixup_branches does */
@@ -3218,7 +3298,7 @@ agx3_emit_sample_loop_footer(struct util_dynarray *out, unsigned nr_samples,
 
    {
       agx_instr I = {.op = AGX_OPCODE_POP_EXEC, .nest = 1};
-      agx3_pack_instr(out, NULL, &I);
+      agx3_pack_instr(out, NULL, &I, 0);
    }
 }
 

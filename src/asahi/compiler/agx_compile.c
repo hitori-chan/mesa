@@ -3528,6 +3528,15 @@ agx_mem_vectorize_cb(unsigned align_mul, unsigned align_offset,
    if (bit_size > 32)
       return false;
 
+   /* G15's stack instructions move at most 8 bytes (a3_stack_mem); data, when
+    * set, points to whether the target is G15
+    */
+   const bool *g15 = data;
+   if (g15 && *g15 && num_components * bit_size > 64 &&
+       (low->intrinsic == nir_intrinsic_load_scratch ||
+        low->intrinsic == nir_intrinsic_store_scratch))
+      return false;
+
    return true;
 }
 
@@ -3583,6 +3592,7 @@ agx_optimize_nir(nir_shader *nir, bool soft_fault, uint16_t *preamble_size,
                .modes = nir_var_mem_global | nir_var_mem_constant |
                         nir_var_shader_temp,
                .callback = agx_mem_vectorize_cb,
+               .cb_data = &g15,
             });
    NIR_PASS(_, nir, nir_lower_pack);
    NIR_PASS(_, nir, nir_opt_algebraic);
@@ -3827,6 +3837,13 @@ mem_access_size_align_cb(nir_intrinsic_op intrin, uint8_t bytes,
     */
    if (g15 && bit_size == 8)
       max_comps = 1;
+
+   /* G15's stack instructions move at most 8 bytes (two 32-bit components as
+    * 16-bit halves, a3_stack_mem)
+    */
+   if (g15 && (intrin == nir_intrinsic_load_scratch ||
+               intrin == nir_intrinsic_store_scratch))
+      max_comps = MIN2(max_comps, 8 / (bit_size / 8));
 
    return (nir_mem_access_size_align){
       .num_components = MIN2(bytes / (bit_size / 8), max_comps),
@@ -4129,7 +4146,9 @@ agx_compile_function_nir(nir_shader *nir, nir_function_impl *impl,
    AGX_PASS(ctx, agx_ra);
    agx_lower_64bit_postra(ctx);
 
-   if (ctx->scratch_size_B > 0) {
+   /* G15's thread-private stack needs no adjust: the entry program's specTPR
+    * allocates it (agx3_stack_size) */
+   if (ctx->scratch_size_B > 0 && ctx->key->dev.gpu_generation < 15) {
       /* Apple always allocate 40 more bytes in the entrypoint and align to 4. */
       uint64_t stack_size = align(DIV_ROUND_UP(ctx->scratch_size_B, 4) + 10, 4);
 

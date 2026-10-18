@@ -1222,9 +1222,9 @@ agx_pack_binary(agx_context *ctx, struct util_dynarray *emission)
          block->last_offset = emission->size;
 
          if (ctx->key->dev.gpu_generation >= 15) {
-            agx3_pack_instr(emission, &fixups3, ins);
-            ctx->out->stack_size =
-               MAX2(ctx->out->stack_size, agx3_stack_size(ins));
+            agx3_pack_instr(emission, &fixups3, ins, ctx->scratch_size_B);
+            ctx->out->stack_size = MAX2(ctx->out->stack_size,
+                                        agx3_stack_size(ins, ctx->scratch_size_B));
             ctx->out->cr_count = MAX2(ctx->out->cr_count, agx3_cr_count(ins));
          } else
             agx_pack_instr(emission, &fixups, ins,
