@@ -318,6 +318,18 @@ avoid_instr_g15(const nir_instr *instr, const void *data)
           intr->intrinsic == nir_intrinsic_bindless_sampler_agx;
 }
 
+/* G15 inlines the preamble into the entry program. A gather there handed the
+ * main program wrong values (0 in the first one or two of the four uniforms it
+ * stored, the rest right; the same gather in the main program was right:
+ * dEQP-VK's border_swizzle gathers at constant coordinates), so G15 keeps
+ * texture instructions in the shader. Why is not known.
+ */
+static bool
+can_move_instr_g15(const nir_instr *instr, const void *data)
+{
+   return instr->type != nir_instr_type_tex;
+}
+
 static const nir_opt_preamble_options preamble_options = {
    .drawid_uniform = true,
    .subgroup_size_uniform = true,
@@ -349,6 +361,7 @@ static const nir_opt_preamble_options preamble_options_g15 = {
    .instr_cost_cb = instr_cost,
    .rewrite_cost_cb = rewrite_cost,
    .avoid_instr_cb = avoid_instr_g15,
+   .can_move_instr_cb = can_move_instr_g15,
 
    /* hardware size is 512, but it's polite to leave some wiggle room to push
     * hot constants so we don't end up rematerializing all over the place.
