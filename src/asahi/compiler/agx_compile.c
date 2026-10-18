@@ -1224,6 +1224,90 @@ lower_tex_offset_g15(nir_builder *b, nir_tex_instr *tex, void *data)
 }
 
 /*
+ * G15 has no LOD query: Apple's compiler has no intrinsic for one (none of
+ * libLLVM_32023's llvm.agx.* names), so its AIR lowering computes it. Here
+ * the LOD is log2 of the larger footprint of the coordinates' derivatives
+ * scaled by the size (the 32 B descriptor: width at bit 28, height at 42,
+ * depth at 110), plus the bias; x clamps it to the sampler's LOD range (its
+ * state's 9:0 and 19:10, q4.6) and the texture's levels (last level at bit
+ * 176 when mipmapped, bit 58). A cube is face-local here (cube array mode),
+ * its LOD that of the face. Not verified on the hardware.
+ */
+static bool
+lower_tex_lod_g15(nir_builder *b, nir_tex_instr *tex, void *data)
+{
+   if (tex->op != nir_texop_lod)
+      return false;
+
+   int ci = nir_tex_instr_src_index(tex, nir_tex_src_backend1);
+   int ti = nir_tex_instr_src_index(tex, nir_tex_src_texture_handle);
+   int si = nir_tex_instr_src_index(tex, nir_tex_src_sampler_handle);
+   if (ci < 0 || ti < 0)
+      return false;
+
+   b->cursor = nir_before_instr(&tex->instr);
+
+   unsigned n = tex->sampler_dim == GLSL_SAMPLER_DIM_3D ? 3 : 2;
+   nir_def *coord = nir_trim_vector(b, tex->src[ci].src.ssa, n);
+
+   nir_def *addr = nir_load_from_texture_handle_agx(b, tex->src[ti].src.ssa);
+   nir_def *desc = nir_load_global_constant(b, 4, 32, addr);
+   nir_def *w0 = nir_channel(b, desc, 0), *w1 = nir_channel(b, desc, 1);
+   nir_def *w3 = nir_channel(b, desc, 3);
+   nir_def *w5 = nir_load_global_constant(b, 1, 32, nir_iadd_imm(b, addr, 20));
+
+   nir_def *wh_lo = nir_ushr_imm(b, w0, 28);
+   nir_def *width = nir_ior(b, wh_lo, nir_ishl_imm(b, nir_iand_imm(b, w1, 0x3ff), 4));
+   nir_def *height = nir_ubitfield_extract_imm(b, w1, 10, 14);
+   nir_def *depth = nir_ubitfield_extract_imm(b, w3, 14, 14);
+   nir_def *size = nir_vec3(b, width, height, depth);
+   size = nir_u2f32(b, nir_iadd_imm(b, nir_trim_vector(b, size, n), 1));
+
+   nir_def *dx = nir_fmul(b, nir_ddx(b, coord), size);
+   nir_def *dy = nir_fmul(b, nir_ddy(b, coord), size);
+   nir_def *rho2 = nir_fmax(b, nir_fdot(b, dx, dx), nir_fdot(b, dy, dy));
+   nir_def *lod = nir_fmul_imm(b, nir_flog2(b, rho2), 0.5);
+
+   int bi = nir_tex_instr_src_index(tex, nir_tex_src_bias);
+   if (bi >= 0)
+      lod = nir_fadd(b, lod, nir_f2f32(b, tex->src[bi].src.ssa));
+
+   /* The levels: last level - first level + 1 when mipmapped */
+   nir_def *mip = nir_i2b(b, nir_iand_imm(b, w1, 1 << 26));
+   nir_def *last = nir_isub(b, nir_ubitfield_extract_imm(b, w5, 16, 4),
+                            nir_ubitfield_extract_imm(b, w5, 12, 4));
+   nir_def *max_level = nir_u2f32(b, nir_bcsel(b, mip, last, nir_imm_int(b, 0)));
+
+   nir_def *lo = nir_imm_float(b, 0.0), *hi = max_level;
+   if (si >= 0) {
+      nir_intrinsic_instr *s = nir_src_as_intrinsic(tex->src[si].src);
+      if (s && s->intrinsic == nir_intrinsic_bindless_sampler_agx) {
+         nir_def *entry = nir_bindless_image_agx(
+            b, nir_u2u32(b, s->src[1].ssa), .desc_set = nir_intrinsic_desc_set(s));
+         nir_def *state = nir_load_global_constant(
+            b, 1, 32, nir_load_from_texture_handle_agx(b, entry));
+         nir_def *min_lod = nir_fmul_imm(
+            b, nir_u2f32(b, nir_iand_imm(b, state, 0x3ff)), 1.0 / 64.0);
+         nir_def *max_lod = nir_fmul_imm(
+            b, nir_u2f32(b, nir_ubitfield_extract_imm(b, state, 10, 10)),
+            1.0 / 64.0);
+         lo = min_lod;
+         hi = nir_fmin(b, max_lod, max_level);
+      }
+   }
+
+   nir_def *x = nir_fmin(b, nir_fmax(b, lod, lo), hi);
+   x = nir_fmax(b, nir_fmin(b, x, max_level), nir_imm_float(b, 0.0));
+
+   nir_def *res = nir_vec2(b, x, lod);
+   if (tex->def.bit_size != 32)
+      res = nir_f2fN(b, res, tex->def.bit_size);
+
+   nir_def_replace(&tex->def, nir_pad_vector(b, res, tex->def.num_components));
+   return true;
+}
+
+/*
  * Hardware bindless texture sources are specified as a 64-bit uniform base
  * address summed with a 32-bit register index. We model in NIR with the
  * bindless_image_agx intrinsic.
@@ -4348,6 +4432,10 @@ agx_compile_shader_nir(nir_shader *nir, struct agx_shader_key *key,
 
    if (key->dev.gpu_generation >= 15)
       NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_load_format_g15,
+               nir_metadata_control_flow, NULL);
+
+   if (key->dev.gpu_generation >= 15)
+      NIR_PASS(_, nir, nir_shader_tex_pass, lower_tex_lod_g15,
                nir_metadata_control_flow, NULL);
 
    if (key->dev.gpu_generation >= 15)
