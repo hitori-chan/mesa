@@ -3807,6 +3807,9 @@ mem_access_size_align_cb(nir_intrinsic_op intrin, uint8_t bytes,
                          uint32_t align_offset, bool offset_is_const,
                          enum gl_access_qualifier access, const void *cb_data)
 {
+   bool g15 = *(const uint8_t *)cb_data >= 15;
+   unsigned max_comps = 4;
+
    align = nir_combined_align(align, align_offset);
 
    assert(util_is_power_of_two_nonzero(align));
@@ -3815,11 +3818,18 @@ mem_access_size_align_cb(nir_intrinsic_op intrin, uint8_t bytes,
       bit_size = 8;
    else if ((bytes & 2) || (align == 2))
       bit_size = 16;
-   else if (bit_size >= 32)
+   else if (bit_size >= 32 || g15)
       bit_size = 32;
 
+   /* G15 packs i8 data two bytes to a 16-bit register (AGX3.xml memreg),
+    * where the IR keeps one byte per register: an aligned access moves
+    * 32-bit words and an unaligned one a byte at a time.
+    */
+   if (g15 && bit_size == 8)
+      max_comps = 1;
+
    return (nir_mem_access_size_align){
-      .num_components = MIN2(bytes / (bit_size / 8), 4),
+      .num_components = MIN2(bytes / (bit_size / 8), max_comps),
       .bit_size = bit_size,
       .align = bit_size / 8,
       .shift = nir_mem_access_shift_method_scalar,
@@ -4456,6 +4466,7 @@ agx_compile_shader_nir(nir_shader *nir, struct agx_shader_key *key,
                nir_var_mem_task_payload | nir_var_shader_temp |
                nir_var_function_temp | nir_var_mem_global | nir_var_mem_shared,
       .callback = mem_access_size_align_cb,
+      .cb_data = &key->dev.gpu_generation,
    };
    NIR_PASS(_, nir, nir_lower_mem_access_bit_sizes, &lower_mem_access_options);
 
