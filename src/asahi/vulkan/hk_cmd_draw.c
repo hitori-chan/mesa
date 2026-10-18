@@ -421,6 +421,19 @@ hk_build_bg_eot(struct hk_cmd_buffer *cmd, const VkRenderingInfo *info,
 
    struct agx_usc_builder b = agx_usc_builder(t.cpu, usc_size);
 
+   /* On G15 the spilled render targets' descriptors and the loaded ones share
+    * the table at u0. A loaded target's background texture replaces its
+    * entry 2 * rt, which the background program reads only for that load (a
+    * spilled target's store takes its PBE at 2 * rt + 1). A spilled target
+    * is loaded too, with VK_ATTACHMENT_STORE_OP_NONE (no_store_wa above). */
+   if (g15 && needs_textures_for_spilled_rts) {
+      g15_tex = hk_pool_alloc(cmd, 2 * 32 * HK_MAX_RTS, 64);
+      if (!g15_tex.cpu)
+         return (struct hk_bg_eot){.usc = 0};
+
+      hk_spilled_rt_descs_g15(cmd, g15_tex.cpu);
+   }
+
    bool uses_txf = false;
    unsigned uniforms = 0;
    unsigned nr_tex = 0;
@@ -498,7 +511,7 @@ hk_build_bg_eot(struct hk_cmd_buffer *cmd, const VkRenderingInfo *info,
       }
    }
 
-   if (needs_textures_for_spilled_rts) {
+   if (needs_textures_for_spilled_rts && !g15) {
       hk_usc_upload_spilled_rt_descs(&b, cmd);
       uniforms = MAX2(uniforms, 4);
    }
