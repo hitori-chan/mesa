@@ -803,12 +803,10 @@ agx_emit_local_store_pixel(agx_builder *b, nir_intrinsic_instr *instr)
  * the target samples in bits 11:8, which Apple sets to the flag too (a helper
  * thread targets nothing). One sample per pixel (hardware boots #326-#329):
  * a four-sample target is not verified, the fields hold one bit per sample as
- * far as is known. The result goes to the instruction's first source. */
-static agx_instr *
-agx_emit_sample_mask_g15(agx_builder *b, nir_intrinsic_instr *instr)
+ * far as is known. zs_emit takes the same word (draws.md, depth output). */
+static agx_index
+agx_coverage_word_g15(agx_builder *b, agx_index target, agx_index live)
 {
-   agx_index target = agx_src_index(&instr->src[0]);
-   agx_index live = agx_src_index(&instr->src[1]);
    agx_index active = agx_get_sr_coverage(b, 32, AGX_SR_IS_ACTIVE_THREAD);
 
    agx_index t = agx_temp(b->shader, AGX_SIZE_32);
@@ -823,7 +821,14 @@ agx_emit_sample_mask_g15(agx_builder *b, nir_intrinsic_instr *instr)
    agx_index tt = agx_temp(b->shader, AGX_SIZE_32);
    agx_iadd_to(b, t4, agx_immediate(0), t, 4);
    agx_iadd_to(b, tt, agx_immediate(0x10), t4, 4);
-   agx_index cr0 = agx_imad(b, active, tt, l, 0);
+   return agx_imad(b, active, tt, l, 0);
+}
+
+static agx_instr *
+agx_emit_sample_mask_g15(agx_builder *b, nir_intrinsic_instr *instr)
+{
+   agx_index cr0 = agx_coverage_word_g15(b, agx_src_index(&instr->src[0]),
+                                         agx_src_index(&instr->src[1]));
 
    return agx_sample_mask(b, cr0, agx_zero());
 }
@@ -853,9 +858,34 @@ agx_emit_store_zs(agx_builder *b, nir_intrinsic_instr *instr)
     * maybe rename this flag to something more general.
     */
    b->shader->out->writes_sample_mask = true;
+   b->shader->out->writes_zs = true;
 
    agx_wait_pixel_mask(b, 0x1);
-   return agx_zs_emit(b, agx_src_index(&instr->src[0]), zs, base);
+
+   agx_index mask = agx_src_index(&instr->src[0]);
+   if (b->shader->key->dev.gpu_generation < 15)
+      return agx_zs_emit(b, mask, zs, base);
+
+   /* G15 takes movmsk's coverage word with every sample live and the
+    * instruction's samples as the target, as Apple's depth-output shader
+    * builds it (draws.md, depth output). A mask left at G13's all samples
+    * (the sample count was not known) targets the covered ones.
+    */
+   if (mask.type == AGX_INDEX_IMMEDIATE && mask.value == 0xFF)
+      mask = agx_get_sr_coverage(b, 16, AGX_SR_COVERAGE_MASK);
+
+   agx_instr *I = agx_zs_emit(
+      b, agx_coverage_word_g15(b, mask, agx_immediate(0xf)), zs, base);
+
+   /* Apple's shader releases fence 1 right after its zs_emit. A sample loop
+    * waits again in its next pass, so it leaves the fence to the trailer.
+    */
+   if (!b->shader->key->fs.inside_sample_loop) {
+      agx_signal_pix(b, 0x1);
+      b->shader->out->pix_signal_mask |= 0x1;
+   }
+
+   return I;
 }
 
 static void

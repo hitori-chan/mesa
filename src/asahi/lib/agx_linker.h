@@ -35,6 +35,12 @@ struct agx_linked_shader {
     */
    uint16_t pix_wait_mask;
 
+   /* G15: the fences of pix_wait_mask a part releases itself before the end */
+   uint16_t pix_signal_mask;
+
+   /* Whether the program writes depth or stencil (G15's fragment state) */
+   bool writes_zs;
+
    /* Size in bytes of the linked program (G15's entry program wants it) */
    unsigned main_size;
 
