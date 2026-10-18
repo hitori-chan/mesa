@@ -1722,8 +1722,11 @@ agx3_cr_count(const agx_instr *I)
    case AGX_OPCODE_TEXTURE_LOAD:
       return MAX2(a3_tex_slot(I, a3_tex_coords(I) - 1) + 1,
                   a3_tex_lod_word(I) ? 4 : I->shadow ? 3 : 2);
-   case AGX_OPCODE_IMAGE_LOAD:
    case AGX_OPCODE_ZS_EMIT:
+      /* the coverage word, the depth and the stencil: Apple's depth output
+       * counts 2 for the first two (they live at cr4096, a3_zs_emit) */
+      return I->zs == 3 ? 3 : 2;
+   case AGX_OPCODE_IMAGE_LOAD:
    case AGX_OPCODE_BLOCK_IMAGE_STORE:
       return 2;
    case AGX_OPCODE_IMAGE_WRITE:
@@ -1872,7 +1875,9 @@ a3_src9(struct a3 *a, unsigned op, agx_index idx)
 
 /* A register to coordinate register cr (as the disassembler numbers it),
  * in group 0: the 4-byte mov reaches a cr below 64 in group 0 only and has
- * one size bit for both operands; the 10-byte one takes a 16-bit value */
+ * one size bit for both operands; the 10-byte one has its own for the
+ * destination (vdst bit 15, a carry of the cr case), set for a 32-bit value
+ * as Apple's 10-byte movs to cr4096 have it */
 static void
 a3_mov_cr(struct a3 *a, const agx_instr *I, unsigned cr, agx_index value,
           struct util_dynarray *emission)
@@ -1887,7 +1892,11 @@ a3_mov_cr(struct a3 *a, const agx_instr *I, unsigned cr, agx_index value,
 
       a3_begin(a, I, len == 4 ? AGX3_MOV : AGX3_MOV10,
                len == 4 ? T_MOV : T_ZERO10);
-      a3_set(a, MOV_DST, a3_kind_value(a, MOV_DST, A3_CR, cr, 0));
+      uint64_t dst = a3_kind_value(a, MOV_DST, A3_CR, cr, 0);
+      if (value.size == AGX_SIZE_32)
+         dst |= BITFIELD64_BIT(15);
+
+      a3_set(a, MOV_DST, dst);
       a3_set(a, MOV_SRC,
              a3_reg(a, MOV_SRC, value, 0, BITFIELD_BIT(A3_SX), 0));
 
@@ -2138,27 +2147,31 @@ a3_itrcoords(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
    a3_emit(a, emission);
 }
 
-/* zs_emit (depthf): from cr0 (and cr1), written in group 0. G15's has no
- * sample mask: only all samples. The cr layout is a guess: depth in cr0,
- * with depth the stencil in cr1 (the IR widens it to 32 bits), else the
- * 16-bit stencil in cr0's low half. */
+/* zs_emit (depthf) reads movmsk's coverage word and the depth from the
+ * coordinate registers Apple's depth-output shader writes before it: its
+ * 10-byte mov and cmpsel name cr4096 and cr4097 (the destination's y field,
+ * vdst bit 13, set), 32-bit, and its zs_emit names cr0 (draws.md, depth
+ * output). With the same values in cr0 and cr1 the 3D job hangs in a
+ * punch-through pass (kernel #281). The stencil's place, after the depth,
+ * or the depth's when alone, is a guess (the IR widens it to 32 bits with
+ * depth). */
+#define A3_ZS_CR 4096
+
 static void
 a3_zs_emit(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
 {
    static const uint8_t mode[] = {[1] = 1, [2] = 0, [3] = 3};
-   agx_index samples = I->src[0];
    agx_index zs = I->src[1];
 
    if (I->zs < 1 || I->zs > 3)
       a3_fail(a, "zs_emit of nothing");
-   if (samples.type != AGX_INDEX_IMMEDIATE || samples.value != 0xff)
-      a3_fail(a, "zs_emit with a sample mask (G15 has none)");
 
-   a3_mov_cr(a, I, 0, zs, emission);
+   a3_mov_cr(a, I, A3_ZS_CR + 0, I->src[0], emission);
+   a3_mov_cr(a, I, A3_ZS_CR + 1, zs, emission);
    if (I->zs == 3) {
       agx_index s = zs;
       s.value += 2;
-      a3_mov_cr(a, I, 1, s, emission);
+      a3_mov_cr(a, I, A3_ZS_CR + 2, s, emission);
    }
 
    a3_begin(a, I, AGX3_ZS_EMIT, T_ZS_EMIT);

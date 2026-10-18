@@ -113,6 +113,11 @@ struct agx_shader_info {
     */
    uint16_t pix_wait_mask;
 
+   /* G15: the fences of pix_wait_mask the program releases itself before its
+    * end (fence 1 right after zs_emit, as Apple's depth-output shader)
+    */
+   uint16_t pix_signal_mask;
+
    /* Does the shader have a preamble? If so, it is at offset preamble_offset.
     * The main shader is at offset main_offset. The preamble is executed first.
     */
@@ -133,6 +138,9 @@ struct agx_shader_info {
 
    /* Does the shader control the sample mask? */
    bool writes_sample_mask;
+
+   /* Does the shader write depth or stencil (zs_emit)? */
+   bool writes_zs;
 
    /* Depth layout, never equal to NONE */
    enum gl_frag_depth_layout depth_layout;

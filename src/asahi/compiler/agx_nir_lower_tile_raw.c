@@ -370,7 +370,9 @@ lower_intr(nir_builder *b, nir_intrinsic_instr *intr, void *data)
  * literally (demo15 passes 1 for its one-sample target) and with 0xFF writes
  * the tile's other sample planes, past the end of a one-sample imageblock into
  * the neighbouring tiles' memory (the lab: a 64x64 clear wrote half of the
- * pixels).
+ * pixels). zs_emit's mask becomes the target of its coverage word, which
+ * Apple's depth output sets to the one sample of a one-sample target
+ * (draws.md, depth output).
  */
 static bool
 clamp_sample_mask(nir_builder *b, nir_intrinsic_instr *intr, void *data)
@@ -380,7 +382,8 @@ clamp_sample_mask(nir_builder *b, nir_intrinsic_instr *intr, void *data)
 
    if (intr->intrinsic == nir_intrinsic_store_local_pixel_agx)
       src = 1;
-   else if (intr->intrinsic == nir_intrinsic_load_local_pixel_agx)
+   else if (intr->intrinsic == nir_intrinsic_load_local_pixel_agx ||
+            intr->intrinsic == nir_intrinsic_store_zs_agx)
       src = 0;
    else
       return false;
@@ -400,19 +403,26 @@ clamp_sample_mask(nir_builder *b, nir_intrinsic_instr *intr, void *data)
  * G15's tile store writes every sample its mask names, whether the primitive
  * covers it or not: Apple's multisampled fragment programs mask their tile
  * stores with the coverage (get_sr sr66, SR_CVGINFO), all of it or one bit of
- * it per sample (draws.md, Multisampling).
+ * it per sample (draws.md, Multisampling). zs_emit's target takes the
+ * coverage too (not verified on a multisampled target).
  */
 static bool
 and_coverage(nir_builder *b, nir_intrinsic_instr *intr, void *data)
 {
-   if (intr->intrinsic != nir_intrinsic_store_local_pixel_agx ||
-       nir_intrinsic_explicit_coord(intr))
+   unsigned src;
+
+   if (intr->intrinsic == nir_intrinsic_store_local_pixel_agx &&
+       !nir_intrinsic_explicit_coord(intr))
+      src = 1;
+   else if (intr->intrinsic == nir_intrinsic_store_zs_agx)
+      src = 0;
+   else
       return false;
 
    b->cursor = nir_before_instr(&intr->instr);
-   nir_def *mask = intr->src[1].ssa;
+   nir_def *mask = intr->src[src].ssa;
    nir_def *cvg = nir_u2uN(b, nir_load_sample_mask(b), mask->bit_size);
-   nir_src_rewrite(&intr->src[1], nir_iand(b, mask, cvg));
+   nir_src_rewrite(&intr->src[src], nir_iand(b, mask, cvg));
    return true;
 }
 
