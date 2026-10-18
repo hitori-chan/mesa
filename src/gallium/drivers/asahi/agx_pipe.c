@@ -372,6 +372,13 @@ agx_linear_allowed(const struct agx_resource *pres)
       if (pres->base.bind & PIPE_BIND_SHADER_IMAGE)
          return false;
 
+      /* G15's descriptors hold a linear texture's stride where a layered
+       * one's layer count goes, so a linear texture has one layer (Apple's
+       * linear textures are 2D only, texture.md) */
+      if (agx_device(pres->base.screen)->params.gpu_generation >= 15 &&
+          pres->base.array_size > 1)
+         return false;
+
       break;
 
    /* No other texture type can specify a stride */
