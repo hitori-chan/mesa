@@ -427,7 +427,7 @@ hk_build_bg_eot(struct hk_cmd_buffer *cmd, const VkRenderingInfo *info,
     * spilled target's store takes its PBE at 2 * rt + 1). A spilled target
     * is loaded too, with VK_ATTACHMENT_STORE_OP_NONE (no_store_wa above). */
    if (g15 && needs_textures_for_spilled_rts) {
-      g15_tex = hk_pool_alloc(cmd, 2 * 32 * HK_MAX_RTS, 64);
+      g15_tex = hk_pool_alloc(cmd, HK_SPILL_TABLE_G15_B, 64);
       if (!g15_tex.cpu)
          return (struct hk_bg_eot){.usc = 0};
 
@@ -730,6 +730,8 @@ hk_CmdBeginRendering(VkCommandBuffer commandBuffer,
     */
    render->tilebuffer = agx_build_tilebuffer_layout(
       formats, render->color_att_count, render->tilebuffer.nr_samples, true);
+   render->tilebuffer.g15 =
+      hk_cmd_buffer_device(cmd)->dev.params.gpu_generation >= 15;
 
    const VkRenderingAttachmentLocationInfoKHR ral_info = {
       .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_LOCATION_INFO_KHR,
@@ -3128,6 +3130,7 @@ hk_flush_dynamic_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
       }
 
       key.epilog.link.already_ran_zs |= nontrivial_force_early;
+      key.epilog.g15 = dev->dev.params.gpu_generation >= 15;
 
       struct hk_rendering_state *render = &cmd->state.gfx.render;
       for (uint32_t i = 0; i < render->color_att_count; i++) {
