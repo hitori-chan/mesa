@@ -1133,55 +1133,6 @@ lower_interleave_g15(nir_builder *b, nir_alu_instr *alu, void *data)
 }
 
 /*
- * G15 fetches at a constant level only (F28's immediate): a fetch at a level
- * in a register becomes a chain of fetches, one for each level the texture
- * can have, of which the matching one runs.
- */
-#define AGX_G15_MAX_TXF_LEVELS 15
-
-static bool
-lower_txf_lod_g15(nir_builder *b, nir_instr *instr, void *data)
-{
-   if (instr->type != nir_instr_type_tex)
-      return false;
-
-   nir_tex_instr *tex = nir_instr_as_tex(instr);
-   if (tex->op != nir_texop_txf)
-      return false;
-
-   int lod_idx = nir_tex_instr_src_index(tex, nir_tex_src_lod);
-   if (lod_idx < 0 || nir_src_is_const(tex->src[lod_idx].src))
-      return false;
-
-   b->cursor = nir_before_instr(instr);
-
-   nir_def *lod = tex->src[lod_idx].src.ssa;
-   nir_def *lod32 = nir_u2u32(b, lod);
-   nir_def *res = NULL;
-
-   for (unsigned level = 0; level < AGX_G15_MAX_TXF_LEVELS; ++level) {
-      nir_tex_instr *copy = nir_instr_as_tex(nir_instr_clone(b->shader, instr));
-
-      if (level > 0)
-         nir_push_if(b, nir_ieq_imm(b, lod32, level));
-
-      nir_def *imm = nir_imm_intN_t(b, level, lod->bit_size);
-      nir_builder_instr_insert(b, &copy->instr);
-      nir_src_rewrite(&copy->src[lod_idx].src, imm);
-
-      if (level > 0) {
-         nir_pop_if(b, NULL);
-         res = nir_if_phi(b, &copy->def, res);
-      } else {
-         res = &copy->def;
-      }
-   }
-
-   nir_def_replace(&tex->def, res);
-   return true;
-}
-
-/*
  * Hardware bindless texture sources are specified as a 64-bit uniform base
  * address summed with a 32-bit register index. We model in NIR with the
  * bindless_image_agx intrinsic.
@@ -4274,10 +4225,6 @@ agx_compile_shader_nir(nir_shader *nir, struct agx_shader_key *key,
                nir->info.stage == MESA_SHADER_FRAGMENT ? key->fs.nr_samples : 0,
                nir->info.stage == MESA_SHADER_FRAGMENT &&
                   !key->fs.ignore_tib_dependencies);
-
-   if (key->dev.gpu_generation >= 15)
-      NIR_PASS(_, nir, nir_shader_instructions_pass, lower_txf_lod_g15,
-               nir_metadata_none, NULL);
 
    if (key->dev.gpu_generation >= 15)
       NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_load_format_g15,

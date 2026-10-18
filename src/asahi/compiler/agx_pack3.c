@@ -726,6 +726,7 @@ a3_memshift(const struct a3 *a, unsigned bytes)
 #define T_ZS_EMIT   "d70454000003"                 /* zs_emit ^cr0, 0, z */
 #define T_MOVMSK    "570454000000"                 /* movmsk ^cr0, 0 */
 #define T_PACK_IMGWIR "9705540400080000d0401000"   /* pack_imgwir cr2, 0, u2l, 0, 0, 4 */
+#define T_PACK_SMPIR "1705540600000004f0c00800"    /* pack_smpir cr3, 0, ^r0l, 0, 10 */
 #define T_IMGWBLK   "5710540000000080a8750000"     /* block_image_store ^cr0, 0, du0, 0, 7530 */
 /* Apple's rw.write() of the imgw capture (macOS 27.0.1): image_write ^cr8,
  * group 0, du2, index 1, level 0, xyzw, wait 0 */
@@ -736,6 +737,8 @@ a3_memshift(const struct a3 *a, unsigned bytes)
 #define T_TEX_L0    "05820cb830250900000010000100" /* texture_sample 2D, level 0 */
 #define T_TEX_AUTO  "05000cb8b0000000010110000100" /* texture_sample 2D, auto LOD */
 #define T_TEX_LOAD  "25800c38b0001701000100000100" /* texture_load 2D, level 0 */
+#define T_TEX_LEVELW "15000c38b0000001000110000100" /* texture_sample 2D, level in cr3 */
+#define T_TEX_BIASW "05000cb8b0240400000010000100" /* texture_sample 2D, bias in cr3 */
 
 /* Operand positions (AGX3.xml order) */
 enum {
@@ -837,6 +840,12 @@ enum {
    PACK_IMGWIR_C = 4,
    PACK_IMGWIR_LAYOUT = 5,
    PACK_IMGWIR_WAIT = 6,
+   PACK_SMPIR_DST = 0,
+   PACK_SMPIR_G = 1,
+   PACK_SMPIR_A = 2,
+   PACK_SMPIR_C = 3,
+   PACK_SMPIR_MODE = 4,
+   PACK_SMPIR_WAIT = 5,
    IMGWBLK_CR = 0,
    IMGWBLK_G = 1,
    IMGWBLK_PTR = 2,
@@ -1279,6 +1288,7 @@ a3_atomic(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
 
 static void a3_mov_cr(struct a3 *a, const agx_instr *I, unsigned cr,
                       agx_index value, struct util_dynarray *emission);
+static uint64_t a3_src9(struct a3 *a, unsigned op, agx_index idx);
 
 /* The texture instructions' result masks (texture.md): Apple's 4-bit code
  * for each IR mask (x = 1, y = 2, z = 4, w = 8), 0xff for none */
@@ -1413,6 +1423,39 @@ static const struct a3_cmp_mode a3_tex_cmp[] = {
    [AGX_DIM_2D_ARRAY] = {1056, 297, 801, 635},
 };
 
+/* A LOD or bias in a register goes to cr3's high half (the LOD word, smp.md):
+ * the mode codes (bits 48:63) of a sample with a bias, a sample at a level
+ * and a fetch at a level, from the encoder tree (the corpus has the 2D bias
+ * and level forms) */
+struct a3_lodw_mode {
+   uint16_t bias, level, fetch;
+};
+
+static const struct a3_lodw_mode a3_tex_lodw[] = {
+   [AGX_DIM_2D] = {4, 256, 9344},
+   [AGX_DIM_2D_ARRAY] = {8, 264, 9376},
+   [AGX_DIM_3D] = {400, 8584, 408},
+   [AGX_DIM_CUBE] = {20, 768, 12416},
+   [AGX_DIM_CUBE_ARRAY] = {24, 776, 12448},
+};
+
+/* Whether I takes its LOD or bias through the LOD word: a bias, or a level
+ * other than a sample's level 0 and a fetch's immediate (F28's) */
+static bool
+a3_tex_lod_word(const agx_instr *I)
+{
+   agx_index lod = I->src[1];
+   bool load = I->op == AGX_OPCODE_TEXTURE_LOAD;
+
+   if (I->lod_mode == AGX_LOD_MODE_AUTO_LOD_BIAS)
+      return true;
+   if (I->lod_mode != AGX_LOD_MODE_LOD_MIN)
+      return false;
+   if (lod.type != AGX_INDEX_IMMEDIATE)
+      return true;
+   return load ? lod.value >= 32 : lod.value != 0;
+}
+
 /* An instruction of one of the tables above, A3_NONE for a dimension it
  * leaves out (a designated initialiser leaves those 0, a real instruction) */
 static enum agx3_instr
@@ -1472,7 +1515,9 @@ a3_tex_slot(const agx_instr *I, unsigned c)
  * one 32-bit slot each (a3_tex_slot), in group 0, which the instruction
  * waits for; the result arrives in group A3_SYNC_G and is waited for at
  * once. Done: every dimension, automatic LOD (fragment shaders) and level 0,
- * a fetch at a constant level, immediate or register indices, constant
+ * a fetch at a constant level, a LOD, bias or fetch level in a register (the
+ * LOD word in cr3; 2D and 2D array samples and 2D fetches run on the
+ * hardware), immediate or register indices, constant
  * offsets and gathers (the encoder tree's forms, not verified), 2D and 2D
  * array depth compares without an offset (the reference in cr2). Gallium
  * samples a cube as a 2D array (agx_nir_lower_cube_g15): cube mode's face
@@ -1501,14 +1546,21 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
    agx_index offset = I->src[5];
    if (I->offset && offset.type != AGX_INDEX_IMMEDIATE)
       a3_fail(a, "texture offset in a register");
-   /* A fetch's level is F28's 12-bit immediate (Apple's loads have 0) */
+   /* A fetch's level is F28's 12-bit immediate (Apple's loads have 0), in
+    * q5.6 as the LOD word's (smp.md) */
    bool imm_level = load && I->lod_mode == AGX_LOD_MODE_LOD_MIN &&
-                    lod.type == AGX_INDEX_IMMEDIATE && lod.value < 4096;
+                    lod.type == AGX_INDEX_IMMEDIATE && lod.value < 32;
    bool level0 = I->lod_mode == AGX_LOD_MODE_LOD_MIN &&
                  lod.type == AGX_INDEX_IMMEDIATE && lod.value == 0;
+   bool lodw = a3_tex_lod_word(I);
+   bool bias = I->lod_mode == AGX_LOD_MODE_AUTO_LOD_BIAS;
 
-   if (!auto_lod && !imm_level && !level0)
-      a3_fail(a, "texture LOD other than automatic or level 0");
+   if (!auto_lod && !imm_level && !level0 && !lodw)
+      a3_fail(a, "texture LOD other than automatic, a level or a bias");
+   if (lodw && (I->offset || I->shadow || gather))
+      a3_fail(a, "texture LOD in a register with an offset, compare or gather");
+   if (lodw && (I->dim >= ARRAY_SIZE(a3_tex_lodw) || !a3_tex_lodw[I->dim].bias))
+      a3_fail(a, "texture LOD in a register for this dimension");
    if (gather && load)
       a3_fail(a, "gather of a fetch");
    if (load && auto_lod)
@@ -1520,7 +1572,13 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
 
    enum agx3_instr instr;
    const char *tmpl = load ? T_TEX_LOAD : auto_lod ? T_TEX_AUTO : T_TEX_L0;
-   if (gather) {
+   unsigned lodw_mode = 0;
+   if (lodw) {
+      const struct a3_lodw_mode *m = &a3_tex_lodw[I->dim];
+      instr = load ? AGX3_TEXTURE_LOAD_MODE : AGX3_TEXTURE_SAMPLE_MODE;
+      tmpl = load ? T_TEX_LOAD : bias ? T_TEX_BIASW : T_TEX_LEVELW;
+      lodw_mode = load ? m->fetch : bias ? m->bias : m->level;
+   } else if (gather) {
       /* whatever the stage: a gather reads one level */
       instr = a3_tex_pick(I->offset ? a3_tex_gather_offset : a3_tex_gather,
                           I->dim);
@@ -1554,13 +1612,34 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
    if (instr == A3_NONE)
       a3_fail(a, "texture form not in the encoder tree for this dimension");
 
-   bool has_lod = load && a3_tex_load[I->dim] != A3_NONE;
+   bool has_lod = load && !lodw && a3_tex_load[I->dim] != A3_NONE;
 
+   /* With a LOD word the layer word is ORed into it (pack_smpir's c) */
+   agx_index layer = agx_null();
    for (unsigned c = 0; c < a3_tex_coords(I); ++c) {
       agx_index v = coords;
       v.value += 2 * c;
       v.channels_m1 = 0;
-      a3_mov_cr(a, I, a3_tex_slot(I, c), v, emission);
+      if (lodw && a3_tex_slot(I, c) == 3)
+         layer = v;
+      else
+         a3_mov_cr(a, I, a3_tex_slot(I, c), v, emission);
+   }
+
+   /* The LOD word: cr3's high half the q5.6 LOD or bias that pack_smpir
+    * makes of the f16 (mode 0xa, Apple's for both) or of a fetch's 16-bit
+    * level (mode 0xe, s16 to q5.6), the low half the layer */
+   if (lodw) {
+      a3_begin(a, I, AGX3_PACK_SMPIR, T_PACK_SMPIR);
+      a3_set(a, PACK_SMPIR_DST,
+             a3_kind_value(a, PACK_SMPIR_DST, A3_CR, 3, 0));
+      a3_set(a, PACK_SMPIR_G, 0);
+      a3_set(a, PACK_SMPIR_A, a3_src9(a, PACK_SMPIR_A, lod));
+      if (!agx_is_null(layer))
+         a3_set(a, PACK_SMPIR_C, a3_reg(a, PACK_SMPIR_C, layer, 0, 0, 0));
+      a3_set(a, PACK_SMPIR_MODE, load ? 0xe : 0xa);
+      a3_set(a, PACK_SMPIR_WAIT, 0);
+      a3_emit(a, emission);
    }
 
    /* The depth reference goes to cr2, the slot a 2D or 2D array read leaves
@@ -1586,7 +1665,8 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
    a3_set(a, TEX_TS, a3_tex_index(a, TEX_TS, A3_TS, texture));
    a3_set(a, TEX_CR, a3_kind_value(a, TEX_CR, A3_CR, 0, 0));
    a3_set(a, TEX_Q1, 1);
-   a3_set(a, TEX_Q2, load ? 0 : 1);
+   /* 0 for a fetch and Apple's sample at a level in cr3 */
+   a3_set(a, TEX_Q2, (load || (lodw && !bias)) ? 0 : 1);
    a3_set(a, TEX_WAIT, 1);
    a3_set(a, TEX_SS, a3_tex_index(a, TEX_SS, A3_SS, sampler));
    a3_set(a, TEX_USMP, a3_tex_pair(a, I->src[6]));
@@ -1594,11 +1674,13 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
 
    /* a fetch's level is F28's 12-bit immediate */
    if (has_lod)
-      a3_set(a, TEX_LOD, imm_level ? lod.value : 0);
+      a3_set(a, TEX_LOD, imm_level ? lod.value << 6 : 0);
    if (I->offset)
       a3_set(a, TEX_OFFSET, offset.value);
    if (I->shadow)
       a3_set(a, TEX_MODE, cmp_mode);
+   if (lodw)
+      a3_set(a, TEX_MODE, lodw_mode);
 
    a3_emit(a, emission);
 
@@ -1615,7 +1697,8 @@ agx3_cr_count(const agx_instr *I)
    switch (I->op) {
    case AGX_OPCODE_TEXTURE_SAMPLE:
    case AGX_OPCODE_TEXTURE_LOAD:
-      return MAX2(a3_tex_slot(I, a3_tex_coords(I) - 1) + 1, I->shadow ? 3 : 2);
+      return MAX2(a3_tex_slot(I, a3_tex_coords(I) - 1) + 1,
+                  a3_tex_lod_word(I) ? 4 : I->shadow ? 3 : 2);
    case AGX_OPCODE_IMAGE_LOAD:
    case AGX_OPCODE_ZS_EMIT:
    case AGX_OPCODE_BLOCK_IMAGE_STORE:

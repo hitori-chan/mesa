@@ -3032,6 +3032,30 @@
     <immediate name="mode" bit="48:63"/>
   </ins>
 
+  <!-- A fetch with its mode code (bits 48:63), as texture_sample_mode: the
+       level in cr3's LOD word (smp.md's table) -->
+  <ins name="texture_load_mode" display="texture_load" length="14/20">
+    <exact bit="0:2">101</exact>
+    <exact bit="84">0</exact>
+    <modifier name="length" bit="73"/>
+    <immediate name="g0" bit="45:47"/>
+    <immediate name="g1" bit="42:44"/>
+    <modifier name="mask" bit="27:28 37 86" kind="texture_load_mask"/>
+    <dest kind="texreg" bit="3 4:7 22:23 15 27:28 37 86"/>
+    <src kind="ts" bit="71 11:14 68:70 87"/>
+    <src kind="cr" bit="8:10 24:26"/>
+    <immediate name="q1" bit="29"/>
+    <immediate name="q2" bit="31"/>
+    <modifier name="wait" bit="39:41" kind="wait1"/>
+    <modifier name="unk" bit="18:19 36" kind="expect3"/>
+    <src kind="ss" bit="72 32:35 65:67 88"/>
+    <immediate name="usmp" bit="96:99"/>
+    <immediate name="utex" bit="100:103"/>
+    <immediate name="q3" bit="64"/>
+    <immediate name="offset" bit="75:79 105:110 21"/>
+    <immediate name="mode" bit="48:63"/>
+  </ins>
+
   <!-- bitop_unary, op 1 -->
   <ins name="mov" display="mov" length="4">
     <exact bit="0:2 16:18">001011</exact>
@@ -3559,6 +3583,28 @@
     <src kind="imgsrc_b" bit="50:58 69 72 80"/>
     <src kind="imgsrc_c" bit="59:67 73 81 70"/>
     <immediate name="layout" bit="82:85"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <!--
+   pack_smpir: the texture sample's LOD word, Apple's one-source form of the
+   argument pack (applegpu's pack_args, 0x517; libLLVM 32023 instruction
+   118), written to a coordinate register as the corpus's 194 uses with a
+   coordinate register destination have it (1705540600000004f0c00800).
+   D = pack(mode, a) | c. mode is m0 (bit 52) | m1 (58) << 1 | m23 (82:83) << 2,
+   applegpu's one-source table: 0xa f16 to q5.6 in bits 16:31 (every use in
+   the corpus, a LOD or a bias), 0xb f16 to uq4.6 in bits 16:31, 0xe s16 to
+   q5.6 in bits 16:31, 0x4 umin(a, 0x7ff), 0x1 umin(a, 5) << 12. a is a
+   16-bit source, c the word ORed in (Apple's: immediate 0).
+  -->
+  <ins name="pack_smpir" display="pack_smpir" length="12">
+    <exact bit="0:11 38:40 50:51 53:57 68 69 72 75 78 80 84:95">0000000000000100110000000000010100010111</exact>
+    <dest kind="crsrc" bit="24:36 37"/>
+    <immediate name="g" bit="74 76:77"/>
+    <src kind="src9" bit="41:49 71 79"/>
+    <src kind="imgsrc_c" bit="59:67 73 81 70"/>
+    <immediate name="mode" bit="52 58 82:83"/>
     <modifier name="wait" bit="12:17" kind="wait"/>
     <modifier name="unk" bit="18 20 22" kind="expect3"/>
   </ins>
