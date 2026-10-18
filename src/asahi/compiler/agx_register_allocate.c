@@ -1451,6 +1451,14 @@ agx_ra(agx_context *ctx)
       }
    }
 
+   /* G15: a preamble that needs more registers than G15 has is dropped: the
+    * shader is compiled again without one (agx_compile_shader_nir)
+    */
+   if (g15 && spilling && !can_spill && ctx->is_preamble) {
+      ctx->ra_failed = true;
+      return;
+   }
+
    if (spilling || remat) {
       assert((remat || can_spill) && "this shader cannot spill");
 
