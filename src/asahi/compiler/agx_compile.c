@@ -4266,10 +4266,14 @@ agx_compile_shader_nir(nir_shader *nir, struct agx_shader_key *key,
    NIR_PASS(_, nir, nir_lower_frag_coord_to_pixel_coord);
    NIR_PASS(_, nir, nir_lower_vars_to_ssa);
 
-   /* G15's tile accesses move raw data */
+   /* G15's tile accesses move raw data. A fragment program's stores write
+    * the covered samples only, the background program's (the clear shaders)
+    * all of them. */
    if (key->dev.gpu_generation >= 15)
       NIR_PASS(_, nir, agx_nir_lower_tile_raw,
-               nir->info.stage == MESA_SHADER_FRAGMENT ? key->fs.nr_samples : 0);
+               nir->info.stage == MESA_SHADER_FRAGMENT ? key->fs.nr_samples : 0,
+               nir->info.stage == MESA_SHADER_FRAGMENT &&
+                  !key->fs.ignore_tib_dependencies);
 
    if (key->dev.gpu_generation >= 15)
       NIR_PASS(_, nir, nir_shader_instructions_pass, lower_txf_lod_g15,

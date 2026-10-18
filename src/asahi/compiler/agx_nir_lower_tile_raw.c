@@ -396,8 +396,29 @@ clamp_sample_mask(nir_builder *b, nir_intrinsic_instr *intr, void *data)
    return true;
 }
 
+/*
+ * G15's tile store writes every sample its mask names, whether the primitive
+ * covers it or not: Apple's multisampled fragment programs mask their tile
+ * stores with the coverage (get_sr sr66, SR_CVGINFO), all of it or one bit of
+ * it per sample (draws.md, Multisampling).
+ */
+static bool
+and_coverage(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   if (intr->intrinsic != nir_intrinsic_store_local_pixel_agx ||
+       nir_intrinsic_explicit_coord(intr))
+      return false;
+
+   b->cursor = nir_before_instr(&intr->instr);
+   nir_def *mask = intr->src[1].ssa;
+   nir_def *cvg = nir_u2uN(b, nir_load_sample_mask(b), mask->bit_size);
+   nir_src_rewrite(&intr->src[1], nir_iand(b, mask, cvg));
+   return true;
+}
+
 bool
-agx_nir_lower_tile_raw(nir_shader *shader, unsigned nr_samples)
+agx_nir_lower_tile_raw(nir_shader *shader, unsigned nr_samples,
+                       bool mask_coverage)
 {
    bool progress = nir_shader_intrinsics_pass(shader, lower_intr,
                                               nir_metadata_control_flow, NULL);
@@ -406,6 +427,11 @@ agx_nir_lower_tile_raw(nir_shader *shader, unsigned nr_samples)
    if (nr_samples) {
       progress |= nir_shader_intrinsics_pass(
          shader, clamp_sample_mask, nir_metadata_control_flow, &nr_samples);
+   }
+
+   if (nr_samples > 1 && mask_coverage) {
+      progress |= nir_shader_intrinsics_pass(
+         shader, and_coverage, nir_metadata_control_flow, NULL);
    }
 
    return progress;
