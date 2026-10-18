@@ -2741,17 +2741,20 @@ hk_flush_ppp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
       uint32_t pipeline = hk_upload_usc_words(cmd, fs, linked_fs);
 
       if (g15) {
-         /* G15: word 0 bits 15:0 and word 1 hold the CF binding table's full
-          * VA (see agx_state.c) */
          uint64_t cf = dev->dev.shader_base + gfx->varyings;
-         uint32_t w[3] = {
-            ((cf >> 32) & 0xffff) | (linked_fs->b.cf.nr_bindings << 16),
-            cf & ~3u,
-            gfx->varyings,
-         };
-         agx_ppp_validate(&ppp, sizeof(w));
-         memcpy(ppp.head, w, sizeof(w));
-         ppp.head += sizeof(w);
+
+         agx_ppp_push(&ppp, FRAGMENT_SHADER_WORD_0_G15, cfg) {
+            cfg.cf_bindings_high = cf >> 32;
+            cfg.cf_binding_count = linked_fs->b.cf.nr_bindings;
+         }
+
+         agx_ppp_push(&ppp, FRAGMENT_SHADER_WORD_1_G15, cfg) {
+            cfg.cf_bindings_low = cf & BITFIELD64_MASK(32);
+         }
+
+         agx_ppp_push(&ppp, FRAGMENT_SHADER_WORD_2, cfg) {
+            cfg.cf_bindings = gfx->varyings;
+         }
       } else {
          agx_ppp_push_packed(&ppp, &linked_fs->fs_counts,
                              FRAGMENT_SHADER_WORD_0);
