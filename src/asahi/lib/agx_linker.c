@@ -119,6 +119,8 @@ agx_fast_link(struct agx_linked_shader *linked, struct agx_device *dev,
 
       size += part->info.main_size;
       linked->pix_wait_mask |= part->info.pix_wait_mask;
+      linked->pix_signal_mask |= part->info.pix_signal_mask;
+      linked->writes_zs |= part->info.writes_zs;
       linked->cr_count = MAX2(linked->cr_count, part->info.cr_count);
 
       nr_gprs = MAX2(nr_gprs, part->info.nr_gprs);
@@ -134,14 +136,16 @@ agx_fast_link(struct agx_linked_shader *linked, struct agx_device *dev,
    assert(size > 0 && "must stop");
 
    /* G15: the program releases the fences it waited on at its end, before
-    * the last part's stop (agx3_emit_stop's 4 bytes). In a sample loop the
-    * parts have no stop: the loop's footer and the trailer end the program.
+    * the last part's stop (agx3_emit_stop's 4 bytes), but those a part
+    * released itself. In a sample loop the parts have no stop: the loop's
+    * footer and the trailer end the program.
     */
+   uint16_t pix_late = linked->pix_wait_mask & ~linked->pix_signal_mask;
    struct util_dynarray trailer;
    util_dynarray_init(&trailer, NULL);
-   if (g15 && (linked->pix_wait_mask || nr_samples_shaded)) {
-      if (linked->pix_wait_mask)
-         agx3_emit_signal_pix(&trailer, linked->pix_wait_mask);
+   if (g15 && (pix_late || nr_samples_shaded)) {
+      if (pix_late)
+         agx3_emit_signal_pix(&trailer, pix_late);
       agx3_emit_stop(&trailer);
       size += trailer.size;
       if (!nr_samples_shaded)
@@ -276,6 +280,12 @@ agx_fast_link(struct agx_linked_shader *linked, struct agx_device *dev,
          writes_sample_mask = false;
          linked->no_op = true;
       }
+
+      /* G15: Apple's depth output disables triangle merging (its fragment
+       * control 2, 0x44000200: draws.md)
+       */
+      if (g15 && linked->writes_zs)
+         disable_tri_merging = true;
 
       agx_pack(&linked->fragment_control, FRAGMENT_CONTROL, cfg) {
          cfg.tag_write_disable = tag_write_disable;
