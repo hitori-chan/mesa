@@ -593,11 +593,44 @@ hk_cmd_buffer_upload_root(struct hk_cmd_buffer *cmd,
    return root_ptr.gpu;
 }
 
+/* G15's texture and image instructions index tables of 32 B entries (the
+ * 24 B descriptors zero-padded): render target i's texture at entry 2 * i,
+ * its PBE at 2 * i + 1, as agx_nir_lower_tilebuffer indexes them. dst holds
+ * 2 * 32 * HK_MAX_RTS bytes. */
+void
+hk_spilled_rt_descs_g15(struct hk_cmd_buffer *cmd, uint8_t *dst)
+{
+   struct hk_rendering_state *render = &cmd->state.gfx.render;
+
+   memset(dst, 0, 2 * 32 * HK_MAX_RTS);
+
+   for (unsigned i = 0; i < render->color_att_count; ++i) {
+      struct hk_image_view *iview = render->color_att[i].iview;
+      if (!iview)
+         continue;
+
+      memcpy(dst + 64 * i, &iview->planes[0].emrt_texture,
+             sizeof(struct agx_texture_packed));
+      memcpy(dst + 64 * i + 32, &iview->planes[0].emrt_pbe,
+             sizeof(struct agx_pbe_packed));
+   }
+}
+
 void
 hk_usc_upload_spilled_rt_descs(struct agx_usc_builder *b,
                                struct hk_cmd_buffer *cmd)
 {
    struct hk_rendering_state *render = &cmd->state.gfx.render;
+
+   if (hk_cmd_buffer_device(cmd)->dev.params.gpu_generation >= 15) {
+      struct agx_ptr t = hk_pool_alloc(cmd, 2 * 32 * HK_MAX_RTS, 64);
+      if (!t.cpu)
+         return;
+
+      hk_spilled_rt_descs_g15(cmd, t.cpu);
+      agx_usc_uniform(b, 0, 4, hk_pool_upload(cmd, &t.gpu, 8, 8));
+      return;
+   }
 
    /* Upload texture/PBE descriptors for each render target so we can clear
     * spilled render targets.
