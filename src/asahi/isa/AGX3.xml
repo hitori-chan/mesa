@@ -2460,7 +2460,7 @@
   </encoding>
 
   <!--
-   itrcoords' source, a register in Apple's operand form: 0:7 the register
+   itrcoords' destination, a register in Apple's operand form: 0:7 the register
    in 16-bit units, 8 cache, 9 register (Apple's kind 2; kind 3 clears it
    and widens the number), 10 the register form (the immediate-free forms
    of a uniform or the stack clear it), 11 32-bit
@@ -2481,7 +2481,7 @@
   </encoding>
 
   <!--
-   A 32-bit register named in 16-bit units, 8 bits (itrcoords' destination)
+   A 32-bit register named in 16-bit units, 8 bits (itrcoords' source)
   -->
   <encoding name="reg8x2">
     <case>
@@ -3473,17 +3473,19 @@
    machine opcodes 12622 and 12623 (the DAG lowering sub_250712EE4 pairs
    the centroid's two operands into one value; the selector sub_2506BC7BC);
    the encoder's handler sub_25090328C sets bit 57 for 12623, the sample.
-   The source is one 32-bit register: the index in its low half (the
-   corpus's three clear only the low half), or the centroid's two masks
-   (which half holds which is a guess). Not run on the hardware. The source
-   has no immediate form; the uniform and stack forms are not modelled.
-   dcache (bit 56) is set in the corpus (the destination's cache flag, by
-   its place among the operand's fields).
+   The destination is the register at bits 24:31 and the source the one at
+   41:48 (the corpus's three name r2 in both; kernel #276: with the two
+   swapped, iter read stale coordinates). The source is one 32-bit
+   register: the index in its low half (the corpus's three clear only the
+   low half), or the centroid's two masks (which half holds which is a
+   guess; the centroid is not run on the hardware). The uniform and stack
+   forms of the destination field are not modelled. Bit 56 is set in the
+   corpus (probably a cache flag, not verified).
   -->
   <ins name="itrcoords" display="itrcoords" length="8">
     <exact bit="0:10">10010101111</exact>
-    <dest kind="reg8x2" bit="41:48"/>
-    <src kind="itrsrc" bit="24:31 32 33 51 49"/>
+    <dest kind="itrsrc" bit="24:31 32 33 51 49"/>
+    <src kind="reg8x2" bit="41:48"/>
     <modifier name="sample" bit="57"/>
     <modifier name="dcache" bit="56"/>
     <modifier name="wait" bit="12:17" kind="wait"/>
