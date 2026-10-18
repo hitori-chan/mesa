@@ -2787,7 +2787,7 @@
 
   <group name="texture_sample" length="14/20">
     <exact bit="0:2">101</exact>
-    <exact bit="48:56">mode</exact>
+    <exact bit="48:58">mode</exact>
     <exact bit="84">1</exact>
     <modifier name="length" bit="73"/>
     <immediate name="g0" bit="45:47"/>
@@ -2803,11 +2803,11 @@
     <src kind="ss" bit="72 32:35 65:67 88"/>
     <immediate name="usmp" bit="96:99"/>
     <immediate name="utex" bit="100:103"/>
-    <ins name="texture_sample" display="texture_sample" mode="000001001"/>
-    <ins name="texture_sample_2d_array" display="texture_sample_2d_array" mode="100001001"/>
-    <ins name="texture_sample_3d" display="texture_sample_3d" mode="000111001"/>
-    <ins name="texture_sample_cube" display="texture_sample_cube" mode="000010011"/>
-    <ins name="texture_sample_cube_array" display="texture_sample_cube_array" mode="001010011"/>
+    <ins name="texture_sample" display="texture_sample" mode="00000001001"/>
+    <ins name="texture_sample_2d_array" display="texture_sample_2d_array" mode="00100001001"/>
+    <ins name="texture_sample_3d" display="texture_sample_3d" mode="00000111001"/>
+    <ins name="texture_sample_cube" display="texture_sample_cube" mode="00000010011"/>
+    <ins name="texture_sample_cube_array" display="texture_sample_cube_array" mode="00001010011"/>
   </group>
 
   <group name="texture_sample_auto" length="14/20">
@@ -2842,7 +2842,7 @@
 
   <group name="texture_load" length="14/20">
     <exact bit="0:2">101</exact>
-    <exact bit="48:56">mode</exact>
+    <exact bit="48:58">mode</exact>
     <exact bit="84">0</exact>
     <modifier name="length" bit="73"/>
     <immediate name="g0" bit="45:47"/>
@@ -2859,11 +2859,11 @@
     <immediate name="usmp" bit="96:99"/>
     <immediate name="utex" bit="100:103"/>
     <immediate name="lod" bit="59:63 89:94 20"/>
-    <ins name="texture_load" display="texture_load" mode="100010111"/>
-    <ins name="texture_load_2d_array" display="texture_load_2d_array" mode="110010111"/>
-    <ins name="texture_load_3d" display="texture_load_3d" mode="001111001"/>
-    <ins name="texture_load_cube" display="texture_load_cube" mode="100110111"/>
-    <ins name="texture_load_cube_array" display="texture_load_cube_array" mode="101110111"/>
+    <ins name="texture_load" display="texture_load" mode="00100010111"/>
+    <ins name="texture_load_2d_array" display="texture_load_2d_array" mode="00110010111"/>
+    <ins name="texture_load_3d" display="texture_load_3d" mode="00001111001"/>
+    <ins name="texture_load_cube" display="texture_load_cube" mode="00100110111"/>
+    <ins name="texture_load_cube_array" display="texture_load_cube_array" mode="00101110111"/>
   </group>
 
   <group name="texture_load_nolod" length="14/20">
