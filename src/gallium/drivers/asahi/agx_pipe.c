@@ -1609,12 +1609,8 @@ agx_flush_render(struct agx_context *ctx, struct agx_batch *batch,
    struct asahi_bg_eot pipeline_background =
       agx_build_bg_eot(batch, false, false);
 
-   /* G15's kernel has no partial renders yet and its compiler no texture
-    * loads: the partial programs (which load the tilebuffer back from memory)
-    * stay unbuilt
-    */
    struct asahi_bg_eot pipeline_background_partial =
-      cmdbuf_g15 ? pipeline_background : agx_build_bg_eot(batch, false, true);
+      agx_build_bg_eot(batch, false, true);
 
    struct asahi_bg_eot pipeline_store = agx_build_bg_eot(batch, true, false);
 
