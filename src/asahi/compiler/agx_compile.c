@@ -4589,9 +4589,13 @@ agx_compile_shader_nir(nir_shader *nir, struct agx_shader_key *key,
          nir->info.outputs_written & (VARYING_BIT_LAYER | VARYING_BIT_VIEWPORT);
 
    } else if (nir->info.stage == MESA_SHADER_FRAGMENT) {
+      /* G15's helper lanes return wrong texture results, so derivatives at
+       * a shared edge are right only with merging on: keep it for them.
+       */
       info->disable_tri_merging =
          nir->info.uses_wide_subgroup_intrinsics ||
-         nir->info.fs.needs_coarse_quad_helper_invocations ||
+         (nir->info.fs.needs_coarse_quad_helper_invocations &&
+          key->dev.gpu_generation < 15) ||
          nir->info.writes_memory;
 
       /* Writing the sample mask requires tag writes */
