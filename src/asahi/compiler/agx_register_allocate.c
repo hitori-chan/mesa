@@ -6,6 +6,7 @@
 #include "util/bitset.h"
 #include "util/macros.h"
 #include "util/sparse_bitset.h"
+#include "util/u_debug.h"
 #include "util/u_dynarray.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
@@ -1318,11 +1319,45 @@ lower_exports(agx_context *ctx)
    agx_emit_parallel_copies(&b, copies, nr);
 }
 
+/* G15: the register file ends at AGX_G15_MAX_HALFREGS (or AGX_G15_MAX_REG),
+ * rounded down to a multiple of the widest vector and of 8 halves, as the
+ * register file must be (reg_file_alignment in agx_ra) */
+DEBUG_GET_ONCE_NUM_OPTION(agx_g15_max_reg, "AGX_G15_MAX_REG", 0)
+
+static unsigned
+agx_g15_max_regs(agx_context *ctx)
+{
+   unsigned halfregs = AGX_G15_MAX_HALFREGS;
+   unsigned max_ncomps = 8;
+
+   unsigned max_reg = debug_get_option_agx_g15_max_reg();
+   if (max_reg)
+      halfregs = MIN2(2 * (max_reg + 1), AGX_NUM_REGS);
+
+   agx_foreach_instr_global(ctx, I) {
+      agx_foreach_ssa_dest(I, d) {
+         unsigned n = util_next_power_of_two(agx_index_size_16(I->dest[d]));
+         max_ncomps = MAX2(max_ncomps, n);
+      }
+   }
+
+   return ROUND_DOWN_TO(halfregs, max_ncomps);
+}
+
 void
 agx_ra(agx_context *ctx)
 {
-   bool force_spilling =
-      (agx_compiler_debug & AGX_DBG_SPILL) && ctx->key->has_scratch;
+   bool g15 = ctx->key->dev.gpu_generation >= 15;
+
+   /* G15 spills to the thread-private stack, which the entry program sizes
+    * from the program's stack (agx3_stack_size, esl_spectpr): it needs no
+    * scratch buffer, so internal programs spill too. A preamble does not: it
+    * runs inside the entry program, before the specTPR. Nor does a prolog or
+    * epilog, whose stack the entry program does not see. */
+   bool can_spill =
+      g15 ? !ctx->is_preamble && !ctx->key->secondary : ctx->key->has_scratch;
+
+   bool force_spilling = (agx_compiler_debug & AGX_DBG_SPILL) && can_spill;
 
    /* Determine maximum possible registers. We won't exceed this! */
    unsigned max_possible_regs = AGX_NUM_REGS;
@@ -1383,6 +1418,9 @@ agx_ra(agx_context *ctx)
       max_possible_regs = 32;
    }
 
+   if (g15)
+      max_possible_regs = MIN2(max_possible_regs, agx_g15_max_regs(ctx));
+
    /* Calculate the demand. We'll use it to determine if we need to spill and to
     * bound register assignment.
     */
@@ -1414,8 +1452,7 @@ agx_ra(agx_context *ctx)
    }
 
    if (spilling || remat) {
-      assert((remat || ctx->key->has_scratch) &&
-             "internal shaders are unspillable");
+      assert((remat || can_spill) && "this shader cannot spill");
 
       agx_spill(ctx, max_possible_regs, remat);
 
@@ -1470,6 +1507,12 @@ agx_ra(agx_context *ctx)
          sizes[v] = I->dest[d].size;
          classes[v] = ra_class_for_index(I->dest[d]);
 
+         /* G15: a spill slot is a whole 32-bit word, 4 B aligned: Apple's
+          * stack accesses all move 32-bit words (as two halves), and a 16-bit
+          * one at a 2 B offset is not known to work */
+         if (g15 && classes[v] == RA_MEM)
+            ncomps[v] = MAX2(ncomps[v], 2);
+
          max_ncomps = MAX2(max_ncomps, ncomps[v]);
       }
    }
@@ -1494,6 +1537,9 @@ agx_ra(agx_context *ctx)
    unsigned max_regs = agx_occupancy_for_register_count(demand).max_registers;
    if (ctx->key->is_helper || force_spilling)
       max_regs = max_possible_regs;
+
+   /* ...within the register file */
+   max_regs = MIN2(max_regs, max_possible_regs);
 
    max_regs = ROUND_DOWN_TO(max_regs, reg_file_alignment);
 

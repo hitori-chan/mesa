@@ -155,6 +155,7 @@ agx_emit_parallel_copies_for_class(agx_builder *b, struct agx_copy *copies,
     */
    struct agx_copy *copies2 = calloc(sizeof(copies[0]), num_copies * 2);
    unsigned num_copies2 = 0;
+   bool g15 = b->shader->key && b->shader->key->dev.gpu_generation >= 15;
 
    for (unsigned i = 0; i < num_copies; ++i) {
       struct agx_copy copy = copies[i];
@@ -164,6 +165,14 @@ agx_emit_parallel_copies_for_class(agx_builder *b, struct agx_copy *copies,
          continue;
 
       assert(copy.dest < AGX_NUM_MODELED_REGS);
+
+      /* G15: a spill slot is a whole 32-bit word (agx_ra), so a 16-bit
+       * memory-memory copy moves the word: split into halves, it moved 16-bit
+       * data at 2 B stack offsets, which are not known to work */
+      if (cls && copy.src.memory && copy.src.size == AGX_SIZE_16 && g15) {
+         assert(!(copy.dest & 1) && !(copy.src.value & 1) && "word slots");
+         copy.src.size = AGX_SIZE_32;
+      }
 
       if (copy.src.size == AGX_SIZE_64) {
          copy.src.size = AGX_SIZE_32;
