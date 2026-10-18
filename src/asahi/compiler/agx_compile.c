@@ -22,6 +22,7 @@
 #include "agx_compiler.h"
 #include "agx_debug.h"
 #include "agx_nir.h"
+#include "agx_nir_texture.h"
 #include "agx_opcodes.h"
 #include "glsl_types.h"
 #include "nir.h"
@@ -1178,6 +1179,38 @@ lower_txf_lod_g15(nir_builder *b, nir_instr *instr, void *data)
    }
 
    nir_def_replace(&tex->def, res);
+   return true;
+}
+
+/*
+ * G15 takes a multisampled fetch's sample index at bit 12 of the layer word,
+ * an array's layer in its low bits (smp.md, Dimensions and arrays): Apple's
+ * read sequence for the multisampled dimensions (libLLVM_32023
+ * sub_25092FC54) packs the index with code 9 at position 12 and the layer with
+ * code 4 (umin(x, 0x7ff)) at position 0. agx_nir_lower_texture left G13's
+ * word, the index in the low half and the layer in the high half;
+ * agx_pack3.c puts the word in cr2.
+ */
+static bool
+lower_ms_index_g15(nir_builder *b, nir_tex_instr *tex, void *data)
+{
+   int idx = nir_tex_instr_src_index(tex, nir_tex_src_backend1);
+
+   if (tex->sampler_dim != GLSL_SAMPLER_DIM_MS || idx < 0 ||
+       (tex->backend_flags & AGX_TEXTURE_FLAG_G15_MS_INDEX))
+      return false;
+
+   b->cursor = nir_before_instr(&tex->instr);
+   nir_def *coord = tex->src[idx].src.ssa;
+   unsigned last = coord->num_components - 1;
+   nir_def *word = nir_channel(b, coord, last);
+   nir_def *sample = nir_iand_imm(b, word, 0xf);
+   nir_def *layer = nir_umin_imm(b, nir_ushr_imm(b, word, 16), 0x7ff);
+   word = nir_ior(b, nir_ishl_imm(b, sample, 12), layer);
+
+   nir_src_rewrite(&tex->src[idx].src,
+                   nir_vector_insert_imm(b, coord, word, last));
+   tex->backend_flags |= AGX_TEXTURE_FLAG_G15_MS_INDEX;
    return true;
 }
 
@@ -4278,6 +4311,10 @@ agx_compile_shader_nir(nir_shader *nir, struct agx_shader_key *key,
    if (key->dev.gpu_generation >= 15)
       NIR_PASS(_, nir, nir_shader_instructions_pass, lower_txf_lod_g15,
                nir_metadata_none, NULL);
+
+   if (key->dev.gpu_generation >= 15)
+      NIR_PASS(_, nir, nir_shader_tex_pass, lower_ms_index_g15,
+               nir_metadata_control_flow, NULL);
 
    if (key->dev.gpu_generation >= 15)
       NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_load_format_g15,

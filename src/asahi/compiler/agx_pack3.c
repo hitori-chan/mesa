@@ -1455,12 +1455,17 @@ a3_tex_has_layer_word(const agx_instr *I)
    }
 }
 
-/* The cr slot of IR coordinate word c (texture.md, boot of 2026-10-17): the
- * spatial coordinates in slots 0-2, the layer word in slot 3 whatever the
- * dimension (a 2D array's layer in slot 2 is ignored) */
+/* The cr slot of IR coordinate word c (smp.md, Dimensions and arrays): the
+ * spatial coordinates in slots 0-2, the layer word in slot 3 (a 2D array's
+ * layer in slot 2 is ignored), but a multisampled read's word (the sample
+ * index at bit 12, an array's layer below it, lower_ms_index_g15) right
+ * after y, in slot 2 (in slot 3 both are ignored) */
 static unsigned
 a3_tex_slot(const agx_instr *I, unsigned c)
 {
+   if (I->dim == AGX_DIM_2D_MS || I->dim == AGX_DIM_2D_MS_ARRAY)
+      return c;
+
    return (a3_tex_has_layer_word(I) && c == a3_tex_coords(I) - 1) ? 3 : c;
 }
 
