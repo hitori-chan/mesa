@@ -70,8 +70,9 @@ has_nonzero_lod(nir_tex_instr *tex)
 }
 
 static bool
-lower_tex_crawl(nir_builder *b, nir_instr *instr, UNUSED void *data)
+lower_tex_crawl(nir_builder *b, nir_instr *instr, void *data)
 {
+   bool g15 = *(bool *)data;
    if (instr->type != nir_instr_type_tex)
       return false;
 
@@ -92,17 +93,24 @@ lower_tex_crawl(nir_builder *b, nir_instr *instr, UNUSED void *data)
 
    nir_def *res;
    if (tex->op == nir_texop_txs) {
-      res =
-         libagx_txs(b, ptr, lod, nir_imm_int(b, nr_comps),
-                    nir_imm_bool(b, tex->sampler_dim == GLSL_SAMPLER_DIM_BUF),
-                    nir_imm_bool(b, tex->sampler_dim == GLSL_SAMPLER_DIM_1D),
-                    nir_imm_bool(b, tex->sampler_dim == GLSL_SAMPLER_DIM_2D),
-                    nir_imm_bool(b, tex->sampler_dim == GLSL_SAMPLER_DIM_CUBE),
-                    nir_imm_bool(b, tex->is_array));
+      nir_def *args[] = {
+         nir_imm_int(b, nr_comps),
+         nir_imm_bool(b, tex->sampler_dim == GLSL_SAMPLER_DIM_BUF),
+         nir_imm_bool(b, tex->sampler_dim == GLSL_SAMPLER_DIM_1D),
+         nir_imm_bool(b, tex->sampler_dim == GLSL_SAMPLER_DIM_2D),
+         nir_imm_bool(b, tex->sampler_dim == GLSL_SAMPLER_DIM_CUBE),
+         nir_imm_bool(b, tex->is_array),
+      };
+      res = g15 ? libagx_txs_g15(b, ptr, lod, args[0], args[1], args[2],
+                                 args[3], args[4], args[5])
+                : libagx_txs(b, ptr, lod, args[0], args[1], args[2], args[3],
+                             args[4], args[5]);
    } else if (tex->op == nir_texop_query_levels) {
-      res = libagx_texture_levels(b, ptr);
+      res = g15 ? libagx_texture_levels_g15(b, ptr)
+                : libagx_texture_levels(b, ptr);
    } else {
-      res = libagx_texture_samples(b, ptr);
+      res = g15 ? libagx_texture_samples_g15(b, ptr)
+                : libagx_texture_samples(b, ptr);
    }
 
    nir_def_rewrite_uses(&tex->def, nir_trim_vector(b, res, nr_comps));
@@ -808,9 +816,11 @@ agx_nir_lower_cube_g15(nir_shader *s)
                               NULL);
 }
 
-/* g15: image atomics crawl G15's PBE (libagx_image_texel_address_g15) */
-bool
-agx_nir_lower_texture_gen(nir_shader *s, bool g15)
+/* g15: image atomics crawl G15's PBE (libagx_image_texel_address_g15);
+ * g15_queries: size, level and sample queries read G15's texture descriptor
+ */
+static bool
+lower_texture(nir_shader *s, bool g15, bool g15_queries)
 {
    bool progress = false;
 
@@ -849,15 +859,29 @@ agx_nir_lower_texture_gen(nir_shader *s, bool g15)
    NIR_PASS(progress, s, nir_shader_instructions_pass, lower_regular_texture,
             nir_metadata_none, NULL);
    NIR_PASS(progress, s, nir_shader_instructions_pass, lower_tex_crawl,
-            nir_metadata_control_flow, NULL);
+            nir_metadata_control_flow, &g15_queries);
 
    return progress;
 }
 
 bool
+agx_nir_lower_texture_gen(nir_shader *s, bool g15)
+{
+   return lower_texture(s, g15, g15);
+}
+
+/* Honeykrisp's G15 images keep G13's atomics path; its texture descriptors
+ * are G15's */
+bool
+agx_nir_lower_texture_queries_gen(nir_shader *s, bool g15)
+{
+   return lower_texture(s, false, g15);
+}
+
+bool
 agx_nir_lower_texture(nir_shader *s)
 {
-   return agx_nir_lower_texture_gen(s, false);
+   return lower_texture(s, false, false);
 }
 
 static bool
