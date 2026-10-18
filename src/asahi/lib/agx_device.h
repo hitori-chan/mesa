@@ -271,6 +271,11 @@ agx_image_desc_va(const struct agx_device *dev, uint64_t addr)
  */
 #define AGX_G15_PIPELINE_LENGTH 8
 
+/* A fragment program's first word: Apple sets bit 6 with depth or stencil
+ * output and with fragment atomics (draws.md)
+ */
+#define AGX_G15_PIPELINE_ZS_OUT BITFIELD_BIT(6)
+
 static inline void
 agx_g15_pipeline(void *out, uint64_t va)
 {

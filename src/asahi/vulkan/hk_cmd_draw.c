@@ -2686,15 +2686,22 @@ hk_flush_ppp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
          }
       }
 
-      /* G15: the entry program's VA follows word 2 */
+      /* G15: the entry program's VA follows word 2. With depth or stencil
+       * output Apple sets the first word's bit 6 and word 3 (draws.md).
+       */
+      bool zs_out = g15 && linked_fs->b.writes_zs;
+
       if (g15) {
          agx_ppp_validate(&ppp, AGX_G15_PIPELINE_LENGTH);
          agx_g15_pipeline(ppp.head, dev->dev.shader_base + pipeline);
+         if (zs_out)
+            ((uint32_t *)ppp.head)[0] |= AGX_G15_PIPELINE_ZS_OUT;
          ppp.head += AGX_G15_PIPELINE_LENGTH;
       }
 
-      agx_ppp_push(&ppp, FRAGMENT_SHADER_WORD_3, cfg)
-         ;
+      agx_ppp_push(&ppp, FRAGMENT_SHADER_WORD_3, cfg) {
+         cfg.unknown = zs_out;
+      }
    }
 
    if (dirty.occlusion_query) {

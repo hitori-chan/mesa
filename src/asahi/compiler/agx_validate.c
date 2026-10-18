@@ -295,7 +295,8 @@ agx_read_registers(const agx_instr *I, unsigned s)
 
          return (z && s) ? 4 : z ? 2 : 1;
       } else {
-         return 1;
+         /* G13's 16-bit sample mask, G15's 32-bit coverage word */
+         return size;
       }
 
    case AGX_OPCODE_IMAGE_WRITE:
