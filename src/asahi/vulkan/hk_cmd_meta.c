@@ -330,7 +330,16 @@ struct vk_meta_image_copy_key {
    unsigned block_size;
    unsigned nr_samples;
    bool block_based;
+
+   /* G15's device_load and device_store have no format conversion */
+   bool g15;
 };
+
+static bool
+hk_meta_g15(struct vk_device *device)
+{
+   return ((struct hk_device *)device)->dev.params.gpu_generation >= 15;
+}
 
 static nir_def *
 linearize_coords(nir_builder *b, nir_def *coord,
@@ -383,12 +392,12 @@ is_format_native(enum pipe_format format)
 
 static nir_def *
 load_store_formatted(nir_builder *b, nir_def *base, nir_def *index,
-                     nir_def *value, enum pipe_format format)
+                     nir_def *value, enum pipe_format format, bool g15)
 {
    if (util_format_is_depth_or_stencil(format))
       format = canonical_format_pipe(format);
 
-   if (is_format_native(format)) {
+   if (!g15 && is_format_native(format)) {
       enum pipe_format isa = ail_pixel_format[format].renderable;
       unsigned isa_size = util_format_get_blocksize(isa);
       unsigned isa_components = util_format_get_blocksize(format) / isa_size;
@@ -539,7 +548,7 @@ build_image_copy_shader(const struct vk_meta_image_copy_key *key)
 
          if (src_is_buf) {
             value1 = load_store_formatted(b, get_push(b, buffer), src_coord,
-                                          NULL, key->dst_format);
+                                          NULL, key->dst_format, key->g15);
          } else {
             value1 = nir_txf(b, src_coord, .texture_deref = deref,
                              .ms_index = msaa ? ms_index : NULL);
@@ -556,7 +565,7 @@ build_image_copy_shader(const struct vk_meta_image_copy_key *key)
 
          if (dst_is_buf) {
             load_store_formatted(b, get_push(b, buffer), dst_coord, value1,
-                                 key->dst_format);
+                                 key->dst_format, key->g15);
          } else if (!key->block_based) {
             nir_image_deref_store(b, image_deref, nir_pad_vec4(b, dst_coord),
                                   ms_index, value1, nir_imm_int(b, 0),
@@ -602,6 +611,18 @@ build_image_copy_shader(const struct vk_meta_image_copy_key *key)
    }
 
    return b->shader;
+}
+
+/*
+ * G15 copies into an image with image writes (imgwci, layered on the
+ * hardware): its block write's layer operand is not known (imgwblk,
+ * agx_pack3.c), and its images are never compressed, which the block write
+ * serves.
+ */
+static bool
+hk_meta_block_copies(struct vk_device *device)
+{
+   return !hk_meta_g15(device);
 }
 
 static VkResult
@@ -784,6 +805,7 @@ hk_meta_copy_image_to_buffer2(struct vk_command_buffer *cmd,
 
          struct vk_meta_image_copy_key key = {
             .key_type = VK_META_OBJECT_KEY_COPY_IMAGE_TO_BUFFER,
+            .g15 = hk_meta_g15(device),
             .type = IMG2BUF,
             .block_size = blocksize_B,
             .nr_samples = image->samples,
@@ -969,6 +991,7 @@ hk_meta_copy_buffer_to_image2(struct vk_command_buffer *cmd,
 
          struct vk_meta_image_copy_key key = {
             .key_type = VK_META_OBJECT_KEY_COPY_IMAGE_TO_BUFFER,
+            .g15 = hk_meta_g15(device),
             .type = BUF2IMG,
             .block_size = blocksize_B,
             .nr_samples = image->samples,
@@ -977,8 +1000,8 @@ hk_meta_copy_buffer_to_image2(struct vk_command_buffer *cmd,
                hk_format_to_pipe_format(aspect_format(image->format, aspect))),
 
             /* TODO: MSAA path */
-            .block_based =
-               (image->image_type != VK_IMAGE_TYPE_1D) && image->samples == 1,
+            .block_based = (image->image_type != VK_IMAGE_TYPE_1D) &&
+                           image->samples == 1 && hk_meta_block_copies(device),
          };
 
          VkPipelineLayout pipeline_layout;
@@ -1131,6 +1154,7 @@ hk_meta_copy_image2(struct vk_command_buffer *cmd, struct vk_meta_device *meta,
 
             struct vk_meta_image_copy_key key = {
                .key_type = VK_META_OBJECT_KEY_COPY_IMAGE_TO_BUFFER,
+            .g15 = hk_meta_g15(device),
                .type = IMG2IMG,
                .block_size = blocksize_B,
                .nr_samples = dst_image->samples,
@@ -1140,7 +1164,8 @@ hk_meta_copy_image2(struct vk_command_buffer *cmd, struct vk_meta_device *meta,
 
                /* TODO: MSAA path */
                .block_based = (dst_image->image_type != VK_IMAGE_TYPE_1D) &&
-                              dst_image->samples == 1,
+                              dst_image->samples == 1 &&
+                              hk_meta_block_copies(device),
             };
 
             assert(key.nr_samples == src_image->samples);

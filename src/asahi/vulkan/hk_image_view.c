@@ -198,9 +198,9 @@ format_for_plane(struct hk_image_view *view, unsigned view_plane)
 
 /*
  * G15's texture descriptor (cmdbuf.xml's "Texture G15"), as Gallium packs it:
- * uncompressed, single-sampled, linear with one layer or twiddled, the raw VA
- * (texture.md). The rest fails here rather than reaching the hardware
- * misread.
+ * uncompressed, linear with one layer or twiddled, a multisampled one
+ * twiddled with (samples >> 2) & 3, the raw VA (texture.md). The rest fails
+ * here rather than reaching the hardware misread.
  */
 static void
 pack_texture_g15(struct hk_image_view *view, unsigned view_plane,
@@ -218,16 +218,23 @@ pack_texture_g15(struct hk_image_view *view, unsigned view_plane,
    unsigned layer = view->vk.base_array_layer;
    struct hk_3d denom = view_denominator(view);
 
-   if (layout->compressed || view->vk.image->samples > 1 || plane->sparse_map ||
-       (layout->tiling == AIL_TILING_LINEAR && layers > 1)) {
-      mesa_loge("G15: a compressed, multisampled, sparse or linear layered "
-                "texture is not supported yet");
+   bool ms = view->vk.image->samples > 1;
+
+   if (layout->compressed || plane->sparse_map ||
+       (layout->tiling == AIL_TILING_LINEAR && (layers > 1 || ms))) {
+      mesa_loge("G15: a compressed, sparse, linear multisampled or linear "
+                "layered texture is not supported yet");
       assert(0);
    }
 
    agx_pack(out, TEXTURE_G15, cfg) {
       cfg.dimension = translate_image_view_type(
          view->vk.view_type, view->vk.image->samples > 1, layers > 1, usage);
+
+      /* A sampled cube is a cube array of one (agx_nir_lower_cube_g15); the
+       * depth counts cubes */
+      if (cfg.dimension == AGX_TEXTURE_DIMENSION_CUBE)
+         cfg.dimension = AGX_TEXTURE_DIMENSION_CUBE_ARRAY;
       cfg.layout = agx_translate_layout(layout->tiling);
       cfg.channels = ail_pixel_format[p_format].channels;
       cfg.type = ail_pixel_format[p_format].type;
@@ -266,6 +273,10 @@ pack_texture_g15(struct hk_image_view *view, unsigned view_plane,
          cfg.stride = ail_get_linear_stride_B(layout, 0) - 16;
       else
          cfg.page_aligned_layers = layout->page_aligned_layers;
+
+      /* (samples >> 2) & 3, the dimension says multisampled (texture.md) */
+      if (ms)
+         cfg.samples = agx_translate_sample_count(view->vk.image->samples);
    }
 }
 
@@ -278,8 +289,6 @@ pack_texture(struct hk_image_view *view, unsigned view_plane,
    struct hk_image_plane *plane = &image->planes[image_plane];
    struct ail_layout *layout = &plane->layout;
    struct hk_device *dev = (struct hk_device *)view->vk.base.device;
-   uint64_t base_addr =
-      agx_image_desc_va(&dev->dev, hk_image_base_address(image, image_plane));
 
    bool cubes_to_2d = usage != HK_DESC_USAGE_SAMPLED;
 
@@ -337,6 +346,9 @@ pack_texture(struct hk_image_view *view, unsigned view_plane,
                        out);
       return;
    }
+
+   uint64_t base_addr =
+      agx_image_desc_va(&dev->dev, hk_image_base_address(image, image_plane));
 
    agx_pack(out, TEXTURE, cfg) {
       cfg.dimension = translate_image_view_type(

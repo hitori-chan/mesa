@@ -297,7 +297,8 @@ hk_get_device_features(
       .sparseResidency4Samples = false,
       .sparseResidency8Samples = false,
       .sparseResidencyAliased = true,
-      .sparseResidencyImage2D = true,
+      /* G15's descriptors of a sparse image are not packed yet */
+      .sparseResidencyImage2D = dev->params.gpu_generation < 15,
       .sparseResidencyBuffer = true,
 
       /* This needs investigation. */

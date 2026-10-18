@@ -354,6 +354,11 @@ hk_GetPhysicalDeviceImageFormatProperties2(
    if (pImageFormatInfo->flags & (VK_IMAGE_CREATE_SPARSE_ALIASED_BIT |
                                   VK_IMAGE_CREATE_SPARSE_BINDING_BIT |
                                   VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT)) {
+      /* G15: a sparse image's descriptors are not packed yet (its texture
+       * and PBE through the image heap) */
+      if (pdev->dev.params.gpu_generation >= 15)
+         return VK_ERROR_FORMAT_NOT_SUPPORTED;
+
       features &= ~VK_FORMAT_FEATURE_2_HOST_IMAGE_TRANSFER_BIT_EXT;
 
       /* We also do not support sparse RGB32 uniform texel buffers, as we do not
