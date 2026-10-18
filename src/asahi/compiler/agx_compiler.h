@@ -373,6 +373,9 @@ typedef struct {
       uint32_t bfi_mask;
       uint16_t pixel_offset;
       uint16_t zs;
+
+      /* G15: the coordinate register an st_vary stores from */
+      uint8_t vary_cr;
       int16_t stack_size;
       enum agx_sr sr;
       enum agx_round round;
@@ -1056,6 +1059,7 @@ void agx3_fixup_branches(struct util_dynarray *emission,
                          struct util_dynarray *fixups);
 unsigned agx3_stack_size(const agx_instr *I);
 unsigned agx3_cr_count(const agx_instr *I);
+void agx3_assign_vary_crs(agx_context *ctx);
 
 #ifndef NDEBUG
 void agx_validate(agx_context *ctx, const char *after_str);
