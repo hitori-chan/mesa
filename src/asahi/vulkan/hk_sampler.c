@@ -185,7 +185,11 @@ hk_CreateSampler(VkDevice device,
    if (!sampler)
       return vk_error(dev, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   bool workaround_rgba4 = dev->vk.enabled_features.customBorderColors;
+   /* The workaround emulates opaque black as a custom border, which G15 does
+    * not emulate yet (hk_descriptor_set.c): its samplers keep the hardware's
+    * opaque black (RGBA4 not verified) */
+   bool workaround_rgba4 = dev->vk.enabled_features.customBorderColors &&
+                           dev->dev.params.gpu_generation < 15;
    bool custom_border =
       uses_border(info) &&
       is_border_color_custom(info->borderColor, workaround_rgba4);
