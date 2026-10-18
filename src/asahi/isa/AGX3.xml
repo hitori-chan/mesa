@@ -2254,6 +2254,46 @@
     </case>
   </encoding>
 
+  <!--
+   The thread-private stack's index (ldtps, sttps): 0:15 the 16-bit
+   immediate, the register (0:7, 8 an unknown flag, 9 32-bit, 11 lu) or the
+   uniform (0:8, 9 32-bit); 16 sx, 17 register, 18 uniform
+  -->
+  <encoding name="tpsidx">
+    <case>
+      <exact bit="9 10 12:15 17:18">01000001</exact>
+      <immediate name="reg" bit="1:7" shift="1"/>
+      <modifier name="lu" bit="11"/>
+      <modifier name="sx" bit="16"/>
+      <property name="size32"/>
+      <carry bit="0 8"/>
+    </case>
+    <case>
+      <exact bit="9 10 12:15 17:18">01000000</exact>
+      <immediate name="reg" bit="0:7"/>
+      <modifier name="lu" bit="11"/>
+      <modifier name="sx" bit="16"/>
+      <carry bit="8"/>
+    </case>
+    <case>
+      <exact bit="9 17:18">101</exact>
+      <immediate name="uniform" bit="1:8" shift="1"/>
+      <modifier name="sx" bit="16"/>
+      <property name="size32"/>
+      <carry bit="0"/>
+    </case>
+    <case>
+      <exact bit="9 17:18">100</exact>
+      <immediate name="uniform" bit="0:8"/>
+      <modifier name="sx" bit="16"/>
+    </case>
+    <case>
+      <exact bit="17:18">00</exact>
+      <immediate name="imm" bit="0:15"/>
+      <carry bit="16"/>
+    </case>
+  </encoding>
+
   <!-- atomictg's index: tgidx with lu at 8 and the unknown flag at 15 -->
   <encoding name="atgidx">
     <case>
@@ -2719,6 +2759,50 @@
     <immediate name="l1" bit="92"/>
     <immediate name="q0" bit="20"/>
     <modifier name="unk" bit="18 22" kind="expect2"/>
+  </ins>
+
+  <!--
+   The thread-private stack (Apple's ldtps and sttps, libLLVM 32023's
+   encoder; 364 and 112 in the QuartzCore corpus): the per-thread memory the
+   entry program's specTPR sizes. No base: the index addresses the stack in
+   bytes, shifted left by shift (Apple's stack kernel: an element index with
+   shift 2 and offset 4; the corpus: a byte pointer with shift 0). g is the
+   load group (ldtps) or a group of the store's (sttps, 0 in Apple's code);
+   q is an unknown group (the corpus has 0 and 1); a store's lu frees its
+   data register, as device_store's g bit 0 does. Apple moves 32-bit data
+   as i16 halves. Bits 61 (ldtps) and 59 (sttps) are set in the corpus and
+   clear in the stack kernel; bits 11 and 78 (ldtps), 11 (sttps) are
+   unknown flags. A byte index with shift 0, i16 data and offset 0 runs on
+   the hardware (Mesa's scratch, vkcompute stk).
+  -->
+  <ins name="ldtps" display="ldtps" length="12">
+    <exact bit="0:10">00001101111</exact>
+    <immediate name="g" bit="54:56"/>
+    <modifier name="type" bit="52:53" kind="device_load_type"/>
+    <modifier name="mask" bit="48:51" kind="device_load_mask"/>
+    <dest kind="memreg" bit="24 25:31 52:53 48:51"/>
+    <src kind="tpsidx" bit="32:47 60 81 82"/>
+    <immediate name="offset" bit="62:77"/>
+    <immediate name="q" bit="57:59"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <immediate name="shift" bit="79:80"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+    <modifier name="unk2" bit="61" kind="expect1"/>
+  </ins>
+
+  <ins name="sttps" display="sttps" length="10">
+    <exact bit="0:10">00011101111</exact>
+    <immediate name="g" bit="54:56"/>
+    <modifier name="type" bit="52:53" kind="device_store_type"/>
+    <modifier name="mask" bit="48:51" kind="device_store_mask"/>
+    <src kind="memreg" bit="24 25:31 52:53 48:51"/>
+    <src kind="tpsidx" bit="32:47 58 78 79"/>
+    <immediate name="offset" bit="60:75"/>
+    <immediate name="lu" bit="57"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <immediate name="shift" bit="76:77"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+    <modifier name="unk2" bit="59" kind="expect1"/>
   </ins>
 
   <!--
