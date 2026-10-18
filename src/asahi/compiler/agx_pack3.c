@@ -1402,6 +1402,22 @@ a3_tex_pair(struct a3 *a, agx_index base)
    return base.value >> 2;
 }
 
+/* The operand of the current instruction that is the single bit b, or -1 */
+static int
+a3_op_at_bit(const struct a3 *a, unsigned b)
+{
+   const struct agx3_pack_spec *s = a->spec;
+
+   for (unsigned op = 0; op < s->nops; op++) {
+      if (s->op_start[op + 1] == s->op_start[op] + 1 &&
+          s->fields[s->op_start[op]].start == b &&
+          s->fields[s->op_start[op]].size == 1)
+         return op;
+   }
+
+   return -1;
+}
+
 /* A texture or sampler index: an immediate, or a 16-bit register of the
  * low 64 (the field counts halves, boot #323); a 32-bit register is read as
  * its low half */
@@ -1871,6 +1887,18 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
    a3_begin(a, I, instr, tmpl);
    a3_set(a, TEX_G0, A3_SYNC_G);
    a3_set(a, TEX_G1, A3_SYNC_G);
+   /* Bit 64 of a sample (q3) ends the quad's helper lanes: after it,
+    * derivatives read 0 across an uncovered pixel, and a later sample's
+    * implicit LOD comes out wrong (the last column of an odd-width
+    * viewport). Apple sets it only on a fragment shader's last sample when
+    * no sample or derivative follows (the QuartzCore corpus: 222 of 222
+    * flagged samples, none on an earlier one); T_TEX_AUTO is such a sample.
+    * Keep the helpers to the end. */
+   if (!load) {
+      int q3 = a3_op_at_bit(a, 64);
+      if (q3 >= 0)
+         a3_set(a, q3, 0);
+   }
    if (gather) {
       /* four values of one component (AGX_GATHER_R, _G, _B, _A) */
       a3_set(a, TEX_COMPONENT, I->gather >> 1);
