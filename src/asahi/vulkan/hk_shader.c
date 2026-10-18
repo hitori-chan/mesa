@@ -846,6 +846,10 @@ hk_lower_nir(struct hk_device *dev, nir_shader *nir,
    NIR_PASS(_, nir, agx_nir_lower_texture_early,
             dev->dev.params.gpu_generation < 15 /* support_lod_bias */);
 
+   /* G15 samples a cube in cube array mode (pack_texture_g15), seamless */
+   if (dev->dev.params.gpu_generation >= 15)
+      NIR_PASS(_, nir, agx_nir_lower_cube_g15);
+
    struct hk_instance *instance = hk_physical_device_instance(
       (struct hk_physical_device *)dev->vk.physical);
 
@@ -929,6 +933,8 @@ hk_lower_nir(struct hk_device *dev, nir_shader *nir,
    }
 
    NIR_PASS(_, nir, agx_nir_lower_texture);
+   if (dev->dev.params.gpu_generation >= 15)
+      NIR_PASS(_, nir, hk_nir_lower_image_loads_g15);
    NIR_PASS(_, nir, agx_nir_lower_multisampled_image_store);
 
    agx_preprocess_nir(nir);
