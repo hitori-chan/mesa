@@ -1241,6 +1241,93 @@ lower_tex_offset_g15(nir_builder *b, nir_tex_instr *tex, void *data)
 }
 
 /*
+ * G15: a LOD clamp (a min LOD: Vulkan's MinLod operand, GL's textureClampARB)
+ * has no known form (smp.md: the min-LOD kind f140 is not run). Sample with
+ * gradients instead: the given ones, or an implicit LOD's coordinate
+ * derivatives scaled by 2^bias, and where their LOD (lower_tex_lod_g15's
+ * footprint, plus the bias) is below the clamp, isotropic gradients of LOD
+ * min. A fragment shader's 2D, 2D array and 3D samples only. Not verified on
+ * the hardware (its LOD may weigh anisotropy where the footprint does not).
+ */
+static bool
+lower_tex_min_lod_g15(nir_builder *b, nir_tex_instr *tex, void *data)
+{
+   int mi = nir_tex_instr_src_index(tex, nir_tex_src_min_lod);
+   int pi = nir_tex_instr_src_index(tex, nir_tex_src_lod_bias_min_agx);
+   int ci = nir_tex_instr_src_index(tex, nir_tex_src_backend1);
+   int ti = nir_tex_instr_src_index(tex, nir_tex_src_texture_handle);
+   bool grad = tex->op == nir_texop_txd;
+
+   if ((grad ? mi : pi) < 0 || ci < 0 || ti < 0 ||
+       (!grad && tex->op != nir_texop_tex && tex->op != nir_texop_txb) ||
+       (!grad && b->shader->info.stage != MESA_SHADER_FRAGMENT) ||
+       (tex->sampler_dim != GLSL_SAMPLER_DIM_2D &&
+        tex->sampler_dim != GLSL_SAMPLER_DIM_3D))
+      return false;
+
+   b->cursor = nir_before_instr(&tex->instr);
+
+   unsigned n = tex->sampler_dim == GLSL_SAMPLER_DIM_3D ? 3 : 2;
+   nir_def *bias = nir_imm_float(b, 0.0), *min, *dx, *dy;
+
+   if (grad) {
+      min = nir_f2f32(b, nir_steal_tex_src(tex, nir_tex_src_min_lod));
+      dx = nir_steal_tex_src(tex, nir_tex_src_ddx);
+      dy = nir_steal_tex_src(tex, nir_tex_src_ddy);
+   } else {
+      nir_def *p = nir_steal_tex_src(tex, nir_tex_src_lod_bias_min_agx);
+      bias = nir_f2f32(b, nir_unpack_32_2x16_split_x(b, p));
+      min = nir_f2f32(b, nir_unpack_32_2x16_split_y(b, p));
+
+      int ci2 = nir_tex_instr_src_index(tex, nir_tex_src_backend1);
+      nir_def *coord = nir_trim_vector(b, tex->src[ci2].src.ssa, n);
+      dx = nir_ddx(b, coord);
+      dy = nir_ddy(b, coord);
+   }
+
+   dx = nir_f2f32(b, nir_trim_vector(b, dx, n));
+   dy = nir_f2f32(b, nir_trim_vector(b, dy, n));
+
+   int ti2 = nir_tex_instr_src_index(tex, nir_tex_src_texture_handle);
+   nir_def *addr = nir_load_from_texture_handle_agx(b, tex->src[ti2].src.ssa);
+   nir_def *desc = nir_load_global_constant(b, 4, 32, addr);
+   nir_def *w0 = nir_channel(b, desc, 0), *w1 = nir_channel(b, desc, 1);
+   nir_def *w3 = nir_channel(b, desc, 3);
+   nir_def *width = nir_ior(b, nir_ushr_imm(b, w0, 28),
+                            nir_ishl_imm(b, nir_iand_imm(b, w1, 0x3ff), 4));
+   nir_def *height = nir_ubitfield_extract_imm(b, w1, 10, 14);
+   nir_def *depth = nir_ubitfield_extract_imm(b, w3, 14, 14);
+   nir_def *size = nir_vec3(b, width, height, depth);
+   size = nir_u2f32(b, nir_iadd_imm(b, nir_trim_vector(b, size, n), 1));
+
+   nir_def *scale = nir_fexp2(b, bias);
+   dx = nir_fmul(b, dx, scale);
+   dy = nir_fmul(b, dy, scale);
+
+   nir_def *sx = nir_fmul(b, dx, size), *sy = nir_fmul(b, dy, size);
+   nir_def *rho2 = nir_fmax(b, nir_fdot(b, sx, sx), nir_fdot(b, sy, sy));
+   nir_def *lod = nir_fmul_imm(b, nir_flog2(b, rho2), 0.5);
+   nir_def *clamped = nir_fge(b, min, lod);
+
+   /* One texel of level min along each axis in turn */
+   nir_def *texel = nir_fdiv(b, nir_fexp2(b, min), size);
+   nir_def *zero = nir_imm_float(b, 0.0);
+   nir_def *ix[3], *iy[3];
+   for (unsigned c = 0; c < n; ++c) {
+      ix[c] = c == 0 ? nir_channel(b, texel, 0) : zero;
+      iy[c] = c == 1 ? nir_channel(b, texel, 1) : zero;
+   }
+
+   dx = nir_bcsel(b, clamped, nir_vec(b, ix, n), dx);
+   dy = nir_bcsel(b, clamped, nir_vec(b, iy, n), dy);
+
+   tex->op = nir_texop_txd;
+   nir_tex_instr_add_src(tex, nir_tex_src_ddx, dx);
+   nir_tex_instr_add_src(tex, nir_tex_src_ddy, dy);
+   return true;
+}
+
+/*
  * G15 has no LOD query: Apple's compiler has no intrinsic for one (none of
  * libLLVM_32023's llvm.agx.* names), so its AIR lowering computes it. Here
  * the LOD is log2 of the larger footprint of the coordinates' derivatives
@@ -4484,6 +4571,10 @@ agx_compile_shader_nir(nir_shader *nir, struct agx_shader_key *key,
 
    if (key->dev.gpu_generation >= 15)
       NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_load_format_g15,
+               nir_metadata_control_flow, NULL);
+
+   if (key->dev.gpu_generation >= 15)
+      NIR_PASS(_, nir, nir_shader_tex_pass, lower_tex_min_lod_g15,
                nir_metadata_control_flow, NULL);
 
    if (key->dev.gpu_generation >= 15)
