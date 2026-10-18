@@ -716,13 +716,14 @@ agx_pack_texture_g15(void *out, struct agx_resource *rsrc,
       return;
    }
 
-   /* A cube is a 2D array of its faces (agx_nir_lower_cube_g15) */
+   /* A cube is a cube array (agx_nir_lower_cube_g15) */
    bool cube = target_is_cube(state->target);
 
    agx_pack(out, TEXTURE_G15, cfg) {
-      cfg.dimension = cube ? AGX_TEXTURE_DIMENSION_2D_ARRAY
-                           : agx_translate_tex_dim(
-                                state->target, util_res_sample_count(&rsrc->base));
+      cfg.dimension =
+         cube ? AGX_TEXTURE_DIMENSION_CUBE_ARRAY
+              : agx_translate_tex_dim(state->target,
+                                      util_res_sample_count(&rsrc->base));
       cfg.layout = agx_translate_layout(rsrc->layout.tiling);
       cfg.channels = ail_pixel_format[format].channels;
       cfg.type = ail_pixel_format[format].type;
@@ -747,6 +748,9 @@ agx_pack_texture_g15(void *out, struct agx_resource *rsrc,
       cfg.address = agx_map_texture_gpu(rsrc, first_layer);
 
       cfg.depth = state->target == PIPE_TEXTURE_3D ? rsrc->base.depth0 : layers;
+      /* a cube array's counts cubes */
+      if (cube)
+         cfg.depth = MAX2(layers / 6, 1);
 
       if (rsrc->layout.tiling == AIL_TILING_LINEAR)
          cfg.stride = ail_get_linear_stride_B(&rsrc->layout, 0) - 16;
@@ -1292,10 +1296,9 @@ agx_pack_pbe_g15(struct agx_pbe_packed *out, struct agx_resource *tex,
    }
 
    agx_pack(out, PBE_G15, cfg) {
-      cfg.dimension =
-         is_buffer ? AGX_TEXTURE_DIMENSION_2D
-                   : agx_translate_tex_dim(target,
-                                           util_res_sample_count(&tex->base));
+      cfg.dimension = is_buffer ? AGX_TEXTURE_DIMENSION_2D
+                                : agx_translate_tex_dim(
+                                     target, util_res_sample_count(&tex->base));
       cfg.layout = is_buffer ? AGX_LAYOUT_LINEAR
                              : agx_translate_layout(tex->layout.tiling);
       cfg.channels = ail_pixel_format[view->format].channels;
