@@ -2151,8 +2151,8 @@ a3_mov_cr(struct a3 *a, const agx_instr *I, unsigned cr, agx_index value,
  * with two varyings, the GS copy shader's st_vars through cr0 with dynamic
  * slots). The st_vars take their crs in turn, as Apple's vertex shaders take
  * a cr per output, and a cr still being read is reused only after a wait for
- * group 0. A loop's back edge may bring the last iteration's stores. Other
- * instructions' crs are not tracked (a texture sample after an st_var).
+ * group 0, as is one another instruction writes. A loop's back edge may
+ * bring the last iteration's stores.
  */
 void
 agx3_assign_vary_crs(agx_context *ctx)
@@ -2170,8 +2170,17 @@ agx3_assign_vary_crs(agx_context *ctx)
          if (I->op == AGX_OPCODE_WAIT && I->scoreboard == 0)
             pending = 0;
 
-         if (I->op != AGX_OPCODE_ST_VARY)
+         /* Another instruction's crs (a vertex shader's texture fetch after
+          * the point size's st_var: the fetch read the wrong texel) */
+         if (I->op != AGX_OPCODE_ST_VARY) {
+            unsigned n = MIN2(agx3_cr_count(I), A3_VARY_CRS);
+            if (pending & BITFIELD_MASK(n)) {
+               agx_builder b = agx_init_builder(ctx, agx_before_instr(I));
+               agx_wait(&b, 0);
+               pending = 0;
+            }
             continue;
+         }
 
          unsigned cr = (next++) % A3_VARY_CRS;
          if (pending & BITFIELD_BIT(cr)) {
