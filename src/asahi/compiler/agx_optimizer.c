@@ -150,14 +150,20 @@ agx_optimizer_inline_imm(agx_instr **defs, agx_instr *I, bool g15)
 
       bool float_src = agx_is_float_src(I, s);
 
-      /* G15 takes a constant texel offset as F42's 12-bit immediate, the
-       * nibbles of Mesa's packed offset */
+      /* G15 takes a constant texel offset as F42's 12-bit immediate, x, y
+       * and z as nibbles at bits 0, 4 and 8; the IR's offset is in the LOD
+       * word's layout (x at 12, y at 28, z at 0: lower_tex_offset_g15) */
       if (g15 && s == 5 &&
           (I->op == AGX_OPCODE_TEXTURE_SAMPLE ||
            I->op == AGX_OPCODE_TEXTURE_LOAD)) {
-         if (I->offset && !I->shadow && def->imm < 4096) {
+         uint64_t w = def->imm;
+
+         if (I->offset && !I->shadow && !(w & ~0xf000f00full)) {
+            unsigned f42 =
+               ((w >> 12) & 0xf) | (((w >> 28) & 0xf) << 4) | ((w & 0xf) << 8);
+
             /* the 32-bit word it stands for */
-            I->src[s] = agx_immediate(def->imm);
+            I->src[s] = agx_immediate(f42);
             I->src[s].size = AGX_SIZE_32;
          }
 
