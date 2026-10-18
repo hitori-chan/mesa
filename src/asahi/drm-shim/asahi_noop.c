@@ -80,6 +80,19 @@ asahi_ioctl_noop(int fd, unsigned long request, void *arg)
    return 0;
 }
 
+/* A bound object (timestamps) gets a nonzero handle, as from the kernel */
+static int
+asahi_ioctl_gem_bind_object(int fd, unsigned long request, void *arg)
+{
+   struct drm_asahi_gem_bind_object *bind = arg;
+   static uint32_t next_object = 1;
+
+   if (bind->op == DRM_ASAHI_BIND_OBJECT_OP_BIND)
+      bind->object_handle = next_object++;
+
+   return 0;
+}
+
 static int
 asahi_ioctl_gem_create(int fd, unsigned long request, void *arg)
 {
@@ -231,7 +244,7 @@ static ioctl_fn_t driver_ioctls[] = {
    [DRM_ASAHI_GEM_MMAP_OFFSET] = asahi_ioctl_gem_mmap_offset,
    [DRM_ASAHI_QUEUE_CREATE] = asahi_ioctl_noop,
    [DRM_ASAHI_QUEUE_DESTROY] = asahi_ioctl_noop,
-   [DRM_ASAHI_GEM_BIND_OBJECT] = asahi_ioctl_noop,
+   [DRM_ASAHI_GEM_BIND_OBJECT] = asahi_ioctl_gem_bind_object,
    [DRM_ASAHI_SUBMIT] = asahi_ioctl_submit,
 };
 
