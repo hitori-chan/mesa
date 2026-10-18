@@ -179,8 +179,8 @@ view_denominator(struct hk_image_view *view)
    };
 }
 
-static enum pipe_format
-format_for_plane(struct hk_image_view *view, unsigned view_plane)
+enum pipe_format
+hk_image_view_plane_format(struct hk_image_view *view, unsigned view_plane)
 {
    const struct vk_format_ycbcr_info *ycbcr_info =
       vk_format_get_ycbcr_info(view->vk.format);
@@ -296,7 +296,7 @@ pack_texture(struct hk_image_view *view, unsigned view_plane,
    unsigned level = view->vk.base_mip_level;
    unsigned layer = view->vk.base_array_layer;
 
-   enum pipe_format p_format = format_for_plane(view, view_plane);
+   enum pipe_format p_format = hk_image_view_plane_format(view, view_plane);
    const struct util_format_description *desc =
       util_format_description(p_format);
 
@@ -478,7 +478,7 @@ pack_pbe_g15(struct hk_device *dev, struct hk_image_view *view,
    unsigned level = view->vk.base_mip_level;
    unsigned layer = view->vk.base_array_layer;
 
-   enum pipe_format p_format = format_for_plane(view, view_plane);
+   enum pipe_format p_format = hk_image_view_plane_format(view, view_plane);
    const struct util_format_description *desc =
       util_format_description(p_format);
 
@@ -596,7 +596,7 @@ pack_pbe(struct hk_device *dev, struct hk_image_view *view, unsigned view_plane,
    unsigned level = view->vk.base_mip_level;
    unsigned layer = view->vk.base_array_layer;
 
-   enum pipe_format p_format = format_for_plane(view, view_plane);
+   enum pipe_format p_format = hk_image_view_plane_format(view, view_plane);
    const struct util_format_description *desc =
       util_format_description(p_format);
 
