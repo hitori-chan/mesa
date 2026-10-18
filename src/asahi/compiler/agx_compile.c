@@ -1217,8 +1217,25 @@ lower_tex_offset_g15(nir_builder *b, nir_tex_instr *tex, void *data)
    nir_def *x = nir_ishl_imm(b, nir_iand_imm(b, p, 0xf), 12);
    nir_def *y = nir_ishl_imm(b, nir_ubitfield_extract_imm(b, p, 4, 4), 28);
    nir_def *z = nir_ubitfield_extract_imm(b, p, 8, 4);
+   nir_def *word = nir_ior(b, nir_ior(b, x, y), z);
 
-   nir_src_rewrite(&tex->src[idx].src, nir_ior(b, nir_ior(b, x, y), z));
+   /* An array's layer shares the word (bits 0:10, umin(layer, 0x7ff) as
+    * pack_smpir's mode 4 makes it). When the offset goes in the word (a
+    * register, or with a compare), OR the layer in here too: the packer then
+    * needs one pack_smpir for a LOD or bias, the offset and the layer (C is
+    * a single register), and ORing the layer a second time where it packs it
+    * itself changes nothing */
+   int ci = nir_tex_instr_src_index(tex, nir_tex_src_backend1);
+   if (tex->is_array && tex->sampler_dim != GLSL_SAMPLER_DIM_CUBE &&
+       tex->sampler_dim != GLSL_SAMPLER_DIM_MS && ci >= 0 &&
+       (tex->is_shadow || !nir_src_is_const(tex->src[idx].src))) {
+      nir_def *coord = tex->src[ci].src.ssa;
+      nir_def *layer =
+         nir_u2u32(b, nir_channel(b, coord, coord->num_components - 1));
+      word = nir_ior(b, word, nir_umin(b, layer, nir_imm_int(b, 0x7ff)));
+   }
+
+   nir_src_rewrite(&tex->src[idx].src, word);
    tex->backend_flags |= AGX_TEXTURE_FLAG_G15_IR_OFFSET;
    return true;
 }

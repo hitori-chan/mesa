@@ -1826,13 +1826,12 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
    /* The LOD word: pack_smpir's A the f16 LOD or bias as q5.6 (mode 0xa,
     * Apple's for both) or a fetch's 16-bit level (mode 0xe, s16 to q5.6), at
     * bits 16:27; with none, the layer clamped to 0x7ff (mode 4, Apple's code
-    * 4 at position 0); its C the offset word or the layer, ORed in */
+    * 4 at position 0); its C the offset word or the layer, ORed in. An
+    * array's offset word already holds the layer (lower_tex_offset_g15 in
+    * agx_compile.c), which a LOD and an offset need: C is one register */
    if (word) {
       agx_index pa = lodw ? lod : layer;
       agx_index pc = off_word ? offset : lodw ? layer : agx_null();
-
-      if (lodw && off_word && !agx_is_null(layer))
-         a3_fail(a, "texture LOD and offset in registers on an array");
 
       if (agx_is_null(pa)) {
          a3_mov_cr(a, I, 3, offset, emission);
