@@ -259,7 +259,16 @@ agx_repair_ssa(agx_context *ctx)
          if (I->op != AGX_OPCODE_PHI) {
             agx_foreach_ssa_src(I, s) {
                assert(I->src[s].value < n);
-               agx_replace_src(I, s, resolve_read(&rctx, block, I->src[s]));
+
+               /* Resolve the variable, not the source: the phis resolve_read
+                * inserts take the index it is given, so a negated source made
+                * a negated phi, and RA a negated copy into it (G15's tess_quad
+                * with spills: mov r24, r26.neg) */
+               agx_index var = agx_get_vec_index(
+                  I->src[s].value, I->src[s].size, agx_channels(I->src[s]));
+               var.memory = I->src[s].memory;
+
+               agx_replace_src(I, s, resolve_read(&rctx, block, var));
             }
          }
 
