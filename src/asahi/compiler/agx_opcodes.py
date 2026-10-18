@@ -151,6 +151,9 @@ SR = enum("sr", {
    # instance IDs are special registers, where G13 preloads r5 and r6
    256: 'vertex_id',
    257: 'instance_id',
+   # the tile's layer, which Apple's end-of-tile program reads for its
+   # layered block writes (G13 reads threadgroup_position_in_grid.z)
+   258: 'layer_id',
 })
 
 ATOMIC_OPC = enum("atomic_opc", {

@@ -375,16 +375,26 @@ lower_image_intrin(nir_builder *b, nir_intrinsic_instr *intr,
    b->cursor = nir_before_instr(&intr->instr);
 
    /* Reads and queries use the texture descriptor; writes and atomics PBE. */
-   unsigned offs;
-   if (intr->intrinsic != nir_intrinsic_image_deref_load &&
-       intr->intrinsic != nir_intrinsic_image_deref_sparse_load &&
-       intr->intrinsic != nir_intrinsic_image_deref_size &&
-       intr->intrinsic != nir_intrinsic_image_deref_samples) {
+   bool pbe = intr->intrinsic != nir_intrinsic_image_deref_load &&
+              intr->intrinsic != nir_intrinsic_image_deref_sparse_load &&
+              intr->intrinsic != nir_intrinsic_image_deref_size &&
+              intr->intrinsic != nir_intrinsic_image_deref_samples;
 
-      offs = offsetof(struct hk_storage_image_descriptor, pbe);
-   } else {
-      offs = offsetof(struct hk_storage_image_descriptor, tex);
+   /* G15: the entry of the texture or the PBE (hk_descriptor_set.h); a read
+    * becomes a fetch with the sampler in the entry after the texture
+    * (hk_nir_lower_image_loads_g15) */
+   if (ctx->g15) {
+      unsigned offs = pbe ? offsetof(struct hk_storage_image_descriptor_g15, pbe)
+                          : offsetof(struct hk_storage_image_descriptor_g15, tex);
+
+      nir_rewrite_image_intrinsic(
+         intr, load_texture_index_g15(b, ctx, intr->src[0], offs, false),
+         nir_image_intrinsic_type_bindless);
+      return true;
    }
+
+   unsigned offs = pbe ? offsetof(struct hk_storage_image_descriptor, pbe)
+                       : offsetof(struct hk_storage_image_descriptor, tex);
 
    nir_rewrite_image_intrinsic(intr,
                                load_image_handle(b, ctx, intr->src[0], offs),
@@ -1000,4 +1010,103 @@ hk_nir_lower_descriptors(nir_shader *nir,
       nir, lower_ssbo_descriptor, nir_metadata_control_flow, &ctx);
 
    return pass_lower_descriptors || pass_lower_ssbo;
+}
+
+/* G15: the sampler entry after a texture handle's entry (hk_descriptor_set.h:
+ * a sampled image's sampler, or the txf sampler of a storage image or texel
+ * buffer) */
+static nir_def *
+sampler_after_texture_g15(nir_builder *b, nir_def *handle)
+{
+   if (!nir_def_is_intrinsic(handle))
+      return NULL;
+
+   nir_intrinsic_instr *intr = nir_def_as_intrinsic(handle);
+   if (intr->intrinsic != nir_intrinsic_bindless_image_agx)
+      return NULL;
+
+   nir_def *entry = nir_iadd_imm(b, intr->src[0].ssa, 1);
+   return nir_bindless_sampler_agx(b, nir_imul_imm(b, entry, 32), entry,
+                                   .desc_set = nir_intrinsic_desc_set(intr));
+}
+
+/*
+ * G15 has no image load (libLLVM 32023 knows none): an image is read as its
+ * texture descriptor by a fetch with the txf sampler, the coordinates as
+ * agx_nir_lower_texture leaves them (a 1D or buffer image as 2D, a cube as a
+ * 2D array), as Gallium's lower_image_load_g15. Multisampled loads are left
+ * alone. Fetches agx_nir_lower_texture took the sampler from (a buffer
+ * texture's) get the one after the texture again.
+ */
+static bool
+lower_image_load_g15(nir_builder *b, nir_instr *instr, UNUSED void *data)
+{
+   b->cursor = nir_before_instr(instr);
+
+   if (instr->type == nir_instr_type_tex) {
+      nir_tex_instr *tex = nir_instr_as_tex(instr);
+      int h = nir_tex_instr_src_index(tex, nir_tex_src_texture_handle);
+
+      if ((tex->op != nir_texop_txf && tex->op != nir_texop_txf_ms) || h < 0 ||
+          nir_tex_instr_src_index(tex, nir_tex_src_sampler_handle) >= 0)
+         return false;
+
+      nir_def *s = sampler_after_texture_g15(b, tex->src[h].src.ssa);
+      if (!s)
+         return false;
+
+      nir_tex_instr_add_src(tex, nir_tex_src_sampler_handle, s);
+      return true;
+   }
+
+   if (instr->type != nir_instr_type_intrinsic)
+      return false;
+
+   nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+   if (intr->intrinsic != nir_intrinsic_bindless_image_load)
+      return false;
+
+   enum glsl_sampler_dim dim = nir_intrinsic_image_dim(intr);
+   bool array = nir_intrinsic_image_array(intr);
+
+   if (dim == GLSL_SAMPLER_DIM_MS)
+      return false;
+
+   if (dim == GLSL_SAMPLER_DIM_CUBE) {
+      dim = GLSL_SAMPLER_DIM_2D;
+      array = true;
+   }
+
+   nir_def *sampler = sampler_after_texture_g15(b, intr->src[0].ssa);
+   if (!sampler)
+      return false;
+
+   assert(dim == GLSL_SAMPLER_DIM_2D || dim == GLSL_SAMPLER_DIM_3D);
+   unsigned n = glsl_get_sampler_dim_coordinate_components(dim) + array;
+
+   nir_tex_instr *tex = nir_tex_instr_create(b->shader, 4);
+   tex->op = nir_texop_txf;
+   tex->sampler_dim = dim;
+   tex->is_array = array;
+   tex->coord_components = n;
+   tex->dest_type = nir_intrinsic_dest_type(intr);
+   tex->src[0] = nir_tex_src_for_ssa(nir_tex_src_backend1,
+                                     nir_trim_vector(b, intr->src[1].ssa, n));
+   tex->src[1] = nir_tex_src_for_ssa(nir_tex_src_lod, intr->src[3].ssa);
+   tex->src[2] =
+      nir_tex_src_for_ssa(nir_tex_src_texture_handle, intr->src[0].ssa);
+   tex->src[3] = nir_tex_src_for_ssa(nir_tex_src_sampler_handle, sampler);
+
+   nir_def_init(&tex->instr, &tex->def, 4, intr->def.bit_size);
+   nir_builder_instr_insert(b, &tex->instr);
+   nir_def_replace(&intr->def,
+                   nir_trim_vector(b, &tex->def, intr->def.num_components));
+   return true;
+}
+
+bool
+hk_nir_lower_image_loads_g15(nir_shader *nir)
+{
+   return nir_shader_instructions_pass(nir, lower_image_load_g15,
+                                       nir_metadata_control_flow, NULL);
 }

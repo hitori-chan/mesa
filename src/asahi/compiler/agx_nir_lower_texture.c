@@ -749,19 +749,8 @@ lower_cube_g15(nir_builder *b, nir_tex_instr *tex, UNUSED void *data)
    if (tex->sampler_dim != GLSL_SAMPLER_DIM_CUBE)
       return false;
 
-   /* The descriptor holds 6 layers per cube */
-   if (tex->op == nir_texop_txs) {
-      if (!tex->is_array)
-         return false;
-
-      b->cursor = nir_after_instr(&tex->instr);
-      nir_def *cubes = nir_udiv_imm(b, nir_channel(b, &tex->def, 2), 6);
-      nir_def_rewrite_uses_after(&tex->def,
-                                 nir_vector_insert_imm(b, &tex->def, cubes, 2));
-      return true;
-   }
-
-   /* txd is a txl here (lower_txd_cube_map); LOD queries keep the cube */
+   /* txd is a txl here (lower_txd_cube_map); LOD and size queries keep the
+    * cube */
    if (tex->op != nir_texop_tex && tex->op != nir_texop_txb &&
        tex->op != nir_texop_txl && tex->op != nir_texop_tg4)
       return false;
@@ -770,38 +759,35 @@ lower_cube_g15(nir_builder *b, nir_tex_instr *tex, UNUSED void *data)
    nir_def *coord = nir_f2fN(b, nir_steal_tex_src(tex, nir_tex_src_coord), 32);
    nir_def *face;
    nir_def *st = cube_face_coord(b, coord, &face);
-   bool array = tex->is_array;
 
-   tex->sampler_dim = GLSL_SAMPLER_DIM_2D;
-   tex->is_array = true;
-   tex->coord_components = 3;
-
-   /* The layer is clamped here, by cube: the face is always in range */
-   tex->backend_flags |= AGX_TEXTURE_FLAG_NO_CLAMP;
-
-   nir_def *layer = face;
-   if (array) {
-      nir_def *cube = nir_fround_even(b, nir_channel(b, coord, 3));
+   nir_def *cube = nir_imm_int(b, 0);
+   if (tex->is_array) {
+      cube = nir_fround_even(b, nir_channel(b, coord, 3));
       cube = nir_f2u32(b, nir_fmax_imm(b, cube, 0.0));
-
-      nir_def *faces = nir_channel(b, nir_get_texture_size(b, tex), 2);
-      nir_def *last = nir_iadd_imm(b, nir_udiv_imm(b, faces, 6), -1);
-      cube = nir_umin(b, cube, last);
-      layer = nir_iadd(b, nir_imul_imm(b, cube, 6), face);
    }
 
-   nir_def *new_coord = nir_vec3(b, nir_channel(b, st, 0),
-                                 nir_channel(b, st, 1), nir_u2f32(b, layer));
-   nir_tex_instr_add_src(tex, nir_tex_src_coord, new_coord);
+   /* The LOD word: the cube at bits 0:10, the face at 12 */
+   nir_def *word =
+      nir_ior(b, nir_umin_imm(b, cube, 0x7ff), nir_ishl_imm(b, face, 12));
+
+   tex->is_array = true;
+   tex->coord_components = 4;
+   tex->backend_flags |= AGX_TEXTURE_FLAG_NO_CLAMP;
+   nir_tex_instr_add_src(tex, nir_tex_src_coord,
+                         nir_vec4(b, nir_channel(b, st, 0),
+                                  nir_channel(b, st, 1), nir_imm_float(b, 0),
+                                  nir_u2f32(b, word)));
    return true;
 }
 
 /*
- * G15 samples a cube as a 2D array of its faces, whose descriptor
- * agx_pack_texture_g15 packs: the hardware's cube mode reads a face-local
- * (s, t) and its face operand is not known. Filtering stops at the face edges
- * (not seamless). Runs before agx_nir_lower_texture, whose image size queries
- * divide by 6 themselves.
+ * G15 samples every cube in the hardware's cube array mode, whose descriptor
+ * agx_pack_texture_g15 packs (the depth counts cubes): the face-local (s, t)
+ * in cr0 and cr1 and the LOD word in cr3 with the cube at bits 0:10 and the
+ * face at 12, as libLLVM 32023's cube array read sequence packs them
+ * (sub_25092FC54: code 4 at 0, code 10 at 12); a cube is cube 0. The
+ * direction is projected onto its face here, as Apple's compiler does for
+ * cubedir. The hardware filters across the faces (seamless).
  */
 bool
 agx_nir_lower_cube_g15(nir_shader *s)

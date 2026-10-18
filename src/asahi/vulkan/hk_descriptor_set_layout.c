@@ -33,6 +33,9 @@ hk_descriptor_stride_align_for_type(
    const VkMutableDescriptorTypeListEXT *type_list, uint32_t *stride,
    uint32_t *alignment)
 {
+   /* G15 indexes descriptors as 32 B entries (hk_descriptor_set.h) */
+   bool g15 = pdev->dev.params.gpu_generation >= 15;
+
    switch (type) {
    case VK_DESCRIPTOR_TYPE_SAMPLER:
    case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
@@ -40,13 +43,22 @@ hk_descriptor_stride_align_for_type(
    case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
    case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
       *stride = *alignment = sizeof(struct hk_sampled_image_descriptor);
+
+      /* A mutable descriptor of it and a storage image fits in 96 B */
+      if (g15)
+         *alignment = 32;
       break;
 
    case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
    case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
    case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
-      *stride = sizeof(struct hk_storage_image_descriptor);
-      *alignment = 8;
+      if (g15) {
+         *stride = sizeof(struct hk_storage_image_descriptor_g15);
+         *alignment = 32;
+      } else {
+         *stride = sizeof(struct hk_storage_image_descriptor);
+         *alignment = 8;
+      }
       break;
 
    case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
@@ -66,8 +78,11 @@ hk_descriptor_stride_align_for_type(
 
    case VK_DESCRIPTOR_TYPE_MUTABLE_EXT:
       *stride = *alignment = 0;
-      if (type_list == NULL)
-         *stride = *alignment = HK_MAX_DESCRIPTOR_SIZE;
+      if (type_list == NULL) {
+         /* The largest descriptor; G15's (96 B) at its entries' alignment */
+         *stride = g15 ? HK_MAX_DESCRIPTOR_SIZE : 64;
+         *alignment = g15 ? 32 : 64;
+      }
       for (unsigned i = 0; type_list && i < type_list->descriptorTypeCount;
            i++) {
          /* This shouldn't recurse */
