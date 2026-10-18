@@ -268,6 +268,10 @@ can_move_instr(nir_instr *instr, opt_preamble_ctx *ctx)
    if (ctx->nonuniform_cf_nesting > 0 && !instr_can_speculate(instr))
       return false;
 
+   if (ctx->options->can_move_instr_cb &&
+       !ctx->options->can_move_instr_cb(instr, ctx->options->cb_data))
+      return false;
+
    switch (instr->type) {
    case nir_instr_type_tex: {
       nir_tex_instr *tex = nir_instr_as_tex(instr);
