@@ -1293,12 +1293,17 @@ lower_tex_min_lod_g15(nir_builder *b, nir_tex_instr *tex, void *data)
    nir_def *desc = nir_load_global_constant(b, 4, 32, addr);
    nir_def *w0 = nir_channel(b, desc, 0), *w1 = nir_channel(b, desc, 1);
    nir_def *w3 = nir_channel(b, desc, 3);
+   nir_def *w5 = nir_load_global_constant(b, 1, 32, nir_iadd_imm(b, addr, 20));
    nir_def *width = nir_ior(b, nir_ushr_imm(b, w0, 28),
                             nir_ishl_imm(b, nir_iand_imm(b, w1, 0x3ff), 4));
    nir_def *height = nir_ubitfield_extract_imm(b, w1, 10, 14);
    nir_def *depth = nir_ubitfield_extract_imm(b, w3, 14, 14);
    nir_def *size = nir_vec3(b, width, height, depth);
-   size = nir_u2f32(b, nir_iadd_imm(b, nir_trim_vector(b, size, n), 1));
+   size = nir_iadd_imm(b, nir_trim_vector(b, size, n), 1);
+
+   /* The view's first level's size */
+   nir_def *first = nir_ubitfield_extract_imm(b, w5, 12, 4);
+   size = nir_u2f32(b, nir_umax_imm(b, nir_ushr(b, size, first), 1));
 
    nir_def *scale = nir_fexp2(b, bias);
    dx = nir_fmul(b, dx, scale);
@@ -1365,7 +1370,11 @@ lower_tex_lod_g15(nir_builder *b, nir_tex_instr *tex, void *data)
    nir_def *height = nir_ubitfield_extract_imm(b, w1, 10, 14);
    nir_def *depth = nir_ubitfield_extract_imm(b, w3, 14, 14);
    nir_def *size = nir_vec3(b, width, height, depth);
-   size = nir_u2f32(b, nir_iadd_imm(b, nir_trim_vector(b, size, n), 1));
+   size = nir_iadd_imm(b, nir_trim_vector(b, size, n), 1);
+
+   /* The view's first level's size */
+   nir_def *first = nir_ubitfield_extract_imm(b, w5, 12, 4);
+   size = nir_u2f32(b, nir_umax_imm(b, nir_ushr(b, size, first), 1));
 
    nir_def *dx = nir_fmul(b, nir_ddx(b, coord), size);
    nir_def *dy = nir_fmul(b, nir_ddy(b, coord), size);
@@ -1378,11 +1387,10 @@ lower_tex_lod_g15(nir_builder *b, nir_tex_instr *tex, void *data)
 
    /* The levels: last level - first level + 1 when mipmapped */
    nir_def *mip = nir_i2b(b, nir_iand_imm(b, w1, 1 << 26));
-   nir_def *last = nir_isub(b, nir_ubitfield_extract_imm(b, w5, 16, 4),
-                            nir_ubitfield_extract_imm(b, w5, 12, 4));
+   nir_def *last = nir_isub(b, nir_ubitfield_extract_imm(b, w5, 16, 4), first);
    nir_def *max_level = nir_u2f32(b, nir_bcsel(b, mip, last, nir_imm_int(b, 0)));
 
-   nir_def *lo = nir_imm_float(b, 0.0), *hi = max_level;
+   nir_def *lo = nir_imm_float(b, 0.0), *hi = max_level, *mip_filter = NULL;
    if (si >= 0) {
       nir_intrinsic_instr *s = nir_src_as_intrinsic(tex->src[si].src);
       if (s && s->intrinsic == nir_intrinsic_bindless_sampler_agx) {
@@ -1397,11 +1405,22 @@ lower_tex_lod_g15(nir_builder *b, nir_tex_instr *tex, void *data)
             1.0 / 64.0);
          lo = min_lod;
          hi = nir_fmin(b, max_lod, max_level);
+         mip_filter = nir_ubitfield_extract_imm(b, state, 27, 2);
       }
    }
 
    nir_def *x = nir_fmin(b, nir_fmax(b, lod, lo), hi);
    x = nir_fmax(b, nir_fmin(b, x, max_level), nir_imm_float(b, 0.0));
+
+   /* The level accessed: rounded with a nearest mip filter (ceil(x + 0.5) - 1,
+    * as Vulkan's level selection), the base level with none */
+   if (mip_filter) {
+      nir_def *nearest =
+         nir_fadd_imm(b, nir_fceil(b, nir_fadd_imm(b, x, 0.5)), -1.0);
+      x = nir_bcsel(b, nir_ieq_imm(b, mip_filter, 1 /* nearest */), nearest, x);
+      x = nir_bcsel(b, nir_ieq_imm(b, mip_filter, 0 /* none */),
+                    nir_imm_float(b, 0.0), x);
+   }
 
    nir_def *res = nir_vec2(b, x, lod);
    if (tex->def.bit_size != 32)
