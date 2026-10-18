@@ -595,14 +595,17 @@ hk_cmd_buffer_upload_root(struct hk_cmd_buffer *cmd,
 
 /* G15's texture and image instructions index tables of 32 B entries (the
  * 24 B descriptors zero-padded): render target i's texture at entry 2 * i,
- * its PBE at 2 * i + 1, as agx_nir_lower_tilebuffer indexes them. dst holds
- * 2 * 32 * HK_MAX_RTS bytes. */
+ * its PBE at 2 * i + 1, and the txf sampler its reads fetch with after them,
+ * as agx_nir_lower_tilebuffer indexes them. dst holds HK_SPILL_TABLE_G15_B
+ * bytes. */
 void
 hk_spilled_rt_descs_g15(struct hk_cmd_buffer *cmd, uint8_t *dst)
 {
    struct hk_rendering_state *render = &cmd->state.gfx.render;
 
-   memset(dst, 0, 2 * 32 * HK_MAX_RTS);
+   static_assert(HK_MAX_RTS == AGX_MAX_RENDER_TARGETS, "spill table layout");
+   memset(dst, 0, HK_SPILL_TABLE_G15_B);
+   agx_pack_txf_sampler((struct agx_sampler_packed *)(dst + 64 * HK_MAX_RTS));
 
    for (unsigned i = 0; i < render->color_att_count; ++i) {
       struct hk_image_view *iview = render->color_att[i].iview;
@@ -623,7 +626,7 @@ hk_usc_upload_spilled_rt_descs(struct agx_usc_builder *b,
    struct hk_rendering_state *render = &cmd->state.gfx.render;
 
    if (hk_cmd_buffer_device(cmd)->dev.params.gpu_generation >= 15) {
-      struct agx_ptr t = hk_pool_alloc(cmd, 2 * 32 * HK_MAX_RTS, 64);
+      struct agx_ptr t = hk_pool_alloc(cmd, HK_SPILL_TABLE_G15_B, 64);
       if (!t.cpu)
          return;
 
