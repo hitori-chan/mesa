@@ -1323,12 +1323,17 @@ lower_tex_min_lod_g15(nir_builder *b, nir_tex_instr *tex, void *data)
    nir_def *desc = nir_load_global_constant(b, 4, 32, addr);
    nir_def *w0 = nir_channel(b, desc, 0), *w1 = nir_channel(b, desc, 1);
    nir_def *w3 = nir_channel(b, desc, 3);
+   nir_def *w5 = nir_load_global_constant(b, 1, 32, nir_iadd_imm(b, addr, 20));
    nir_def *width = nir_ior(b, nir_ushr_imm(b, w0, 28),
                             nir_ishl_imm(b, nir_iand_imm(b, w1, 0x3ff), 4));
    nir_def *height = nir_ubitfield_extract_imm(b, w1, 10, 14);
    nir_def *depth = nir_ubitfield_extract_imm(b, w3, 14, 14);
    nir_def *size = nir_vec3(b, width, height, depth);
-   size = nir_u2f32(b, nir_iadd_imm(b, nir_trim_vector(b, size, n), 1));
+   size = nir_iadd_imm(b, nir_trim_vector(b, size, n), 1);
+
+   /* The view's first level's size */
+   nir_def *first = nir_ubitfield_extract_imm(b, w5, 12, 4);
+   size = nir_u2f32(b, nir_umax_imm(b, nir_ushr(b, size, first), 1));
 
    nir_def *scale = nir_fexp2(b, bias);
    dx = nir_fmul(b, dx, scale);
@@ -1358,14 +1363,21 @@ lower_tex_min_lod_g15(nir_builder *b, nir_tex_instr *tex, void *data)
 }
 
 /*
- * G15 has no LOD query: Apple's compiler has no intrinsic for one (none of
- * libLLVM_32023's llvm.agx.* names), so its AIR lowering computes it. Here
- * the LOD is log2 of the larger footprint of the coordinates' derivatives
- * scaled by the size (the 32 B descriptor: width at bit 28, height at 42,
- * depth at 110), plus the bias; x clamps it to the sampler's LOD range (its
- * state's 9:0 and 19:10, q4.6) and the texture's levels (last level at bit
- * 176 when mipmapped, bit 58). A cube is face-local here (cube array mode),
- * its LOD that of the face. Not verified on the hardware.
+ * G15's LOD query, smp bit 85 (Apple's compiler sets it for an smp intrinsic's
+ * query flag), is not run: its result layout is not traced. Here the LOD is
+ * computed instead: log2 of the larger footprint of the coordinates'
+ * derivatives scaled by the size (the 32 B descriptor: width at bit 28, height
+ * at 42, depth at 110), plus the bias; x clamps it to the sampler's LOD range
+ * (its state's 9:0 and 19:10, q4.6) and the texture's levels (last level at bit
+ * 176 when mipmapped, bit 58). A cube's query keeps its direction
+ * (lower_cube_g15): its footprint is that of the face coordinates, the quotient
+ * rule's derivatives as nir_lower_tex's lower_gradient_cube_map takes them
+ * (dEQP-VK textureQueryLod cubes read the direction's x and y as a 2D
+ * coordinate). A null descriptor (agx_set_null_texture_g15, at the zero page)
+ * queries 0, as G13's hardware query of it: its 1x1x1 size gave a fragment's 3D
+ * query of gl_FragCoord.xyz, whose z slopes, a small positive LOD (dEQP-VK
+ * robustness2's null_descriptor 3D fragment cases). Not verified on the
+ * hardware otherwise.
  */
 static bool
 lower_tex_lod_g15(nir_builder *b, nir_tex_instr *tex, void *data)
@@ -1396,21 +1408,59 @@ lower_tex_lod_g15(nir_builder *b, nir_tex_instr *tex, void *data)
    nir_def *height = nir_ubitfield_extract_imm(b, w1, 10, 14);
    nir_def *depth = nir_ubitfield_extract_imm(b, w3, 14, 14);
    nir_def *size = nir_vec3(b, width, height, depth);
-   size = nir_u2f32(b, nir_iadd_imm(b, nir_trim_vector(b, size, n), 1));
+   size = nir_iadd_imm(b, nir_trim_vector(b, size, n), 1);
 
-   nir_def *dx = nir_fmul(b, nir_ddx(b, coord), size);
-   nir_def *dy = nir_fmul(b, nir_ddy(b, coord), size);
+   /* The view's first level's size */
+   nir_def *first = nir_ubitfield_extract_imm(b, w5, 12, 4);
+   size = nir_u2f32(b, nir_umax_imm(b, nir_ushr(b, size, first), 1));
+
+   nir_def *dx, *dy;
+   if (tex->sampler_dim == GLSL_SAMPLER_DIM_CUBE) {
+      nir_def *p = nir_trim_vector(b, tex->src[ci].src.ssa, 3);
+      nir_def *ddx = nir_ddx(b, p), *ddy = nir_ddy(b, p);
+      nir_def *a = nir_fabs(b, p);
+      nir_def *ax = nir_channel(b, a, 0), *ay = nir_channel(b, a, 1);
+      nir_def *az = nir_channel(b, a, 2);
+      nir_def *is_z = nir_fge(b, az, nir_fmax(b, ax, ay));
+      nir_def *is_y = nir_fge(b, ay, nir_fmax(b, ax, az));
+
+      /* The major axis last: z, else y (xzy), else x (yzx) */
+      unsigned xzy[3] = {0, 2, 1}, yzx[3] = {1, 2, 0};
+      nir_def *v[3] = {p, ddx, ddy};
+      for (unsigned i = 0; i < 3; ++i) {
+         v[i] = nir_bcsel(b, is_z, v[i],
+                          nir_bcsel(b, is_y, nir_swizzle(b, v[i], xzy, 3),
+                                    nir_swizzle(b, v[i], yzx, 3)));
+      }
+
+      /* d(Q.xy / Q.z) in the face's [-1, 1], to texels: half the size */
+      nir_def *rcp = nir_frcp(b, nir_channel(b, v[0], 2));
+      nir_def *q = nir_fmul(b, nir_trim_vector(b, v[0], 2), rcp);
+      nir_def *half = nir_fmul_imm(b, size, 0.5);
+      nir_def *d[2];
+      for (unsigned i = 0; i < 2; ++i) {
+         nir_def *dq = v[1 + i];
+         nir_def *dz = nir_fmul(b, q, nir_channel(b, dq, 2));
+         d[i] = nir_fmul(b, rcp, nir_fsub(b, nir_trim_vector(b, dq, 2), dz));
+         d[i] = nir_fmul(b, d[i], half);
+      }
+      dx = d[0];
+      dy = d[1];
+   } else {
+      dx = nir_fmul(b, nir_ddx(b, coord), size);
+      dy = nir_fmul(b, nir_ddy(b, coord), size);
+   }
    nir_def *rx2 = nir_fdot(b, dx, dx), *ry2 = nir_fdot(b, dy, dy);
    nir_def *rho2 = nir_fmax(b, rx2, ry2);
    nir_def *lod = nir_fmul_imm(b, nir_flog2(b, rho2), 0.5);
 
    /* The levels: last level - first level + 1 when mipmapped */
    nir_def *mip = nir_i2b(b, nir_iand_imm(b, w1, 1 << 26));
-   nir_def *last = nir_isub(b, nir_ubitfield_extract_imm(b, w5, 16, 4),
-                            nir_ubitfield_extract_imm(b, w5, 12, 4));
-   nir_def *max_level = nir_u2f32(b, nir_bcsel(b, mip, last, nir_imm_int(b, 0)));
+   nir_def *last = nir_isub(b, nir_ubitfield_extract_imm(b, w5, 16, 4), first);
+   nir_def *max_level =
+      nir_u2f32(b, nir_bcsel(b, mip, last, nir_imm_int(b, 0)));
 
-   nir_def *lo = nir_imm_float(b, 0.0), *hi = max_level;
+   nir_def *lo = nir_imm_float(b, 0.0), *hi = max_level, *mip_filter = NULL;
    if (si >= 0) {
       nir_intrinsic_instr *s = nir_src_as_intrinsic(tex->src[si].src);
       if (s && s->intrinsic == nir_intrinsic_bindless_sampler_agx) {
@@ -1426,7 +1476,7 @@ lower_tex_lod_g15(nir_builder *b, nir_tex_instr *tex, void *data)
             1.0 / 64.0);
          lo = min_lod;
          hi = nir_fmin(b, max_lod, max_level);
-      }
+         mip_filter = nir_ubitfield_extract_imm(b, state, 27, 2);
 
          /* Anisotropic, the larger footprint over N samples, log2(rho_max /
           * N) with N = min(rho_max / rho_min, the maximum), that is
@@ -1442,6 +1492,7 @@ lower_tex_lod_g15(nir_builder *b, nir_tex_instr *tex, void *data)
          nir_def *spread =
             nir_fmul(b, rho2, nir_fexp2(b, nir_fmul_imm(b, log2_max, -2.0)));
          lod = nir_fmul_imm(b, nir_flog2(b, nir_fmax(b, rmin2, spread)), 0.5);
+      }
    }
 
    int bi = nir_tex_instr_src_index(tex, nir_tex_src_bias);
@@ -1451,7 +1502,21 @@ lower_tex_lod_g15(nir_builder *b, nir_tex_instr *tex, void *data)
    nir_def *x = nir_fmin(b, nir_fmax(b, lod, lo), hi);
    x = nir_fmax(b, nir_fmin(b, x, max_level), nir_imm_float(b, 0.0));
 
+   /* The level accessed: rounded with a nearest mip filter (ceil(x + 0.5) - 1,
+    * as Vulkan's level selection), the base level with none */
+   if (mip_filter) {
+      nir_def *nearest =
+         nir_fadd_imm(b, nir_fceil(b, nir_fadd_imm(b, x, 0.5)), -1.0);
+      x = nir_bcsel(b, nir_ieq_imm(b, mip_filter, 1 /* nearest */), nearest, x);
+      x = nir_bcsel(b, nir_ieq_imm(b, mip_filter, 0 /* none */),
+                    nir_imm_float(b, 0.0), x);
+   }
+
    nir_def *res = nir_vec2(b, x, lod);
+   nir_def *null = nir_iand(
+      b, nir_ieq_imm(b, nir_channel(b, desc, 2), AGX_ZERO_PAGE_ADDRESS >> 4),
+      nir_ieq_imm(b, nir_iand_imm(b, w3, 0xfff), 0));
+   res = nir_bcsel(b, null, nir_imm_vec2(b, 0.0, 0.0), res);
    if (tex->def.bit_size != 32)
       res = nir_f2fN(b, res, tex->def.bit_size);
 
