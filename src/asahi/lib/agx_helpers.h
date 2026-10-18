@@ -265,6 +265,25 @@ agx_set_null_pbe(struct agx_pbe_packed *pbe)
    }
 }
 
+/* G15's (cmdbuf.xml's "PBE G15"): writes land in the scratch page, as G13's
+ * (not verified on the hardware) */
+static inline void
+agx_set_null_pbe_g15(struct agx_pbe_packed *pbe)
+{
+   agx_pack(pbe, PBE_G15, cfg) {
+      cfg.width = 1;
+      cfg.height = 1;
+      cfg.layout = AGX_LAYOUT_TWIDDLED;
+      cfg.channels = AGX_CHANNELS_R8;
+      cfg.type = AGX_TEXTURE_TYPE_UNORM /* don't care */;
+      cfg.swizzle_r = AGX_CHANNEL_R;
+      cfg.swizzle_g = AGX_CHANNEL_R;
+      cfg.swizzle_b = AGX_CHANNEL_R;
+      cfg.swizzle_a = AGX_CHANNEL_R;
+      cfg.buffer = AGX_SCRATCH_PAGE_ADDRESS;
+   }
+}
+
 /*
  * Determine the maximum vertex/divided instance index.  For robustness,
  * the index will be clamped to this before reading (if soft fault is
