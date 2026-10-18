@@ -33,11 +33,24 @@ agx_select_tile_size(unsigned px_size_B)
 }
 
 static inline unsigned
-format_align_B(enum pipe_format format)
+format_size_B(enum pipe_format format)
 {
    /* For some reason util_format_get_blocksize(NONE) = 1 */
+   if (format == PIPE_FORMAT_NONE)
+      return 0;
+
    enum pipe_format phys = ail_pixel_format[format].renderable;
-   return (format != PIPE_FORMAT_NONE) ? util_format_get_blocksize(phys) : 0;
+   unsigned size_B = util_format_get_blocksize(phys);
+   if (util_format_get_nr_components(phys) == 1)
+      size_B *= util_format_get_nr_components(format);
+
+   return size_B;
+}
+
+static inline unsigned
+format_align_B(enum pipe_format format)
+{
+   return MIN2(util_next_power_of_two(format_size_B(format)), 8);
 }
 
 struct agx_tilebuffer_layout
@@ -69,24 +82,18 @@ agx_build_tilebuffer_layout(const enum pipe_format *formats, uint8_t nr_cbufs,
       enum pipe_format format = formats[rt];
       tib.logical_format[rt] = format;
 
-      assert(util_is_aligned(offset_B, MAX2(format_align_B(formats[rt]), 1)) &&
-             "loop invariant ensured by the sort");
-
-      unsigned size_B = format_align_B(format);
-      enum pipe_format phys = ail_pixel_format[format].renderable;
-      if (util_format_get_nr_components(phys) == 1) {
-         size_B *= util_format_get_nr_components(format);
-      }
+      unsigned size_B = format_size_B(format);
+      unsigned start_B = ALIGN_POT(offset_B, MAX2(format_align_B(format), 1));
 
       /* If allocating this render target would exceed any tilebuffer limits, we
        * need to spill it to memory. Otherwise, allocate it to the tilebuffer.
        */
-      unsigned new_offset_B = offset_B + size_B;
+      unsigned new_offset_B = start_B + size_B;
       bool fits = (new_offset_B <= MAX_BYTES_PER_SAMPLE) &&
                   (ALIGN_POT(new_offset_B, 8) * MIN_TILE_SIZE_PX *
                    nr_samples) <= MAX_BYTES_PER_TILE;
       if (fits) {
-         tib._offset_B[rt] = offset_B;
+         tib._offset_B[rt] = start_B;
          offset_B = new_offset_B;
       } else {
          tib.spilled[rt] = true;
