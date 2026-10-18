@@ -2917,7 +2917,19 @@ agx3_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
    }
 
    case AGX_OPCODE_ASR:
-      a3_alu(&a, I, &a3_asr, I->src, emission);
+      /* asr widens a 16-bit value before it shifts, as the compares do, so
+       * the value is an extended source: without sx, 0xea00 >> 8 is 0x00ea
+       * and every 8- and 16-bit sign extension (i2i16 is bfi then asr) came
+       * out unsigned. The shift amount has no sx bit.
+       */
+      a3_begin(&a, I, a3_asr.instr, a3_asr.tmpl);
+      a3_set(&a, 0, a3_reg(&a, 0, I->dest[0], 0, 0, 0));
+      a3_set(&a, 2, a3_ext_src(&a, 2, I->src[0]));
+      a3_set(&a, 3, a3_src(&a, 3, I->src[1], true));
+      if (I->saturate)
+         a3_fail(&a, "saturate not supported");
+      a3_vt(&a, a3_asr.vt);
+      a3_emit(&a, emission);
       return;
 
    case AGX_OPCODE_BITREV:
