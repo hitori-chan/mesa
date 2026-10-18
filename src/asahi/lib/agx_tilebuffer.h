@@ -51,6 +51,11 @@ struct agx_tilebuffer_layout {
    /* If layered rendering is used */
    bool layered;
 
+   /* G15 (set by the driver): a spilled render target is read by a fetch
+    * with the txf sampler at entry 2 * AGX_MAX_RENDER_TARGETS of the spill
+    * table, which G15 indexes in 32 B entries; it has no image load */
+   bool g15;
+
    /* Selected tile size in pixels. Either 32*32, 32*16, or 16*16. */
    uint16_t tile_size;
 
