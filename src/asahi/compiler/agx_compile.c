@@ -1321,10 +1321,11 @@ agx_translate_bindless_handle(agx_builder *b, nir_src *handle, agx_index *base)
 
    *base = agx_uniform(nir_intrinsic_desc_set(intr), AGX_SIZE_64);
 
-   /* G15 takes a constant index as an immediate (its texture instructions
-    * index the table by an immediate in their short form) */
+   /* G15 takes a constant index below 256 as an immediate (its texture
+    * instructions index the table by an 8-bit immediate in their short form);
+    * a larger one goes in a register, whose low half the instruction reads */
    if (b->shader->key->dev.gpu_generation >= 15 &&
-       nir_src_is_const(intr->src[0]))
+       nir_src_is_const(intr->src[0]) && nir_src_as_uint(intr->src[0]) < 256)
       return agx_immediate(nir_src_as_uint(intr->src[0]));
 
    return agx_src_index(&intr->src[0]);
@@ -2945,7 +2946,8 @@ agx_emit_tex(agx_builder *b, nir_tex_instr *instr)
                sampler_base =
                   agx_uniform(nir_intrinsic_desc_set(intr), AGX_SIZE_64);
 
-               if (nir_src_is_const(intr->src[1]))
+               if (nir_src_is_const(intr->src[1]) &&
+                   nir_src_as_uint(intr->src[1]) < 256)
                   sampler = agx_immediate(nir_src_as_uint(intr->src[1]));
             }
          } else {
