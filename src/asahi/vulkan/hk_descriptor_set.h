@@ -75,6 +75,29 @@ struct hk_storage_image_descriptor {
 static_assert(sizeof(struct hk_storage_image_descriptor) == 48,
               "hk_storage_image_descriptor has no holes");
 
+/*
+ * G15's storage image and texel buffer descriptor, three 32 B entries: the
+ * texture (reads and queries), the txf sampler (G15 has no image load: a read
+ * is a fetch, which names a sampler), and the PBE (writes and atomics). The
+ * texture and sampler sit where hk_sampled_image_descriptor_g15 has them, so
+ * a texel buffer's fetch finds its sampler as a sampled image's does.
+ */
+struct hk_storage_image_descriptor_g15 {
+   struct agx_texture_packed tex;
+   uint32_t tex_pad[2];
+   struct agx_sampler_packed txf_sampler;
+   uint32_t sampler_pad[6];
+   struct agx_pbe_packed pbe;
+   uint32_t pbe_pad[2];
+};
+static_assert(sizeof(struct hk_storage_image_descriptor_g15) == 96,
+              "three 32 B entries");
+static_assert(offsetof(struct hk_storage_image_descriptor_g15, txf_sampler) ==
+                 offsetof(struct hk_sampled_image_descriptor_g15, sampler),
+              "the sampler is the entry after the texture");
+static_assert(offsetof(struct hk_storage_image_descriptor_g15, pbe) == 64,
+              "the PBE is the third entry");
+
 /* This has to match nir_address_format_64bit_bounded_global */
 struct hk_buffer_address {
    uint64_t base_addr;
