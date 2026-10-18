@@ -256,8 +256,9 @@ pack_texture_g15(struct hk_image_view *view, unsigned view_plane,
          cfg.last_level = level + view->vk.level_count - 1;
       }
 
-      cfg.extended = cfg.first_level || cfg.last_level;
+      /* The level word comes with the mipmapped bit, as Apple's (texture.md) */
       cfg.mipmapped = layout->levels > 1;
+      cfg.extended = cfg.mipmapped || cfg.first_level || cfg.last_level;
       cfg.srgb = (desc->colorspace == UTIL_FORMAT_COLORSPACE_SRGB);
       cfg.srgb_2_channel = cfg.srgb && util_format_colormask(desc) == 0x3;
       cfg.depth = layers;

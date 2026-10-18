@@ -735,8 +735,12 @@ agx_pack_texture_g15(void *out, struct agx_resource *rsrc,
       cfg.height = rsrc->base.height0;
       cfg.first_level = state->u.tex.first_level;
       cfg.last_level = state->u.tex.last_level;
-      cfg.extended = cfg.first_level || cfg.last_level;
       cfg.mipmapped = rsrc->mipmapped;
+
+      /* The level word: Apple's encoder sets it with the mipmapped bit. A
+       * mipmapped texture without it samples levels outside the view's
+       * (texture.md) */
+      cfg.extended = cfg.mipmapped || cfg.first_level || cfg.last_level;
       cfg.srgb = (desc->colorspace == UTIL_FORMAT_COLORSPACE_SRGB);
       cfg.srgb_2_channel = cfg.srgb && util_format_colormask(desc) == 0x3;
 
