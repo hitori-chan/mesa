@@ -387,10 +387,11 @@ agx_esl_from_usc(struct util_dynarray *out, const uint8_t *usc,
       break;
 
    case AGX_ESL_END_OF_TILE:
-      /* demo15's: the block write's coordinates in cr0 and cr1 */
+      /* demo15's: the block write's coordinates in cr0 and cr1; a layered
+       * write's packs in cr2 and cr3 too (agx3_cr_count) */
       esl_speclm_imageblock(out, &tile);
       esl_ldshdr(out, main_va, code ? code->main_size : 0);
-      esl_spectpr(out, 0, 2);
+      esl_spectpr(out, 0, MAX2(2, code ? code->cr_count : 0));
       break;
    }
 

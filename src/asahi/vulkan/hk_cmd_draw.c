@@ -279,6 +279,7 @@ hk_bg_eot_esl(struct hk_cmd_buffer *cmd, const uint8_t *usc,
       .cpu = map + (shader->ptr - shader->bo->va->addr),
       .size = shader->info.binary_size,
       .main_size = shader->info.main_size,
+      .cr_count = shader->info.cr_count,
    };
 
    struct util_dynarray esl;
@@ -388,6 +389,29 @@ hk_build_bg_eot(struct hk_cmd_buffer *cmd, const VkRenderingInfo *info,
       }
    }
 
+   /* G15 has no texture or sampler state registers (agx_bg_eot.h): a
+    * loading program reads its render targets' descriptors through a table
+    * at u0 (the texture of render target rt at entry 2 * rt) and its sampler
+    * through a second pair, past the clear colours, as Gallium's */
+   bool g15 = dev->dev.params.gpu_generation >= 15;
+   struct agx_ptr g15_tex = {0};
+
+   if (g15) {
+      bool loads = false;
+      unsigned first_free = 4;
+
+      for (unsigned rt = 0; rt < HK_MAX_RTS; ++rt) {
+         loads |= key.op[rt] == AGX_BG_LOAD;
+         if (key.op[rt] == AGX_BG_CLEAR)
+            first_free = 4 + 8 * (rt + 1);
+      }
+
+      if (loads) {
+         key.g15_sampler_uniform = first_free;
+         assert(first_free <= AGX_G15_MAX_BG_SAMPLER_UNIFORM);
+      }
+   }
+
    /* Begin building the pipeline */
    size_t usc_size = agx_usc_size(3 + HK_MAX_RTS);
    struct agx_ptr t = hk_pool_usc_alloc(cmd, usc_size, 64);
@@ -410,6 +434,20 @@ hk_build_bg_eot(struct hk_cmd_buffer *cmd, const VkRenderingInfo *info,
          const struct agx_texture_packed *desc =
             key.tib.layered ? &iview->planes[0].layered_background
                             : &iview->planes[0].background;
+
+         if (g15) {
+            const unsigned size_B = 2 * 32 * HK_MAX_RTS;
+
+            if (!g15_tex.cpu) {
+               g15_tex = hk_pool_alloc(cmd, size_B, 64);
+               if (!g15_tex.cpu)
+                  return (struct hk_bg_eot){.usc = 0};
+               memset(g15_tex.cpu, 0, size_B);
+            }
+
+            memcpy((uint8_t *)g15_tex.cpu + 2 * 32 * rt, desc, sizeof(*desc));
+            continue;
+         }
 
          agx_usc_pack(&b, TEXTURE, cfg) {
             /* Shifted to match eMRT indexing, could be optimized */
@@ -464,7 +502,35 @@ hk_build_bg_eot(struct hk_cmd_buffer *cmd, const VkRenderingInfo *info,
       uniforms = MAX2(uniforms, 4);
    }
 
-   if (uses_txf) {
+   if (g15_tex.cpu) {
+      agx_usc_uniform(&b, 0, 4, hk_pool_upload(cmd, &g15_tex.gpu, 8, 8));
+      uniforms = MAX2(uniforms, 4);
+   }
+
+   if (uses_txf && g15) {
+      /* A 32 B sampler table entry, Gallium's background sampler */
+      struct agx_ptr sampler = hk_pool_alloc(cmd, 32, 64);
+      if (!sampler.cpu)
+         return (struct hk_bg_eot){.usc = 0};
+
+      memset(sampler.cpu, 0, 32);
+      agx_pack(sampler.cpu, SAMPLER, cfg) {
+         cfg.minimum_lod = 0.0f;
+         cfg.maximum_lod = INFINITY;
+         cfg.magnify = AGX_FILTER_LINEAR;
+         cfg.minify = AGX_FILTER_NEAREST;
+         cfg.mip_filter = AGX_MIP_FILTER_NONE;
+         cfg.wrap_s = AGX_WRAP_CLAMP_TO_EDGE;
+         cfg.wrap_t = AGX_WRAP_CLAMP_TO_EDGE;
+         cfg.wrap_r = AGX_WRAP_CLAMP_TO_EDGE;
+         cfg.pixel_coordinates = true;
+         cfg.compare_func = AGX_COMPARE_FUNC_ALWAYS;
+      }
+
+      agx_usc_uniform(&b, key.g15_sampler_uniform, 4,
+                      hk_pool_upload(cmd, &sampler.gpu, 8, 8));
+      uniforms = MAX2(uniforms, key.g15_sampler_uniform + 4);
+   } else if (uses_txf) {
       agx_usc_push_packed(&b, SAMPLER, dev->dev.txf_sampler);
    }
 
