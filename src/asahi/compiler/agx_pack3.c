@@ -2036,14 +2036,14 @@ a3_block_image_store(struct a3 *a, const agx_instr *I,
  * at the IR's bindless base (a 64-bit uniform or register pair), the index an
  * immediate or a register. The coordinates and the data go to a tuple of
  * eight 32-bit coordinate registers, written in group 0, which the
- * instruction waits for and frees: x, y, data x, data y, then the
- * coordinate after y, data z, data w (Apple's code puts the data in slots 2,
- * 3, 6 and 7 after x and y in 0 and 1). Apple's builder packs a 3D image's z,
- * or an array's layer clamped to 0x7ff (pack_args' min7ff), as the element
- * after y, guessed to be slot 4 (not verified: AGX3_IMGW_Z and
- * AGX3_IMGW_LAYER override it). Cube images are 2D arrays here. The level is
- * the instruction's immediate; all four data components are given. */
-static unsigned a3_imgw_z = 4, a3_imgw_layer = 4;
+ * instruction waits for and frees. With two coordinates (2D, a 1D array's
+ * layer as the second): x, y, data x, data y in slots 0-3, data z and w in 6
+ * and 7 (Apple's code). With a third (a 2D array's layer, a 3D image's z):
+ * x, y, data x, the third coordinate, -, data y, z, w (slots 0-3, 5-7; a 2D
+ * array on the hardware, kernel #274; the 3D form and the 1D array are not
+ * verified). Apple's builder clamps a layer to 0x7ff (pack_args' min7ff).
+ * Cube images are 2D arrays here. The level is the instruction's immediate;
+ * all four data components are given. */
 
 static void
 a3_image_write(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
@@ -2069,26 +2069,23 @@ a3_image_write(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
    if (data.size != AGX_SIZE_32 || coords.size != AGX_SIZE_32)
       a3_fail(a, "image write of 16-bit data or coordinates");
 
-   bool array = I->dim == AGX_DIM_1D_ARRAY || I->dim == AGX_DIM_2D_ARRAY ||
-                I->dim == AGX_DIM_CUBE_ARRAY;
    unsigned ncoords = coords.channels_m1 + 1;
 
+   static const uint8_t coord_slot[3] = {0, 1, 3};
    for (unsigned c = 0; c < ncoords; ++c) {
-      unsigned slot = c < 2                       ? c
-                      : (array && c == ncoords - 1) ? a3_imgw_layer
-                                                    : a3_imgw_z;
+      unsigned slot = coord_slot[c];
       agx_index v = coords;
       v.value += 2 * c;
       v.channels_m1 = 0;
       a3_mov_cr(a, I, slot, v, emission);
    }
 
-   static const uint8_t data_slot[4] = {2, 3, 6, 7};
+   static const uint8_t data_slot[2][4] = {{2, 3, 6, 7}, {2, 5, 6, 7}};
    for (unsigned c = 0; c < 4; ++c) {
       agx_index v = data;
       v.value += 2 * c;
       v.channels_m1 = 0;
-      a3_mov_cr(a, I, data_slot[c], v, emission);
+      a3_mov_cr(a, I, data_slot[ncoords > 2][c], v, emission);
    }
 
    a3_begin(a, I, instr[I->dim], T_IMGW);
@@ -2323,8 +2320,6 @@ agx3_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
       assert(!strcmp(agx3_kind_names[A3_SS], "ss"));
       a3_survey_on = debug_get_bool_option("AGX3_SURVEY", false);
       a3_debug = debug_get_bool_option("AGX3_DEBUG", false);
-      a3_imgw_z = debug_get_num_option("AGX3_IMGW_Z", 4);
-      a3_imgw_layer = debug_get_num_option("AGX3_IMGW_LAYER", 4);
       if (a3_survey_on)
          atexit(a3_survey_print);
    }

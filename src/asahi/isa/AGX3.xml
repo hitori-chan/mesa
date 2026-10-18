@@ -3404,8 +3404,9 @@
    index of the 32 B array at a uniform or register pair (libLLVM 32023's
    imgwci tree and MC lowering handler sub_250904F34, texture.md). The
    coordinates and the data are a tuple of eight 32-bit coordinate registers
-   from cr: x, y, data x, data y, then z, the layer, data z, data w (the
-   z and layer slots are not verified). g is the group of their producers.
+   from cr: x, y, data x, data y, -, -, data z, data w; a third coordinate (a
+   2D array's layer, verified; a 3D image's z) is slot 3 and moves data y to
+   slot 5. g is the group of their producers.
    The level is the 12-bit immediate (a uniform or none are other forms);
    data says which data components are given (Apple's codes: 4 all four, 3
    xyz with w = 1, 7 x broadcast; the others are listed in texture.md). The
