@@ -15,6 +15,7 @@
 #include "hk_descriptor_set_layout.h"
 #include "hk_device.h"
 #include "hk_entrypoints.h"
+#include "hk_image.h"
 #include "hk_image_view.h"
 #include "hk_physical_device.h"
 #include "hk_sampler.h"
@@ -52,6 +53,25 @@ write_desc(struct hk_descriptor_set *set, uint32_t binding, uint32_t elem,
    memcpy(dst, desc_data, desc_size);
 }
 
+/* The format a G15 custom border is packed for: the view's (a combined
+ * descriptor), else the sampler's. A sampler made without one, written alone,
+ * gets the border's 32-bit words as they are (not verified).
+ */
+static enum pipe_format
+g15_border_format(const struct hk_sampler *sampler, struct hk_image_view *view,
+                  unsigned plane)
+{
+   if (view)
+      return hk_image_view_plane_format(view, plane);
+
+   if (sampler->vk.format != VK_FORMAT_UNDEFINED)
+      return hk_format_to_pipe_format(sampler->vk.format);
+
+   return vk_border_color_is_int(sampler->vk.border_color)
+             ? PIPE_FORMAT_R32G32B32A32_UINT
+             : PIPE_FORMAT_R32G32B32A32_FLOAT;
+}
+
 /* G15's layout of a sampled image descriptor (hk_descriptor_set.h) */
 static void
 write_sampled_image_view_desc_g15(struct hk_descriptor_set *set,
@@ -68,6 +88,7 @@ write_sampled_image_view_desc_g15(struct hk_descriptor_set *set,
 
    uint8_t plane_count = 1;
    bool ia = (descriptor_type == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT);
+   struct hk_image_view *view = NULL;
 
    /* An image without a sampler fetches (txf) with the txf sampler */
    if (descriptor_type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE || ia) {
@@ -77,7 +98,7 @@ write_sampled_image_view_desc_g15(struct hk_descriptor_set *set,
 
    if (descriptor_type != VK_DESCRIPTOR_TYPE_SAMPLER && info &&
        info->imageView != VK_NULL_HANDLE) {
-      VK_FROM_HANDLE(hk_image_view, view, info->imageView);
+      view = hk_image_view_from_handle(info->imageView);
 
       plane_count = view->plane_count;
       for (uint8_t plane = 0; plane < plane_count; plane++) {
@@ -103,15 +124,18 @@ write_sampled_image_view_desc_g15(struct hk_descriptor_set *set,
          sampler = hk_sampler_from_handle(info->sampler);
       }
 
-      if (sampler->has_border)
-         mesa_loge("G15: custom border colours are not supported yet");
-      else
-         plane_count = MAX2(plane_count, sampler->plane_count);
+      plane_count = MAX2(plane_count, sampler->plane_count);
 
       for (uint8_t plane = 0; plane < plane_count; plane++) {
          uint8_t sampler_plane = MIN2(plane, sampler->plane_count - 1);
          desc[plane].sampler = sampler->planes[sampler_plane].hw->key;
          desc[plane].lod_bias_fp16 = sampler->lod_bias_fp16;
+
+         /* The custom border, read by the hardware after the state */
+         if (sampler->has_border) {
+            agx_pack_border(&desc[plane].border, sampler->custom_border.uint32,
+                            g15_border_format(sampler, view, plane));
+         }
       }
    }
    write_desc(set, binding, elem, desc, sizeof(desc[0]) * plane_count);
