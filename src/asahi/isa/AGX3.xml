@@ -2535,6 +2535,12 @@
       <exact bit="8:11">0000</exact>
       <immediate name="imm" bit="0:7"/>
     </case>
+    <!-- bit 9 alone: Apple's layer pack in its end-of-tile program, 0x204
+         (code 4, umin(layer, 0x7ff) as pack_smpir's mode 4; smp.md) -->
+    <case>
+      <exact bit="8:11">0010</exact>
+      <immediate name="imm" bit="0:7"/>
+    </case>
   </encoding>
 
   <!--
