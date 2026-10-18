@@ -428,6 +428,24 @@ a3_ext_src(struct a3 *a, unsigned op, agx_index idx)
                  BITFIELD_BIT(A3_SX), 0);
 }
 
+/* A compared value: G15 extends a 16-bit register before it compares, and
+ * without sx it zero-extends, so a signed compare of 16-bit values needs sx
+ * (the 16-bit clamp of a signed integer render target turned every value into
+ * -128; cmpsel verified, cmp and the ballots by analogy). Immediates are small
+ * and positive. */
+static uint64_t
+a3_cmp_src(struct a3 *a, unsigned op, agx_index idx, bool integer,
+           enum agx_icond icond)
+{
+   bool sgn = icond == AGX_ICOND_SLT || icond == AGX_ICOND_SGT;
+
+   if (!integer || !sgn || idx.type == AGX_INDEX_IMMEDIATE ||
+       idx.size != AGX_SIZE_16)
+      return a3_src(a, op, idx, integer);
+
+   return a3_reg(a, op, idx, BITFIELD_BIT(A3_SX), BITFIELD_BIT(A3_SX), 0);
+}
+
 /* A t/v consistency modifier (dst_vt): its first bit is the complement of
  * its second; the destination holds both as carry bits (and the group the
  * second). Set the first from the second as packed so far, in every
@@ -1012,8 +1030,8 @@ a3_cmpsel(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
                len == 10 ? T_CMPSEL : T_CMPSEL14);
       a3_set(a, CMPSEL_CC, cc);
       a3_set(a, 1, a3_reg(a, 1, I->dest[0], 0, 0, 0));
-      a3_set(a, 2, a3_src(a, 2, I->src[0], integer));
-      a3_set(a, 3, a3_src(a, 3, I->src[1], integer));
+      a3_set(a, 2, a3_cmp_src(a, 2, I->src[0], integer, I->icond));
+      a3_set(a, 3, a3_cmp_src(a, 3, I->src[1], integer, I->icond));
       a3_set(a, 4, a3_src(a, 4, I->src[2], sel_int));
       a3_set(a, 5, a3_src(a, 5, I->src[3], sel_int));
 
@@ -2373,8 +2391,8 @@ a3_ballot(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
             fl ? T_FCMP_BAL : T_ICMP_BAL);
    a3_set(a, 0, cc + (I->invert_cond ? 8 : 0));
    a3_set(a, 1, a3_reg(a, 1, I->dest[0], 0, 0, 0));
-   a3_set(a, 3, a3_src(a, 3, I->src[0], !fl));
-   a3_set(a, 4, a3_src(a, 4, I->src[1], !fl));
+   a3_set(a, 3, a3_cmp_src(a, 3, I->src[0], !fl, I->icond));
+   a3_set(a, 4, a3_cmp_src(a, 4, I->src[1], !fl, I->icond));
    a3_vt(a, 2);
    a3_emit(a, emission);
 }
@@ -2456,8 +2474,8 @@ a3_cmp(struct a3 *a, const agx_instr *I, bool fl, unsigned cond, bool invert,
                len == 10 ? T_ZERO10 : T_ZERO14);
       a3_set(a, CMP_CC, (invert ? 48 : 32) + cond);
       a3_set(a, CMP_D, cc);
-      a3_set(a, CMP_A, a3_src(a, CMP_A, I->src[0], !fl));
-      a3_set(a, CMP_B, a3_src(a, CMP_B, I->src[1], !fl));
+      a3_set(a, CMP_A, a3_cmp_src(a, CMP_A, I->src[0], !fl, I->icond));
+      a3_set(a, CMP_B, a3_cmp_src(a, CMP_B, I->src[1], !fl, I->icond));
 
       if (len == 14 || a3_check(a, out))
          break;
