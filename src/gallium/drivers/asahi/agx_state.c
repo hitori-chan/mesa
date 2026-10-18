@@ -2040,6 +2040,12 @@ agx_shader_initialize(struct agx_device *dev, struct agx_uncompiled_shader *so,
    so->info.nr_bindful_textures = BITSET_LAST_BIT(nir->info.textures_used);
    so->info.nr_bindful_images = BITSET_LAST_BIT(nir->info.images_used);
 
+   /* G15's iter takes its coefficient register as an immediate only */
+   if (dev->params.gpu_generation >= 15 &&
+       nir->info.stage == MESA_SHADER_FRAGMENT)
+      NIR_PASS(_, nir, nir_lower_indirect_derefs_to_if_else_trees,
+               nir_var_shader_in, UINT32_MAX);
+
    NIR_PASS(_, nir, nir_lower_io, nir_var_shader_in | nir_var_shader_out,
             glsl_type_size,
             nir_lower_io_lower_64bit_to_32 |

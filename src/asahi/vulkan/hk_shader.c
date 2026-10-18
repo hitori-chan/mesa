@@ -912,8 +912,13 @@ hk_lower_nir(struct hk_device *dev, nir_shader *nir,
 
    /* TODO: we can do indirect VS output */
    nir_variable_mode lower_indirect_modes = 0;
-   if (nir->info.stage == MESA_SHADER_FRAGMENT)
+   if (nir->info.stage == MESA_SHADER_FRAGMENT) {
       lower_indirect_modes |= nir_var_shader_out;
+
+      /* G15's iter takes its coefficient register as an immediate only */
+      if (dev->dev.params.gpu_generation >= 15)
+         lower_indirect_modes |= nir_var_shader_in;
+   }
    else if (nir->info.stage == MESA_SHADER_VERTEX)
       lower_indirect_modes |= nir_var_shader_in | nir_var_shader_out;
 
