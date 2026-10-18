@@ -855,7 +855,9 @@ hk_lower_nir(struct hk_device *dev, nir_shader *nir,
       NIR_PASS(_, nir, agx_nir_lower_image_view_min_lod);
    }
 
-   if ((features & HK_FEAT_CUSTOM_BORDER) && !HK_PERF(dev, NOBORDER)) {
+   /* G15 takes custom borders from the descriptor (hk_descriptor_set.h) */
+   if ((features & HK_FEAT_CUSTOM_BORDER) && !HK_PERF(dev, NOBORDER) &&
+       dev->dev.params.gpu_generation < 15) {
       NIR_PASS(_, nir, agx_nir_lower_custom_border);
    }
 

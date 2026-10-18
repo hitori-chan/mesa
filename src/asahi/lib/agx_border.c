@@ -82,6 +82,13 @@ get_channel_info(enum pipe_format format, unsigned channel)
       return (struct channel){UTIL_FORMAT_TYPE_FLOAT, false, 16};
 
    default:
+      /* ASTC as the other 8-bit compressed formats (not verified) */
+      if (util_format_description(format)->layout == UTIL_FORMAT_LAYOUT_ASTC) {
+         bool srgb = util_format_is_srgb(format) && channel < 3;
+         return (struct channel){UTIL_FORMAT_TYPE_UNSIGNED, true,
+                                 srgb ? 12 : 8};
+      }
+
       assert(
          !util_format_is_compressed(format) &&
          "Other compressed formats must be special cased for border colours."
