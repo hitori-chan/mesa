@@ -124,6 +124,11 @@ struct agx_shader_info {
    bool has_preamble;
    unsigned preamble_offset, main_offset;
 
+   /* G15: the preamble did not fit in the registers, so the shader is
+    * compiled again without one (agx_compile_shader_nir)
+    */
+   bool preamble_too_big;
+
    /* Does the shader read the tilebuffer? */
    bool reads_tib;
 

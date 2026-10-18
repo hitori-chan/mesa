@@ -4253,7 +4253,14 @@ agx_compile_function_nir(nir_shader *nir, nir_function_impl *impl,
    if (agx_should_dump(nir, AGX_DBG_SHADERS))
       agx_print_shader(ctx, stdout);
 
-   AGX_PASS(ctx, agx_ra);
+   agx_ra(ctx);
+   if (ctx->ra_failed) {
+      out->preamble_too_big = true;
+      ralloc_free(ctx);
+      return 0;
+   }
+
+   agx_validate(ctx, "agx_ra");
    agx_lower_64bit_postra(ctx);
 
    /* G15's thread-private stack needs no adjust: the entry program's specTPR
@@ -4527,9 +4534,9 @@ lower_printf_buffer(nir_builder *b, nir_intrinsic_instr *intr, UNUSED void *_)
    return true;
 }
 
-void
-agx_compile_shader_nir(nir_shader *nir, struct agx_shader_key *key,
-                       struct agx_shader_part *out)
+static void
+agx_compile_shader_nir_impl(nir_shader *nir, struct agx_shader_key *key,
+                            struct agx_shader_part *out, bool no_preamble)
 {
    agx_compiler_debug = agx_get_compiler_debug();
    struct agx_shader_info *info = &out->info;
@@ -4640,12 +4647,11 @@ agx_compile_shader_nir(nir_shader *nir, struct agx_shader_key *key,
             nir_metadata_control_flow, NULL);
 
    info->push_count = key->reserved_preamble;
+   bool preamble = !key->secondary && !no_preamble;
    agx_optimize_nir(
-      nir, key->dev.soft_fault, key->secondary ? NULL : &info->push_count,
-      (key->secondary || !key->promote_textures) ? NULL
-                                                 : &info->texture_state_count,
-      (key->secondary || !key->promote_textures) ? NULL
-                                                 : &info->sampler_state_count,
+      nir, key->dev.soft_fault, preamble ? &info->push_count : NULL,
+      (!preamble || !key->promote_textures) ? NULL : &info->texture_state_count,
+      (!preamble || !key->promote_textures) ? NULL : &info->sampler_state_count,
       key->dev.gpu_generation >= 15);
 
    if (nir->info.stage == MESA_SHADER_FRAGMENT) {
@@ -4661,6 +4667,11 @@ agx_compile_shader_nir(nir_shader *nir, struct agx_shader_key *key,
    nir_foreach_function_with_impl(func, impl, nir) {
       unsigned offset =
          agx_compile_function_nir(nir, impl, key, &binary, &out->info);
+
+      if (info->preamble_too_big) {
+         util_dynarray_fini(&binary);
+         return;
+      }
 
       if (func->is_preamble) {
          info->preamble_offset = offset;
@@ -4735,4 +4746,25 @@ agx_compile_shader_nir(nir_shader *nir, struct agx_shader_key *key,
 
    out->binary = binary.data;
    info->binary_size = binary.size;
+}
+
+void
+agx_compile_shader_nir(nir_shader *nir, struct agx_shader_key *key,
+                       struct agx_shader_part *out)
+{
+   /* G15: a preamble cannot spill (agx_ra). When one needs more registers
+    * than G15 has (a long uniform computation, as fp64 builtins), compile
+    * again without one from a copy taken before the preamble was made, and
+    * let the main program spill.
+    */
+   nir_shader *copy = NULL;
+   if (key->dev.gpu_generation >= 15 && !key->secondary)
+      copy = nir_shader_clone(NULL, nir);
+
+   agx_compile_shader_nir_impl(nir, key, out, false);
+
+   if (out->info.preamble_too_big)
+      agx_compile_shader_nir_impl(copy, key, out, true);
+
+   ralloc_free(copy);
 }
