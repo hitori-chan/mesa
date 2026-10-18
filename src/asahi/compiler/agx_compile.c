@@ -3528,10 +3528,14 @@ agx_mem_vectorize_cb(unsigned align_mul, unsigned align_offset,
    if (bit_size > 32)
       return false;
 
-   /* G15's stack instructions move at most 8 bytes (a3_stack_mem); data, when
-    * set, points to whether the target is G15
+   /* data, when set, points to whether the target is G15. G15 packs i8 data
+    * two bytes to a 16-bit register where the IR keeps one byte per register,
+    * so 8-bit accesses stay scalar (mem_access_size_align_cb); its stack
+    * instructions move at most 8 bytes (a3_stack_mem).
     */
    const bool *g15 = data;
+   if (g15 && *g15 && bit_size == 8)
+      return false;
    if (g15 && *g15 && num_components * bit_size > 64 &&
        (low->intrinsic == nir_intrinsic_load_scratch ||
         low->intrinsic == nir_intrinsic_store_scratch))
