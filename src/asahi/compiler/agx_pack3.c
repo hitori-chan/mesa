@@ -2183,10 +2183,10 @@ a3_block_image_store(struct a3 *a, const agx_instr *I,
  * eight 32-bit coordinate registers, written in group 0, which the
  * instruction waits for and frees. With two coordinates (2D, a 1D array's
  * layer as the second): x, y, data x, data y in slots 0-3, data z and w in 6
- * and 7 (Apple's code). With a third (a 2D array's layer, a 3D image's z):
- * x, y, data x, the third coordinate, -, data y, z, w (slots 0-3, 5-7; a 2D
- * array on the hardware, kernel #274; the 3D form and the 1D array are not
- * verified). Apple's builder clamps a layer to 0x7ff (pack_args' min7ff).
+ * and 7 (Apple's code). A 2D array's layer is slot 3 and moves data y to
+ * slot 5; a 3D image's z is slot 2 and moves the data to slots 4-7 (both on
+ * the hardware, kernels #274 and #276; the 1D array is not verified). Apple's
+ * builder clamps a layer to 0x7ff (pack_args' min7ff).
  * Cube images are 2D arrays here. The level is the instruction's immediate;
  * all four data components are given. */
 
@@ -2216,21 +2216,28 @@ a3_image_write(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
 
    unsigned ncoords = coords.channels_m1 + 1;
 
-   static const uint8_t coord_slot[3] = {0, 1, 3};
+   /* The third coordinate: a 3D image's z or an array's layer */
+   bool is_3d = I->dim == AGX_DIM_3D;
+   const uint8_t coord_slot[3] = {0, 1, is_3d ? 2 : 3};
+   static const uint8_t data_slots[3][4] = {
+      {2, 3, 6, 7}, /* two coordinates */
+      {2, 5, 6, 7}, /* an array's layer */
+      {4, 5, 6, 7}, /* a 3D image's z */
+   };
+   const uint8_t *data_slot = data_slots[ncoords > 2 ? (is_3d ? 2 : 1) : 0];
+
    for (unsigned c = 0; c < ncoords; ++c) {
-      unsigned slot = coord_slot[c];
       agx_index v = coords;
       v.value += 2 * c;
       v.channels_m1 = 0;
-      a3_mov_cr(a, I, slot, v, emission);
+      a3_mov_cr(a, I, coord_slot[c], v, emission);
    }
 
-   static const uint8_t data_slot[2][4] = {{2, 3, 6, 7}, {2, 5, 6, 7}};
    for (unsigned c = 0; c < 4; ++c) {
       agx_index v = data;
       v.value += 2 * c;
       v.channels_m1 = 0;
-      a3_mov_cr(a, I, data_slot[ncoords > 2][c], v, emission);
+      a3_mov_cr(a, I, data_slot[c], v, emission);
    }
 
    a3_begin(a, I, instr[I->dim], T_IMGW);
