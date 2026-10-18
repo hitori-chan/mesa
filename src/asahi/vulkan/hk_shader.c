@@ -840,11 +840,9 @@ hk_lower_nir(struct hk_device *dev, nir_shader *nir,
    NIR_PASS(_, nir, nir_lower_robust_access, should_lower_robust, NULL);
 
    /* We must do early lowering before hk_nir_lower_descriptors, since this will
-    * create lod_bias instructions. G15 packs no LOD bias from a register yet,
-    * so the sampler's bias is dropped there.
+    * create lod_bias instructions.
     */
-   NIR_PASS(_, nir, agx_nir_lower_texture_early,
-            dev->dev.params.gpu_generation < 15 /* support_lod_bias */);
+   NIR_PASS(_, nir, agx_nir_lower_texture_early, true /* support_lod_bias */);
 
    /* G15 samples a cube in cube array mode (pack_texture_g15), seamless */
    if (dev->dev.params.gpu_generation >= 15)
