@@ -3348,13 +3348,6 @@ agx_build_pipeline(struct agx_batch *batch, struct agx_compiled_shader *cs,
          : phys_stage == MESA_SHADER_VERTEX ? AGX_ESL_VERTEX
                                             : AGX_ESL_COMPUTE;
 
-      /* Only compute entry programs set up a stack */
-      if (cs->b.info.stack_size && esl_stage != AGX_ESL_COMPUTE) {
-         fprintf(stderr, "G15: a %s shader with a stack is not supported yet\n",
-                 esl_stage == AGX_ESL_VERTEX ? "vertex" : "fragment");
-         return 0;
-      }
-
       uint64_t esl = agx_upload_esl(batch, t.cpu, &code, esl_stage);
       return esl ? agx_usc_addr(dev, esl) : 0;
    }
@@ -3777,6 +3770,7 @@ agx_build_bg_eot(struct agx_batch *batch, bool store, bool partial_render)
                 (shader->ptr - shader->bo->va->addr),
          .size = shader->info.binary_size,
          .main_size = shader->info.main_size,
+         .stack_size = shader->info.stack_size,
          .cr_count = shader->info.cr_count,
       };
 
