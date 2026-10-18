@@ -4254,18 +4254,20 @@ agx_encode_state(struct agx_batch *batch, uint8_t *out)
                                              MESA_SHADER_FRAGMENT, 0, 0);
 
       if (g15) {
-         /* G15 has no register counts: word 0 bits 15:0 and word 1 hold the
-          * CF binding table's full VA (bits 47:32, then 31:2), as Apple's
-          * emitFragmentProgramVariantAndArguments builds them. */
          uint64_t cf = dev->shader_base + batch->varyings;
-         uint32_t w[3] = {
-            ((cf >> 32) & 0xffff) | (ctx->linked.fs->cf.nr_bindings << 16),
-            cf & ~3u,
-            batch->varyings,
-         };
-         agx_ppp_validate(&ppp, sizeof(w));
-         memcpy(ppp.head, w, sizeof(w));
-         ppp.head += sizeof(w);
+
+         agx_ppp_push(&ppp, FRAGMENT_SHADER_WORD_0_G15, cfg) {
+            cfg.cf_bindings_high = cf >> 32;
+            cfg.cf_binding_count = ctx->linked.fs->cf.nr_bindings;
+         }
+
+         agx_ppp_push(&ppp, FRAGMENT_SHADER_WORD_1_G15, cfg) {
+            cfg.cf_bindings_low = cf & BITFIELD64_MASK(32);
+         }
+
+         agx_ppp_push(&ppp, FRAGMENT_SHADER_WORD_2, cfg) {
+            cfg.cf_bindings = batch->varyings;
+         }
       } else {
          agx_ppp_push(&ppp, FRAGMENT_SHADER_WORD_0, cfg) {
             cfg.uniform_register_count = ctx->fs->b.info.push_count;
