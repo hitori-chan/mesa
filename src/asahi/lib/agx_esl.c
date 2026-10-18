@@ -384,8 +384,8 @@ agx_esl_from_usc(struct util_dynarray *out, const uint8_t *usc,
       /* a program that loads render targets has its coordinates in cr (a
        * clearing one has none, demo15's); it waits for no pixel fence, the
        * background programs are the eldest pixels */
-      if (code && code->cr_count)
-         esl_spectpr(out, 0, code->cr_count);
+      if (code && (code->cr_count || code->stack_size))
+         esl_spectpr(out, code->stack_size, code->cr_count);
       break;
 
    case AGX_ESL_END_OF_TILE:
@@ -393,7 +393,8 @@ agx_esl_from_usc(struct util_dynarray *out, const uint8_t *usc,
        * write's packs in cr2 and cr3 too (agx3_cr_count) */
       esl_speclm_imageblock(out, &tile);
       esl_ldshdr(out, main_va, code ? code->main_size : 0);
-      esl_spectpr(out, 0, MAX2(2, code ? code->cr_count : 0));
+      esl_spectpr(out, code ? code->stack_size : 0,
+                  MAX2(2, code ? code->cr_count : 0));
       break;
    }
 
