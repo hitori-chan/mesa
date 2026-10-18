@@ -496,6 +496,7 @@ pack_pbe_g15(struct hk_device *dev, struct hk_image_view *view,
                         : view->vk.layer_count;
 
    bool msaa = view->vk.image->samples > 1;
+   struct hk_3d denom = view_denominator(view);
 
    /* What Apple's encoder does for these is not decoded: the descriptor is
     * packed as for a plain image, and a render to one fails in the
@@ -503,12 +504,10 @@ pack_pbe_g15(struct hk_device *dev, struct hk_image_view *view,
    static bool warned;
    if (!warned && (layout->compressed || msaa ||
                    view->vk.view_type == VK_IMAGE_VIEW_TYPE_3D ||
-                   view_denominator(view).x > 1 ||
                    (layout->tiling == AIL_TILING_LINEAR && layers > 1))) {
       warned = true;
-      fprintf(stderr,
-              "G15: the PBE of a compressed, multisampled, 3D, "
-              "block-compressed or linear layered image is a guess\n");
+      fprintf(stderr, "G15: the PBE of a compressed, multisampled, 3D or "
+                      "linear layered image is a guess\n");
    }
 
    agx_pack(out, PBE_G15, cfg) {
@@ -536,9 +535,23 @@ pack_pbe_g15(struct hk_device *dev, struct hk_image_view *view,
           desc->channel[3].type == UTIL_FORMAT_TYPE_VOID)
          cfg.swizzle_a = AGX_CHANNEL_A;
 
-      cfg.buffer = base_addr + ail_get_layer_offset_B(layout, layer);
-      cfg.width = layout->width_px;
-      cfg.height = layout->height_px;
+      /* An uncompressed view of a block-compressed image, as G13 packs it:
+       * the level's own address and size in blocks, at level 0 */
+      if (denom.x > 1) {
+         assert(denom.z == 1 && "todo how to handle?");
+         assert(view->vk.level_count == 1);
+         assert(view->vk.layer_count == 1);
+
+         cfg.buffer = base_addr + ail_get_layer_level_B(layout, layer, level);
+         cfg.width = DIV_ROUND_UP(u_minify(layout->width_px, level), denom.x);
+         cfg.height = DIV_ROUND_UP(u_minify(layout->height_px, level), denom.y);
+         level = 0;
+      } else {
+         cfg.buffer = base_addr + ail_get_layer_offset_B(layout, layer);
+         cfg.width = layout->width_px;
+         cfg.height = layout->height_px;
+      }
+
       cfg.mipmapped = image->vk.mip_levels > 1;
 
       if (msaa)
