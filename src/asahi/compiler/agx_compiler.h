@@ -493,6 +493,11 @@ typedef struct {
    bool is_preamble;
    unsigned scratch_size_B;
 
+   /* G15: register allocation stopped because the preamble needs more
+    * registers than G15 has and cannot spill (agx_ra)
+    */
+   bool ra_failed;
+
    struct list_head blocks; /* list of agx_block */
    struct agx_shader_info *out;
    struct agx_shader_key *key;
