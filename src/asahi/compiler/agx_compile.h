@@ -248,7 +248,7 @@ agx_compact_kernel_info(struct agx_shader_info *info)
 /* The registers a G15 program may use, in 16-bit halves: r0-r93. A main
  * program that used r97 hung the GPU and one that stopped at r81 ran; an entry
  * program that wrote r95 hung and one that stopped at r94 ran
- * (metal-compute.md, Registers). Apple's compiler gives G15C 96 GPRs
+ * (compute-program.md, Registers). Apple's compiler gives G15C 96 GPRs
  * (AGCLLVMG15TargetLowerer +0x42C = 0x60), and no shader of the QuartzCore
  * corpus uses a register above r93. The allocator spills the rest to the
  * thread-private stack. Its register file is a multiple of 8 halves (16 with a
@@ -257,6 +257,14 @@ agx_compact_kernel_info(struct agx_shader_info *info)
  * AGX_G15_MAX_REG=N makes rN the highest register instead, for an experiment
  * (in the same steps; the disk cache ignores it). */
 #define AGX_G15_MAX_HALFREGS 188
+
+/* A main program stops at r63: the triangle and quad tessellators allocated
+ * to r91 lost their index stores (the stores' address came out wrong, with no
+ * fault), and allocated to r63 they run right. Which instruction misreads r64
+ * and above is not known; Apple's corpus names registers that high only in
+ * some operand positions (compute-program.md, Registers). Preambles keep
+ * AGX_G15_MAX_HALFREGS for the pushed words. */
+#define AGX_G15_MAIN_HALFREGS 128
 
 /* G15 (AGX3) building blocks for the entry program, from the compiler's
  * G15 packer (agx_pack3.c). Registers and uniforms are 32-bit indices. */

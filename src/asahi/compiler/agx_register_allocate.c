@@ -1319,29 +1319,41 @@ lower_exports(agx_context *ctx)
    agx_emit_parallel_copies(&b, copies, nr);
 }
 
-/* G15: the register file ends at AGX_G15_MAX_HALFREGS (or AGX_G15_MAX_REG),
- * rounded down to a multiple of the widest vector and of 8 halves, as the
- * register file must be (reg_file_alignment in agx_ra) */
+/* G15: the register file ends at AGX_G15_MAIN_HALFREGS, a preamble's at
+ * AGX_G15_MAX_HALFREGS (or either at AGX_G15_MAX_REG), past any preloaded or
+ * exported register, rounded down to a multiple of the widest vector and of 8
+ * halves, as the register file must be (reg_file_alignment in agx_ra) */
 DEBUG_GET_ONCE_NUM_OPTION(agx_g15_max_reg, "AGX_G15_MAX_REG", 0)
 
 static unsigned
 agx_g15_max_regs(agx_context *ctx)
 {
-   unsigned halfregs = AGX_G15_MAX_HALFREGS;
+   unsigned halfregs =
+      ctx->is_preamble ? AGX_G15_MAX_HALFREGS : AGX_G15_MAIN_HALFREGS;
    unsigned max_ncomps = 8;
 
    unsigned max_reg = debug_get_option_agx_g15_max_reg();
    if (max_reg)
       halfregs = MIN2(2 * (max_reg + 1), AGX_NUM_REGS);
 
+   unsigned fixed = 0;
    agx_foreach_instr_global(ctx, I) {
+      if (I->op == AGX_OPCODE_PRELOAD) {
+         unsigned size = agx_size_align_16(I->src[0].size);
+         fixed = MAX2(fixed, I->src[0].value + size);
+      } else if (I->op == AGX_OPCODE_EXPORT) {
+         unsigned size = agx_size_align_16(I->src[0].size);
+         fixed = MAX2(fixed, I->imm + size);
+      }
+
       agx_foreach_ssa_dest(I, d) {
          unsigned n = util_next_power_of_two(agx_index_size_16(I->dest[d]));
          max_ncomps = MAX2(max_ncomps, n);
       }
    }
 
-   return ROUND_DOWN_TO(halfregs, max_ncomps);
+   return MAX2(ROUND_DOWN_TO(halfregs, max_ncomps),
+               ALIGN_POT(fixed, max_ncomps));
 }
 
 void
