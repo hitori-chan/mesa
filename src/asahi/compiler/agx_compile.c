@@ -1357,7 +1357,6 @@ agx_block_image_store_g15_supported(const nir_intrinsic_instr *instr)
           nir_src_is_const(instr->src[0]) &&
           (nir_intrinsic_image_dim(instr) == GLSL_SAMPLER_DIM_2D ||
            nir_intrinsic_image_dim(instr) == GLSL_SAMPLER_DIM_MS) &&
-          !nir_intrinsic_image_array(instr) &&
           !nir_intrinsic_explicit_coord(instr);
 }
 
@@ -1385,14 +1384,24 @@ agx_emit_block_image_store_g15(agx_builder *b, nir_intrinsic_instr *instr)
    agx_imad_to(b, y, agx_get_sr(b, 32, AGX_SR_THREADGROUP_POSITION_IN_GRID_Y),
                h, agx_zero(), 0);
 
-   agx_index coords = agx_vec2(b, x, y);
-
    bool ms = nir_intrinsic_image_dim(instr) == GLSL_SAMPLER_DIM_MS;
+   bool array = nir_intrinsic_image_array(instr);
+
+   /* A layered target's layer (the tile's) is a third coordinate, whose low
+    * half pack_imgwir takes */
+   agx_index coords;
+   if (array) {
+      agx_index layer = agx_temp(b->shader, AGX_SIZE_32);
+      agx_mov_to(b, layer, agx_src_index(&instr->src[2]));
+      coords = agx_emit_collect(b, 3, (agx_index[]){x, y, layer});
+   } else {
+      coords = agx_vec2(b, x, y);
+   }
 
    return agx_block_image_store(
       b, agx_uniform(4 * rt, AGX_SIZE_64), agx_immediate(rt), offset, coords,
       agx_format_for_pipe(nir_intrinsic_format(instr)),
-      ms ? AGX_DIM_2D_MS : AGX_DIM_2D, true);
+      agx_tex_dim(ms ? GLSL_SAMPLER_DIM_MS : GLSL_SAMPLER_DIM_2D, array), true);
 }
 
 static agx_instr *
@@ -2032,7 +2041,10 @@ agx_emit_intrinsic(agx_builder *b, nir_intrinsic_instr *instr)
       return agx_get_sr_to(b, dst, AGX_SR_THREAD_INDEX_IN_THREADGROUP);
 
    case nir_intrinsic_load_layer_id:
-      return agx_get_sr_to(b, dst, AGX_SR_THREADGROUP_POSITION_IN_GRID_Z);
+      return agx_get_sr_to(b, dst,
+                           b->shader->key->dev.gpu_generation >= 15
+                              ? AGX_SR_LAYER_ID
+                              : AGX_SR_THREADGROUP_POSITION_IN_GRID_Z);
 
    case nir_intrinsic_barrier: {
       assert(!b->shader->is_preamble && "invalid");

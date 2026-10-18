@@ -557,6 +557,10 @@ a3_sr(const struct a3 *a, enum agx_sr sr)
       return 23;
    case AGX_SR_BACKFACING:
       return 69;
+   /* The tile's layer: Apple's end-of-tile program reads sr67 into its
+    * layered block writes' pack_imgwir (smp.md) */
+   case AGX_SR_LAYER_ID:
+      return 67;
    /* SR_CVGINFO, the pixel's sample coverage: Apple's per-sample shading
     * masks its tile stores with its bits (draws.md, Multisampling) */
    case AGX_SR_COVERAGE_MASK:
@@ -726,6 +730,8 @@ a3_memshift(const struct a3 *a, unsigned bytes)
 #define T_ZS_EMIT   "d70454000003"                 /* zs_emit ^cr0, 0, z */
 #define T_MOVMSK    "570454000000"                 /* movmsk ^cr0, 0 */
 #define T_PACK_IMGWIR "9705540400080000d0401000"   /* pack_imgwir cr2, 0, u2l, 0, 0, 4 */
+/* Apple's end-of-tile layer pack (pack_imgwir cr2, 2, ^r4l, 0x204, 0, 0) */
+#define T_PACK_IMGWIR_LAYER "9705540400101000f0d00000"
 #define T_PACK_SMPIR "1705540600000004f0c00800"    /* pack_smpir cr3, 0, ^r0l, 0, 10 */
 #define T_IMGWBLK   "5710540000000080a8750000"     /* block_image_store ^cr0, 0, du0, 0, 7530 */
 /* Apple's rw.write() of the imgw capture (macOS 27.0.1): image_write ^cr8,
@@ -1824,9 +1830,13 @@ agx3_cr_count(const agx_instr *I)
                                                                          : 2);
       return MAX2(n, a3_tex_grad_words(I) ? 4 + a3_tex_grad_words(I) : 0);
    }
+   case AGX_OPCODE_BLOCK_IMAGE_STORE:
+      /* x, y and pack_imgwir's cr2; a layered target's layer pack in cr2
+       * and the offset's in cr3 */
+      return (I->dim == AGX_DIM_2D_ARRAY || I->dim == AGX_DIM_2D_MS_ARRAY) ? 4
+                                                                          : 2;
    case AGX_OPCODE_IMAGE_LOAD:
    case AGX_OPCODE_ZS_EMIT:
-   case AGX_OPCODE_BLOCK_IMAGE_STORE:
       return 2;
    case AGX_OPCODE_IMAGE_WRITE:
       return 8;
@@ -2340,12 +2350,13 @@ a3_block_image_store(struct a3 *a, const agx_instr *I,
    agx_index offset = I->src[2];
    agx_index coords = I->src[3];
 
+   bool array = I->dim == AGX_DIM_2D_ARRAY || I->dim == AGX_DIM_2D_MS_ARRAY;
+
    if (base.type != AGX_INDEX_UNIFORM || base.size != AGX_SIZE_64 ||
        coords.type != AGX_INDEX_REGISTER || coords.size != AGX_SIZE_32 ||
-       agx_channels(coords) != 2 || !I->explicit_coords ||
-       (I->dim != AGX_DIM_2D && I->dim != AGX_DIM_2D_MS))
-      a3_fail(a, "block_image_store of a layered or bindless image (G15: "
-                 "imgwblk's layer operand is not known)");
+       agx_channels(coords) != (array ? 3 : 2) || !I->explicit_coords ||
+       (I->dim != AGX_DIM_2D && I->dim != AGX_DIM_2D_MS && !array))
+      a3_fail(a, "block_image_store of a bindless image or of this dimension");
 
    agx_index x = agx_register(coords.value, AGX_SIZE_32);
    agx_index y = agx_register(coords.value + 2, AGX_SIZE_32);
@@ -2353,9 +2364,23 @@ a3_block_image_store(struct a3 *a, const agx_instr *I,
    a3_mov_cr(a, I, 0, x, emission);
    a3_mov_cr(a, I, 1, y, emission);
 
+   /* A layered target (Apple's end-of-tile program, its 2D array writes):
+    * the layer packed into cr2 by pack_imgwir B code 0x204, the tilebuffer
+    * offset's pack moved to cr3 */
+   if (array) {
+      agx_index layer = agx_register(coords.value + 4, AGX_SIZE_16);
+
+      a3_begin(a, I, AGX3_PACK_IMGWIR, T_PACK_IMGWIR_LAYER);
+      a3_set(a, PACK_IMGWIR_DST,
+             a3_kind_value(a, PACK_IMGWIR_DST, A3_CR, 2, 0));
+      a3_set(a, PACK_IMGWIR_G, 0);
+      a3_set(a, PACK_IMGWIR_A, a3_src9(a, PACK_IMGWIR_A, layer));
+      a3_emit(a, emission);
+   }
+
    a3_begin(a, I, AGX3_PACK_IMGWIR, T_PACK_IMGWIR);
    a3_set(a, PACK_IMGWIR_DST,
-          a3_kind_value(a, PACK_IMGWIR_DST, A3_CR, 2, 0));
+          a3_kind_value(a, PACK_IMGWIR_DST, A3_CR, array ? 3 : 2, 0));
    a3_set(a, PACK_IMGWIR_G, 0);
    a3_set(a, PACK_IMGWIR_A, a3_src9(a, PACK_IMGWIR_A, offset));
    a3_set(a, PACK_IMGWIR_B, a3_imm(a, PACK_IMGWIR_B, 0, false));
@@ -2371,7 +2396,10 @@ a3_block_image_store(struct a3 *a, const agx_instr *I,
    /* The image type in the flags (smp.md): 2D 0x1d6a, 2D multisampled
     * 0x1c8a, the dimension's fields only (not verified for the multisampled
     * form); bits 77:79 (flags 11:13) the tile format's class */
-   unsigned flags = I->dim == AGX_DIM_2D_MS ? 0x1c8a : 0x1d6a;
+   unsigned flags = I->dim == AGX_DIM_2D_MS         ? 0x1c8a
+                    : I->dim == AGX_DIM_2D_MS_ARRAY ? 0x1c0a
+                    : I->dim == AGX_DIM_2D_ARRAY    ? 0x1d4a
+                                                    : 0x1d6a;
    flags = (flags & ~(7u << 11)) | (a3_imgwblk_format(I->format) << 11);
    a3_set(a, IMGWBLK_FLAGS, flags);
    a3_set(a, IMGWBLK_WAIT, BITFIELD_BIT(0));
