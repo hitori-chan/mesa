@@ -105,12 +105,18 @@ is_border_color_custom(VkBorderColor color, bool workaround_rgba4)
    }
 }
 
-/* Translate an American VkBorderColor into a Canadian agx_border_colour */
+/* Translate an American VkBorderColor into a Canadian agx_border_colour. G15
+ * takes a custom border from the descriptor (hk_descriptor_set.h); G13
+ * emulates it with a clamp-to-1 and a clamp-to-0 sampler.
+ */
 static enum agx_border_colour
 translate_border_color(VkBorderColor color, bool custom_to_1,
-                       bool workaround_rgba4)
+                       bool workaround_rgba4, bool g15)
 {
    if (is_border_color_custom(color, workaround_rgba4)) {
+      if (g15)
+         return AGX_BORDER_COLOUR_CUSTOM;
+
       return custom_to_1 ? AGX_BORDER_COLOUR_OPAQUE_WHITE
                          : AGX_BORDER_COLOUR_TRANSPARENT_BLACK;
    }
@@ -165,8 +171,10 @@ pack_sampler(const struct hk_physical_device *pdev,
       }
 
       if (uses_border(info)) {
-         cfg.border_colour = translate_border_color(
-            info->borderColor, custom_to_1, workaround_rgba4);
+         cfg.border_colour =
+            translate_border_color(info->borderColor, custom_to_1,
+                                   workaround_rgba4,
+                                   pdev->dev.params.gpu_generation >= 15);
       }
    }
 }
@@ -185,9 +193,8 @@ hk_CreateSampler(VkDevice device,
    if (!sampler)
       return vk_error(dev, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   /* The workaround emulates opaque black as a custom border, which G15 does
-    * not emulate yet (hk_descriptor_set.c): its samplers keep the hardware's
-    * opaque black (RGBA4 not verified) */
+   /* G13's RGBA4 workaround emulates opaque black as a custom border. G15's
+    * samplers keep the hardware's opaque black (RGBA4 not verified) */
    bool workaround_rgba4 = dev->vk.enabled_features.customBorderColors &&
                            dev->dev.params.gpu_generation < 15;
    bool custom_border =
@@ -261,6 +268,12 @@ hk_CreateSampler(VkDevice device,
 
          sampler->plane_count++;
       }
+   } else if (custom_border && dev->dev.params.gpu_generation >= 15) {
+      /* G15's hardware takes the border from the descriptor, packed for the
+       * image view's format when the descriptor is written. The hardware
+       * applies the view's swizzle to it, so it is recorded unswizzled. */
+      sampler->custom_border = sampler->vk.border_color_value;
+      sampler->has_border = true;
    } else if (custom_border) {
       /* If the sampler uses custom border colours, we need both clamp-to-1
        * and clamp-to-0 variants. We treat these as planes.

@@ -32,3 +32,7 @@ struct hk_image_view {
 
 VK_DEFINE_NONDISP_HANDLE_CASTS(hk_image_view, vk.base, VkImageView,
                                VK_OBJECT_TYPE_IMAGE_VIEW)
+
+/* The format the hardware descriptors of a view plane name */
+enum pipe_format hk_image_view_plane_format(struct hk_image_view *view,
+                                            unsigned view_plane);

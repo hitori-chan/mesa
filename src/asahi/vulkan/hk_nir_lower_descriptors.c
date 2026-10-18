@@ -733,8 +733,8 @@ lower_tex(nir_builder *b, nir_tex_instr *tex,
       nir_tex_instr_add_src(tex, nir_tex_src_texture_handle, handle);
 
       /* The sampler (a texture without one, for txf: the entry's zero
-       * sampler; the LOD query reads its LOD range and mip filter); no custom
-       * border colours yet */
+       * sampler; the LOD query reads its LOD range and mip filter), a custom
+       * border colour in its entry (hk_descriptor_set.h) */
       if (!nir_tex_instr_is_query(tex) || tex->op == nir_texop_lod) {
          offset_B = plane_offset_B + SAMPLED_OFFS(ctx, sampler);
          nir_def *s = load_texture_index_g15(

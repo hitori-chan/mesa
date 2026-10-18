@@ -50,23 +50,28 @@ static_assert(sizeof(struct hk_sampled_image_descriptor) == 64,
  * pair, the texture (its last 8 bytes, compression, zero) and the sampler (its
  * 8 B state at +0) alike. With the set as both tables, a combined descriptor
  * at offset o is texture o / 32 and sampler o / 32 + 1, immediates for a
- * fixed binding. No custom border colours yet (no room for the clamp-to-0
- * sampler).
+ * fixed binding. A custom border colour is the hardware's: border class 3 in
+ * the state and the border packed for the view's format right after it, at
+ * +8 in the sampler's entry, as Gallium places it (dEQP-GLES31's border_clamp
+ * and dEQP-VK's custom border cases pass). The shader's words follow;
+ * clamp_0_sampler_index_or_negative stays -1 (G13's emulation is not used).
  */
 struct hk_sampled_image_descriptor_g15 {
    struct agx_texture_packed tex;
    uint32_t tex_pad[2];
    struct agx_sampler_packed sampler;
+   struct agx_border_packed border;
    uint16_t lod_bias_fp16;
    uint16_t min_lod_fp16;
    uint16_t min_lod_uint16;
    int16_t clamp_0_sampler_index_or_negative;
-   uint32_t border[4];
 };
 static_assert(sizeof(struct hk_sampled_image_descriptor_g15) == 64,
               "the G15 layout takes the same space");
 static_assert(offsetof(struct hk_sampled_image_descriptor_g15, sampler) == 32,
               "the sampler is the next 32 B entry");
+static_assert(offsetof(struct hk_sampled_image_descriptor_g15, border) == 40,
+              "the custom border follows the sampler state");
 
 struct hk_storage_image_descriptor {
    struct agx_texture_packed tex;
