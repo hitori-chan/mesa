@@ -1678,7 +1678,8 @@ static struct agx_compiled_shader *
 agx_compile_nir(struct agx_device *dev, nir_shader *nir,
                 struct util_debug_callback *debug, mesa_shader_stage stage,
                 bool internal_kernel, bool terminal, bool secondary,
-                unsigned cf_base, BITSET_WORD *attrib_components_read)
+                unsigned cf_base, BITSET_WORD *attrib_components_read,
+                unsigned nr_samples)
 {
    struct agx_compiled_shader *compiled = CALLOC_STRUCT(agx_compiled_shader);
    compiled->stage = stage;
@@ -1714,6 +1715,7 @@ agx_compile_nir(struct agx_device *dev, nir_shader *nir,
 
    if (nir->info.stage == MESA_SHADER_FRAGMENT) {
       key.fs.cf_base = cf_base;
+      key.fs.nr_samples = nr_samples;
    }
 
    agx_compile_shader_nir(nir, &key, &compiled->b);
@@ -1732,11 +1734,10 @@ agx_compile_nir(struct agx_device *dev, nir_shader *nir,
    return compiled;
 }
 
-static struct agx_compiled_shader *
-agx_build_meta_shader_internal(struct agx_context *ctx,
-                               meta_shader_builder_t builder, void *data,
-                               size_t data_size, bool prolog, bool epilog,
-                               unsigned cf_base, bool internal_kernel);
+static struct agx_compiled_shader *agx_build_meta_shader_internal(
+   struct agx_context *ctx, meta_shader_builder_t builder, void *data,
+   size_t data_size, bool prolog, bool epilog, unsigned cf_base,
+   bool internal_kernel, unsigned nr_samples);
 
 /* Does not take ownership of key. Clones if necessary. */
 static struct agx_compiled_shader *
@@ -1843,7 +1844,7 @@ agx_compile_variant(struct agx_device *dev, struct pipe_context *pctx,
 
    struct agx_compiled_shader *compiled = agx_compile_nir(
       dev, nir, &pctx->debug, so->type, false, so->type != MESA_SHADER_FRAGMENT,
-      false, 0, attrib_components_read);
+      false, 0, attrib_components_read, 0);
 
    if (so->type == MESA_SHADER_FRAGMENT) {
       /* XXX: don't replicate this all over the driver */
@@ -1860,14 +1861,14 @@ agx_compile_variant(struct agx_device *dev, struct pipe_context *pctx,
    /* Compile auxiliary programs */
    if (gs_count) {
       compiled->gs_count = agx_compile_nir(
-         dev, gs_count, &pctx->debug, so->type, false, true, false, 0, NULL);
+         dev, gs_count, &pctx->debug, so->type, false, true, false, 0, NULL, 0);
       compiled->gs_count->so = so;
    }
 
    if (pre_gs) {
       compiled->pre_gs =
          agx_compile_nir(dev, pre_gs, &pctx->debug, MESA_SHADER_COMPUTE, false,
-                         true, false, 0, NULL);
+                         true, false, 0, NULL, 0);
    }
 
    if (gs_copy) {
@@ -1887,7 +1888,7 @@ agx_compile_variant(struct agx_device *dev, struct pipe_context *pctx,
 
       compiled->gs_copy =
          agx_compile_nir(dev, gs_copy, &pctx->debug, MESA_SHADER_GEOMETRY,
-                         false, true, false, 0, NULL);
+                         false, true, false, 0, NULL, 0);
       compiled->gs_copy->so = so;
       compiled->gs_copy->stage = so->type;
       compiled->gs_copy->uvs = uvs;
@@ -2340,11 +2341,11 @@ asahi_fast_link(struct agx_context *ctx, struct agx_uncompiled_shader *so,
    if (so->type == MESA_SHADER_FRAGMENT) {
       prolog = agx_build_meta_shader_internal(
          ctx, build_fs_prolog, &key->prolog.fs, sizeof(key->prolog.fs), true,
-         false, key->prolog.fs.cf_base, false);
+         false, key->prolog.fs.cf_base, false, 0);
 
       epilog = agx_build_meta_shader_internal(
          ctx, agx_nir_fs_epilog, &key->epilog.fs, sizeof(key->epilog.fs), false,
-         true, 0, false);
+         true, 0, false, key->epilog.fs.nr_samples);
 
    } else if (so->type == MESA_SHADER_TESS_EVAL) {
       /* No prolog/epilog needed */
@@ -2353,7 +2354,7 @@ asahi_fast_link(struct agx_context *ctx, struct agx_uncompiled_shader *so,
 
       prolog = agx_build_meta_shader_internal(
          ctx, agx_nir_vs_prolog, &key->prolog.vs, sizeof(key->prolog.vs), true,
-         false, 0, false);
+         false, 0, false, 0);
    }
 
    /* Fast-link it all together */
@@ -2796,7 +2797,8 @@ static struct agx_compiled_shader *
 agx_build_meta_shader_internal(struct agx_context *ctx,
                                meta_shader_builder_t builder, void *data,
                                size_t data_size, bool prolog, bool epilog,
-                               unsigned cf_base, bool internal_kernel)
+                               unsigned cf_base, bool internal_kernel,
+                               unsigned nr_samples)
 {
    /* Build the meta shader key */
    size_t total_key_size = sizeof(struct agx_generic_meta_key) + data_size;
@@ -2832,7 +2834,7 @@ agx_build_meta_shader_internal(struct agx_context *ctx,
       dev, b.shader, NULL, MESA_SHADER_COMPUTE, internal_kernel,
       !prolog && !(b.shader->info.stage == MESA_SHADER_FRAGMENT &&
                    b.shader->info.fs.uses_sample_shading),
-      prolog || epilog, cf_base, NULL);
+      prolog || epilog, cf_base, NULL, nr_samples);
 
    ralloc_free(b.shader);
 
@@ -2852,7 +2854,7 @@ agx_build_meta_shader(struct agx_context *ctx, meta_shader_builder_t builder,
                       void *data, size_t data_size)
 {
    return agx_build_meta_shader_internal(ctx, builder, data, data_size, false,
-                                         false, 0, false);
+                                         false, 0, false, 0);
 }
 
 static unsigned
