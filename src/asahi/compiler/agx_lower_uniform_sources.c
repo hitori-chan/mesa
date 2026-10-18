@@ -74,6 +74,37 @@ agx_instr_accepts_uniform(enum agx_opcode op, unsigned src_index,
    }
 }
 
+/*
+ * G15: a memory instruction whose base is a uniform the preamble wrote reads a
+ * stale address: the preamble runs inline in the entry program right before
+ * the shader, and the entry program cannot read back the uniforms it writes
+ * (agx_esl.c). The geometry shader's dispatches stored to wrong addresses with
+ * such bases and right ones with the base moved to registers first. Pushed
+ * uniforms (below reserved_preamble) are written early and work as bases.
+ */
+static bool
+agx_g15_stale_uniform_base(agx_context *ctx, agx_instr *I, unsigned s)
+{
+   if (ctx->key->dev.gpu_generation < 15 || ctx->is_preamble)
+      return false;
+
+   unsigned base_src;
+   switch (I->op) {
+   case AGX_OPCODE_DEVICE_LOAD:
+      base_src = 0;
+      break;
+   case AGX_OPCODE_DEVICE_STORE:
+   case AGX_OPCODE_ATOMIC:
+      base_src = 1;
+      break;
+   default:
+      return false;
+   }
+
+   return s == base_src && I->src[s].type == AGX_INDEX_UNIFORM &&
+          I->src[s].value >= ctx->key->reserved_preamble;
+}
+
 void
 agx_lower_uniform_sources(agx_context *ctx)
 {
@@ -81,6 +112,11 @@ agx_lower_uniform_sources(agx_context *ctx)
       agx_builder b = agx_init_builder(ctx, agx_before_instr(I));
 
       agx_foreach_src(I, s) {
+         if (agx_g15_stale_uniform_base(ctx, I, s)) {
+            agx_replace_src(I, s, agx_mov(&b, I->src[s]));
+            continue;
+         }
+
          /* G15's block write takes its descriptor's address in a uniform
           * pair (its 7-bit field reaches the low half only) */
          if (I->op == AGX_OPCODE_BLOCK_IMAGE_STORE && s == 0 &&
