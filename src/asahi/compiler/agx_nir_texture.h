@@ -15,6 +15,10 @@
  * (agx_compile.c, lower_ms_index_g15) */
 #define AGX_TEXTURE_FLAG_G15_MS_INDEX (1 << 2)
 
+/* G15: the packed offset is in the LOD word's layout (agx_compile.c,
+ * lower_tex_offset_g15) */
+#define AGX_TEXTURE_FLAG_G15_IR_OFFSET (1 << 3)
+
 /* Texel buffers lowered to (at most) 16384x16384 2D textures */
 #define AGX_TEXTURE_BUFFER_WIDTH      16384
 #define AGX_TEXTURE_BUFFER_MAX_HEIGHT 16384
