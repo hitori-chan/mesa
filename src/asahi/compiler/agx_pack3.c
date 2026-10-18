@@ -20,6 +20,7 @@
 #include <setjmp.h>
 #include "util/bitscan.h"
 #include "util/u_debug.h"
+#include "agx_builder.h"
 #include "agx_compiler.h"
 #include "agx3_pack.h"
 
@@ -1862,8 +1863,7 @@ agx3_cr_count(const agx_instr *I)
    case AGX_OPCODE_IMAGE_WRITE:
       return 8;
    case AGX_OPCODE_ST_VARY:
-      return I->src[0].type == AGX_INDEX_IMMEDIATE ? (I->src[0].value & 7) + 1
-                                                   : 1;
+      return I->vary_cr + 1;
    case AGX_OPCODE_SAMPLE_MASK:
       /* the mov to cr0 before movmsk: Apple's discard shader has 1 here;
        * with 0, movmsk does not kill (boots #333-#360) */
@@ -2037,18 +2037,62 @@ a3_mov_cr(struct a3 *a, const agx_instr *I, unsigned cr, agx_index value,
    a3_emit(a, emission);
 }
 
+#define A3_VARY_CRS 8
+
+/* G15's st_var reads its coordinate register after it issues, until its
+ * group (field g, 0 here) completes, and a later write to that cr does not
+ * wait for it: a mov to the cr of the st_var just before stored the new value
+ * in both slots (the point size and the first varying of a vertex shader
+ * with two varyings, the GS copy shader's st_vars through cr0 with dynamic
+ * slots). The st_vars take their crs in turn, as Apple's vertex shaders take
+ * a cr per output, and a cr still being read is reused only after a wait for
+ * group 0. A loop's back edge may bring the last iteration's stores. Other
+ * instructions' crs are not tracked (a texture sample after an st_var).
+ */
+void
+agx3_assign_vary_crs(agx_context *ctx)
+{
+   unsigned next = 0;
+   uint8_t pending = 0;
+
+   agx_foreach_block(ctx, block) {
+      agx_foreach_predecessor(block, pred) {
+         if ((*pred)->index >= block->index)
+            pending = BITFIELD_MASK(A3_VARY_CRS);
+      }
+
+      agx_foreach_instr_in_block(block, I) {
+         if (I->op == AGX_OPCODE_WAIT && I->scoreboard == 0)
+            pending = 0;
+
+         if (I->op != AGX_OPCODE_ST_VARY)
+            continue;
+
+         unsigned cr = (next++) % A3_VARY_CRS;
+         if (pending & BITFIELD_BIT(cr)) {
+            agx_builder b = agx_init_builder(ctx, agx_before_instr(I));
+            agx_wait(&b, 0);
+            pending = 0;
+         }
+
+         pending |= BITFIELD_BIT(cr);
+         I->vary_cr = cr;
+      }
+   }
+}
+
 /* st_vary: G15 stores a varying from a coordinate register that an ALU
  * instruction wrote in a group (uvsw; demo15's transform writes cr0-cr3
  * in groups 0-3 and each st_var waits for its group). The value goes
- * through cr (slot mod 8) in group 0; st_var waits for group 0 and frees
- * the cr. The slot counts 32-bit words, as G13's. G15 has no last flag:
- * the IR's is dropped. */
+ * through cr (agx3_assign_vary_crs) in group 0; st_var waits for group 0
+ * and frees the cr. The slot counts 32-bit words, as G13's. G15 has no last
+ * flag: the IR's is dropped. */
 static void
 a3_st_vary(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
 {
    agx_index slot = I->src[0];
    agx_index value = I->src[1];
-   unsigned cr = slot.type == AGX_INDEX_IMMEDIATE ? (slot.value & 7) : 0;
+   unsigned cr = I->vary_cr;
 
    if (value.size != AGX_SIZE_32)
       a3_fail(a, "st_vary of a value that is not 32-bit");
