@@ -52,9 +52,10 @@ hk_cdm_cache_flush(struct hk_device *dev, struct hk_cs *cs)
 
    if (dev->dev.params.gpu_generation >= 15) {
       uint32_t *out = cs->current;
-      /* G15C: Metal's barrier after a launch with bit 4, as Gallium's
-       * agx_cdm_launch_g15 (image writes visible to later texture fetches) */
-      *(out++) = 0x60000170;
+      /* G15C: Metal's barrier after a launch with bits 0, 1 and 4, as
+       * Gallium's agx_cdm_launch_g15 (the next launch waits for this one's
+       * writes, and image writes are visible to later texture fetches) */
+      *(out++) = 0x60000173;
       cs->current = out;
    } else
       cs->current = agx_cdm_barrier(cs->current, dev->dev.chip);
