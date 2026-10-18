@@ -1960,7 +1960,9 @@ hk_fast_link(struct hk_device *dev, bool fragment, struct hk_shader *main,
       agx_usc_immediates(&b, &main->b.info.rodata, main->bo->va->addr);
    }
 
-   if (s->b.uses_txf)
+   /* G15 has no sampler state registers: a fetch's sampler is a descriptor
+    * entry (hk_descriptor_set.h), and an entry program has no sampler word */
+   if (s->b.uses_txf && dev->dev.params.gpu_generation < 15)
       agx_usc_push_packed(&b, SAMPLER, dev->dev.txf_sampler);
 
    agx_usc_shared_non_fragment(&b, &main->b.info, 0);
