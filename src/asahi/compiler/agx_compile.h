@@ -206,7 +206,7 @@ struct agx_precompiled_kernel_info {
 
    /* G15's entry program (lib/agx_esl.c) */
    uint32_t stack_size;
-   uint16_t cr_count;
+   uint32_t cr_count;
 };
 
 static inline struct agx_precompiled_kernel_info
