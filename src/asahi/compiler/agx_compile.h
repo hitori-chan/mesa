@@ -397,6 +397,11 @@ struct agx_shader_key {
     */
    bool secondary;
 
+   /* Set for a vertex shader linked after a vertex prolog, which exports the
+    * vertex and instance IDs. G15 reads them from special registers otherwise.
+    */
+   bool vs_prolog;
+
    union {
       struct agx_fs_shader_key fs;
    };

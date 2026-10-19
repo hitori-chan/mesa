@@ -123,13 +123,15 @@ agx_cached_sr(agx_context *ctx, agx_index *cache, enum agx_sr sr)
 }
 
 /* The vertex and instance IDs: G13 preloads them (r5 and r6), G15's vertex
- * shaders read special registers (as demo15's does). A software vertex shader
+ * shaders read special registers (as demo15's does). A vertex shader linked
+ * after a prolog takes the prolog's exports in r5 and r6 instead, as on G13,
+ * since the prolog remaps the vertex ID for adjacency. A software vertex shader
  * (compute) keeps the preloaded ABI. */
 static bool
 agx_ids_in_sr(const agx_builder *b)
 {
    return b->shader->key->dev.gpu_generation >= 15 &&
-          b->shader->stage == MESA_SHADER_VERTEX;
+          b->shader->stage == MESA_SHADER_VERTEX && !b->shader->key->vs_prolog;
 }
 
 static agx_index
