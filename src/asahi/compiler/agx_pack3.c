@@ -1950,9 +1950,8 @@ agx3_cr_count(const agx_instr *I)
       return MAX2(n, a3_tex_grad_words(I) ? 4 + a3_tex_grad_words(I) : 0);
    }
    case AGX_OPCODE_ZS_EMIT:
-      /* the coverage word, the depth and the stencil: Apple's depth output
-       * counts 2 for the first two (they live at cr4096, a3_zs_emit) */
-      return I->zs == 3 ? 3 : 2;
+      /* the coverage word (with the stencil), then the depth (a3_zs_emit) */
+      return (I->zs & 1) ? 2 : 1;
    case AGX_OPCODE_BLOCK_IMAGE_STORE:
       /* x, y and pack_imgwir's cr2; a layered target's layer pack in cr2
        * and the offset's in cr3 */
@@ -2456,17 +2455,19 @@ static void
 a3_zs_emit(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
 {
    static const uint8_t mode[] = {[1] = 1, [2] = 0, [3] = 3};
-   agx_index zs = I->src[1];
 
    if (I->zs < 1 || I->zs > 3)
       a3_fail(a, "zs_emit of nothing");
 
+   /* cr4096: the coverage word with the stencil in bits 16:23 (the
+    * compiler builds it); cr4097: the depth, the first of zs_emit's
+    * second source. The stencil alone (mode 0) writes nothing on the
+    * hardware, so the drivers add the depth (agx_nir_lower_stencil_only_g15) */
    a3_mov_cr(a, I, A3_ZS_CR + 0, I->src[0], emission);
-   a3_mov_cr(a, I, A3_ZS_CR + 1, zs, emission);
-   if (I->zs == 3) {
-      agx_index s = zs;
-      s.value += 2;
-      a3_mov_cr(a, I, A3_ZS_CR + 2, s, emission);
+   if (I->zs & 1) {
+      agx_index z = I->src[1];
+      z.size = AGX_SIZE_32;
+      a3_mov_cr(a, I, A3_ZS_CR + 1, z, emission);
    }
 
    a3_begin(a, I, AGX3_ZS_EMIT, T_ZS_EMIT);

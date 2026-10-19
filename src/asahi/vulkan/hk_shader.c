@@ -1101,6 +1101,9 @@ hk_compile_nir(struct hk_device *dev, const VkAllocationCallbacks *pAllocator,
       shader->info.fs.interp.flat =
          ~(nir->info.linear_varyings | nir->info.perspective_varyings);
 
+      if (dev->dev.params.gpu_generation >= 15)
+         NIR_PASS(_, nir, agx_nir_lower_stencil_only_g15);
+
       /* Discards must be lowering before lowering MSAA to handle discards */
       NIR_PASS(_, nir, agx_nir_lower_discard_zs_emit);
       NIR_PASS(_, nir, agx_nir_lower_fs_output_to_epilog,

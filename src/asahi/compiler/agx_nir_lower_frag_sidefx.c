@@ -56,6 +56,34 @@ pass(struct nir_builder *b, nir_intrinsic_instr *intr, void *data)
    return true;
 }
 
+static bool
+stencil_with_z(struct nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   if (intr->intrinsic != nir_intrinsic_store_output ||
+       nir_intrinsic_io_semantics(intr).location != FRAG_RESULT_STENCIL)
+      return false;
+
+   b->cursor = nir_before_instr(&intr->instr);
+   insert_z_write(b);
+   return true;
+}
+
+/* G15's zs_emit writes no stencil alone (its stencil-only code, 0, leaves the
+ * stencil as it was on the hardware), so a shader that writes only stencil
+ * also writes its own depth, as for side effects above.
+ */
+bool
+agx_nir_lower_stencil_only_g15(nir_shader *s)
+{
+   uint64_t zs = s->info.outputs_written & (BITFIELD64_BIT(FRAG_RESULT_STENCIL) |
+                                            BITFIELD64_BIT(FRAG_RESULT_DEPTH));
+   if (zs != BITFIELD64_BIT(FRAG_RESULT_STENCIL))
+      return false;
+
+   return nir_shader_intrinsics_pass(s, stencil_with_z, nir_metadata_control_flow,
+                                     NULL);
+}
+
 bool
 agx_nir_lower_frag_sidefx(nir_shader *s)
 {

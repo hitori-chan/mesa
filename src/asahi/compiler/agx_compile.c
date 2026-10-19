@@ -874,8 +874,16 @@ agx_emit_store_zs(agx_builder *b, nir_intrinsic_instr *instr)
    if (mask.type == AGX_INDEX_IMMEDIATE && mask.value == 0xFF)
       mask = agx_get_sr_coverage(b, 16, AGX_SR_COVERAGE_MASK);
 
-   agx_instr *I = agx_zs_emit(
-      b, agx_coverage_word_g15(b, mask, agx_immediate(0xf)), zs, base);
+   /* The stencil goes in bits 16:23 of the coverage word, the depth in the
+    * next register (Apple's depthf layout, draws.md). */
+   agx_index word = agx_coverage_word_g15(b, mask, agx_immediate(0xf));
+   if (write_s) {
+      agx_index s32 = agx_temp(b->shader, AGX_SIZE_32);
+      agx_mov_to(b, s32, agx_src_index(&instr->src[2]));
+      word = agx_bfi(b, word, s32, agx_immediate(16), 8);
+   }
+
+   agx_instr *I = agx_zs_emit(b, word, zs, base);
 
    /* Apple's shader releases fence 1 right after its zs_emit. A sample loop
     * waits again in its next pass, so it leaves the fence to the trailer.

@@ -1017,9 +1017,9 @@
   </enum>
 
   <!--
-   What zs_emit (depthf) writes: Apple's depthf handler sets bit 0 for
-   depth and bit 1 for stencil only with depth; its G13 path writes G13's
-   zs code (1 depth, 2 stencil, 3 both) for the same instructions
+   What zs_emit (depthf) writes, from Apple's encoder: 1 depth, 0 stencil,
+   3 both (sub_25090734C); its G13 path writes G13's zs code (1 depth, 2
+   stencil, 3 both) for the same instructions
   -->
   <enum kind="zs_write" name="Depth/stencil written">
     <value value="0">s</value>
@@ -3620,9 +3620,10 @@
   </ins>
 
   <!--
-   zs_emit (depthf): depth and/or stencil from a coordinate register (g
-   its group). No sample mask: G13's zs_emit has one. The layout of depth
-   and stencil in the cr is not known.
+   zs_emit (depthf): depth and/or stencil from a coordinate register group
+   (g its group): word 0 is movmsk's coverage word with the stencil in bits
+   16:23, word 1 the 32-bit depth (none for stencil alone). Apple's depthf
+   layout tables (sub_25092CAF8).
   -->
   <ins name="zs_emit" display="zs_emit" length="6">
     <exact bit="0:10">10011010111</exact>
