@@ -2700,11 +2700,12 @@
     <immediate name="imm7" bit="8:14"/>
   </ins>
 
-  <!-- mov_imm, 32-bit immediate -->
+  <!-- mov_imm, 32-bit immediate (Apple's ldimm: the register's bit 7, r64
+       and up, at bit 19 in both lengths) -->
   <ins name="mov_imm32" display="mov_imm" length="8/10">
     <exact bit="0:2 15 17 20">011100</exact>
     <modifier name="length" bit="16"/>
-    <dest kind="vdst" bit="18 4:7 22:23 60 =0000 =00 =0 3 21 70 =0 =0"/>
+    <dest kind="vdst" bit="18 4:7 22:23 19 =0000 =00 =0 3 21 70 =0 =0"/>
     <immediate name="imm32" bit="8:14 33:36 42:43 48:59 25:31"/>
     <modifier name="group" bit="77:79 70 21 =0" kind="vgroup"/>
   </ins>
