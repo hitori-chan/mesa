@@ -354,8 +354,12 @@ hk_GetPhysicalDeviceImageFormatProperties2(
    if (pImageFormatInfo->flags & (VK_IMAGE_CREATE_SPARSE_ALIASED_BIT |
                                   VK_IMAGE_CREATE_SPARSE_BINDING_BIT |
                                   VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT)) {
-      /* G15: a sparse image's descriptors are not packed yet */
-      if (pdev->dev.params.gpu_generation >= 15)
+      /* G15: a sparse resident image's descriptor (its sparse map) is not
+       * packed yet. Sparse binding alone keeps the image's layout and
+       * descriptor, as sparseBinding requires.
+       */
+      if (pdev->dev.params.gpu_generation >= 15 &&
+          (pImageFormatInfo->flags & VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT))
          return VK_ERROR_FORMAT_NOT_SUPPORTED;
 
       features &= ~VK_FORMAT_FEATURE_2_HOST_IMAGE_TRANSFER_BIT_EXT;
