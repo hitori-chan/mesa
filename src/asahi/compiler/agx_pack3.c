@@ -2039,7 +2039,7 @@ agx3_cr_count(const agx_instr *I)
    case AGX_OPCODE_IMAGE_LOAD:
       return 2;
    case AGX_OPCODE_IMAGE_WRITE:
-      return 8;
+      return I->vary_cr + 8;
    case AGX_OPCODE_ST_VARY:
       return I->vary_cr + 1;
    case AGX_OPCODE_SAMPLE_MASK:
@@ -2226,54 +2226,61 @@ a3_mov_cr(struct a3 *a, const agx_instr *I, unsigned cr, agx_index value,
 }
 
 #define A3_VARY_CRS 8
+#define A3_IMGW_TUPLES 2
 
-/* G15's st_var reads its coordinate register after it issues, until its
- * group (field g, 0 here) completes, and a later write to that cr does not
- * wait for it: a mov to the cr of the st_var just before stored the new value
- * in both slots (the point size and the first varying of a vertex shader
- * with two varyings, the GS copy shader's st_vars through cr0 with dynamic
- * slots). The st_vars take their crs in turn, as Apple's vertex shaders take
- * a cr per output, and a cr still being read is reused only after a wait for
- * group 0, as is one another instruction writes. A loop's back edge may
- * bring the last iteration's stores.
+/* G15's st_var and image write read their coordinate registers after they
+ * issue, until their group (0) completes, and a later write to those crs does
+ * not wait for it: a mov to the cr of the st_var just before stored the new
+ * value in both slots (the point size and the first varying of a vertex
+ * shader with two varyings, the GS copy shader's st_vars through cr0 with
+ * dynamic slots). An image write likewise: of two writes from cr0-cr7, the
+ * first stored the second's data, and the second, its tuple freed by the
+ * first, wrote zero to texel (0, 0); a texture fetch whose coordinates went
+ * to cr0 right after a write read texel (0, 0) (dEQP-VK
+ * texel_view_compatible's decompress pass). The st_vars take their crs in
+ * turn, as Apple's vertex shaders take a cr per output, and the image writes
+ * take tuples from cr8 in turn, clear of the crs other instructions write
+ * from cr0, as Apple's shaders give each write its own tuple. A cr still
+ * being read is reused only after a wait for group 0, as is one another
+ * instruction writes. A loop's back edge may bring the last iteration's.
  */
 void
-agx3_assign_vary_crs(agx_context *ctx)
+agx3_assign_crs(agx_context *ctx)
 {
-   unsigned next = 0;
-   uint8_t pending = 0;
+   unsigned next_vary = 0, next_imgw = 0;
+   uint64_t pending = 0;
 
    agx_foreach_block(ctx, block) {
       agx_foreach_predecessor(block, pred) {
          if ((*pred)->index >= block->index)
-            pending = BITFIELD_MASK(A3_VARY_CRS);
+            pending = ~0ull;
       }
 
       agx_foreach_instr_in_block(block, I) {
          if (I->op == AGX_OPCODE_WAIT && I->scoreboard == 0)
             pending = 0;
 
-         /* Another instruction's crs (a vertex shader's texture fetch after
-          * the point size's st_var: the fetch read the wrong texel) */
-         if (I->op != AGX_OPCODE_ST_VARY) {
-            unsigned n = MIN2(agx3_cr_count(I), A3_VARY_CRS);
-            if (pending & BITFIELD_MASK(n)) {
-               agx_builder b = agx_init_builder(ctx, agx_before_instr(I));
-               agx_wait(&b, 0);
-               pending = 0;
-            }
-            continue;
+         uint64_t crs;
+         if (I->op == AGX_OPCODE_ST_VARY) {
+            I->vary_cr = (next_vary++) % A3_VARY_CRS;
+            crs = BITFIELD64_BIT(I->vary_cr);
+         } else if (I->op == AGX_OPCODE_IMAGE_WRITE) {
+            I->vary_cr = 8 * (1 + (next_imgw++) % A3_IMGW_TUPLES);
+            crs = BITFIELD64_RANGE(I->vary_cr, 8);
+         } else {
+            /* Another instruction's crs (a vertex shader's texture fetch after
+             * the point size's st_var: the fetch read the wrong texel) */
+            crs = BITFIELD64_MASK(MIN2(agx3_cr_count(I), 64));
          }
 
-         unsigned cr = (next++) % A3_VARY_CRS;
-         if (pending & BITFIELD_BIT(cr)) {
+         if (pending & crs) {
             agx_builder b = agx_init_builder(ctx, agx_before_instr(I));
             agx_wait(&b, 0);
             pending = 0;
          }
 
-         pending |= BITFIELD_BIT(cr);
-         I->vary_cr = cr;
+         if (I->op == AGX_OPCODE_ST_VARY || I->op == AGX_OPCODE_IMAGE_WRITE)
+            pending |= crs;
       }
    }
 }
@@ -2281,7 +2288,7 @@ agx3_assign_vary_crs(agx_context *ctx)
 /* st_vary: G15 stores a varying from a coordinate register that an ALU
  * instruction wrote in a group (uvsw; demo15's transform writes cr0-cr3
  * in groups 0-3 and each st_var waits for its group). The value goes
- * through cr (agx3_assign_vary_crs) in group 0; st_var waits for group 0
+ * through cr (agx3_assign_crs) in group 0; st_var waits for group 0
  * and frees the cr. The slot counts 32-bit words, as G13's. G15 has no last
  * flag: the IR's is dropped. */
 static void
@@ -2691,13 +2698,14 @@ a3_block_image_store(struct a3 *a, const agx_instr *I,
 /* image_write (imgwci): the PBE descriptor is entry index of the 32 B array
  * at the IR's bindless base (a 64-bit uniform or register pair), the index an
  * immediate or a register. The coordinates and the data go to a tuple of
- * eight 32-bit coordinate registers, written in group 0, which the
- * instruction waits for and frees. With two coordinates (2D, a 1D array's
- * layer as the second): x, y, data x, data y in slots 0-3, data z and w in 6
- * and 7 (Apple's code). A 2D array's layer is slot 3 and moves data y to
- * slot 5; a 3D image's z is slot 2 and moves the data to slots 4-7 (both on
- * the hardware, kernels #274 and #276; the 1D array is not verified). Apple's
- * builder clamps a layer to 0x7ff (pack_args' min7ff).
+ * eight 32-bit coordinate registers from vary_cr (agx3_assign_crs), written
+ * in group 0, which the instruction waits for and frees. With two
+ * coordinates (2D, a 1D array's layer as the second): x, y, data x, data y in
+ * slots 0-3, data z and w in 6 and 7 (Apple's code). A 2D array's layer is
+ * slot 3 and moves data y to slot 5; a 3D image's z is slot 2 and moves the
+ * data to slots 4-7 (both on the hardware, kernels #274 and #276; the 1D
+ * array is not verified). Apple's builder clamps a layer to 0x7ff (pack_args'
+ * min7ff).
  * Cube images are 2D arrays here. The level is the instruction's immediate;
  * all four data components are given. */
 
@@ -2741,18 +2749,19 @@ a3_image_write(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
       agx_index v = coords;
       v.value += 2 * c;
       v.channels_m1 = 0;
-      a3_mov_cr(a, I, coord_slot[c], v, emission);
+      a3_mov_cr(a, I, I->vary_cr + coord_slot[c], v, emission);
    }
 
    for (unsigned c = 0; c < 4; ++c) {
       agx_index v = data;
       v.value += 2 * c;
       v.channels_m1 = 0;
-      a3_mov_cr(a, I, data_slot[c], v, emission);
+      a3_mov_cr(a, I, I->vary_cr + data_slot[c], v, emission);
    }
 
    a3_begin(a, I, instr[I->dim], T_IMGW);
-   a3_set(a, IMGW_CR, a3_kind_value(a, IMGW_CR, A3_CR, 0, BITFIELD_BIT(A3_LU)));
+   a3_set(a, IMGW_CR,
+          a3_kind_value(a, IMGW_CR, A3_CR, I->vary_cr, BITFIELD_BIT(A3_LU)));
    a3_set(a, IMGW_G, 0);
    a3_set(a, IMGW_BASE, a3_membase(a, IMGW_BASE, base));
 
