@@ -1433,14 +1433,16 @@ static const uint8_t a3_tex_mask[16] = {
    0xff, 0, 1, 5, 2, 8, 9, 6, 3, 4, 10, 13, 11, 12, 14, 7,
 };
 
-/* A texture table's uniform pair, as the instruction names it: n for
- * u(2n):u(2n+1), so the table base must be a 64-bit uniform below u32 */
+/* A texture table's pair, as the instruction names it: n for u(2n):u(2n+1),
+ * or for r(2n):r(2n+1) with bit 83 (the texture's) or 82 (the sampler's) set
+ * (texture.md), so the table base must be a 64-bit uniform below u32 or a
+ * 64-bit register below r32 */
 static unsigned
 a3_tex_pair(struct a3 *a, agx_index base)
 {
-   if (base.type != AGX_INDEX_UNIFORM || base.size != AGX_SIZE_64 ||
-       (base.value & 3) || base.value >= 64)
-      a3_fail(a, "texture table base is not a uniform pair below u32");
+   if ((base.type != AGX_INDEX_UNIFORM && base.type != AGX_INDEX_REGISTER) ||
+       base.size != AGX_SIZE_64 || (base.value & 3) || base.value >= 64)
+      a3_fail(a, "texture table base is not a pair below u32 or r32");
 
    return base.value >> 2;
 }
@@ -2011,6 +2013,18 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
       a3_set(a, TEX_MODE, code);
 
    a3_emit(a, emission);
+
+   /* The table pairs in registers: bits 83 and 82, which no operand holds */
+   if (I->src[2].type == AGX_INDEX_REGISTER ||
+       I->src[6].type == AGX_INDEX_REGISTER) {
+      uint8_t *out = (uint8_t *)emission->data + emission->size - a->length;
+
+      assert(a->length >= 14);
+      if (I->src[2].type == AGX_INDEX_REGISTER)
+         out[10] |= BITFIELD_BIT(83 - 80);
+      if (I->src[6].type == AGX_INDEX_REGISTER)
+         out[10] |= BITFIELD_BIT(82 - 80);
+   }
 
    a3_wait(a, I, A3_SYNC_G, emission);
 }

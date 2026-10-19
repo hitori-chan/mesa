@@ -117,7 +117,8 @@ load_ubo(nir_builder *b, nir_intrinsic_instr *intr, void *bases)
 }
 
 /* G15's texture instructions index the table by descriptor (32 B each), not
- * by byte offset */
+ * by byte offset, and read 16 bits of the index: the per-stage table is far
+ * smaller, which the mask says (the backend drops it) */
 static nir_def *
 load_texture_handle(nir_builder *b, nir_intrinsic_instr *intr, void *base,
                     bool g15)
@@ -125,6 +126,8 @@ load_texture_handle(nir_builder *b, nir_intrinsic_instr *intr, void *base,
    nir_def *offs_B = nir_u2u32(b, intr->src[0].ssa);
    if (!g15)
       offs_B = nir_imul_imm(b, offs_B, AGX_TEXTURE_DESC_STRIDE);
+   else
+      offs_B = nir_iand_imm(b, offs_B, 0xffff);
 
    nir_load_sysval_agx(b, 1, 64, .desc_set = stage_table(b),
                        .binding = (uintptr_t)base, .flags = ~0);
