@@ -1401,7 +1401,11 @@ lower_tex_min_lod_g15(nir_builder *b, nir_tex_instr *tex, void *data)
  * depth at 110), plus the bias; x clamps it to the sampler's LOD range (its
  * state's 9:0 and 19:10, q4.6) and the texture's levels (last level at bit
  * 176 when mipmapped, bit 58). A cube is face-local here (cube array mode),
- * its LOD that of the face. Not verified on the hardware.
+ * its LOD that of the face. A null descriptor (agx_set_null_texture_g15, at
+ * the zero page) queries 0, as G13's hardware query of it: its 1x1x1 size
+ * gave a fragment's 3D query of gl_FragCoord.xyz, whose z slopes, a small
+ * positive LOD (dEQP-VK robustness2's null_descriptor 3D fragment cases).
+ * Not verified on the hardware otherwise.
  */
 static bool
 lower_tex_lod_g15(nir_builder *b, nir_tex_instr *tex, void *data)
@@ -1487,6 +1491,10 @@ lower_tex_lod_g15(nir_builder *b, nir_tex_instr *tex, void *data)
    }
 
    nir_def *res = nir_vec2(b, x, lod);
+   nir_def *null = nir_iand(
+      b, nir_ieq_imm(b, nir_channel(b, desc, 2), AGX_ZERO_PAGE_ADDRESS >> 4),
+      nir_ieq_imm(b, nir_iand_imm(b, w3, 0xfff), 0));
+   res = nir_bcsel(b, null, nir_imm_vec2(b, 0.0, 0.0), res);
    if (tex->def.bit_size != 32)
       res = nir_f2fN(b, res, tex->def.bit_size);
 
