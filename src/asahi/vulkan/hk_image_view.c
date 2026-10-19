@@ -457,8 +457,10 @@ pack_texture(struct hk_image_view *view, unsigned view_plane,
 /*
  * G15's PBE descriptor (cmdbuf.xml's "PBE G15"). What Apple's encoder and
  * noopwafel's demo15 settle is packed: uncompressed images, linear (the one
- * the hardware ran: a 2D RGBA8 target) or twiddled, one layer for linear.
- * The rest is a guess (a warning says so).
+ * the hardware ran: a 2D RGBA8 target) or twiddled, one layer for linear,
+ * multisampled (the sample count and the multisampled dimensions) and 3D (the
+ * depth in the layer count). Compressed images and linear arrays are not
+ * decoded (a warning says so).
  *
  * The address is the plane's VA as it is, 44 bits of it (G13's descriptor
  * has 36 and a level; demo15 sets "level 1" for the 1 TiB bit of its
@@ -499,15 +501,13 @@ pack_pbe_g15(struct hk_device *dev, struct hk_image_view *view,
    struct hk_3d denom = view_denominator(view);
 
    /* What Apple's encoder does for these is not decoded: the descriptor is
-    * packed as for a plain image, and a render to one fails in the
-    * end-of-tile program's packer */
+    * packed as for a plain image */
    static bool warned;
-   if (!warned && (layout->compressed || msaa ||
-                   view->vk.view_type == VK_IMAGE_VIEW_TYPE_3D ||
+   if (!warned && (layout->compressed ||
                    (layout->tiling == AIL_TILING_LINEAR && layers > 1))) {
       warned = true;
-      fprintf(stderr, "G15: the PBE of a compressed, multisampled, 3D or "
-                      "linear layered image is a guess\n");
+      fprintf(stderr, "G15: the PBE of a compressed or linear layered image is "
+                      "a guess\n");
    }
 
    agx_pack(out, PBE_G15, cfg) {
