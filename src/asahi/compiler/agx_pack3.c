@@ -2599,9 +2599,10 @@ a3_imgwblk_format(enum agx_format format)
 
 /* block_image_store (imgwblk): the tile to the image a PBE descriptor
  * describes. G15 takes the descriptor's address in a 64-bit uniform (the IR's
- * base, which the entry program loads) and three coordinate registers: x and
- * y of the tile's first pixel (the IR's coords, a 32-bit vec2) in cr0 and
- * cr1, and pack_imgwir's register in cr2, all written in group 0 as demo15's
+ * base, which the entry program loads) and coordinate registers: x and y of
+ * the tile's first pixel (the IR's coords, a 32-bit vec2) in cr0 and cr1, and
+ * pack_imgwir's register in cr2 (cr3 for a multisampled or layered target),
+ * all written in group 0 as demo15's
  * end-of-tile program does (it ran on the hardware: imadd to cr0 and cr1,
  * pack_imgwir to cr4 in 16-bit units, imgwblk waiting for group 0).
  * pack_imgwir's first source is the render target's offset in the tilebuffer
@@ -2625,6 +2626,11 @@ a3_block_image_store(struct a3 *a, const agx_instr *I,
    agx_index coords = I->src[3];
 
    bool array = I->dim == AGX_DIM_2D_ARRAY || I->dim == AGX_DIM_2D_MS_ARRAY;
+
+   /* The tilebuffer offset's pack is the fourth coordinate register of every
+    * form but the 1-sample 2D write's: a multisampled 2D write leaves cr2
+    * unwritten (Apple's end-of-tile program, its 0x08a writes) */
+   unsigned offset_cr = (array || I->dim == AGX_DIM_2D_MS) ? 3 : 2;
 
    if (base.type != AGX_INDEX_UNIFORM || base.size != AGX_SIZE_64 ||
        coords.type != AGX_INDEX_REGISTER || coords.size != AGX_SIZE_32 ||
@@ -2654,7 +2660,7 @@ a3_block_image_store(struct a3 *a, const agx_instr *I,
 
    a3_begin(a, I, AGX3_PACK_IMGWIR, T_PACK_IMGWIR);
    a3_set(a, PACK_IMGWIR_DST,
-          a3_kind_value(a, PACK_IMGWIR_DST, A3_CR, array ? 3 : 2, 0));
+          a3_kind_value(a, PACK_IMGWIR_DST, A3_CR, offset_cr, 0));
    a3_set(a, PACK_IMGWIR_G, 0);
    a3_set(a, PACK_IMGWIR_A, a3_src9(a, PACK_IMGWIR_A, offset));
    a3_set(a, PACK_IMGWIR_B, a3_imm(a, PACK_IMGWIR_B, 0, false));
@@ -2668,8 +2674,8 @@ a3_block_image_store(struct a3 *a, const agx_instr *I,
    a3_set(a, IMGWBLK_PTR, a3_membase(a, IMGWBLK_PTR, base));
    a3_set(a, IMGWBLK_OFFSET, a3_imm(a, IMGWBLK_OFFSET, 0, false));
    /* The image type in the flags (smp.md): 2D 0x1d6a, 2D multisampled
-    * 0x1c8a, the dimension's fields only (not verified for the multisampled
-    * form); bits 77:79 (flags 11:13) the tile format's class */
+    * 0x1c8a, the dimension's fields only; bits 77:79 (flags 11:13) the tile
+    * format's class */
    unsigned flags = I->dim == AGX_DIM_2D_MS         ? 0x1c8a
                     : I->dim == AGX_DIM_2D_MS_ARRAY ? 0x1c0a
                     : I->dim == AGX_DIM_2D_ARRAY    ? 0x1d4a
