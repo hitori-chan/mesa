@@ -1880,8 +1880,10 @@ agx_compile_variant(struct agx_device *dev, struct pipe_context *pctx,
             key->rt_formats, ARRAY_SIZE(key->rt_formats), key->nr_samples, true,
             dev->params.gpu_generation >= 15);
 
-         if (dev->debug & AGX_DBG_SMALLTILE)
+         if (dev->debug & AGX_DBG_SMALLTILE) {
             tib.tile_size = 16 * 16;
+            agx_tilebuffer_pack_usc(&tib);
+         }
 
          /* XXX: don't replicate this all over the driver */
          unsigned rt_spill_base = BITSET_LAST_BIT(nir->info.textures_used) +
@@ -3996,8 +3998,11 @@ agx_batch_init_state(struct agx_batch *batch)
       util_framebuffer_get_num_layers(&batch->key) > 1,
       agx_device(batch->ctx->base.screen)->params.gpu_generation >= 15);
 
-   if (agx_device(batch->ctx->base.screen)->debug & AGX_DBG_SMALLTILE)
+   /* The USC words carry the tile size, which G15's specLM takes */
+   if (agx_device(batch->ctx->base.screen)->debug & AGX_DBG_SMALLTILE) {
       batch->tilebuffer_layout.tile_size = 16 * 16;
+      agx_tilebuffer_pack_usc(&batch->tilebuffer_layout);
+   }
 
    /* If the layout spilled render targets, we need to decompress those render
     * targets to ensure we can write to them.
