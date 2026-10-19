@@ -26,6 +26,11 @@ extern "C" {
 /* u0-u255 inclusive, as pairs of 16-bits */
 #define AGX_NUM_UNIFORMS (512)
 
+/* G15: the reserved pairs r4:r5 and r6:r7 that a texture and a sampler table
+ * base in registers, or in uniforms past u32, move to before their
+ * instruction, which names pairs below r32 or u32 (halfregs) */
+#define AGX_G15_TEX_BASE_REG (8)
+
 /* Semi-arbitrary limit for spill slot allocation */
 #define AGX_NUM_MODELED_REGS_LOG2 (11)
 #define AGX_NUM_MODELED_REGS      (1 << AGX_NUM_MODELED_REGS_LOG2)
@@ -555,6 +560,10 @@ typedef struct {
     * NIR-level scratch.
     */
    unsigned spill_base_B;
+
+   /* G15: a texture or sampler table base in registers, which goes through
+    * the reserved pairs at AGX_G15_TEX_BASE_REG */
+   bool g15_tex_base;
 
    /* Beginning of stack allocation used for parallel copy lowering */
    bool has_spill_pcopy_reserved;
