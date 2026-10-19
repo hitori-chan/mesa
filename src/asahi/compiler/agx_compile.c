@@ -2005,7 +2005,23 @@ agx_emit_image_load(agx_builder *b, agx_index dst, nir_intrinsic_instr *intr)
 
    bool is_ms = dim == GLSL_SAMPLER_DIM_MS;
    unsigned coord_comps = glsl_get_sampler_dim_coordinate_components(dim);
-   if (is_array && is_ms) {
+   if (is_ms && b->shader->key->dev.gpu_generation >= 15) {
+      /* G15's word: the sample index at bit 12, an array's layer clamped to
+       * 0x7ff below it (lower_ms_index_g15) */
+      agx_index sample = agx_temp(b->shader, AGX_SIZE_32);
+      agx_mov_to(b, sample, ms_index);
+
+      agx_index base = agx_immediate(0);
+      if (is_array) {
+         agx_index layer = coord[coord_comps];
+         agx_index max = agx_mov_imm(b, 32, 0x7ff);
+         base = agx_icmpsel(b, layer, max, layer, max, AGX_ICOND_ULT);
+      }
+
+      agx_index word = agx_temp(b->shader, AGX_SIZE_32);
+      agx_bfi_to(b, word, base, sample, agx_immediate(12), 4);
+      coord[coord_comps++] = word;
+   } else if (is_array && is_ms) {
       agx_index layer = agx_temp(b->shader, AGX_SIZE_16);
       agx_subdivide_to(b, layer, coord[coord_comps], 0);
 
@@ -2021,8 +2037,11 @@ agx_emit_image_load(agx_builder *b, agx_index dst, nir_intrinsic_instr *intr)
       coord_comps++;
    }
 
-   /* Multisampled images do not support mipmapping */
-   if (is_ms) {
+   /* Multisampled images do not support mipmapping. G15 fetches at level 0,
+    * as agx_emit_tex */
+   if (is_ms && b->shader->key->dev.gpu_generation >= 15) {
+      lod = agx_immediate(0);
+   } else if (is_ms) {
       lod_mode = AGX_LOD_MODE_AUTO_LOD;
       lod = agx_zero();
    }
@@ -2032,12 +2051,14 @@ agx_emit_image_load(agx_builder *b, agx_index dst, nir_intrinsic_instr *intr)
    agx_index sampler = agx_immediate(0), sampler_base = agx_null();
 
    /* G15 reads an image as a fetch with the txf sampler, whose handle its
-    * drivers put in the sample index's place (lower_image_load_g15). An
-    * image_load, unlike a texture_load, stays in order with the image
-    * writes; at most a read-only image's load became a txf. */
-   if (b->shader->key->dev.gpu_generation >= 15 && !is_ms) {
+    * drivers put in the sample index's place, or the LOD's for a
+    * multisampled image (lower_image_load_g15). An image_load, unlike a
+    * texture_load, stays in order with the image writes; at most a read-only
+    * image's load became a txf. */
+   if (b->shader->key->dev.gpu_generation >= 15) {
       b->shader->out->uses_sampler_heap = true;
-      sampler = agx_translate_sampler_g15(b, &intr->src[2], &sampler_base);
+      sampler = agx_translate_sampler_g15(
+         b, is_ms ? &intr->src[3] : &intr->src[2], &sampler_base);
 
       /* As agx_emit_tex: after the pixel fence */
       if (b->shader->stage == MESA_SHADER_FRAGMENT)

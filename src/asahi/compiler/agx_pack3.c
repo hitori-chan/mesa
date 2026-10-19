@@ -1797,8 +1797,7 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
    agx_index coords = I->src[0], lod = I->src[1];
    agx_index texture = I->src[3], sampler = I->src[4];
 
-   /* An image load is a fetch with the txf sampler (agx_emit_image_load),
-    * which a multisampled one does not have */
+   /* An image load is a fetch with the txf sampler (agx_emit_image_load) */
    if (I->op == AGX_OPCODE_IMAGE_LOAD && agx_is_null(I->src[6]))
       a3_fail(a, "image load without the txf sampler");
    if (I->dim >= ARRAY_SIZE(a3_tex_auto))

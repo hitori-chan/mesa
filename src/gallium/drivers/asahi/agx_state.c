@@ -1283,13 +1283,15 @@ agx_pack_pbe_g15(struct agx_pbe_packed *out, struct agx_resource *tex,
    unsigned layers = is_buffer ? 1 : view->u.tex.last_layer - layer + 1;
    bool ms = util_res_sample_count(&tex->base) > 1;
 
-   /* A multisampled PBE is the end-of-tile block write's (G13 binds the image
-    * stores' as a buffer); it is never linear (texture.md) */
+   /* A multisampled PBE is the end-of-tile block write's, never linear
+    * (texture.md); image stores reach a multisampled image through a linear
+    * 2D view of its samples, as on G13 */
+   bool ms_view = ms && !block_access;
    if (tex->layout.compressed ||
-       (ms && (!block_access || tex->layout.tiling == AIL_TILING_LINEAR)) ||
+       (ms && !ms_view && tex->layout.tiling == AIL_TILING_LINEAR) ||
        (tex->layout.tiling == AIL_TILING_LINEAR && layers > 1)) {
-      fprintf(stderr, "G15: PBE of a compressed image, a multisampled image "
-                      "store or a linear layered image is not supported yet\n");
+      fprintf(stderr, "G15: PBE of a compressed image or a linear layered "
+                      "image is not supported yet\n");
       assert(0);
    }
 
@@ -1341,6 +1343,19 @@ agx_pack_pbe_g15(struct agx_pbe_packed *out, struct agx_resource *tex,
          cfg.width = AGX_TEXTURE_BUFFER_WIDTH;
          cfg.height = MAX2(DIV_ROUND_UP(size_el, cfg.width), 1);
          cfg.stride = (stride_B >> 4) - 1;
+      } else if (ms_view) {
+         unsigned blocksize_B = util_format_get_blocksize(view->format);
+         unsigned size_px =
+            (tex->layout.size_B - tex->layout.layer_stride_B * layer) /
+            blocksize_B;
+
+         cfg.dimension = AGX_TEXTURE_DIMENSION_2D;
+         cfg.layout = AGX_LAYOUT_LINEAR;
+         cfg.width = AGX_TEXTURE_BUFFER_WIDTH;
+         cfg.height = DIV_ROUND_UP(size_px, cfg.width);
+         cfg.stride = ((cfg.width * blocksize_B) >> 4) - 1;
+         cfg.buffer += tex->layout.level_offsets_B[level];
+         cfg.mipmapped = false;
       } else if (tex->layout.tiling == AIL_TILING_LINEAR) {
          /* In 16-byte units, minus 1 (demo15's 0xF for a 256 B stride) */
          assert((ail_get_linear_stride_B(&tex->layout, level) & 15) == 0);
@@ -1360,25 +1375,39 @@ agx_pack_pbe_g15(struct agx_pbe_packed *out, struct agx_resource *tex,
       }
 
       /* (samples >> 2) & 3, as the read state (texture.md) */
-      if (ms)
+      if (ms && !ms_view)
          cfg.samples = agx_translate_sample_count(tex->base.nr_samples);
    }
 }
 
 /*
- * G15: what an image atomic's texel address needs (PBE G15 software), in the
- * fourth word of the PBE's 32 B slot. A multisampled image has no PBE for
- * image stores on G15, and a buffer's offset is in the PBE's address.
+ * G15: what an image store's or atomic's texel address needs (PBE G15
+ * software), in the fourth word of the PBE's 32 B slot. A buffer's offset is
+ * in the PBE's address.
  */
 static void
 agx_pack_pbe_g15_software(uint8_t *out, const struct pipe_image_view *view)
 {
    struct agx_resource *tex = agx_resource(view->resource);
 
-   if (tex->base.target == PIPE_BUFFER || util_res_sample_count(&tex->base) > 1)
+   if (tex->base.target == PIPE_BUFFER)
       return;
 
    unsigned level = view->u.tex.level;
+
+   if (util_res_sample_count(&tex->base) > 1) {
+      struct ail_tile tile_size = tex->layout.tilesize_el[level];
+
+      agx_pack(out, PBE_G15_SOFTWARE_MSAA, cfg) {
+         cfg.aligned_width =
+            align(u_minify(tex->base.width0, level), tile_size.width_el);
+         cfg.tile_width = tile_size.width_el;
+         cfg.tile_height = tile_size.height_el;
+         cfg.layer_stride = tex->layout.layer_stride_B;
+         cfg.sample_count_log2 = util_logbase2(tex->base.nr_samples);
+      }
+      return;
+   }
 
    agx_pack(out, PBE_G15_SOFTWARE, cfg) {
       cfg.level_offset = ail_get_level_offset_B(&tex->layout, level);
@@ -1878,7 +1907,8 @@ agx_compile_variant(struct agx_device *dev, struct pipe_context *pctx,
       NIR_PASS(_, nir, agx_nir_lower_fs_active_samples_to_register);
    }
 
-   NIR_PASS(_, nir, agx_nir_lower_multisampled_image_store, false);
+   NIR_PASS(_, nir, agx_nir_lower_multisampled_image_store,
+            dev->params.gpu_generation >= 15);
 
    struct agx_compiled_shader *compiled = agx_compile_nir(
       dev, nir, &pctx->debug, so->type, false, so->type != MESA_SHADER_FRAGMENT,
@@ -2873,7 +2903,8 @@ agx_build_meta_shader_internal(struct agx_context *ctx,
    if (!prolog) {
       agx_preprocess_nir(b.shader);
       NIR_PASS(_, b.shader, agx_nir_lower_texture);
-      NIR_PASS(_, b.shader, agx_nir_lower_multisampled_image_store, false);
+      NIR_PASS(_, b.shader, agx_nir_lower_multisampled_image_store,
+               dev->params.gpu_generation >= 15);
    }
 
    struct agx_compiled_shader *shader = agx_compile_nir(
@@ -3004,6 +3035,10 @@ agx_upload_spilled_rt_descriptors(uint8_t *out, struct agx_batch *batch)
 
       agx_pack_texture(texture, rsrc, surf->format, &sampler_view);
       agx_batch_upload_pbe(batch, pbe, &view, false, false, true, true);
+
+      /* A multisampled target's store addresses its samples by them */
+      if (batch->tilebuffer_layout.g15)
+         agx_pack_pbe_g15_software((uint8_t *)pbe + AGX_PBE_LENGTH, &view);
    }
 
    if (batch->tilebuffer_layout.g15) {
