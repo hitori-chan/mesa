@@ -466,11 +466,17 @@ pack_texture(struct hk_image_view *view, unsigned view_plane,
  * has 36 and a level; demo15 sets "level 1" for the 1 TiB bit of its
  * target's address). The image heap's alias addresses are above 1 TiB, so
  * they are not relative to it.
+ *
+ * A multisampled image is stored to (an image store, an atomic or a spilled
+ * render target) through a linear 2D view of its samples, as on G13: G15 has
+ * no multisampled image write. sw gets the software words libagx's texel
+ * addressing reads (PBE G15 software); the hardware reads that word of a
+ * multisampled or compressed PBE, so the end-of-tile PBEs keep it zero.
  */
 static void
 pack_pbe_g15(struct hk_device *dev, struct hk_image_view *view,
              unsigned view_plane, enum hk_desc_usage usage,
-             struct agx_pbe_packed *out)
+             struct agx_pbe_packed *out, struct agx_pbe_g15_software_packed *sw)
 {
    struct hk_image *image = container_of(view->vk.image, struct hk_image, vk);
    const uint8_t image_plane = view->planes[view_plane].image_plane;
@@ -498,6 +504,7 @@ pack_pbe_g15(struct hk_device *dev, struct hk_image_view *view,
                         : view->vk.layer_count;
 
    bool msaa = view->vk.image->samples > 1;
+   bool msaa_view = msaa && !eot;
    struct hk_3d denom = view_denominator(view);
 
    /* What Apple's encoder does for these is not decoded: the descriptor is
@@ -554,10 +561,22 @@ pack_pbe_g15(struct hk_device *dev, struct hk_image_view *view,
 
       cfg.mipmapped = image->vk.mip_levels > 1;
 
-      if (msaa)
+      if (msaa && !msaa_view)
          cfg.samples = agx_translate_sample_count(view->vk.image->samples);
 
-      if (layout->tiling == AIL_TILING_LINEAR) {
+      if (msaa_view) {
+         unsigned blocksize_B = util_format_get_blocksize(p_format);
+         unsigned size_px =
+            (layout->size_B - layout->layer_stride_B * layer) / blocksize_B;
+
+         cfg.dimension = AGX_TEXTURE_DIMENSION_2D;
+         cfg.layout = AGX_LAYOUT_LINEAR;
+         cfg.width = AGX_TEXTURE_BUFFER_WIDTH;
+         cfg.height = DIV_ROUND_UP(size_px, cfg.width);
+         cfg.stride = ((cfg.width * blocksize_B) >> 4) - 1;
+         cfg.buffer += layout->level_offsets_B[level];
+         cfg.mipmapped = false;
+      } else if (layout->tiling == AIL_TILING_LINEAR) {
          /* In 16-byte units, minus 1 (demo15's 0xF for a 256 B stride; the
           * rows' pitch is a multiple of 16 B) */
          assert((ail_get_linear_stride_B(layout, level) & 15) == 0);
@@ -576,14 +595,41 @@ pack_pbe_g15(struct hk_device *dev, struct hk_image_view *view,
          }
       }
    }
+
+   memset(sw, 0, sizeof(*sw));
+   if (eot)
+      return;
+
+   struct ail_tile tile = {1, 1};
+   if (layout->tiling != AIL_TILING_LINEAR)
+      tile = layout->tilesize_el[view->vk.base_mip_level];
+
+   if (msaa_view) {
+      agx_pack(sw, PBE_G15_SOFTWARE_MSAA, cfg) {
+         cfg.aligned_width = align(
+            u_minify(layout->width_px, view->vk.base_mip_level), tile.width_el);
+         cfg.tile_width = tile.width_el;
+         cfg.tile_height = tile.height_el;
+         cfg.layer_stride = layout->layer_stride_B;
+         cfg.sample_count_log2 = util_logbase2(view->vk.image->samples);
+      }
+   } else {
+      agx_pack(sw, PBE_G15_SOFTWARE, cfg) {
+         cfg.level_offset = ail_get_level_offset_B(layout, level);
+         cfg.tile_width = tile.width_el;
+         cfg.tile_height = tile.height_el;
+         cfg.layer_stride = layout->layer_stride_B;
+      }
+   }
 }
 
 static void
 pack_pbe(struct hk_device *dev, struct hk_image_view *view, unsigned view_plane,
-         enum hk_desc_usage usage, struct agx_pbe_packed *out)
+         enum hk_desc_usage usage, struct agx_pbe_packed *out,
+         struct agx_pbe_g15_software_packed *g15_sw)
 {
    if (dev->dev.params.gpu_generation >= 15) {
-      pack_pbe_g15(dev, view, view_plane, usage, out);
+      pack_pbe_g15(dev, view, view_plane, usage, out, g15_sw);
       return;
    }
 
@@ -784,11 +830,16 @@ hk_image_view_init(struct hk_device *dev, struct hk_image_view *view,
       pack_texture(view, p, HK_DESC_USAGE_LAYERED_BG_EOT,
                    &view->planes[p].layered_background);
 
-      pack_pbe(dev, view, p, HK_DESC_USAGE_STORAGE, &view->planes[p].storage);
-      pack_pbe(dev, view, p, HK_DESC_USAGE_BG_EOT, &view->planes[p].eot);
-      pack_pbe(dev, view, p, HK_DESC_USAGE_EMRT, &view->planes[p].emrt_pbe);
+      struct agx_pbe_g15_software_packed eot_sw;
+
+      pack_pbe(dev, view, p, HK_DESC_USAGE_STORAGE, &view->planes[p].storage,
+               &view->planes[p].storage_g15_sw);
+      pack_pbe(dev, view, p, HK_DESC_USAGE_BG_EOT, &view->planes[p].eot,
+               &eot_sw);
+      pack_pbe(dev, view, p, HK_DESC_USAGE_EMRT, &view->planes[p].emrt_pbe,
+               &view->planes[p].emrt_g15_sw);
       pack_pbe(dev, view, p, HK_DESC_USAGE_LAYERED_BG_EOT,
-               &view->planes[p].layered_eot);
+               &view->planes[p].layered_eot, &eot_sw);
    }
 
    return VK_SUCCESS;
