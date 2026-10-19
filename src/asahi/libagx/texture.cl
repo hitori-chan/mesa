@@ -280,8 +280,9 @@ libagx_buffer_texel_address(constant const struct agx_pbe_packed *ptr,
 /*
  * G15: the PBE is G15's (the address is the image's VA in the image heap; a
  * buffer's offset is in it; the level in the extended word) and the software
- * words sit in the slot's fourth word (PBE G15 software). Not multisampled:
- * G15 packs no PBE for a multisampled image store.
+ * words sit in the slot's fourth word (PBE G15 software). A multisampled image
+ * is bound as a linear 2D view of its samples, as on G13, with its own
+ * software words (PBE G15 software MSAA); only its sample index is wanted.
  */
 uint64_t
 libagx_image_texel_address_g15(constant const struct agx_pbe_packed *ptr,
@@ -289,16 +290,25 @@ libagx_image_texel_address_g15(constant const struct agx_pbe_packed *ptr,
                                uint bytes_per_sample_B, bool is_1d,
                                bool is_msaa, bool is_layered, bool return_index)
 {
+   constant uint8_t *sw_ptr = (constant uint8_t *)ptr + 24;
    agx_unpack(NULL, ptr, PBE_G15, d);
-   agx_unpack(NULL, (constant uint8_t *)ptr + 24, PBE_G15_SOFTWARE, sw);
+   agx_unpack(NULL, sw_ptr, PBE_G15_SOFTWARE, sw);
+   agx_unpack(NULL, sw_ptr, PBE_G15_SOFTWARE_MSAA, ms);
+
+   uint samples_log2 = is_msaa ? ms.sample_count_log2 : 0;
 
    uint total_px;
    if (is_1d) {
       total_px = coord.x;
    } else {
-      uint level = d.extended ? d.level : 0;
-      uint width_px = max(d.width >> level, 1u);
-      uint aligned_width_px = align(width_px, sw.tile_width);
+      uint aligned_width_px;
+      if (is_msaa) {
+         aligned_width_px = ms.aligned_width;
+      } else {
+         uint level = d.extended ? d.level : 0;
+         uint width_px = max(d.width >> level, 1u);
+         aligned_width_px = align(width_px, sw.tile_width);
+      }
 
       total_px =
          libagx_twiddle_coordinates(convert_ushort2(coord.xy), sw.tile_width,
@@ -306,25 +316,29 @@ libagx_image_texel_address_g15(constant const struct agx_pbe_packed *ptr,
    }
 
    if (is_layered) {
-      total_px += coord[is_1d ? 1 : 2] * (sw.layer_stride / bytes_per_sample_B);
+      total_px += coord[is_1d ? 1 : 2] *
+                  ((sw.layer_stride / bytes_per_sample_B) >> samples_log2);
    }
 
-   uint total_sa = total_px + sample_idx;
+   uint total_sa = (total_px << samples_log2) + sample_idx;
 
    if (return_index)
       return total_sa;
    else
-      return d.buffer + sw.level_offset +
+      return d.buffer + (is_msaa ? 0 : sw.level_offset) +
              (uint64_t)total_sa * bytes_per_sample_B;
 }
 
+/* Word 4, which the hardware ignores in a buffer's PBE, holds the elements
+ * Honeykrisp's view starts after its 16 B aligned address (Gallium's is 0) */
 uint64_t
 libagx_buffer_texel_address_g15(constant const struct agx_pbe_packed *ptr,
                                 uint4 coord, uint bytes_per_pixel_B)
 {
    agx_unpack(NULL, ptr, PBE_G15, d);
 
-   return d.buffer + (uint64_t)(coord.x * bytes_per_pixel_B);
+   uint32_t x_el = ((constant uint32_t *)ptr)[4] + coord.x;
+   return d.buffer + (uint64_t)(x_el * bytes_per_pixel_B);
 }
 
 /* Buffer texture lowerings */
