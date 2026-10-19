@@ -281,10 +281,10 @@ agx_fast_link(struct agx_linked_shader *linked, struct agx_device *dev,
          linked->no_op = true;
       }
 
-      /* G15: Apple's depth output disables triangle merging (its fragment
-       * control 2, 0x44000200: draws.md)
+      /* G15: Apple's discard and depth output disable triangle merging (their
+       * fragment control 2, 0x44000200: draws.md)
        */
-      if (g15 && linked->writes_zs)
+      if (g15 && writes_sample_mask)
          disable_tri_merging = true;
 
       agx_pack(&linked->fragment_control, FRAGMENT_CONTROL, cfg) {
