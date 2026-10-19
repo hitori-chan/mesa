@@ -936,11 +936,12 @@ hk_lower_nir(struct hk_device *dev, nir_shader *nir,
                nir_metadata_control_flow, NULL);
    }
 
-   NIR_PASS(_, nir, agx_nir_lower_texture_queries_gen,
+   NIR_PASS(_, nir, agx_nir_lower_texture_gen,
             dev->dev.params.gpu_generation >= 15);
    if (dev->dev.params.gpu_generation >= 15)
       NIR_PASS(_, nir, hk_nir_lower_image_loads_g15);
-   NIR_PASS(_, nir, agx_nir_lower_multisampled_image_store);
+   NIR_PASS(_, nir, agx_nir_lower_multisampled_image_store,
+            dev->dev.params.gpu_generation >= 15);
 
    agx_preprocess_nir(nir);
 
