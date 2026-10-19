@@ -648,6 +648,28 @@ agx_interp_for_bary(nir_intrinsic_instr *bary, agx_index *sample_index)
    }
 }
 
+/* G15: zero if coefficient register cf holds a constant plane, A's bit 0 set
+ * and neither A nor B with an exponent. The hardware gives a channel that is
+ * the same at every vertex that plane, of the value itself rather than of the
+ * value over W, even with perspective shading (perspprobe, #338), so it must
+ * not be multiplied by W: G13's iterproj leaves it alone, as the at-offset
+ * lowering does (cf_valid in agx_nir_lower_interpolation.c). */
+static agx_index
+agx_g15_cf_varies(agx_builder *b, unsigned cf)
+{
+   agx_index abc = agx_vec_temp(b->shader, AGX_SIZE_32, 3);
+   agx_ldcf_to(b, abc, agx_immediate(cf), 1);
+   agx_emit_cached_split(b, abc, 3);
+
+   agx_index A = agx_emit_extract(b, abc, 0);
+   agx_index B = agx_emit_extract(b, abc, 1);
+   agx_index exp = agx_and(b, agx_or(b, A, B), agx_mov_imm(b, 32, 0x7f800000));
+   agx_index no_flag =
+      agx_xor(b, agx_and(b, A, agx_immediate(1)), agx_immediate(1));
+
+   return agx_or(b, exp, no_flag);
+}
+
 static void
 agx_emit_load_vary(agx_builder *b, agx_index dest, nir_intrinsic_instr *instr)
 {
@@ -706,6 +728,7 @@ agx_emit_load_vary(agx_builder *b, agx_index dest, nir_intrinsic_instr *instr)
           * flag on W's iteration, but then its reciprocal and multiplies
           * name the coefficient registers (forms the packer does not have);
           * with plain ones the flagged iteration reads 0 (boots #274-#282).
+          * A channel with a constant plane keeps its iterated value (below).
           */
          agx_index w = agx_temp(b->shader, AGX_SIZE_32);
          agx_iter_to(b, w, J, sample_index, 1, interp, false);
@@ -715,9 +738,13 @@ agx_emit_load_vary(agx_builder *b, agx_index dest, nir_intrinsic_instr *instr)
          agx_iter_to(b, vec, I, sample_index, components, interp, false);
          agx_emit_cached_split(b, vec, components);
 
+         assert(I.type == AGX_INDEX_IMMEDIATE);
          agx_index chans[4];
          for (unsigned c = 0; c < components; ++c) {
-            agx_index t = agx_fmul(b, agx_emit_extract(b, vec, c), rcp_w);
+            agx_index v = agx_emit_extract(b, vec, c);
+            agx_index t = agx_icmpsel(b, agx_g15_cf_varies(b, I.value + c),
+                                      agx_zero(), v, agx_fmul(b, v, rcp_w),
+                                      AGX_ICOND_UEQ);
 
             if (dest.size == AGX_SIZE_16) {
                chans[c] = agx_temp(b->shader, AGX_SIZE_16);
