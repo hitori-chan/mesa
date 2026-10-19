@@ -12,8 +12,8 @@
 #include <sys/stat.h>
 
 #include "drm-shim/drm_shim.h"
-#include "util/macros.h"
 #include "drm-uapi/asahi_drm.h"
+#include "util/macros.h"
 
 static struct drm_asahi_params_global params = {
    .gpu_generation = 13,
