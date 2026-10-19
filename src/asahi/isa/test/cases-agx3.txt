@@ -182,8 +182,8 @@ c70454000204022c0000 simd_shuffle_xor r0, r1, 1
 0604                 wait     0
 06fc                 wait     012345
 0620060006000600     wait_long 3
-fcfee3941a0c2d1c40c0 mov_imm  cr127, 2508570366, group 6
-d4e2c37c000812154080 mov_imm  u125l, 2091012194, group 4
+fcfeeb941a0c2d0c40c0 mov_imm  cr127, 2508570366, group 6
+d4e2cb7c000812054080 mov_imm  u125l, 2091012194, group 4
 5c8c87d41004e8044060 mov_imm  u37, 3567062028, group 3
 44d7d4e6             get_sr   7, r52h, sr87
 04940001             get_stack 0, 0, r0l, st10l
