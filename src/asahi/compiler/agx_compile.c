@@ -838,17 +838,23 @@ agx_emit_local_store_pixel(agx_builder *b, nir_intrinsic_instr *instr)
  * the target samples in bits 11:8, which Apple sets to the flag too (a helper
  * thread targets nothing). One sample per pixel (hardware boots #326-#329):
  * a four-sample target is not verified, the fields hold one bit per sample as
- * far as is known. zs_emit takes the same word (draws.md, depth output). */
+ * far as is known. zs_emit takes the same word (draws.md, depth output).
+ * The target is limited to the covered samples: G13's all-samples target drew
+ * the samples a pixel's other triangle covers, so alpha to coverage on a
+ * two-triangle quad wrote one triangle's depth into the other's samples along
+ * their shared diagonal (dEQP-VK multisample z_export.sample_mask_*_atc,
+ * alpha_to_coverage_no_color_attachment). */
 static agx_index
 agx_coverage_word_g15(agx_builder *b, agx_index target, agx_index live)
 {
    agx_index active = agx_get_sr_coverage(b, 32, AGX_SR_IS_ACTIVE_THREAD);
+   agx_index covered = agx_get_sr_coverage(b, 32, AGX_SR_COVERAGE_MASK);
 
    agx_index t = agx_temp(b->shader, AGX_SIZE_32);
    agx_index l = agx_temp(b->shader, AGX_SIZE_32);
    agx_mov_to(b, t, target);
    agx_mov_to(b, l, live);
-   t = agx_and(b, t, agx_immediate(0xf));
+   t = agx_and(b, t, covered);
    l = agx_and(b, l, agx_immediate(0xf));
 
    /* cr0 = active * (0x10 + target * 0x100) + live (iadd shifts by 4 at most) */
@@ -903,11 +909,8 @@ agx_emit_store_zs(agx_builder *b, nir_intrinsic_instr *instr)
 
    /* G15 takes movmsk's coverage word with every sample live and the
     * instruction's samples as the target, as Apple's depth-output shader
-    * builds it (draws.md, depth output). A mask left at G13's all samples
-    * (the sample count was not known) targets the covered ones.
+    * builds it (draws.md, depth output).
     */
-   if (mask.type == AGX_INDEX_IMMEDIATE && mask.value == 0xFF)
-      mask = agx_get_sr_coverage(b, 16, AGX_SR_COVERAGE_MASK);
 
    /* The stencil goes in bits 16:23 of the coverage word, the depth in the
     * next register (Apple's depthf layout, draws.md). */
