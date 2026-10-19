@@ -72,6 +72,33 @@ g15_border_format(const struct hk_sampler *sampler, struct hk_image_view *view,
              : PIPE_FORMAT_R32G32B32A32_FLOAT;
 }
 
+/* G15's opaque black puts its 1 in the format's last channel, the red of an
+ * RGBA4 view (A4B4G4R4 in memory) and the blue of a BGRA4 one (dEQP-VK
+ * sampler clamp_to_border_opaque_black). With the view known, a format whose
+ * alpha is an earlier channel takes it as a custom border, packed for it.
+ */
+static void
+g15_opaque_black_as_custom(struct hk_sampled_image_descriptor_g15 *desc,
+                           struct hk_image_view *view, unsigned plane)
+{
+   enum pipe_format format = hk_image_view_plane_format(view, plane);
+   if (util_format_description(format)->swizzle[3] >= PIPE_SWIZZLE_W)
+      return;
+
+   agx_unpack(NULL, &desc->sampler, SAMPLER, state);
+   if (state.border_colour != AGX_BORDER_COLOUR_OPAQUE_BLACK)
+      return;
+
+   agx_pack(&desc->sampler, SAMPLER, cfg) {
+      cfg = state;
+      cfg.border_colour = AGX_BORDER_COLOUR_CUSTOM;
+   }
+
+   bool integer = util_format_is_pure_integer(format);
+   const uint32_t black[4] = {0, 0, 0, integer ? 1 : fui(1.0)};
+   agx_pack_border(&desc->border, black, format);
+}
+
 /* G15's layout of a sampled image descriptor (hk_descriptor_set.h) */
 static void
 write_sampled_image_view_desc_g15(struct hk_descriptor_set *set,
@@ -135,6 +162,8 @@ write_sampled_image_view_desc_g15(struct hk_descriptor_set *set,
          if (sampler->has_border) {
             agx_pack_border(&desc[plane].border, sampler->custom_border.uint32,
                             g15_border_format(sampler, view, plane));
+         } else if (view) {
+            g15_opaque_black_as_custom(&desc[plane], view, plane);
          }
       }
    }
