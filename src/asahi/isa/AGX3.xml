@@ -2135,23 +2135,27 @@
 
   <!--
    Texture result (TextureRegDesc): 0:6 reg (32-bit registers count whole
-   registers), 7 s (32-bit), 8:11 mask (count: 1 1 1 1 2 2 3 4 2 2 2 2 3 3 3 0)
+   registers), 7 s (32-bit), 8:11 mask (count: 1 1 1 1 2 2 3 4 2 2 2 2 3 3 3 0),
+   12 h: the register's bit 7 in 16-bit units (r64 and up), instruction bit
+   153, so only in the 20-byte form (libLLVM 32023's smp tree, f2[7:7]; the
+   14-byte form requires it clear). A 32-bit result has its bits 1:6 at 0:5
+   and leaves 6 (instruction bit 23) clear: Apple's tree never sets it.
   -->
   <encoding name="texreg">
     <case>
       <!-- no components -->
       <exact bit="8:11">1111</exact>
-      <carry bit="0 1 2 3 4 5 6 7"/>
+      <carry bit="0 1 2 3 4 5 6 7 12"/>
     </case>
     <case>
-      <exact bit="7">1</exact>
-      <immediate name="reg" bit="0:6" shift="1"/>
+      <exact bit="6:7">10</exact>
+      <immediate name="reg" bit="0:5 12" shift="1"/>
       <modifier name="count" bit="8:11" table="1 1 1 1 2 2 3 4 2 2 2 2 3 3 3 0"/>
       <property name="size32"/>
     </case>
     <case>
       <exact bit="7">0</exact>
-      <immediate name="reg" bit="0:6"/>
+      <immediate name="reg" bit="0:6 12"/>
       <modifier name="count" bit="8:11" table="1 1 1 1 2 2 3 4 2 2 2 2 3 3 3 0"/>
     </case>
   </encoding>
@@ -2834,7 +2838,7 @@
     <immediate name="g0" bit="45:47"/>
     <immediate name="g1" bit="42:44"/>
     <immediate name="component" bit="27:28"/>
-    <dest kind="texreg" bit="3 4:7 22:23 15 =11 =1 =0"/>
+    <dest kind="texreg" bit="3 4:7 22:23 15 =11 =1 =0 153"/>
     <src kind="ts" bit="71 11:14 68:70 87"/>
     <src kind="cr" bit="8:10 24:25 =0"/>
     <immediate name="q1" bit="29"/>
@@ -2860,7 +2864,7 @@
     <immediate name="g0" bit="45:47"/>
     <immediate name="g1" bit="42:44"/>
     <immediate name="component" bit="27:28"/>
-    <dest kind="texreg" bit="3 4:7 22:23 15 =11 =1 =0"/>
+    <dest kind="texreg" bit="3 4:7 22:23 15 =11 =1 =0 153"/>
     <src kind="ts" bit="71 11:14 68:70 87"/>
     <src kind="cr" bit="8:10 24:25 =0"/>
     <immediate name="q1" bit="29"/>
@@ -2884,7 +2888,7 @@
     <immediate name="g0" bit="45:47"/>
     <immediate name="g1" bit="42:44"/>
     <modifier name="mask" bit="27:28 37 86" kind="texture_sample_mask"/>
-    <dest kind="texreg" bit="3 4:7 22:23 15 27:28 37 86"/>
+    <dest kind="texreg" bit="3 4:7 22:23 15 27:28 37 86 153"/>
     <src kind="ts" bit="71 11:14 68:70 87"/>
     <src kind="cr" bit="8:10 24:26"/>
     <immediate name="q1" bit="29"/>
@@ -2909,7 +2913,7 @@
     <immediate name="g0" bit="45:47"/>
     <immediate name="g1" bit="42:44"/>
     <modifier name="mask" bit="27:28 37 86" kind="texture_sample_mask"/>
-    <dest kind="texreg" bit="3 4:7 22:23 15 27:28 37 86"/>
+    <dest kind="texreg" bit="3 4:7 22:23 15 27:28 37 86 153"/>
     <src kind="ts" bit="71 11:14 68:70 87"/>
     <src kind="cr" bit="8:10 24:26"/>
     <immediate name="q1" bit="29"/>
@@ -2939,7 +2943,7 @@
     <immediate name="g0" bit="45:47"/>
     <immediate name="g1" bit="42:44"/>
     <modifier name="mask" bit="27:28 37 86" kind="texture_load_mask"/>
-    <dest kind="texreg" bit="3 4:7 22:23 15 27:28 37 86"/>
+    <dest kind="texreg" bit="3 4:7 22:23 15 27:28 37 86 153"/>
     <src kind="ts" bit="71 11:14 68:70 87"/>
     <src kind="cr" bit="8:10 24:26"/>
     <immediate name="q1" bit="29"/>
@@ -2965,7 +2969,7 @@
     <immediate name="g0" bit="45:47"/>
     <immediate name="g1" bit="42:44"/>
     <modifier name="mask" bit="27:28 37 86" kind="texture_load_mask"/>
-    <dest kind="texreg" bit="3 4:7 22:23 15 27:28 37 86"/>
+    <dest kind="texreg" bit="3 4:7 22:23 15 27:28 37 86 153"/>
     <src kind="ts" bit="71 11:14 68:70 87"/>
     <src kind="cr" bit="8:10 24:26"/>
     <immediate name="q1" bit="29"/>
@@ -3002,7 +3006,7 @@
     <immediate name="g0" bit="45:47"/>
     <immediate name="g1" bit="42:44"/>
     <modifier name="mask" bit="27:28 37 86" kind="texture_sample_mask"/>
-    <dest kind="texreg" bit="3 4:7 22:23 15 27:28 37 86"/>
+    <dest kind="texreg" bit="3 4:7 22:23 15 27:28 37 86 153"/>
     <src kind="ts" bit="71 11:14 68:70 87"/>
     <src kind="cr" bit="8:10 24:26"/>
     <immediate name="q1" bit="29"/>
@@ -3027,7 +3031,7 @@
     <immediate name="g0" bit="45:47"/>
     <immediate name="g1" bit="42:44"/>
     <modifier name="mask" bit="27:28 37 86" kind="texture_sample_mask"/>
-    <dest kind="texreg" bit="3 4:7 22:23 15 27:28 37 86"/>
+    <dest kind="texreg" bit="3 4:7 22:23 15 27:28 37 86 153"/>
     <src kind="ts" bit="71 11:14 68:70 87"/>
     <src kind="cr" bit="8:10 24:26"/>
     <immediate name="q1" bit="29"/>
@@ -3052,7 +3056,7 @@
     <immediate name="g0" bit="45:47"/>
     <immediate name="g1" bit="42:44"/>
     <modifier name="mask" bit="27:28 37 86" kind="texture_load_mask"/>
-    <dest kind="texreg" bit="3 4:7 22:23 15 27:28 37 86"/>
+    <dest kind="texreg" bit="3 4:7 22:23 15 27:28 37 86 153"/>
     <src kind="ts" bit="71 11:14 68:70 87"/>
     <src kind="cr" bit="8:10 24:26"/>
     <immediate name="q1" bit="29"/>
@@ -3086,7 +3090,7 @@
     <immediate name="g0" bit="45:47"/>
     <immediate name="g1" bit="42:44"/>
     <immediate name="component" bit="27:28"/>
-    <dest kind="texreg" bit="3 4:7 22:23 15 =11 =1 =0"/>
+    <dest kind="texreg" bit="3 4:7 22:23 15 =11 =1 =0 153"/>
     <src kind="ts" bit="71 11:14 68:70 87"/>
     <src kind="cr" bit="8:10 24:25 =0"/>
     <immediate name="q1" bit="29"/>
@@ -3108,7 +3112,7 @@
     <immediate name="g0" bit="45:47"/>
     <immediate name="g1" bit="42:44"/>
     <modifier name="mask" bit="27:28 37 86" kind="texture_sample_mask"/>
-    <dest kind="texreg" bit="3 4:7 22:23 15 27:28 37 86"/>
+    <dest kind="texreg" bit="3 4:7 22:23 15 27:28 37 86 153"/>
     <src kind="ts" bit="71 11:14 68:70 87"/>
     <src kind="cr" bit="8:10 24:26"/>
     <immediate name="q1" bit="29"/>
@@ -3132,7 +3136,7 @@
     <immediate name="g0" bit="45:47"/>
     <immediate name="g1" bit="42:44"/>
     <modifier name="mask" bit="27:28 37 86" kind="texture_load_mask"/>
-    <dest kind="texreg" bit="3 4:7 22:23 15 27:28 37 86"/>
+    <dest kind="texreg" bit="3 4:7 22:23 15 27:28 37 86 153"/>
     <src kind="ts" bit="71 11:14 68:70 87"/>
     <src kind="cr" bit="8:10 24:26"/>
     <immediate name="q1" bit="29"/>
