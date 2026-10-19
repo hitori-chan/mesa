@@ -374,7 +374,8 @@ typedef struct {
       uint16_t pixel_offset;
       uint16_t zs;
 
-      /* G15: the coordinate register an st_vary stores from */
+      /* G15: the coordinate register an st_vary stores from, or the first of
+       * an image_write's tuple */
       uint8_t vary_cr;
       int16_t stack_size;
       enum agx_sr sr;
@@ -1065,7 +1066,7 @@ void agx3_fixup_branches(struct util_dynarray *emission,
                          struct util_dynarray *fixups);
 unsigned agx3_stack_size(const agx_instr *I, unsigned scratch_B);
 unsigned agx3_cr_count(const agx_instr *I);
-void agx3_assign_vary_crs(agx_context *ctx);
+void agx3_assign_crs(agx_context *ctx);
 
 #ifndef NDEBUG
 void agx_validate(agx_context *ctx, const char *after_str);
