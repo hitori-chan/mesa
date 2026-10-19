@@ -1319,17 +1319,16 @@ lower_exports(agx_context *ctx)
    agx_emit_parallel_copies(&b, copies, nr);
 }
 
-/* G15: the register file ends at AGX_G15_MAIN_HALFREGS, a preamble's at
- * AGX_G15_MAX_HALFREGS (or either at AGX_G15_MAX_REG), past any preloaded or
- * exported register, rounded down to a multiple of the widest vector and of 8
- * halves, as the register file must be (reg_file_alignment in agx_ra) */
+/* G15: the register file ends at AGX_G15_MAX_HALFREGS (or at AGX_G15_MAX_REG),
+ * past any preloaded or exported register, rounded down to a multiple of the
+ * widest vector and of 8 halves, as the register file must be
+ * (reg_file_alignment in agx_ra) */
 DEBUG_GET_ONCE_NUM_OPTION(agx_g15_max_reg, "AGX_G15_MAX_REG", 0)
 
 static unsigned
 agx_g15_max_regs(agx_context *ctx)
 {
-   unsigned halfregs =
-      ctx->is_preamble ? AGX_G15_MAX_HALFREGS : AGX_G15_MAIN_HALFREGS;
+   unsigned halfregs = AGX_G15_MAX_HALFREGS;
    unsigned max_ncomps = 8;
 
    unsigned max_reg = debug_get_option_agx_g15_max_reg();

@@ -258,14 +258,6 @@ agx_compact_kernel_info(struct agx_shader_info *info)
  * (in the same steps; the disk cache ignores it). */
 #define AGX_G15_MAX_HALFREGS 188
 
-/* A main program stops at r63: the triangle and quad tessellators allocated
- * to r91 lost their index stores (the stores' address came out wrong, with no
- * fault), and allocated to r63 they run right. Which instruction misreads r64
- * and above is not known; Apple's corpus names registers that high only in
- * some operand positions (compute-program.md, Registers). Preambles keep
- * AGX_G15_MAX_HALFREGS for the pushed words. */
-#define AGX_G15_MAIN_HALFREGS 128
-
 /* G15 (AGX3) building blocks for the entry program, from the compiler's
  * G15 packer (agx_pack3.c). Registers and uniforms are 32-bit indices. */
 struct util_dynarray;
