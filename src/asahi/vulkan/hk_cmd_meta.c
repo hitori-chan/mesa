@@ -1154,7 +1154,7 @@ hk_meta_copy_image2(struct vk_command_buffer *cmd, struct vk_meta_device *meta,
 
             struct vk_meta_image_copy_key key = {
                .key_type = VK_META_OBJECT_KEY_COPY_IMAGE_TO_BUFFER,
-            .g15 = hk_meta_g15(device),
+               .g15 = hk_meta_g15(device),
                .type = IMG2IMG,
                .block_size = blocksize_B,
                .nr_samples = dst_image->samples,

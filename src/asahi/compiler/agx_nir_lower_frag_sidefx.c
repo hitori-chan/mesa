@@ -75,13 +75,14 @@ stencil_with_z(struct nir_builder *b, nir_intrinsic_instr *intr, void *data)
 bool
 agx_nir_lower_stencil_only_g15(nir_shader *s)
 {
-   uint64_t zs = s->info.outputs_written & (BITFIELD64_BIT(FRAG_RESULT_STENCIL) |
-                                            BITFIELD64_BIT(FRAG_RESULT_DEPTH));
+   uint64_t zs =
+      s->info.outputs_written &
+      (BITFIELD64_BIT(FRAG_RESULT_STENCIL) | BITFIELD64_BIT(FRAG_RESULT_DEPTH));
    if (zs != BITFIELD64_BIT(FRAG_RESULT_STENCIL))
       return false;
 
-   return nir_shader_intrinsics_pass(s, stencil_with_z, nir_metadata_control_flow,
-                                     NULL);
+   return nir_shader_intrinsics_pass(s, stencil_with_z,
+                                     nir_metadata_control_flow, NULL);
 }
 
 bool

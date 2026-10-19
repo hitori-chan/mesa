@@ -30,7 +30,8 @@ lower_tex_handle_to_u0(nir_builder *b, nir_intrinsic_instr *intr, void *data)
    b->cursor = nir_instr_remove(&intr->instr);
    nir_def *offs = g15 ? nir_u2u32(b, intr->src[0].ssa)
                        : nir_imul_imm(b, intr->src[0].ssa, 24);
-   nir_def_rewrite_uses(&intr->def, nir_bindless_image_agx(b, offs, .desc_set = 0));
+   nir_def_rewrite_uses(&intr->def,
+                        nir_bindless_image_agx(b, offs, .desc_set = 0));
 
    return true;
 }
@@ -58,9 +59,9 @@ add_handles_g15(nir_builder *b, nir_instr *instr, void *data)
    }
 
    if (nir_tex_instr_src_index(tex, nir_tex_src_sampler_handle) < 0) {
-      nir_def *sampler = nir_bindless_sampler_agx(
-         b, nir_imm_int(b, 0), nir_imm_intN_t(b, 0, 16),
-         .desc_set = sampler_uniform);
+      nir_def *sampler = nir_bindless_sampler_agx(b, nir_imm_int(b, 0),
+                                                  nir_imm_intN_t(b, 0, 16),
+                                                  .desc_set = sampler_uniform);
       nir_tex_instr_add_src(tex, nir_tex_src_sampler_handle, sampler);
       progress = true;
    }

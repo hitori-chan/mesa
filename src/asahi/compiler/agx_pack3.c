@@ -20,9 +20,9 @@
 #include <setjmp.h>
 #include "util/bitscan.h"
 #include "util/u_debug.h"
+#include "agx3_pack.h"
 #include "agx_builder.h"
 #include "agx_compiler.h"
-#include "agx3_pack.h"
 
 /* agx3_kind_names' order */
 enum a3_kind {
@@ -294,8 +294,8 @@ a3_fail(const struct a3 *a, const char *what)
 
 /* A register or uniform operand */
 static uint64_t
-a3_reg(struct a3 *a, unsigned op, agx_index idx, uint32_t mods,
-       uint32_t prefer, unsigned count_field)
+a3_reg(struct a3 *a, unsigned op, agx_index idx, uint32_t mods, uint32_t prefer,
+       unsigned count_field)
 {
    enum a3_kind kind;
 
@@ -414,8 +414,7 @@ a3_src(struct a3 *a, unsigned op, agx_index idx, bool integer)
    if (idx.neg)
       mods |= BITFIELD_BIT(A3_NEG);
 
-   return a3_reg(a, op, idx, mods, BITFIELD_BIT(integer ? A3_SX : A3_NEG),
-                 0);
+   return a3_reg(a, op, idx, mods, BITFIELD_BIT(integer ? A3_SX : A3_NEG), 0);
 }
 
 /* An extended integer source (iadd, imad, a memory index): the IR's abs is
@@ -428,8 +427,8 @@ a3_ext_src(struct a3 *a, unsigned op, agx_index idx)
       return a3_imm(a, op, idx.value, false);
 
    bool sx = !idx.abs && idx.size != AGX_SIZE_64;
-   return a3_reg(a, op, idx, sx ? BITFIELD_BIT(A3_SX) : 0,
-                 BITFIELD_BIT(A3_SX), 0);
+   return a3_reg(a, op, idx, sx ? BITFIELD_BIT(A3_SX) : 0, BITFIELD_BIT(A3_SX),
+                 0);
 }
 
 /* A compared value: G15 extends a 16-bit register before it compares, and
@@ -501,8 +500,9 @@ a3_check(const struct a3 *a, uint8_t *out)
 
       if (back[op] != (a->want[op] | pad)) {
          if (a3_debug)
-            fprintf(stderr, "AGX3: %s operand %u: set 0x%" PRIx64
-                    ", reads 0x%" PRIx64 "\n",
+            fprintf(stderr,
+                    "AGX3: %s operand %u: set 0x%" PRIx64 ", reads 0x%" PRIx64
+                    "\n",
                     a->spec->name, op, a->want[op], back[op]);
          return false;
       }
@@ -701,35 +701,37 @@ a3_memshift(const struct a3 *a, unsigned bytes)
 #define T_BFI       "270054000200001090100800"     /* bfi r0, r1, 0, 0 */
 #define T_MOV       "0b020100"                     /* mov r0, r1 */
 #define T_LOAD      "67005400061f2000570100404000" /* device_load 5, ... */
-#define T_STORE     "e7005400020000001100009008" "00"
-#define T_WAIT      "0604"                         /* wait 0 */
-#define T_STOP      "0e000000"
-#define T_BITOP     "0b030605000800000000"         /* andn1 r0, r1, r2 */
-#define T_CMPSEL    "02030305020605000008"         /* cmpsel ult, r0..r4 */
-#define T_CMPSEL14  T_CMPSEL "00000000"
-#define T_IMADD     "9f00540002041030d0212a00"     /* imadd r0, r1, r2, r3 */
-#define T_IADD64    "9f015400020820501105"         /* iadd dr0, dr2, dr4 */
-#define T_IADD_SH   "9f0154000200f8c81004"         /* iadd r0, 0, r0, lsl 1 */
-#define T_BFEIL     "a70054000200001090100800"     /* bfeil r0, r1, 0, 0 */
-#define T_ASR       "a7015400020408182200"         /* asr r0, r1, r2 */
-#define T_IUNOP     "2705540002044c04"             /* popcount r0, r1 */
-#define T_F2I       "27075400020494480300"         /* convert f_to_s32 */
-#define T_I2F       "a707540002048c20"             /* convert u32_to_f */
-#define T_FUNOP     "2f005400020490400200"         /* floor r0, r1 */
-#define T_FADD      "01000400020000000000"         /* fadd (10 B) */
-#define T_FFMA      "01000600020000000000"         /* ffma (10 B) */
-#define T_ZERO10    "00000000000000000000"
-#define T_ICMP_BAL  "1707540002041038a202"         /* icmp_ballot ieq */
-#define T_FCMP_BAL  "97075400020410a888840000"     /* fcmp_ballot flt */
-#define T_SHUFFLE   "c70454000204022c0000"         /* simd_shuffle_xor */
-#define T_IF        "0f055401"                     /* if cc0, 1 */
-#define T_ELSE      "0f042401"                     /* else cc0, 1 */
-#define T_WHILE     "8f045405"                     /* while cc1, 1 */
-#define T_BREAK     "8f0554010000"                 /* break cc0, 1 */
-#define T_POP_EXEC  "0f0604010000"                 /* pop_exec 1 */
-#define T_JMP       "0f015402a0c900000100"         /* jmp_exec_none */
-#define T_ZERO12    "000000000000000000000000"
-#define T_ZERO14    "0000000000000000000000000000"
+#define T_STORE                                                                \
+   "e7005400020000001100009008"                                                \
+   "00"
+#define T_WAIT     "0604" /* wait 0 */
+#define T_STOP     "0e000000"
+#define T_BITOP    "0b030605000800000000" /* andn1 r0, r1, r2 */
+#define T_CMPSEL   "02030305020605000008" /* cmpsel ult, r0..r4 */
+#define T_CMPSEL14 T_CMPSEL "00000000"
+#define T_IMADD    "9f00540002041030d0212a00" /* imadd r0, r1, r2, r3 */
+#define T_IADD64   "9f015400020820501105"     /* iadd dr0, dr2, dr4 */
+#define T_IADD_SH  "9f0154000200f8c81004"     /* iadd r0, 0, r0, lsl 1 */
+#define T_BFEIL    "a70054000200001090100800" /* bfeil r0, r1, 0, 0 */
+#define T_ASR      "a7015400020408182200"     /* asr r0, r1, r2 */
+#define T_IUNOP    "2705540002044c04"         /* popcount r0, r1 */
+#define T_F2I      "27075400020494480300"     /* convert f_to_s32 */
+#define T_I2F      "a707540002048c20"         /* convert u32_to_f */
+#define T_FUNOP    "2f005400020490400200"     /* floor r0, r1 */
+#define T_FADD     "01000400020000000000"     /* fadd (10 B) */
+#define T_FFMA     "01000600020000000000"     /* ffma (10 B) */
+#define T_ZERO10   "00000000000000000000"
+#define T_ICMP_BAL "1707540002041038a202"     /* icmp_ballot ieq */
+#define T_FCMP_BAL "97075400020410a888840000" /* fcmp_ballot flt */
+#define T_SHUFFLE  "c70454000204022c0000"     /* simd_shuffle_xor */
+#define T_IF       "0f055401"                 /* if cc0, 1 */
+#define T_ELSE     "0f042401"                 /* else cc0, 1 */
+#define T_WHILE    "8f045405"                 /* while cc1, 1 */
+#define T_BREAK    "8f0554010000"             /* break cc0, 1 */
+#define T_POP_EXEC "0f0604010000"             /* pop_exec 1 */
+#define T_JMP      "0f015402a0c900000100"     /* jmp_exec_none */
+#define T_ZERO12   "000000000000000000000000"
+#define T_ZERO14   "0000000000000000000000000000"
 
 /* libLLVM 32023's encoder (GPUCompiler.framework, macOS 26A434) with the
  * operands below: wait none, the hint bits at their defaults */
@@ -738,37 +740,43 @@ a3_memshift(const struct a3 *a, unsigned bytes)
 #define T_ATG       "670354010002000002000004"     /* threadgroup_atomic add */
 #define T_ADEV      "6701540000048182000000008003" /* device_atomic add */
 #define T_ADEV_RET  "6701540000048182000600008003" /* ... 3, st0, add */
-#define T_GET_STACK "0c80094300800000"             /* get_stack 2, 2, r0, ^st0 */
-#define T_LDTPS     "6f0054000000112000000000"     /* ldtps 0, i32, x, r0, 0 */
-#define T_STTPS     "ef005400000011080000"         /* sttps i32, x, r0, 0 */
-#define T_BARRIER   "070454610300"                 /* threadgroup_barrier */
-#define T_ST_VAR    "5706540000404800"             /* st_var ^cr0, 0, 0 */
-#define T_ST_TILE   "e70654000000012e00000000"     /* tile_store i32 */
-#define T_LD_TILE   "670654000000012e01000000"     /* tile_load 2, i32 */
-#define T_WAIT_PIX  "8702540c0800"                 /* wait_pix 12, f1 */
-#define T_SIG_PIX   "0702540c0000"                 /* signal_pix 12 */
-#define T_LDCF      "1f0354000002"                 /* ldcf 2, r0, 0 */
-#define T_ITER      "2f055400020000021000"         /* iter r0, cf0, center */
-#define T_ITER_COORDS "2f055404030202022000"       /* iter $r2, cf1, ^r2 */
-#define T_ITRCOORDS "af04540403080a03"             /* itrcoords r2, $r2, sample */
-#define T_ZS_EMIT   "d70454000003"                 /* zs_emit ^cr0, 0, z */
-#define T_MOVMSK    "570454000000"                 /* movmsk ^cr0, 0 */
-#define T_PACK_IMGWIR "9705540400080000d0401000"   /* pack_imgwir cr2, 0, u2l, 0, 0, 4 */
+#define T_GET_STACK "0c80094300800000"         /* get_stack 2, 2, r0, ^st0 */
+#define T_LDTPS     "6f0054000000112000000000" /* ldtps 0, i32, x, r0, 0 */
+#define T_STTPS     "ef005400000011080000"     /* sttps i32, x, r0, 0 */
+#define T_BARRIER   "070454610300"             /* threadgroup_barrier */
+#define T_ST_VAR    "5706540000404800"         /* st_var ^cr0, 0, 0 */
+#define T_ST_TILE   "e70654000000012e00000000" /* tile_store i32 */
+#define T_LD_TILE   "670654000000012e01000000" /* tile_load 2, i32 */
+#define T_WAIT_PIX  "8702540c0800"             /* wait_pix 12, f1 */
+#define T_SIG_PIX   "0702540c0000"             /* signal_pix 12 */
+#define T_LDCF      "1f0354000002"             /* ldcf 2, r0, 0 */
+#define T_ITER      "2f055400020000021000"     /* iter r0, cf0, center */
+#define T_ITER_COORDS "2f055404030202022000"   /* iter $r2, cf1, ^r2 */
+#define T_ITRCOORDS   "af04540403080a03"       /* itrcoords r2, $r2, sample */
+#define T_ZS_EMIT     "d70454000003"           /* zs_emit ^cr0, 0, z */
+#define T_MOVMSK      "570454000000"           /* movmsk ^cr0, 0 */
+#define T_PACK_IMGWIR                                                          \
+   "9705540400080000d0401000" /* pack_imgwir cr2, 0, u2l, 0, 0, 4 */
 /* Apple's end-of-tile layer pack (pack_imgwir cr2, 2, ^r4l, 0x204, 0, 0) */
 #define T_PACK_IMGWIR_LAYER "9705540400101000f0d00000"
-#define T_PACK_SMPIR "1705540600000004f0c00800"    /* pack_smpir cr3, 0, ^r0l, 0, 10 */
-#define T_IMGWBLK   "5710540000000080a8750000"     /* block_image_store ^cr0, 0, du0, 0, 7530 */
+#define T_PACK_SMPIR                                                           \
+   "1705540600000004f0c00800" /* pack_smpir cr3, 0, ^r0l, 0, 10 */
+#define T_IMGWBLK                                                              \
+   "5710540000000080a8750000" /* block_image_store ^cr0, 0, du0, 0, 7530 */
 /* Apple's rw.write() of the imgw capture (macOS 27.0.1): image_write ^cr8,
  * group 0, du2, index 1, level 0, xyzw, wait 0 */
-#define T_IMGW      "d71054102040000100040000883a0900"
+#define T_IMGW "d71054102040000100040000883a0900"
 
 /* Apple's texture instructions (the 2026-10-16 capture's kernels and the
  * QuartzCore corpus, texture.md) */
-#define T_TEX_L0    "05820cb830250900000010000100" /* texture_sample 2D, level 0 */
-#define T_TEX_AUTO  "05000cb8b0000000010110000100" /* texture_sample 2D, auto LOD */
-#define T_TEX_LOAD  "25800c38b0001701000100000100" /* texture_load 2D, level 0 */
-#define T_TEX_LEVELW "15000c38b0000001000110000100" /* texture_sample 2D, level in cr3 */
-#define T_TEX_BIASW "05000cb8b0240400000010000100" /* texture_sample 2D, bias in cr3 */
+#define T_TEX_L0 "05820cb830250900000010000100" /* texture_sample 2D, level 0 */
+#define T_TEX_AUTO                                                             \
+   "05000cb8b0000000010110000100" /* texture_sample 2D, auto LOD */
+#define T_TEX_LOAD "25800c38b0001701000100000100" /* texture_load 2D, level 0 */
+#define T_TEX_LEVELW                                                           \
+   "15000c38b0000001000110000100" /* texture_sample 2D, level in cr3 */
+#define T_TEX_BIASW                                                            \
+   "05000cb8b0240400000010000100" /* texture_sample 2D, bias in cr3 */
 
 /* Operand positions (AGX3.xml order) */
 enum {
@@ -953,44 +961,74 @@ a3_alu(struct a3 *a, const agx_instr *I, const struct a3_alu *d,
    a3_emit(a, emission);
 }
 
-static const struct a3_alu a3_imadd = {AGX3_IMADD, T_IMADD, {2, 3, 4}, 1, -1, 7, true, true};
-static const struct a3_alu a3_imsub = {AGX3_IMSUB, T_IMADD, {2, 3, 4}, 1, -1, 7, true, true};
-static const struct a3_alu a3_iadd = {AGX3_IADD, T_IADD, {3, 4}, 1, 2, 7, true, true};
-static const struct a3_alu a3_isub = {AGX3_ISUB, T_IADD, {3, 4}, 1, 2, 7, true, true};
-static const struct a3_alu a3_iadd64 = {AGX3_IADD64, T_IADD64, {3, 4}, 1, 2, -1, true, true};
-static const struct a3_alu a3_isub64 = {AGX3_ISUB64, T_IADD64, {3, 4}, 1, 2, -1, true, true};
-static const struct a3_alu a3_iadd_sh = {AGX3_IADD_SHIFT, T_IADD_SH, {3, 4}, 1, 2, -1, true, true};
-static const struct a3_alu a3_isub_sh = {AGX3_ISUB_SHIFT, T_IADD_SH, {3, 4}, 1, 2, -1, true, true};
-static const struct a3_alu a3_bfi = {AGX3_BFI, T_BFI, {2, 3, 4}, 1, -1, -1, true};
-static const struct a3_alu a3_bfeil = {AGX3_BFEIL, T_BFEIL, {2, 3, 4}, 1, -1, -1, true};
-static const struct a3_alu a3_extr = {AGX3_EXTR, T_BFEIL, {2, 3, 4}, 1, -1, -1, true};
+static const struct a3_alu a3_imadd = {AGX3_IMADD, T_IMADD, {2, 3, 4}, 1,
+                                       -1,         7,       true,      true};
+static const struct a3_alu a3_imsub = {AGX3_IMSUB, T_IMADD, {2, 3, 4}, 1,
+                                       -1,         7,       true,      true};
+static const struct a3_alu a3_iadd = {AGX3_IADD, T_IADD, {3, 4}, 1,
+                                      2,         7,      true,   true};
+static const struct a3_alu a3_isub = {AGX3_ISUB, T_IADD, {3, 4}, 1,
+                                      2,         7,      true,   true};
+static const struct a3_alu a3_iadd64 = {AGX3_IADD64, T_IADD64, {3, 4}, 1,
+                                        2,           -1,       true,   true};
+static const struct a3_alu a3_isub64 = {AGX3_ISUB64, T_IADD64, {3, 4}, 1,
+                                        2,           -1,       true,   true};
+static const struct a3_alu a3_iadd_sh = {
+   AGX3_IADD_SHIFT, T_IADD_SH, {3, 4}, 1, 2, -1, true, true};
+static const struct a3_alu a3_isub_sh = {
+   AGX3_ISUB_SHIFT, T_IADD_SH, {3, 4}, 1, 2, -1, true, true};
+static const struct a3_alu a3_bfi = {AGX3_BFI, T_BFI, {2, 3, 4}, 1,
+                                     -1,       -1,    true};
+static const struct a3_alu a3_bfeil = {AGX3_BFEIL, T_BFEIL, {2, 3, 4}, 1,
+                                       -1,         -1,      true};
+static const struct a3_alu a3_extr = {AGX3_EXTR, T_BFEIL, {2, 3, 4}, 1,
+                                      -1,        -1,      true};
 static const struct a3_alu a3_asr = {AGX3_ASR, T_ASR, {2, 3}, 1, -1, -1, true};
-static const struct a3_alu a3_bitrev = {AGX3_BITREV, T_IUNOP, {2}, 1, -1, -1, true};
-static const struct a3_alu a3_popcount = {AGX3_POPCOUNT, T_IUNOP, {2}, 1, -1, -1, true};
+static const struct a3_alu a3_bitrev = {AGX3_BITREV, T_IUNOP, {2}, 1,
+                                        -1,          -1,      true};
+static const struct a3_alu a3_popcount = {
+   AGX3_POPCOUNT, T_IUNOP, {2}, 1, -1, -1, true};
 static const struct a3_alu a3_ffs = {AGX3_FFS, T_IUNOP, {2}, 1, -1, -1, true};
-static const struct a3_alu a3_fadd = {AGX3_FADD10, T_FADD, {1, 2}, -1, -1, 5, false};
-static const struct a3_alu a3_fmul = {AGX3_FMUL12, T_ZERO12, {1, 2}, -1, -1, 5, false};
-static const struct a3_alu a3_ffma = {AGX3_FFMA10, T_FFMA, {1, 2, 3}, -1, -1, 6, false};
-static const struct a3_alu a3_hadd = {AGX3_HADD10, T_ZERO10, {1, 2}, -1, -1, 4, false};
-static const struct a3_alu a3_hmul = {AGX3_HMUL10, T_ZERO10, {1, 2}, -1, -1, 4, false};
-static const struct a3_alu a3_hfma = {AGX3_HFMA10, T_FFMA, {1, 2, 3}, -1, -1, 5, false};
+static const struct a3_alu a3_fadd = {AGX3_FADD10, T_FADD, {1, 2}, -1,
+                                      -1,          5,      false};
+static const struct a3_alu a3_fmul = {AGX3_FMUL12, T_ZERO12, {1, 2}, -1,
+                                      -1,          5,        false};
+static const struct a3_alu a3_ffma = {AGX3_FFMA10, T_FFMA, {1, 2, 3}, -1,
+                                      -1,          6,      false};
+static const struct a3_alu a3_hadd = {AGX3_HADD10, T_ZERO10, {1, 2}, -1,
+                                      -1,          4,        false};
+static const struct a3_alu a3_hmul = {AGX3_HMUL10, T_ZERO10, {1, 2}, -1,
+                                      -1,          4,        false};
+static const struct a3_alu a3_hfma = {AGX3_HFMA10, T_FFMA, {1, 2, 3}, -1,
+                                      -1,          5,      false};
 
 /* The float unary operations: dest, t/v, source */
 static enum agx3_instr
 a3_funop(enum agx_opcode op)
 {
    switch (op) {
-   case AGX_OPCODE_FLOOR: return AGX3_FLOOR;
-   case AGX_OPCODE_CEIL: return AGX3_CEIL;
-   case AGX_OPCODE_TRUNC: return AGX3_TRUNC;
-   case AGX_OPCODE_ROUNDEVEN: return AGX3_RINT;
-   case AGX_OPCODE_RCP: return AGX3_RCP;
-   case AGX_OPCODE_RSQRT: return AGX3_RSQRT;
-   case AGX_OPCODE_SRSQRT: return AGX3_RSQRT_SPECIAL;
-   case AGX_OPCODE_LOG2: return AGX3_LOG2;
-   case AGX_OPCODE_EXP2: return AGX3_EXP2;
-   case AGX_OPCODE_SIN_PT_2: return AGX3_SINC; /* sin(A pi / 2) / A */
-   default: return AGX3_NUM_INSTRS;
+   case AGX_OPCODE_FLOOR:
+      return AGX3_FLOOR;
+   case AGX_OPCODE_CEIL:
+      return AGX3_CEIL;
+   case AGX_OPCODE_TRUNC:
+      return AGX3_TRUNC;
+   case AGX_OPCODE_ROUNDEVEN:
+      return AGX3_RINT;
+   case AGX_OPCODE_RCP:
+      return AGX3_RCP;
+   case AGX_OPCODE_RSQRT:
+      return AGX3_RSQRT;
+   case AGX_OPCODE_SRSQRT:
+      return AGX3_RSQRT_SPECIAL;
+   case AGX_OPCODE_LOG2:
+      return AGX3_LOG2;
+   case AGX_OPCODE_EXP2:
+      return AGX3_EXP2;
+   case AGX_OPCODE_SIN_PT_2:
+      return AGX3_SINC; /* sin(A pi / 2) / A */
+   default:
+      return AGX3_NUM_INSTRS;
    }
 }
 
@@ -1027,7 +1065,7 @@ a3_cmpsel(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
       [AGX_ICOND_SEQ] = 15, [AGX_ICOND_SLT] = 7, [AGX_ICOND_SGT] = 6,
    };
    static const uint8_t fcc[] = {
-      [AGX_FCOND_EQ] = 8, [AGX_FCOND_LT] = 3,  [AGX_FCOND_GT] = 2,
+      [AGX_FCOND_EQ] = 8,  [AGX_FCOND_LT] = 3,  [AGX_FCOND_GT] = 2,
       [AGX_FCOND_LTN] = 1, [AGX_FCOND_GE] = 10, [AGX_FCOND_LE] = 11,
       [AGX_FCOND_GTN] = 0,
    };
@@ -1100,14 +1138,19 @@ a3_convert(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
 {
    static const int8_t f2i[16] = {
       [0 ... 15] = -1,
-      [AGX_CONVERT_F_TO_U16] = 4, [AGX_CONVERT_F_TO_S16] = 3,
-      [AGX_CONVERT_F_TO_U32] = 0, [AGX_CONVERT_F_TO_S32] = 5,
+      [AGX_CONVERT_F_TO_U16] = 4,
+      [AGX_CONVERT_F_TO_S16] = 3,
+      [AGX_CONVERT_F_TO_U32] = 0,
+      [AGX_CONVERT_F_TO_S32] = 5,
    };
    static const int8_t i2f[16] = {
       [0 ... 15] = -1,
-      [AGX_CONVERT_U8_TO_F] = 1,  [AGX_CONVERT_S8_TO_F] = 3,
-      [AGX_CONVERT_U16_TO_F] = 0, [AGX_CONVERT_S16_TO_F] = 2,
-      [AGX_CONVERT_U32_TO_F] = 4, [AGX_CONVERT_S32_TO_F] = 6,
+      [AGX_CONVERT_U8_TO_F] = 1,
+      [AGX_CONVERT_S8_TO_F] = 3,
+      [AGX_CONVERT_U16_TO_F] = 0,
+      [AGX_CONVERT_S16_TO_F] = 2,
+      [AGX_CONVERT_U32_TO_F] = 4,
+      [AGX_CONVERT_S32_TO_F] = 6,
    };
 
    if (I->src[0].type != AGX_INDEX_IMMEDIATE || I->src[0].value > 15)
@@ -1156,8 +1199,7 @@ a3_mem(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
    a3_set(a, MEM_REG, a3_memreg(a, MEM_REG, reg, type, a3_mem_mask[I->mask]));
    a3_set(a, MEM_BASE, a3_membase(a, MEM_BASE, base));
    a3_set(a, MEM_INDEX, a3_memidx(a, MEM_INDEX, index));
-   a3_set(a, MEM_SHIFT,
-          a3_memshift(a, I->shift + a3_format_shift(I->format)));
+   a3_set(a, MEM_SHIFT, a3_memshift(a, I->shift + a3_format_shift(I->format)));
    a3_set(a, MEM_OFFSET, 0);
    a3_emit(a, emission);
 }
@@ -1258,7 +1300,8 @@ a3_stack_mem(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
 
       if (offset.type == AGX_INDEX_IMMEDIATE) {
          unsigned bytes = c * (halves ? 4 : agx_size_align_16(r.size) * 2);
-         a3_set(a, TPS_INDEX, a3_imm(a, TPS_INDEX, offset.value + bytes, false));
+         a3_set(a, TPS_INDEX,
+                a3_imm(a, TPS_INDEX, offset.value + bytes, false));
       } else if (c == 0) {
          a3_set(a, TPS_INDEX,
                 a3_reg(a, TPS_INDEX, offset, 0, BITFIELD_BIT(A3_SX), 0));
@@ -1314,8 +1357,7 @@ a3_local_atomic(struct a3 *a, const agx_instr *I,
 
    a3_begin(a, I, AGX3_THREADGROUP_ATOMIC, T_ATG);
    a3_set(a, ATG_G, result ? A3_SYNC_G + 1 : 0);
-   a3_set(a, ATG_DST,
-          result ? a3_reg(a, ATG_DST, I->dest[0], 0, 0, 0) : 0);
+   a3_set(a, ATG_DST, result ? a3_reg(a, ATG_DST, I->dest[0], 0, 0, 0) : 0);
    a3_set(a, ATG_DATA, a3_atomic_data(a, ATG_DATA, I->src[0]));
    a3_set(a, ATG_BASE, a3_tgsrc(a, ATG_BASE, I->src[1]));
    a3_set(a, ATG_INDEX, a3_tgsrc(a, ATG_INDEX, I->src[2]));
@@ -1542,47 +1584,83 @@ enum a3_tex_lod {
 
 #define A3_NO_CODE 0xffff
 #define N          A3_NO_CODE
-static const uint16_t a3_tex_code[AGX_DIM_CUBE_ARRAY + 1][2][6][3][2] = {
-   [AGX_DIM_2D] = {
-      {{{0, 32}, {513, 545}, {64, 96}}, {{7, 39}, {779, 811}, {71, 103}},
-       {{9, 41}, {539, 571}, {73, 105}}, {{4, 36}, {641, 673}, {68, 100}},
-       {{256, 288}, {529, 561}, {320, 352}}, {{260, 292}, {521, 553}, {324, 356}}},
-      {{{1152, N}, {649, N}, {1216, N}}, {{N, N}, {N, N}, {N, N}},
-       {{279, N}, {515, N}, {343, N}}, {{N, N}, {N, N}, {N, N}},
-       {{9344, N}, {713, N}, {9408, N}}, {{N, N}, {N, N}, {N, N}}},
-   },
-   [AGX_DIM_2D_ARRAY] = {
-      {{{1024, 1056}, {769, 801}, {1088, 1120}}, {{263, 295}, {843, 875}, {327, 359}},
-       {{265, 297}, {603, 635}, {329, 361}}, {{8, 40}, {897, 929}, {72, 104}},
-       {{264, 296}, {593, 625}, {328, 360}}, {{268, 300}, {777, 809}, {332, 364}}},
-      {{{1184, N}, {905, N}, {1248, N}}, {{N, N}, {N, N}, {N, N}},
-       {{407, N}, {579, N}, {471, N}}, {{N, N}, {N, N}, {N, N}},
-       {{9376, N}, {969, N}, {9440, N}}, {{N, N}, {N, N}, {N, N}}},
-   },
-   [AGX_DIM_3D] = {
-      {{{384, N}, {657, N}, {416, N}}, {{59, N}, {661, N}, {187, N}},
-       {{57, N}, {917, N}, {185, N}}, {{400, N}, {665, N}, {436, N}},
-       {{8584, N}, {537, N}, {8616, N}}, {{412, N}, {793, N}, {444, N}}},
-      {{{388, N}, {785, N}, {420, N}}, {{N, N}, {N, N}, {N, N}},
-       {{121, N}, {899, N}, {249, N}}, {{N, N}, {N, N}, {N, N}},
-       {{408, N}, {601, N}, {440, N}}, {{N, N}, {N, N}, {N, N}}},
-   },
-   [AGX_DIM_CUBE] = {
-      {{{16, 48}, {N, N}, {N, N}}, {{273, 305}, {N, N}, {N, N}},
-       {{19, 51}, {N, N}, {N, N}}, {{20, 52}, {N, N}, {N, N}},
-       {{768, 800}, {N, N}, {832, 864}}, {{772, 804}, {N, N}, {836, 868}}},
-      {{{4224, N}, {N, N}, {N, N}}, {{N, N}, {N, N}, {N, N}},
-       {{311, N}, {N, N}, {N, N}}, {{N, N}, {N, N}, {N, N}},
-       {{12416, N}, {N, N}, {N, N}}, {{N, N}, {N, N}, {N, N}}},
-   },
-   [AGX_DIM_CUBE_ARRAY] = {
-      {{{1040, 1072}, {N, N}, {N, N}}, {{401, 433}, {N, N}, {N, N}},
-       {{83, 115}, {N, N}, {N, N}}, {{24, 56}, {N, N}, {N, N}},
-       {{776, 808}, {N, N}, {840, 872}}, {{780, 812}, {N, N}, {844, 876}}},
-      {{{4256, N}, {N, N}, {N, N}}, {{N, N}, {N, N}, {N, N}},
-       {{375, N}, {N, N}, {N, N}}, {{N, N}, {N, N}, {N, N}},
-       {{12448, N}, {N, N}, {N, N}}, {{N, N}, {N, N}, {N, N}}},
-   },
+static const uint16_t a3_tex_code[AGX_DIM_CUBE_ARRAY + 1][2][6][3][2] =
+   {
+      [AGX_DIM_2D] =
+         {
+            {{{0, 32}, {513, 545}, {64, 96}},
+             {{7, 39}, {779, 811}, {71, 103}},
+             {{9, 41}, {539, 571}, {73, 105}},
+             {{4, 36}, {641, 673}, {68, 100}},
+             {{256, 288}, {529, 561}, {320, 352}},
+             {{260, 292}, {521, 553}, {324, 356}}},
+            {{{1152, N}, {649, N}, {1216, N}},
+             {{N, N}, {N, N}, {N, N}},
+             {{279, N}, {515, N}, {343, N}},
+             {{N, N}, {N, N}, {N, N}},
+             {{9344, N}, {713, N}, {9408, N}},
+             {{N, N}, {N, N}, {N, N}}},
+         },
+      [AGX_DIM_2D_ARRAY] =
+         {
+            {{{1024, 1056}, {769, 801}, {1088, 1120}},
+             {{263, 295}, {843, 875}, {327, 359}},
+             {{265, 297}, {603, 635}, {329, 361}},
+             {{8, 40}, {897, 929}, {72, 104}},
+             {{264, 296}, {593, 625}, {328, 360}},
+             {{268, 300}, {777, 809}, {332, 364}}},
+            {{{1184, N}, {905, N}, {1248, N}},
+             {{N, N}, {N, N}, {N, N}},
+             {{407, N}, {579, N}, {471, N}},
+             {{N, N}, {N, N}, {N, N}},
+             {{9376, N}, {969, N}, {9440, N}},
+             {{N, N}, {N, N}, {N, N}}},
+         },
+      [AGX_DIM_3D] =
+         {
+            {{{384, N}, {657, N}, {416, N}},
+             {{59, N}, {661, N}, {187, N}},
+             {{57, N}, {917, N}, {185, N}},
+             {{400, N}, {665, N}, {436, N}},
+             {{8584, N}, {537, N}, {8616, N}},
+             {{412, N}, {793, N}, {444, N}}},
+            {{{388, N}, {785, N}, {420, N}},
+             {{N, N}, {N, N}, {N, N}},
+             {{121, N}, {899, N}, {249, N}},
+             {{N, N}, {N, N}, {N, N}},
+             {{408, N}, {601, N}, {440, N}},
+             {{N, N}, {N, N}, {N, N}}},
+         },
+      [AGX_DIM_CUBE] =
+         {
+            {{{16, 48}, {N, N}, {N, N}},
+             {{273, 305}, {N, N}, {N, N}},
+             {{19, 51}, {N, N}, {N, N}},
+             {{20, 52}, {N, N}, {N, N}},
+             {{768, 800}, {N, N}, {832, 864}},
+             {{772, 804}, {N, N}, {836, 868}}},
+            {{{4224, N}, {N, N}, {N, N}},
+             {{N, N}, {N, N}, {N, N}},
+             {{311, N}, {N, N}, {N, N}},
+             {{N, N}, {N, N}, {N, N}},
+             {{12416, N}, {N, N}, {N, N}},
+             {{N, N}, {N, N}, {N, N}}},
+         },
+      [AGX_DIM_CUBE_ARRAY] =
+         {
+            {{{1040, 1072}, {N, N}, {N, N}},
+             {{401, 433}, {N, N}, {N, N}},
+             {{83, 115}, {N, N}, {N, N}},
+             {{24, 56}, {N, N}, {N, N}},
+             {{776, 808}, {N, N}, {840, 872}},
+             {{780, 812}, {N, N}, {844, 876}}},
+            {{{4256, N}, {N, N}, {N, N}},
+             {{N, N}, {N, N}, {N, N}},
+             {{375, N}, {N, N}, {N, N}},
+             {{N, N}, {N, N}, {N, N}},
+             {{12448, N}, {N, N}, {N, N}},
+             {{N, N}, {N, N}, {N, N}}},
+         },
 };
 #undef N
 
@@ -1679,8 +1757,7 @@ a3_tex_offset_word(const agx_instr *I)
 static bool
 a3_tex_offset_in_word(const agx_instr *I)
 {
-   return I->offset &&
-          (I->shadow || I->src[5].type != AGX_INDEX_IMMEDIATE);
+   return I->offset && (I->shadow || I->src[5].type != AGX_INDEX_IMMEDIATE);
 }
 
 /* The coordinates of a gradient sample: the IR's (G13's) order, dP/dx and
@@ -1688,8 +1765,7 @@ a3_tex_offset_in_word(const agx_instr *I)
 static unsigned
 a3_tex_grad_words(const agx_instr *I)
 {
-   return I->lod_mode == AGX_LOD_MODE_LOD_GRAD ? I->src[1].channels_m1 + 1
-                                               : 0;
+   return I->lod_mode == AGX_LOD_MODE_LOD_GRAD ? I->src[1].channels_m1 + 1 : 0;
 }
 
 /* texture_sample / texture_load (texture.md; boots #252 and #256 run
@@ -1754,22 +1830,23 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
       a3_fail(a, "texture coordinates are not 32-bit or more than four");
    if (I->mask == 0 || I->mask > 15)
       a3_fail(a, "texture result mask");
-   if (off_word && (offset.type != AGX_INDEX_REGISTER ||
-                    offset.size != AGX_SIZE_32))
+   if (off_word &&
+       (offset.type != AGX_INDEX_REGISTER || offset.size != AGX_SIZE_32))
       a3_fail(a, "texture offset is not a 32-bit register");
 
    /* The forms with a mode code: compares, a LOD word, gradients and an
     * offset in the LOD word (the code table); the others by name */
-   bool coded = I->shadow || lodw || grad || off_word ||
-                (gather && (I->dim == AGX_DIM_CUBE ||
-                            I->dim == AGX_DIM_CUBE_ARRAY));
+   bool coded =
+      I->shadow || lodw || grad || off_word ||
+      (gather && (I->dim == AGX_DIM_CUBE || I->dim == AGX_DIM_CUBE_ARRAY));
    enum agx3_instr instr = A3_NONE;
    const char *tmpl = load ? T_TEX_LOAD : auto_lod ? T_TEX_AUTO : T_TEX_L0;
    unsigned code = A3_NO_CODE;
 
    if (coded) {
-      enum a3_tex_lod form = grad   ? A3_LOD_GRAD
-                             : lodw ? (bias ? A3_LOD_BIAS_WORD : A3_LOD_LEVEL_WORD)
+      enum a3_tex_lod form = grad ? A3_LOD_GRAD
+                             : lodw
+                                ? (bias ? A3_LOD_BIAS_WORD : A3_LOD_LEVEL_WORD)
                              : (auto_lod || gather) ? A3_LOD_AUTO
                                                     : A3_LOD_LEVEL_F28;
 
@@ -1784,8 +1861,9 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
       case AGX_DIM_3D:
       case AGX_DIM_CUBE:
       case AGX_DIM_CUBE_ARRAY:
-         code = a3_tex_code[I->dim][load][form]
-                           [off_word ? 2 : I->offset ? 1 : 0][I->shadow];
+         code = a3_tex_code[I->dim][load][form][off_word    ? 2
+                                                : I->offset ? 1
+                                                            : 0][I->shadow];
          break;
       default:
          break;
@@ -1802,8 +1880,8 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
          tmpl = T_TEX_BIASW;
    } else if (gather) {
       /* whatever the stage: a gather reads one level */
-      instr = a3_tex_pick(I->offset ? a3_tex_gather_offset : a3_tex_gather,
-                          I->dim);
+      instr =
+         a3_tex_pick(I->offset ? a3_tex_gather_offset : a3_tex_gather, I->dim);
       tmpl = T_TEX_AUTO;
    } else if (I->offset) {
       instr = a3_tex_pick(load       ? a3_tex_load_offset
@@ -1903,7 +1981,8 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
    if (gather) {
       /* four values of one component (AGX_GATHER_R, _G, _B, _A) */
       a3_set(a, TEX_COMPONENT, I->gather >> 1);
-      a3_set(a, TEX_DST, a3_reg(a, TEX_DST, I->dest[0], 0, 0, a3_tex_mask[0xf]));
+      a3_set(a, TEX_DST,
+             a3_reg(a, TEX_DST, I->dest[0], 0, 0, a3_tex_mask[0xf]));
    } else {
       a3_set(a, TEX_MASK, a3_tex_mask[I->mask]);
       a3_set(a, TEX_DST,
@@ -1956,7 +2035,7 @@ agx3_cr_count(const agx_instr *I)
       /* x, y and pack_imgwir's cr2; a layered target's layer pack in cr2
        * and the offset's in cr3 */
       return (I->dim == AGX_DIM_2D_ARRAY || I->dim == AGX_DIM_2D_MS_ARRAY) ? 4
-                                                                          : 2;
+                                                                           : 2;
    case AGX_OPCODE_IMAGE_LOAD:
       return 2;
    case AGX_OPCODE_IMAGE_WRITE:
@@ -2085,8 +2164,7 @@ a3_uniform_store(struct a3 *a, const agx_instr *I,
          a3_begin(a, I, len == 4 ? AGX3_MOV : AGX3_MOV10,
                   len == 4 ? T_MOV : T_ZERO10);
          a3_set(a, MOV_DST, a3_reg(a, MOV_DST, dst, 0, 0, 0));
-         a3_set(a, MOV_SRC,
-                a3_reg(a, MOV_SRC, src, 0, BITFIELD_BIT(A3_SX), 0));
+         a3_set(a, MOV_SRC, a3_reg(a, MOV_SRC, src, 0, BITFIELD_BIT(A3_SX), 0));
 
          if (len == 10 || a3_check(a, out))
             break;
@@ -2138,8 +2216,7 @@ a3_mov_cr(struct a3 *a, const agx_instr *I, unsigned cr, agx_index value,
          dst |= BITFIELD64_BIT(15);
 
       a3_set(a, MOV_DST, dst);
-      a3_set(a, MOV_SRC,
-             a3_reg(a, MOV_SRC, value, 0, BITFIELD_BIT(A3_SX), 0));
+      a3_set(a, MOV_SRC, a3_reg(a, MOV_SRC, value, 0, BITFIELD_BIT(A3_SX), 0));
 
       if (len == 10 || a3_check(a, out))
          break;
@@ -2275,8 +2352,7 @@ a3_tile(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
    if (load)
       a3_set(a, LD_TILE_G, A3_SYNC_G);
    a3_set(a, r, a3_memreg(a, r, reg, type, a3_mem_mask[I->mask]));
-   a3_set(a, r + 1,
-          I->explicit_coords ? a3_reg(a, r + 1, coords, 0, 0, 0) : 0);
+   a3_set(a, r + 1, I->explicit_coords ? a3_reg(a, r + 1, coords, 0, 0, 0) : 0);
    a3_set(a, r + 2, a3_src9(a, r + 2, samples));
    a3_set(a, r + 3, a3_imm(a, r + 3, I->pixel_offset, false));
    a3_emit(a, emission);
@@ -2387,14 +2463,14 @@ a3_iter(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
          a3_set(a, ITER_COORDS_DST, a3_reg(a, ITER_COORDS_DST, d, 0, 0, 0));
          a3_set(a, ITER_COORDS_CF,
                 a3_kind_value(a, ITER_COORDS_CF, A3_CF, cf.value + i, 0));
-         a3_set(a, ITER_COORDS_CRD, a3_reg(a, ITER_COORDS_CRD, sample, 0, 0, 0));
+         a3_set(a, ITER_COORDS_CRD,
+                a3_reg(a, ITER_COORDS_CRD, sample, 0, 0, 0));
          a3_emit(a, emission);
       }
       return;
    default:
       a3_fail(a, "iter at the centroid (G15: itrcoords)");
    }
-
 
    for (unsigned i = 0; i < I->channels; i++) {
       agx_index d = dest;
@@ -2488,7 +2564,8 @@ a3_sample_mask(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
    a3_mov_cr(a, I, 0, I->src[0], emission);
 
    a3_begin(a, I, AGX3_MOVMSK, T_MOVMSK);
-   a3_set(a, MOVMSK_CR, a3_kind_value(a, MOVMSK_CR, A3_CR, 0, BITFIELD_BIT(A3_LU)));
+   a3_set(a, MOVMSK_CR,
+          a3_kind_value(a, MOVMSK_CR, A3_CR, 0, BITFIELD_BIT(A3_LU)));
    a3_set(a, MOVMSK_G, 0);
    a3_set(a, MOVMSK_WAIT, BITFIELD_BIT(0));
    a3_emit(a, emission);
@@ -2699,12 +2776,12 @@ a3_ballot(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
       [AGX_ICOND_SEQ] = 1, [AGX_ICOND_SLT] = 3, [AGX_ICOND_SGT] = 2,
    };
    static const int8_t fcc[] = {
-      [AGX_FCOND_EQ] = 0,   [AGX_FCOND_LT] = 4,   [AGX_FCOND_GT] = 2,
-      [AGX_FCOND_LTN] = -1, [AGX_FCOND_GE] = 1,   [AGX_FCOND_LE] = 3,
+      [AGX_FCOND_EQ] = 0,   [AGX_FCOND_LT] = 4, [AGX_FCOND_GT] = 2,
+      [AGX_FCOND_LTN] = -1, [AGX_FCOND_GE] = 1, [AGX_FCOND_LE] = 3,
       [AGX_FCOND_GTN] = -1,
    };
-   bool fl = I->op == AGX_OPCODE_FCMP_BALLOT ||
-             I->op == AGX_OPCODE_FCMP_QUAD_BALLOT;
+   bool fl =
+      I->op == AGX_OPCODE_FCMP_BALLOT || I->op == AGX_OPCODE_FCMP_QUAD_BALLOT;
    bool quad = I->op == AGX_OPCODE_ICMP_QUAD_BALLOT ||
                I->op == AGX_OPCODE_FCMP_QUAD_BALLOT;
    int cc = fl ? fcc[I->fcond] : icc[I->icond];
@@ -2729,15 +2806,24 @@ static enum agx3_instr
 a3_shuffle(enum agx_opcode op)
 {
    switch (op) {
-   case AGX_OPCODE_SHUFFLE: return AGX3_SIMD_SHUFFLE;
-   case AGX_OPCODE_SHUFFLE_XOR: return AGX3_SIMD_SHUFFLE_XOR;
-   case AGX_OPCODE_SHUFFLE_UP: return AGX3_SIMD_SHUFFLE_UP;
-   case AGX_OPCODE_SHUFFLE_DOWN: return AGX3_SIMD_SHUFFLE_DOWN;
-   case AGX_OPCODE_QUAD_SHUFFLE: return AGX3_QUAD_SHUFFLE;
-   case AGX_OPCODE_QUAD_SHUFFLE_XOR: return AGX3_QUAD_SHUFFLE_XOR;
-   case AGX_OPCODE_QUAD_SHUFFLE_UP: return AGX3_QUAD_SHUFFLE_UP;
-   case AGX_OPCODE_QUAD_SHUFFLE_DOWN: return AGX3_QUAD_SHUFFLE_DOWN;
-   default: return AGX3_NUM_INSTRS;
+   case AGX_OPCODE_SHUFFLE:
+      return AGX3_SIMD_SHUFFLE;
+   case AGX_OPCODE_SHUFFLE_XOR:
+      return AGX3_SIMD_SHUFFLE_XOR;
+   case AGX_OPCODE_SHUFFLE_UP:
+      return AGX3_SIMD_SHUFFLE_UP;
+   case AGX_OPCODE_SHUFFLE_DOWN:
+      return AGX3_SIMD_SHUFFLE_DOWN;
+   case AGX_OPCODE_QUAD_SHUFFLE:
+      return AGX3_QUAD_SHUFFLE;
+   case AGX_OPCODE_QUAD_SHUFFLE_XOR:
+      return AGX3_QUAD_SHUFFLE_XOR;
+   case AGX_OPCODE_QUAD_SHUFFLE_UP:
+      return AGX3_QUAD_SHUFFLE_UP;
+   case AGX_OPCODE_QUAD_SHUFFLE_DOWN:
+      return AGX3_QUAD_SHUFFLE_DOWN;
+   default:
+      return AGX3_NUM_INSTRS;
    }
 }
 
@@ -2750,15 +2836,15 @@ a3_shuffle(enum agx_opcode op)
  * re-enables only the threads whose cc is true. Jumps count from the jump
  * instruction's start. The IR's compare-and-branch instructions are a cmp
  * to CF_CC and the instruction on it. */
-#define CF_CC          0
-#define CC_ALWAYS      6
-#define CMP_CC         0
-#define CMP_D          1
-#define CMP_A          2
-#define CMP_B          3
-#define EXEC_A         0
-#define EXEC_N         1
-#define JMP_TARGET     0
+#define CF_CC      0
+#define CC_ALWAYS  6
+#define CMP_CC     0
+#define CMP_D      1
+#define CMP_A      2
+#define CMP_B      3
+#define EXEC_A     0
+#define EXEC_N     1
+#define JMP_TARGET 0
 
 struct agx3_fixup {
    agx_block *block;
@@ -2780,7 +2866,7 @@ static unsigned
 a3_fcc(enum agx_fcond c)
 {
    static const uint8_t fcc[] = {
-      [AGX_FCOND_EQ] = 8, [AGX_FCOND_LT] = 3,  [AGX_FCOND_GT] = 2,
+      [AGX_FCOND_EQ] = 8,  [AGX_FCOND_LT] = 3,  [AGX_FCOND_GT] = 2,
       [AGX_FCOND_LTN] = 1, [AGX_FCOND_GE] = 10, [AGX_FCOND_LE] = 11,
       [AGX_FCOND_GTN] = 0,
    };
@@ -2831,7 +2917,8 @@ a3_cf_cmp(struct a3 *a, const agx_instr *I, enum agx3_instr instr,
           const char *tmpl, struct util_dynarray *emission)
 {
    bool fl = I->op == AGX_OPCODE_IF_FCMP || I->op == AGX_OPCODE_ELSE_FCMP ||
-             I->op == AGX_OPCODE_WHILE_FCMP || I->op == AGX_OPCODE_BREAK_IF_FCMP;
+             I->op == AGX_OPCODE_WHILE_FCMP ||
+             I->op == AGX_OPCODE_BREAK_IF_FCMP;
    unsigned cond = fl ? a3_fcc(I->fcond) : a3_icc(I->icond);
    unsigned cc = CF_CC;
 
@@ -3110,7 +3197,8 @@ agx3_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
       if (srcs[1].type != AGX_INDEX_IMMEDIATE)
          srcs[1].size = AGX_SIZE_16;
 
-      struct a3_alu d = {a3_shuffle(I->op), T_SHUFFLE, {2, 3}, VT, -1, -1, true};
+      struct a3_alu d = {
+         a3_shuffle(I->op), T_SHUFFLE, {2, 3}, VT, -1, -1, true};
       a3_alu(&a, I, &d, srcs, emission);
       return;
    }
@@ -3371,8 +3459,9 @@ agx3_instr_length(const uint8_t *code)
       unsigned length = spec->lengths[0];
 
       if (spec->has_length) {
-         unsigned idx = (raw[spec->length_bit / 64] >> (spec->length_bit % 64)) &
-                        (spec->nlengths - 1);
+         unsigned idx =
+            (raw[spec->length_bit / 64] >> (spec->length_bit % 64)) &
+            (spec->nlengths - 1);
          length = spec->lengths[idx];
       }
 

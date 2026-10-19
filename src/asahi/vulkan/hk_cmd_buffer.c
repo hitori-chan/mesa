@@ -9,10 +9,10 @@
 #include "agx_abi.h"
 #include "agx_bo.h"
 #include "agx_device.h"
+#include "agx_esl.h"
 #include "agx_linker.h"
 #include "agx_tilebuffer.h"
 #include "agx_usc.h"
-#include "agx_esl.h"
 #include "hk_buffer.h"
 #include "hk_cmd_pool.h"
 #include "hk_descriptor_set.h"
@@ -738,11 +738,10 @@ hk_upload_esl(struct hk_cmd_buffer *cmd, struct hk_shader *s,
 
    /* The hardware stage: geometry and tessellation run as compute kernels
     * and a hardware vertex shader (TODO: their kernels' entry programs) */
-   enum agx_esl_stage stage = s->info.stage == MESA_SHADER_FRAGMENT
-                                 ? AGX_ESL_FRAGMENT
-                              : mesa_shader_stage_is_compute(s->info.stage)
-                                 ? AGX_ESL_COMPUTE
-                                 : AGX_ESL_VERTEX;
+   enum agx_esl_stage stage =
+      s->info.stage == MESA_SHADER_FRAGMENT         ? AGX_ESL_FRAGMENT
+      : mesa_shader_stage_is_compute(s->info.stage) ? AGX_ESL_COMPUTE
+                                                    : AGX_ESL_VERTEX;
 
    return hk_upload_esl_code(cmd, &code, stage, usc);
 }
@@ -851,8 +850,7 @@ hk_dispatch_precomp(struct hk_cmd_buffer *cmd, struct agx_grid grid,
    struct agx_precompiled_shader *prog = agx_get_precompiled(&dev->bg_eot, idx);
 
    if (!prog) {
-      fprintf(stderr, "G15: libagx kernel %u has no G15 build, skipped\n",
-              idx);
+      fprintf(stderr, "G15: libagx kernel %u has no G15 build, skipped\n", idx);
       return;
    }
 

@@ -669,9 +669,8 @@ agx_pack_texture_g15(void *out, struct agx_resource *rsrc,
 
    /* A multisampled texture is never linear on G15 (Apple's encoder has no
     * linear multisampled dimension, texture.md) */
-   if (rsrc->layout.compressed ||
-       (rsrc->layout.tiling == AIL_TILING_LINEAR &&
-        (layers > 1 || rsrc->base.nr_samples > 1))) {
+   if (rsrc->layout.compressed || (rsrc->layout.tiling == AIL_TILING_LINEAR &&
+                                   (layers > 1 || rsrc->base.nr_samples > 1))) {
       fprintf(stderr, "G15: texture of a compressed, linear multisampled or "
                       "linear layered image is not supported yet\n");
       assert(0);
@@ -721,9 +720,10 @@ agx_pack_texture_g15(void *out, struct agx_resource *rsrc,
    bool cube = target_is_cube(state->target);
 
    agx_pack(out, TEXTURE_G15, cfg) {
-      cfg.dimension = cube ? AGX_TEXTURE_DIMENSION_CUBE_ARRAY
-                           : agx_translate_tex_dim(
-                                state->target, util_res_sample_count(&rsrc->base));
+      cfg.dimension =
+         cube ? AGX_TEXTURE_DIMENSION_CUBE_ARRAY
+              : agx_translate_tex_dim(state->target,
+                                      util_res_sample_count(&rsrc->base));
       cfg.layout = agx_translate_layout(rsrc->layout.tiling);
       cfg.channels = ail_pixel_format[format].channels;
       cfg.type = ail_pixel_format[format].type;
@@ -1296,10 +1296,9 @@ agx_pack_pbe_g15(struct agx_pbe_packed *out, struct agx_resource *tex,
    }
 
    agx_pack(out, PBE_G15, cfg) {
-      cfg.dimension =
-         is_buffer ? AGX_TEXTURE_DIMENSION_2D
-                   : agx_translate_tex_dim(target,
-                                           util_res_sample_count(&tex->base));
+      cfg.dimension = is_buffer ? AGX_TEXTURE_DIMENSION_2D
+                                : agx_translate_tex_dim(
+                                     target, util_res_sample_count(&tex->base));
       cfg.layout = is_buffer ? AGX_LAYOUT_LINEAR
                              : agx_translate_layout(tex->layout.tiling);
       cfg.channels = ail_pixel_format[view->format].channels;
@@ -1336,8 +1335,8 @@ agx_pack_pbe_g15(struct agx_pbe_packed *out, struct agx_resource *tex,
 
          /* The offset is aligned to 64 B (texture_buffer_offset_alignment);
           * libagx_buffer_image_offset adds word 4, left 0 */
-         cfg.buffer = agx_pbe_addr(
-            tex, agx_map_texture_gpu(tex, 0) + view->u.buf.offset);
+         cfg.buffer =
+            agx_pbe_addr(tex, agx_map_texture_gpu(tex, 0) + view->u.buf.offset);
          cfg.width = AGX_TEXTURE_BUFFER_WIDTH;
          cfg.height = MAX2(DIV_ROUND_UP(size_el, cfg.width), 1);
          cfg.stride = (stride_B >> 4) - 1;
@@ -1375,8 +1374,7 @@ agx_pack_pbe_g15_software(uint8_t *out, const struct pipe_image_view *view)
 {
    struct agx_resource *tex = agx_resource(view->resource);
 
-   if (tex->base.target == PIPE_BUFFER ||
-       util_res_sample_count(&tex->base) > 1)
+   if (tex->base.target == PIPE_BUFFER || util_res_sample_count(&tex->base) > 1)
       return;
 
    unsigned level = view->u.tex.level;
@@ -1769,12 +1767,10 @@ agx_compile_nir(struct agx_device *dev, nir_shader *nir,
    return compiled;
 }
 
-static struct agx_compiled_shader *
-agx_build_meta_shader_internal(struct agx_context *ctx,
-                               meta_shader_builder_t builder, void *data,
-                               size_t data_size, bool prolog, bool epilog,
-                               unsigned cf_base, bool internal_kernel,
-                               unsigned nr_samples);
+static struct agx_compiled_shader *agx_build_meta_shader_internal(
+   struct agx_context *ctx, meta_shader_builder_t builder, void *data,
+   size_t data_size, bool prolog, bool epilog, unsigned cf_base,
+   bool internal_kernel, unsigned nr_samples);
 
 /* Does not take ownership of key. Clones if necessary. */
 static struct agx_compiled_shader *
@@ -3499,8 +3495,10 @@ agx_launch_precomp(struct agx_batch *batch, struct agx_grid grid,
       agx_get_precompiled(&batch->ctx->bg_eot, program);
 
    if (!cs) {
-      fprintf(stderr, "G15: libagx kernel %u has no G15 build, dispatch "
-                      "skipped\n", program);
+      fprintf(stderr,
+              "G15: libagx kernel %u has no G15 build, dispatch "
+              "skipped\n",
+              program);
       return;
    }
 
@@ -3622,17 +3620,19 @@ agx_build_bg_eot(struct agx_batch *batch, bool store, bool partial_render)
           * u0 (the compiler indexes it by 2 * rt, as for spilled targets) */
          if (g15) {
             const struct pipe_surface *surf = &batch->key.cbufs[rt];
-            assert(surf->texture != NULL && "cannot load nonexistent attachment");
+            assert(surf->texture != NULL &&
+                   "cannot load nonexistent attachment");
 
             if (!g15_tex.cpu) {
                g15_tex = agx_pool_alloc_aligned(
-                  &batch->pool, agx_tex_desc_stride(batch) * 2 * batch->key.nr_cbufs,
-                  64);
+                  &batch->pool,
+                  agx_tex_desc_stride(batch) * 2 * batch->key.nr_cbufs, 64);
                memset(g15_tex.cpu, 0,
                       agx_tex_desc_stride(batch) * 2 * batch->key.nr_cbufs);
             }
 
-            struct pipe_sampler_view sampler_view = sampler_view_for_surface(surf);
+            struct pipe_sampler_view sampler_view =
+               sampler_view_for_surface(surf);
             agx_pack_texture(
                (uint8_t *)g15_tex.cpu + 2 * rt * agx_tex_desc_stride(batch),
                agx_resource(surf->texture), surf->format, &sampler_view);
@@ -3728,8 +3728,8 @@ agx_build_bg_eot(struct agx_batch *batch, bool store, bool partial_render)
    }
 
    if (g15 && g15_tex.cpu) {
-      agx_usc_uniform(&b, 0, 4,
-                      agx_pool_upload_aligned(&batch->pool, &g15_tex.gpu, 8, 8));
+      agx_usc_uniform(
+         &b, 0, 4, agx_pool_upload_aligned(&batch->pool, &g15_tex.gpu, 8, 8));
       uniforms = MAX2(uniforms, 4);
    }
 
@@ -4474,10 +4474,10 @@ agx_ensure_cmdbuf_has_space(struct agx_batch *batch, struct agx_encoder *enc,
    struct agx_ptr T = agx_pool_alloc_aligned(&batch->pool, size, 256);
 
    /* Jump from the old command buffer to the new command buffer */
-   agx_cs_jump((uint32_t *)enc->current,
-               vdm ? agx_vdm_va(agx_device(batch->ctx->base.screen), T.gpu)
-                   : T.gpu,
-               vdm);
+   agx_cs_jump(
+      (uint32_t *)enc->current,
+      vdm ? agx_vdm_va(agx_device(batch->ctx->base.screen), T.gpu) : T.gpu,
+      vdm);
 
    /* Swap out the command buffer */
    enc->current = T.cpu;

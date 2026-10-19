@@ -353,9 +353,8 @@ pass(nir_builder *b, nir_intrinsic_instr *intr, void *data)
 
       /* An X channel (B8G8R8X8's) holds 1: G15's PBE fills it from the
        * alpha, and DCP 14.7 blends a scanout surface by that byte */
-      if (comps == 4 &&
-          util_format_description(logical_format)->swizzle[3] ==
-             PIPE_SWIZZLE_1) {
+      if (comps == 4 && util_format_description(logical_format)->swizzle[3] ==
+                           PIPE_SWIZZLE_1) {
          nir_def *one = util_format_is_pure_integer(logical_format)
                            ? nir_imm_intN_t(b, 1, value->bit_size)
                            : nir_imm_floatN_t(b, 1.0, value->bit_size);

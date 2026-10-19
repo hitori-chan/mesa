@@ -244,8 +244,7 @@ asahi_fill_sync(struct drm_asahi_sync *sync, struct vk_sync *vk_sync,
  * program VA}. The binding words are demo15's (the background's
  * 0xFFFF800000000040, the end of tile's 0); their meaning is not traced. */
 static void
-asahi_fill_vdm_command_g15(struct hk_cs *cs,
-                           struct drm_asahi_cmd_render_g15 *g)
+asahi_fill_vdm_command_g15(struct hk_cs *cs, struct drm_asahi_cmd_render_g15 *g)
 {
    const uint64_t bg_binding = 0xFFFF800000000040ull;
 

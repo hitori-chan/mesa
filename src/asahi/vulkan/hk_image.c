@@ -1355,7 +1355,8 @@ hk_image_plane_bind(struct hk_device *dev, struct hk_image_plane *plane,
       uint64_t page_B = *offset_B & ~(uint64_t)(AIL_PAGESIZE - 1);
       uint64_t size_B = mem->bo->size - page_B;
 
-      plane->va = agx_va_alloc(&dev->dev, size_B, AIL_PAGESIZE, AGX_VA_IMAGE, 0);
+      plane->va =
+         agx_va_alloc(&dev->dev, size_B, AIL_PAGESIZE, AGX_VA_IMAGE, 0);
       if (plane->va &&
           agx_bo_bind(&dev->dev, mem->bo, plane->va->addr, size_B, page_B,
                       DRM_ASAHI_BIND_READ | DRM_ASAHI_BIND_WRITE)) {

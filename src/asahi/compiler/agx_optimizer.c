@@ -598,7 +598,8 @@ agx_optimizer_forward(agx_context *ctx)
       /* Inline immediates if we can. TODO: systematic */
       if (I->op != AGX_OPCODE_COLLECT && I->op != AGX_OPCODE_IMAGE_LOAD &&
           I->op != AGX_OPCODE_UNIFORM_STORE && I->op != AGX_OPCODE_EXPORT)
-         agx_optimizer_inline_imm(defs, I, ctx->key && ctx->key->dev.gpu_generation >= 15);
+         agx_optimizer_inline_imm(
+            defs, I, ctx->key && ctx->key->dev.gpu_generation >= 15);
 
       if (I->op == AGX_OPCODE_IF_ICMP) {
          agx_optimizer_if_not(defs, I);

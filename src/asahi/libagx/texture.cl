@@ -287,8 +287,7 @@ uint64_t
 libagx_image_texel_address_g15(constant const struct agx_pbe_packed *ptr,
                                uint4 coord, uint sample_idx,
                                uint bytes_per_sample_B, bool is_1d,
-                               bool is_msaa, bool is_layered,
-                               bool return_index)
+                               bool is_msaa, bool is_layered, bool return_index)
 {
    agx_unpack(NULL, ptr, PBE_G15, d);
    agx_unpack(NULL, (constant uint8_t *)ptr + 24, PBE_G15_SOFTWARE, sw);
@@ -301,14 +300,13 @@ libagx_image_texel_address_g15(constant const struct agx_pbe_packed *ptr,
       uint width_px = max(d.width >> level, 1u);
       uint aligned_width_px = align(width_px, sw.tile_width);
 
-      total_px = libagx_twiddle_coordinates(
-         convert_ushort2(coord.xy), sw.tile_width, sw.tile_height,
-         aligned_width_px);
+      total_px =
+         libagx_twiddle_coordinates(convert_ushort2(coord.xy), sw.tile_width,
+                                    sw.tile_height, aligned_width_px);
    }
 
    if (is_layered) {
-      total_px +=
-         coord[is_1d ? 1 : 2] * (sw.layer_stride / bytes_per_sample_B);
+      total_px += coord[is_1d ? 1 : 2] * (sw.layer_stride / bytes_per_sample_B);
    }
 
    uint total_sa = total_px + sample_idx;
@@ -316,7 +314,8 @@ libagx_image_texel_address_g15(constant const struct agx_pbe_packed *ptr,
    if (return_index)
       return total_sa;
    else
-      return d.buffer + sw.level_offset + (uint64_t)total_sa * bytes_per_sample_B;
+      return d.buffer + sw.level_offset +
+             (uint64_t)total_sa * bytes_per_sample_B;
 }
 
 uint64_t

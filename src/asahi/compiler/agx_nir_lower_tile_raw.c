@@ -51,10 +51,10 @@ static void
 store_raw(nir_builder *b, nir_intrinsic_instr *intr, nir_def *value,
           unsigned base, unsigned mask, enum ail_isa_format format)
 {
-   nir_store_local_pixel_agx(b, value, intr->src[1].ssa, intr->src[2].ssa,
-                             .base = base, .write_mask = mask,
-                             .format = (enum pipe_format)format,
-                             .explicit_coord = nir_intrinsic_explicit_coord(intr));
+   nir_store_local_pixel_agx(
+      b, value, intr->src[1].ssa, intr->src[2].ssa, .base = base,
+      .write_mask = mask, .format = (enum pipe_format)format,
+      .explicit_coord = nir_intrinsic_explicit_coord(intr));
 }
 
 static nir_def *
@@ -77,13 +77,14 @@ store_bytes(nir_builder *b, nir_intrinsic_instr *intr, nir_def *word,
                 AIL_ISA_FORMAT_I8);
       break;
    case 2:
-      store_raw(b, intr, nir_u2u16(b, nir_iand_imm(b, word, 0xffff)), base,
-                0x1, AIL_ISA_FORMAT_I16);
+      store_raw(b, intr, nir_u2u16(b, nir_iand_imm(b, word, 0xffff)), base, 0x1,
+                AIL_ISA_FORMAT_I16);
       break;
    case 3:
-      store_raw(b, intr, nir_u2u16(b, nir_iand_imm(b, word, 0xffff)), base,
-                0x1, AIL_ISA_FORMAT_I16);
-      store_raw(b, intr, nir_u2u16(b, nir_ubitfield_extract_imm(b, word, 16, 8)),
+      store_raw(b, intr, nir_u2u16(b, nir_iand_imm(b, word, 0xffff)), base, 0x1,
+                AIL_ISA_FORMAT_I16);
+      store_raw(b, intr,
+                nir_u2u16(b, nir_ubitfield_extract_imm(b, word, 16, 8)),
                 base + 2, 0x1, AIL_ISA_FORMAT_I8);
       break;
    case 4:
@@ -105,7 +106,8 @@ load_bytes(nir_builder *b, nir_intrinsic_instr *intr, unsigned nbytes,
    case 2:
       return nir_u2u32(b, load_raw(b, intr, 1, 16, base, AIL_ISA_FORMAT_I16));
    case 3: {
-      nir_def *lo = nir_u2u32(b, load_raw(b, intr, 1, 16, base, AIL_ISA_FORMAT_I16));
+      nir_def *lo =
+         nir_u2u32(b, load_raw(b, intr, 1, 16, base, AIL_ISA_FORMAT_I16));
       nir_def *hi =
          nir_u2u32(b, load_raw(b, intr, 1, 16, base + 2, AIL_ISA_FORMAT_I8));
       return nir_ior(b, lo, nir_ishl_imm(b, hi, 16));
@@ -133,7 +135,8 @@ store_byte_channels(nir_builder *b, nir_intrinsic_instr *intr, nir_def *bytes,
    if (run > 0) {
       nir_def *word = nir_channel(b, bytes, 0);
       for (unsigned i = 1; i < run; i++) {
-         word = nir_ior(b, word, nir_ishl_imm(b, nir_channel(b, bytes, i), 8 * i));
+         word =
+            nir_ior(b, word, nir_ishl_imm(b, nir_channel(b, bytes, i), 8 * i));
       }
       store_bytes(b, intr, word, run, base);
    }
@@ -201,30 +204,33 @@ lower_store(nir_builder *b, nir_intrinsic_instr *intr)
    }
 
    case AIL_ISA_FORMAT_U16NORM:
-      store_raw(b, intr,
-                nir_u2u16(b, nir_format_float_to_unorm(b, to_f32(b, value), bits16)),
-                base, mask, AIL_ISA_FORMAT_I16);
+      store_raw(
+         b, intr,
+         nir_u2u16(b, nir_format_float_to_unorm(b, to_f32(b, value), bits16)),
+         base, mask, AIL_ISA_FORMAT_I16);
       return true;
 
    case AIL_ISA_FORMAT_S16NORM:
-      store_raw(b, intr,
-                nir_i2i16(b, nir_format_float_to_snorm(b, to_f32(b, value), bits16)),
-                base, mask, AIL_ISA_FORMAT_I16);
+      store_raw(
+         b, intr,
+         nir_i2i16(b, nir_format_float_to_snorm(b, to_f32(b, value), bits16)),
+         base, mask, AIL_ISA_FORMAT_I16);
       return true;
 
    case AIL_ISA_FORMAT_SRGBA8: {
       nir_def *f = to_f32(b, value);
       if (n >= 3) {
          nir_def *rgb = nir_format_linear_to_srgb(b, channels(b, f, 0, 3));
-         nir_def *c[4] = {nir_channel(b, rgb, 0), nir_channel(b, rgb, 1),
-                          nir_channel(b, rgb, 2),
-                          n == 4 ? nir_channel(b, f, 3) : nir_imm_float(b, 1.0)};
+         nir_def *c[4] = {
+            nir_channel(b, rgb, 0), nir_channel(b, rgb, 1),
+            nir_channel(b, rgb, 2),
+            n == 4 ? nir_channel(b, f, 3) : nir_imm_float(b, 1.0)};
          f = nir_vec(b, c, 4);
       } else {
          f = nir_format_linear_to_srgb(b, f);
       }
-      store_byte_channels(b, intr, nir_format_float_to_unorm(b, f, bits8),
-                          mask, base);
+      store_byte_channels(b, intr, nir_format_float_to_unorm(b, f, bits8), mask,
+                          base);
       return true;
    }
 
@@ -237,13 +243,12 @@ lower_store(nir_builder *b, nir_intrinsic_instr *intr)
 
    case AIL_ISA_FORMAT_RG11B10F:
       store_bytes(b, intr,
-                  nir_format_pack_11f11f10f(b, resize_f32(b, value, 3)),
-                  4, base);
+                  nir_format_pack_11f11f10f(b, resize_f32(b, value, 3)), 4,
+                  base);
       return true;
 
    case AIL_ISA_FORMAT_RGB9E5:
-      store_bytes(b, intr,
-                  nir_format_pack_r9g9b9e5(b, resize_f32(b, value, 3)),
+      store_bytes(b, intr, nir_format_pack_r9g9b9e5(b, resize_f32(b, value, 3)),
                   4, base);
       return true;
 
@@ -270,7 +275,8 @@ lower_load(nir_builder *b, nir_intrinsic_instr *intr)
       if (bs == 16)
          return false;
       res = load_raw(b, intr, k, 16, base, format);
-      res = format == AIL_ISA_FORMAT_F16 ? nir_f2f32(b, res) : nir_u2u32(b, res);
+      res =
+         format == AIL_ISA_FORMAT_F16 ? nir_f2f32(b, res) : nir_u2u32(b, res);
       break;
 
    case AIL_ISA_FORMAT_I8:
@@ -282,8 +288,8 @@ lower_load(nir_builder *b, nir_intrinsic_instr *intr)
       break;
 
    case AIL_ISA_FORMAT_U8NORM:
-      res = nir_format_unorm_to_float(b, unpack_bytes(b, load_bytes(b, intr, k, base), k),
-                                      bits8);
+      res = nir_format_unorm_to_float(
+         b, unpack_bytes(b, load_bytes(b, intr, k, base), k), bits8);
       break;
 
    case AIL_ISA_FORMAT_S8NORM: {
@@ -294,12 +300,14 @@ lower_load(nir_builder *b, nir_intrinsic_instr *intr)
    }
 
    case AIL_ISA_FORMAT_U16NORM:
-      res = nir_format_unorm_to_float(b, nir_u2u32(b, load_raw(b, intr, k, 16, base, AIL_ISA_FORMAT_I16)),
-                                      bits16);
+      res = nir_format_unorm_to_float(
+         b, nir_u2u32(b, load_raw(b, intr, k, 16, base, AIL_ISA_FORMAT_I16)),
+         bits16);
       break;
 
    case AIL_ISA_FORMAT_S16NORM: {
-      nir_def *s = nir_i2i32(b, load_raw(b, intr, k, 16, base, AIL_ISA_FORMAT_I16));
+      nir_def *s =
+         nir_i2i32(b, load_raw(b, intr, k, 16, base, AIL_ISA_FORMAT_I16));
       res = nir_format_snorm_to_float(b, s, bits16);
       break;
    }
@@ -337,7 +345,8 @@ lower_load(nir_builder *b, nir_intrinsic_instr *intr)
 
    /* The conversions above are in 32 bits */
    if (bs == 16 && res->bit_size == 32) {
-      bool is_float = format != AIL_ISA_FORMAT_I8 && format != AIL_ISA_FORMAT_I16;
+      bool is_float =
+         format != AIL_ISA_FORMAT_I8 && format != AIL_ISA_FORMAT_I16;
       res = is_float ? nir_f2f16(b, res) : nir_u2u16(b, res);
    }
 
@@ -440,8 +449,8 @@ agx_nir_lower_tile_raw(nir_shader *shader, unsigned nr_samples,
    }
 
    if (nr_samples > 1 && mask_coverage) {
-      progress |= nir_shader_intrinsics_pass(
-         shader, and_coverage, nir_metadata_control_flow, NULL);
+      progress |= nir_shader_intrinsics_pass(shader, and_coverage,
+                                             nir_metadata_control_flow, NULL);
    }
 
    return progress;

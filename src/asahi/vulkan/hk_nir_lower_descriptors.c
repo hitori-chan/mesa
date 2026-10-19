@@ -384,8 +384,9 @@ lower_image_intrin(nir_builder *b, nir_intrinsic_instr *intr,
     * becomes a fetch with the sampler in the entry after the texture
     * (hk_nir_lower_image_loads_g15) */
    if (ctx->g15) {
-      unsigned offs = pbe ? offsetof(struct hk_storage_image_descriptor_g15, pbe)
-                          : offsetof(struct hk_storage_image_descriptor_g15, tex);
+      unsigned offs =
+         pbe ? offsetof(struct hk_storage_image_descriptor_g15, pbe)
+             : offsetof(struct hk_storage_image_descriptor_g15, tex);
 
       nir_rewrite_image_intrinsic(
          intr, load_texture_index_g15(b, ctx, intr->src[0], offs, false),

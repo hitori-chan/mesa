@@ -124,8 +124,7 @@ hk_dispatch_with_usc_launch(struct hk_device *dev, struct hk_cs *cs,
          return;
       }
 
-      cs->current =
-         hk_cdm_launch_g15(dev, cs->current, grid, wg, usc);
+      cs->current = hk_cdm_launch_g15(dev, cs->current, grid, wg, usc);
    } else {
       cs->current =
          agx_cdm_launch(cs->current, dev->dev.chip, grid, wg, launch, usc);

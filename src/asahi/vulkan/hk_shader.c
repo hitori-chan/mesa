@@ -861,8 +861,8 @@ hk_lower_nir(struct hk_device *dev, nir_shader *nir,
       NIR_PASS(_, nir, agx_nir_lower_custom_border);
    }
 
-   NIR_PASS(_, nir, hk_nir_lower_descriptors, rs, set_layout_count,
-            set_layouts, dev->dev.params.gpu_generation >= 15);
+   NIR_PASS(_, nir, hk_nir_lower_descriptors, rs, set_layout_count, set_layouts,
+            dev->dev.params.gpu_generation >= 15);
    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_global,
             nir_address_format_64bit_global);
    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_ssbo,
@@ -920,8 +920,7 @@ hk_lower_nir(struct hk_device *dev, nir_shader *nir,
       /* G15's iter takes its coefficient register as an immediate only */
       if (dev->dev.params.gpu_generation >= 15)
          lower_indirect_modes |= nir_var_shader_in;
-   }
-   else if (nir->info.stage == MESA_SHADER_VERTEX)
+   } else if (nir->info.stage == MESA_SHADER_VERTEX)
       lower_indirect_modes |= nir_var_shader_in | nir_var_shader_out;
 
    NIR_PASS(_, nir, nir_lower_indirect_derefs_to_if_else_trees,

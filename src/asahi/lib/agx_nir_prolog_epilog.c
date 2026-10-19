@@ -121,8 +121,8 @@ lower_non_monolithic_uniforms(nir_builder *b, nir_intrinsic_instr *intr,
       return true;
    } else if (intr->intrinsic == nir_intrinsic_load_texture_handle_agx) {
       /* G15 counts 32 B entries, not bytes */
-      bool g15 = b->shader->info.stage == MESA_SHADER_FRAGMENT && data &&
-                 *(bool *)data;
+      bool g15 =
+         b->shader->info.stage == MESA_SHADER_FRAGMENT && data && *(bool *)data;
 
       b->cursor = nir_instr_remove(&intr->instr);
       nir_def *offs = nir_u2u32(b, intr->src[0].ssa);

@@ -744,9 +744,9 @@ agx_emit_load_vary(agx_builder *b, agx_index dest, nir_intrinsic_instr *instr)
          agx_index chans[4];
          for (unsigned c = 0; c < components; ++c) {
             agx_index v = agx_emit_extract(b, vec, c);
-            agx_index t = agx_icmpsel(b, agx_g15_cf_varies(b, I.value + c),
-                                      agx_zero(), v, agx_fmul(b, v, rcp_w),
-                                      AGX_ICOND_UEQ);
+            agx_index t =
+               agx_icmpsel(b, agx_g15_cf_varies(b, I.value + c), agx_zero(), v,
+                           agx_fmul(b, v, rcp_w), AGX_ICOND_UEQ);
 
             if (dest.size == AGX_SIZE_16) {
                chans[c] = agx_temp(b->shader, AGX_SIZE_16);
@@ -981,8 +981,8 @@ agx_emit_load(agx_builder *b, agx_index dest, nir_intrinsic_instr *instr)
          }
 
          agx_index tmp = agx_temp(b->shader, dest.size);
-         agx_device_load_to(b, tmp, addr, sign_extend ? idx : agx_abs(idx),
-                            fmt, 0x1, idx_shift, nir_is_coherent(instr));
+         agx_device_load_to(b, tmp, addr, sign_extend ? idx : agx_abs(idx), fmt,
+                            0x1, idx_shift, nir_is_coherent(instr));
          comps[c] = agx_and(b, tmp, agx_immediate(mask));
       }
 
@@ -1005,8 +1005,8 @@ agx_emit_load(agx_builder *b, agx_index dest, nir_intrinsic_instr *instr)
       agx_index comps[4];
 
       assert(nr <= 4);
-      agx_device_load_to(b, halves, addr, offset, fmt, BITFIELD_MASK(nr),
-                         shift, nir_is_coherent(instr));
+      agx_device_load_to(b, halves, addr, offset, fmt, BITFIELD_MASK(nr), shift,
+                         nir_is_coherent(instr));
       agx_emit_split(b, comps, halves, nr);
 
       for (unsigned c = 0; c < nr; ++c) {
@@ -1097,10 +1097,9 @@ lower_load_format_g15(nir_builder *b, nir_intrinsic_instr *intr, void *data)
                          .base = shift, .format = raw_format,
                          .sign_extend = sign_extend);
    } else {
-      raw = nir_load_constant_agx(b, raw_comps, raw_bits, addr, index,
-                                  .access = access, .base = shift,
-                                  .format = raw_format,
-                                  .sign_extend = sign_extend);
+      raw = nir_load_constant_agx(
+         b, raw_comps, raw_bits, addr, index, .access = access, .base = shift,
+         .format = raw_format, .sign_extend = sign_extend);
    }
 
    const unsigned bits8[4] = {8, 8, 8, 8}, bits16[4] = {16, 16, 16, 16};
@@ -1129,9 +1128,8 @@ lower_load_format_g15(nir_builder *b, nir_intrinsic_instr *intr, void *data)
       nir_def *unorm = nir_format_unorm_to_float(b, raw, bits8);
       nir_def *rgb = nir_format_srgb_to_linear(
          b, nir_trim_vector(b, unorm, MIN2(comps, 3)));
-      value = comps > 3 ? nir_vector_insert_imm(
-                             b, nir_pad_vector(b, rgb, 4),
-                             nir_channel(b, unorm, 3), 3)
+      value = comps > 3 ? nir_vector_insert_imm(b, nir_pad_vector(b, rgb, 4),
+                                                nir_channel(b, unorm, 3), 3)
                         : rgb;
       break;
    }
@@ -1183,7 +1181,8 @@ lower_derivatives_g15(nir_builder *b, nir_intrinsic_instr *intr, void *data)
    b->cursor = nir_before_instr(&intr->instr);
 
    nir_def *v = intr->src[0].ssa;
-   nir_def *other = x ? nir_quad_swap_horizontal(b, v) : nir_quad_swap_vertical(b, v);
+   nir_def *other =
+      x ? nir_quad_swap_horizontal(b, v) : nir_quad_swap_vertical(b, v);
    nir_def *lane = nir_load_subgroup_invocation(b);
    nir_def *second = nir_i2b(b, nir_iand_imm(b, lane, x ? 1 : 2));
 
@@ -1428,7 +1427,8 @@ lower_tex_lod_g15(nir_builder *b, nir_tex_instr *tex, void *data)
    nir_def *w5 = nir_load_global_constant(b, 1, 32, nir_iadd_imm(b, addr, 20));
 
    nir_def *wh_lo = nir_ushr_imm(b, w0, 28);
-   nir_def *width = nir_ior(b, wh_lo, nir_ishl_imm(b, nir_iand_imm(b, w1, 0x3ff), 4));
+   nir_def *width =
+      nir_ior(b, wh_lo, nir_ishl_imm(b, nir_iand_imm(b, w1, 0x3ff), 4));
    nir_def *height = nir_ubitfield_extract_imm(b, w1, 10, 14);
    nir_def *depth = nir_ubitfield_extract_imm(b, w3, 14, 14);
    nir_def *size = nir_vec3(b, width, height, depth);
@@ -1450,14 +1450,16 @@ lower_tex_lod_g15(nir_builder *b, nir_tex_instr *tex, void *data)
    /* The levels: last level - first level + 1 when mipmapped */
    nir_def *mip = nir_i2b(b, nir_iand_imm(b, w1, 1 << 26));
    nir_def *last = nir_isub(b, nir_ubitfield_extract_imm(b, w5, 16, 4), first);
-   nir_def *max_level = nir_u2f32(b, nir_bcsel(b, mip, last, nir_imm_int(b, 0)));
+   nir_def *max_level =
+      nir_u2f32(b, nir_bcsel(b, mip, last, nir_imm_int(b, 0)));
 
    nir_def *lo = nir_imm_float(b, 0.0), *hi = max_level, *mip_filter = NULL;
    if (si >= 0) {
       nir_intrinsic_instr *s = nir_src_as_intrinsic(tex->src[si].src);
       if (s && s->intrinsic == nir_intrinsic_bindless_sampler_agx) {
-         nir_def *entry = nir_bindless_image_agx(
-            b, nir_u2u32(b, s->src[1].ssa), .desc_set = nir_intrinsic_desc_set(s));
+         nir_def *entry =
+            nir_bindless_image_agx(b, nir_u2u32(b, s->src[1].ssa),
+                                   .desc_set = nir_intrinsic_desc_set(s));
          nir_def *state = nir_load_global_constant(
             b, 1, 32, nir_load_from_texture_handle_agx(b, entry));
          nir_def *min_lod = nir_fmul_imm(
@@ -1554,7 +1556,8 @@ agx_emit_load_preamble(agx_builder *b, agx_index dst,
 
    unsigned base = nir_intrinsic_base(instr);
    unsigned stride = agx_size_align_16(dst.size);
-   bool g15 = b->shader->is_preamble && b->shader->key->dev.gpu_generation >= 15;
+   bool g15 =
+      b->shader->is_preamble && b->shader->key->dev.gpu_generation >= 15;
 
    for (unsigned i = 0; i < dim; ++i) {
       unsigned halfs = base + i * stride;
@@ -2935,10 +2938,10 @@ agx_emit_alu(agx_builder *b, nir_alu_instr *instr)
       /* G15 has sin_pt_2 (its sinc) but no sin_pt_1: fold the quadrant q in
        * [0, 4) into [-1, 1] as sin_pt_1 does: q, 2 - q or q - 4 */
       if (b->shader->key->dev.gpu_generation >= 15) {
-         agx_index hi = agx_fcmpsel(
-            b, s0, agx_immediate_f(3.0),
-            agx_fadd(b, agx_neg(s0), agx_immediate_f(2.0)),
-            agx_fadd(b, s0, agx_immediate_f(-4.0)), AGX_FCOND_LT);
+         agx_index hi =
+            agx_fcmpsel(b, s0, agx_immediate_f(3.0),
+                        agx_fadd(b, agx_neg(s0), agx_immediate_f(2.0)),
+                        agx_fadd(b, s0, agx_immediate_f(-4.0)), AGX_FCOND_LT);
          fixup = agx_fcmpsel(b, s0, agx_immediate_f(1.0), s0, hi, AGX_FCOND_LT);
       } else {
          fixup = agx_sin_pt_1(b, s0);
@@ -3238,9 +3241,8 @@ agx_emit_tex(agx_builder *b, nir_tex_instr *instr)
    agx_index tmp = agx_vec_temp(b->shader, dst.size, instr->is_sparse ? 8 : 4);
    agx_instr *I = agx_texture_sample_to(
       b, tmp, coords, lod, bindless, texture, sampler, compare_offset,
-      sampler_base,
-      agx_tex_dim(instr->sampler_dim, instr->is_array), lod_mode, 0,
-      !agx_is_null(packed_offset), !agx_is_null(compare),
+      sampler_base, agx_tex_dim(instr->sampler_dim, instr->is_array), lod_mode,
+      0, !agx_is_null(packed_offset), !agx_is_null(compare),
       instr->op == nir_texop_lod, agx_gather_for_nir(instr), instr->is_sparse);
 
    if (instr->op == nir_texop_txf || instr->op == nir_texop_txf_ms) {
@@ -3878,7 +3880,6 @@ agx_optimize_nir(nir_shader *nir, bool soft_fault, uint16_t *preamble_size,
       if (sizes[2] == 0)
          sizes[2]++;
 
-
       NIR_PASS(_, nir, agx_nir_opt_preamble, sizes, g15);
 
       *preamble_size = sizes[0];
@@ -4444,10 +4445,10 @@ agx_compile_function_nir(nir_shader *nir, nir_function_impl *impl,
    if (dump_shaders || selftest) {
       FILE *fp = selftest ? fopen("/dev/null", "w") : stdout;
       bool g15 = key->dev.gpu_generation >= 15;
-      bool errors =
-         g15 ? agx3_disassemble(binary->data + offset, binary->size - offset, fp)
-             : agx2_disassemble(binary->data + offset, binary->size - offset,
-                                fp);
+      bool errors = g15 ? agx3_disassemble(binary->data + offset,
+                                           binary->size - offset, fp)
+                        : agx2_disassemble(binary->data + offset,
+                                           binary->size - offset, fp);
 
       if (errors) {
          /* In a self-test, disassemble again to get something the user can look

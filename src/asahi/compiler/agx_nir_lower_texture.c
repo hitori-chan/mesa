@@ -756,9 +756,9 @@ cube_face_coord(nir_builder *b, nir_def *dir, nir_def **face)
    nir_def *s = nir_ffma(b, sc, half_rcp, nir_imm_float(b, 0.5));
    nir_def *t = nir_ffma(b, tc, half_rcp, nir_imm_float(b, 0.5));
 
-   nir_def *axis = nir_bcsel(b, is_z, nir_imm_int(b, 4),
-                             nir_bcsel(b, is_y, nir_imm_int(b, 2),
-                                       nir_imm_int(b, 0)));
+   nir_def *axis =
+      nir_bcsel(b, is_z, nir_imm_int(b, 4),
+                nir_bcsel(b, is_y, nir_imm_int(b, 2), nir_imm_int(b, 0)));
    *face = nir_iadd(b, axis, nir_b2i32(b, neg));
    return nir_vec2(b, s, t);
 }
@@ -793,10 +793,10 @@ lower_cube_g15(nir_builder *b, nir_tex_instr *tex, UNUSED void *data)
    tex->is_array = true;
    tex->coord_components = 4;
    tex->backend_flags |= AGX_TEXTURE_FLAG_NO_CLAMP;
-   nir_tex_instr_add_src(tex, nir_tex_src_coord,
-                         nir_vec4(b, nir_channel(b, st, 0),
-                                  nir_channel(b, st, 1), nir_imm_float(b, 0),
-                                  nir_u2f32(b, word)));
+   nir_tex_instr_add_src(
+      tex, nir_tex_src_coord,
+      nir_vec4(b, nir_channel(b, st, 0), nir_channel(b, st, 1),
+               nir_imm_float(b, 0), nir_u2f32(b, word)));
    return true;
 }
 
@@ -896,8 +896,7 @@ lower_multisampled_store(nir_builder *b, nir_intrinsic_instr *intr,
    if (nir_intrinsic_image_dim(intr) != GLSL_SAMPLER_DIM_MS)
       return false;
 
-   nir_def *index_px =
-      nir_u2u32(b, image_texel_address(b, intr, true, false));
+   nir_def *index_px = nir_u2u32(b, image_texel_address(b, intr, true, false));
    nir_def *coord2d = coords_for_buffer_texture(b, index_px);
 
    nir_src_rewrite(&intr->src[1], nir_pad_vector(b, coord2d, 4));

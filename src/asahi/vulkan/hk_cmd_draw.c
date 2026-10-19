@@ -2039,10 +2039,9 @@ hk_get_fast_linked_locked_fs(struct hk_device *dev, struct hk_shader *shader,
     */
    bool epilog_stop = (key->nr_samples_shaded == 0);
 
-   struct agx_shader_part *epilog =
-      hk_get_prolog_epilog(dev, &key->epilog, sizeof(key->epilog),
-                           agx_nir_fs_epilog, true, epilog_stop, 0,
-                           key->epilog.nr_samples);
+   struct agx_shader_part *epilog = hk_get_prolog_epilog(
+      dev, &key->epilog, sizeof(key->epilog), agx_nir_fs_epilog, true,
+      epilog_stop, 0, key->epilog.nr_samples);
 
    struct hk_linked_shader *linked =
       hk_fast_link(dev, true, shader, prolog, epilog, key->nr_samples_shaded);
@@ -3889,11 +3888,10 @@ hk_draw(struct hk_cmd_buffer *cmd, uint16_t draw_id, struct agx_draw draw_)
          size_t size_B = libagx_draw_robust_index_vdm_size(dev->dev.chip);
          uint64_t target = hk_cs_alloc_for_indirect(cs, size_B);
 
-         libagx_draw_robust_index(cmd, agx_1d(32), AGX_BARRIER_ALL | AGX_PREGFX,
-                                  target, hk_heap(cmd), draw.b.ptr,
-                                  draw.index_buffer, draw.index_buffer_range_B,
-                                  draw.restart, topology, dev->dev.chip,
-                                  draw.index_size);
+         libagx_draw_robust_index(
+            cmd, agx_1d(32), AGX_BARRIER_ALL | AGX_PREGFX, target, hk_heap(cmd),
+            draw.b.ptr, draw.index_buffer, draw.index_buffer_range_B,
+            draw.restart, topology, dev->dev.chip, draw.index_size);
       } else {
          cs->current = (void *)agx_vdm_draw((uint32_t *)out, dev->dev.chip,
                                             draw, topology);

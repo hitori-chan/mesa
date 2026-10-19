@@ -143,9 +143,10 @@ lower(nir_builder *b, nir_instr *instr, void *data)
       if (state->g15) {
          progress |= lower_sampler_g15(b, tex);
       } else if (((BITSET_COUNT(b->shader->info.samplers_used) > 16) &&
-           (nir_tex_instr_src_index(tex, nir_tex_src_sampler_offset) >= 0 ||
-            tex->sampler_index >= 16)) &&
-          lower_sampler(b, tex)) {
+                  (nir_tex_instr_src_index(tex, nir_tex_src_sampler_offset) >=
+                      0 ||
+                   tex->sampler_index >= 16)) &&
+                 lower_sampler(b, tex)) {
          progress = true;
          *uses_bindless_samplers = true;
       }
@@ -268,7 +269,7 @@ agx_nir_lower_bindings(nir_shader *shader, bool *uses_bindless_samplers,
     */
    progress |= nir_opt_constant_folding(shader);
 
-   progress |= nir_shader_instructions_pass(
-      shader, lower, nir_metadata_control_flow, &state);
+   progress |= nir_shader_instructions_pass(shader, lower,
+                                            nir_metadata_control_flow, &state);
    return progress;
 }

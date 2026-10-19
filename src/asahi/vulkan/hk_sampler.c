@@ -171,10 +171,9 @@ pack_sampler(const struct hk_physical_device *pdev,
       }
 
       if (uses_border(info)) {
-         cfg.border_colour =
-            translate_border_color(info->borderColor, custom_to_1,
-                                   workaround_rgba4,
-                                   pdev->dev.params.gpu_generation >= 15);
+         cfg.border_colour = translate_border_color(
+            info->borderColor, custom_to_1, workaround_rgba4,
+            pdev->dev.params.gpu_generation >= 15);
       }
    }
 }

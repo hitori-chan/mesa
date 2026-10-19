@@ -280,7 +280,8 @@ static inline void
 agx_g15_pipeline(void *out, uint64_t va)
 {
    assert((va & 63) == 0);
-   uint32_t w[2] = {((va >> 38) & BITFIELD_MASK(10)) << 22, (uint32_t)(va >> 6)};
+   uint32_t w[2] = {((va >> 38) & BITFIELD_MASK(10)) << 22,
+                    (uint32_t)(va >> 6)};
    memcpy(out, w, sizeof(w));
 }
 

@@ -4,16 +4,16 @@
  * SPDX-License-Identifier: MIT
  */
 
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 #include <unistd.h>
-#include <inttypes.h>
+#include <sys/stat.h>
 
 #include "drm-shim/drm_shim.h"
-#include "util/macros.h"
 #include "drm-uapi/asahi_drm.h"
+#include "util/macros.h"
 
 static struct drm_asahi_params_global params = {
    .gpu_generation = 13,

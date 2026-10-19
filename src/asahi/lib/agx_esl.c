@@ -5,9 +5,9 @@
 
 #include "agx_esl.h"
 #include <stdio.h>
+#include "compiler/agx_compile.h"
 #include "util/u_debug.h"
 #include "util/u_math.h"
-#include "compiler/agx_compile.h"
 #include "agx_pack.h"
 
 /* The imageblock of a render stage: the tile's shape, the samples and their
@@ -135,16 +135,16 @@ esl_spectpr(struct util_dynarray *out, unsigned stack_bytes, unsigned crs)
  * sample, a stride of 8. */
 static const uint8_t speclm_shape[11][11] = {
    {0x01, 0x47, 0x67, 0xa6, 0x26, 0x66, 0x87, 0x07, 0x46, 0x86, 0x06},
-   {0x2a, 0x4a, 0x6a, 0x8b, 0x0b, 0x4b, 0x8a, 0x0a, 0x2b, 0x6b,    0},
-   {0x2e, 0x4e, 0x6e, 0x8e, 0x0f, 0x4f, 0x6f, 0x0e, 0x2f,    0,    0},
-   {0x34, 0x35, 0x55, 0x75, 0x15, 0x54, 0x74, 0x14,    0,    0,    0},
-   {0x05, 0x24, 0x44, 0x64, 0x04, 0x25, 0x45,    0,    0,    0,    0},
-   {0x0d, 0x2c, 0x4c, 0x4d, 0x0c, 0x2d,    0,    0,    0,    0,    0},
-   {0x13, 0x32, 0x33, 0x52, 0x12,    0,    0,    0,    0,    0,    0},
-   {0x02, 0x03, 0x22, 0x23,    0,    0,    0,    0,    0,    0,    0},
-   {0x08, 0x09, 0x28,    0,    0,    0,    0,    0,    0,    0,    0},
-   {0x10, 0x11,    0,    0,    0,    0,    0,    0,    0,    0,    0},
-   {0x00,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0},
+   {0x2a, 0x4a, 0x6a, 0x8b, 0x0b, 0x4b, 0x8a, 0x0a, 0x2b, 0x6b, 0},
+   {0x2e, 0x4e, 0x6e, 0x8e, 0x0f, 0x4f, 0x6f, 0x0e, 0x2f, 0, 0},
+   {0x34, 0x35, 0x55, 0x75, 0x15, 0x54, 0x74, 0x14, 0, 0, 0},
+   {0x05, 0x24, 0x44, 0x64, 0x04, 0x25, 0x45, 0, 0, 0, 0},
+   {0x0d, 0x2c, 0x4c, 0x4d, 0x0c, 0x2d, 0, 0, 0, 0, 0},
+   {0x13, 0x32, 0x33, 0x52, 0x12, 0, 0, 0, 0, 0, 0},
+   {0x02, 0x03, 0x22, 0x23, 0, 0, 0, 0, 0, 0, 0},
+   {0x08, 0x09, 0x28, 0, 0, 0, 0, 0, 0, 0, 0},
+   {0x10, 0x11, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+   {0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
 };
 
 static void
@@ -175,8 +175,8 @@ esl_speclm_imageblock(struct util_dynarray *out, const struct esl_tile *tile)
  * fence is released once, the shader's by the shader, the others by the entry
  * program, except 0x200, which both release: the universe is 0x2FF (a guess
  * from that one pair; fence 0x100 is in neither). */
-#define ESL_PIX_ALL    0x2FF
-#define ESL_PIX_BOTH   0x200
+#define ESL_PIX_ALL  0x2FF
+#define ESL_PIX_BOTH 0x200
 
 /* pixrel: the fragment entry releases the fences its program does not wait on */
 static void
@@ -309,8 +309,7 @@ agx_esl_from_usc(struct util_dynarray *out, const uint8_t *usc,
          break;
 
       default:
-         fprintf(stderr, "G15: USC word 0x%02x is not supported yet\n",
-                 usc[0]);
+         fprintf(stderr, "G15: USC word 0x%02x is not supported yet\n", usc[0]);
          return false;
       }
    }

@@ -273,8 +273,7 @@ write_storage_image_view_desc(struct hk_descriptor_set *set,
       if (info && info->imageView != VK_NULL_HANDLE) {
          VK_FROM_HANDLE(hk_image_view, view, info->imageView);
          assert(view->plane_count == 1);
-         write_storage_desc_g15(set, binding, elem,
-                                &view->planes[0].ro_storage,
+         write_storage_desc_g15(set, binding, elem, &view->planes[0].ro_storage,
                                 &view->planes[0].storage);
       } else {
          write_storage_desc_g15(set, binding, elem, NULL, NULL);
