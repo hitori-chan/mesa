@@ -440,6 +440,16 @@ struct radv_serialized_shader_arena_block {
    uint32_t arena_size;
 };
 
+struct radv_shader_binary_debug_info {
+   enum radv_shader_binary_type type;
+
+   char *disasm_string;
+   char *ir_string;
+   struct amd_stats *statistics;
+   struct ac_shader_debug_info *debug_info;
+   uint32_t debug_info_count;
+};
+
 struct radv_shader_debug_info {
    /* These are uncached. */
    bool dump_shader;
@@ -449,12 +459,7 @@ struct radv_shader_debug_info {
    char *spirv;
    uint32_t spirv_size;
    char *nir_string;
-   char *disasm_string;
-   char *ir_string;
    char *args_string;
-   struct amd_stats *statistics;
-   struct ac_shader_debug_info *debug_info;
-   uint32_t debug_info_count;
 };
 
 struct radv_shader {
@@ -477,9 +482,10 @@ struct radv_shader {
    uint32_t max_waves;
 
    blake3_hash hash;
-   void *code;
 
    struct radv_shader_debug_info dbg;
+
+   struct radv_shader_binary *binary;
 };
 
 struct radv_shader_part {
@@ -674,8 +680,10 @@ void radv_destroy_shader_upload_queue(struct radv_device *device);
 
 struct radv_shader_args;
 
-VkResult radv_parse_binary_debug_info(const struct radv_compiler_info *compiler_info,
-                                      const struct radv_shader_binary *binary, struct radv_shader_debug_info *dbg);
+struct radv_shader_binary_debug_info radv_parse_binary_debug_info(const struct radv_compiler_info *compiler_info,
+                                                                  const struct radv_shader_binary *binary);
+
+void radv_free_binary_debug_info(struct radv_shader_binary_debug_info *dbg);
 
 VkResult radv_shader_create_uncached(struct radv_device *device, const struct radv_shader_binary *binary,
                                      bool replayable, struct radv_serialized_shader_arena_block *replay_block,
@@ -756,7 +764,8 @@ VkResult radv_dump_shader_stats(struct radv_device *device, struct radv_pipeline
                                 FILE *output);
 
 /* Returns true on success and false on failure */
-bool radv_shader_reupload(struct radv_device *device, struct radv_shader *shader);
+bool radv_shader_get_code(struct radv_device *device, const struct radv_shader *shader, void *dest_ptr);
+bool radv_shader_upload(struct radv_device *device, struct radv_shader *shader);
 
 extern const struct vk_pipeline_cache_object_ops radv_shader_ops;
 

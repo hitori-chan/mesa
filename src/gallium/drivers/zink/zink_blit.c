@@ -536,6 +536,7 @@ zink_blit(struct pipe_context *pctx,
       /* for unordered blit, swap the unordered cmdbuf for the main one for the whole op to avoid conditional hell */
       ctx->bs->cmdbuf = ctx->bs->reordered_cmdbuf;
       ctx->in_rp = false;
+      zink_mark_atom_dirty(ctx, ZINK_ATOM_RENDERPASS);
       ctx->rp_changed = true;
       ctx->queries_disabled = true;
       ctx->pipeline_changed[ZINK_PIPELINE_GFX] = true;
@@ -591,7 +592,8 @@ zink_blit(struct pipe_context *pctx,
       zink_batch_no_rp(ctx);
       ctx->in_rp = in_rp;
       uint32_t rp_state = zink_update_rendering_info(ctx);
-      ctx->gfx_pipeline_state.dirty |= (ctx->gfx_pipeline_state.rp_state != rp_state);
+      if (ctx->gfx_pipeline_state.rp_state != rp_state)
+         zink_gfx_pipeline_state_dirty(ctx);
       ctx->gfx_pipeline_state.rp_state = rp_state;
       ctx->rp_changed = rp_changed;
       ctx->rp_tc_info_updated |= rp_tc_info_updated;

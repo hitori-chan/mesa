@@ -1131,7 +1131,7 @@ struct anv_pipeline_bind_map {
     * anv_push_constants, we can index up to 1024 bytes minus a few values
     * reserved, see ANV_INLINE_PARAM_* above) to inline data parameters.
     */
-   uint8_t                                      inline_dwords[8];
+   uint8_t                                      inline_dwords[16];
 
    /* Bitfield of sets for which the surfaces are accessed */
    uint8_t                                      used_surface_sets;
@@ -2576,6 +2576,7 @@ enum anv_internal_kernel_name {
    ANV_INTERNAL_KERNEL_MEMCPY_COMPUTE,
    ANV_INTERNAL_KERNEL_DGC_GFX_COMPUTE,
    ANV_INTERNAL_KERNEL_DGC_GFX_FRAGMENT,
+   ANV_INTERNAL_KERNEL_DGC_GFX_POSTPROCESS_FRAGMENT,
    ANV_INTERNAL_KERNEL_DGC_CS_COMPUTE,
    ANV_INTERNAL_KERNEL_DGC_CS_FRAGMENT,
    ANV_INTERNAL_KERNEL_DGC_CS_POSTPROCESS_COMPUTE,

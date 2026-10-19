@@ -44,6 +44,12 @@ radeon_check_space(struct radeon_winsys *ws, struct ac_cmdbuf *cs, unsigned need
 
 #define radeon_set_config_reg(reg, value) ac_cmdbuf_set_cfg_reg(reg, value)
 
+#define radeon_opt_set_config_reg(reg, reg_enum, value)                                                                \
+   do {                                                                                                                \
+      struct ac_tracked_regs *__tracked_regs = &__rcs->tracked_regs;                                                   \
+      ac_cmdbuf_opt_set_cfg_reg(__tracked_regs, reg, reg_enum, value);                                                 \
+   } while (0)
+
 /* Packet building helpers for CONTEXT registers. */
 #define radeon_set_context_reg_seq(reg, num) ac_cmdbuf_set_ctx_reg_seq(reg, num)
 
@@ -81,6 +87,12 @@ radeon_check_space(struct radeon_winsys *ws, struct ac_cmdbuf *cs, unsigned need
       ac_cmdbuf_opt_set_ctx_reg4(__tracked_regs, reg, reg_enum, v1, v2, v3, v4);                                       \
    } while (0)
 
+#define radeon_opt_set_context_reg6(reg, reg_enum, v1, v2, v3, v4, v5, v6)                                             \
+   do {                                                                                                                \
+      struct ac_tracked_regs *__tracked_regs = &__rcs->tracked_regs;                                                   \
+      ac_cmdbuf_opt_set_ctx_reg6(__tracked_regs, reg, reg_enum, v1, v2, v3, v4, v5, v6);                               \
+   } while (0)
+
 #define radeon_opt_set_context_regn(reg, values, saved_values, num)                                                    \
    ac_cmdbuf_opt_set_ctx_regn(reg, values, saved_values, num)
 
@@ -95,6 +107,12 @@ radeon_check_space(struct radeon_winsys *ws, struct ac_cmdbuf *cs, unsigned need
 #define radeon_set_uconfig_reg(reg, value) ac_cmdbuf_set_ucfg_reg(reg, value)
 
 #define radeon_set_uconfig_reg_idx(info, reg, idx, value) ac_cmdbuf_set_ucfg_reg_idx(info, reg, idx, value)
+
+#define radeon_opt_set_uconfig_reg(reg, reg_enum, value)                                                               \
+   do {                                                                                                                \
+      struct ac_tracked_regs *__tracked_regs = &__rcs->tracked_regs;                                                   \
+      ac_cmdbuf_opt_set_ucfg_reg(__tracked_regs, reg, reg_enum, value);                                                \
+   } while (0)
 
 #define radeon_opt_set_uconfig_reg_idx(info, reg, idx, reg_enum, value)                                                \
    do {                                                                                                                \

@@ -54,6 +54,52 @@ struct zink_vertex_elements_state;
    util_debug_message(&ctx->dbg, PERF_INFO, __VA_ARGS__); \
 } while(0)
 
+static ALWAYS_INLINE void
+zink_mark_atom_dirty(struct zink_context *ctx, enum zink_atom atom)
+{
+   ctx->dirty_atoms |= BITFIELD_BIT(atom);
+}
+
+static ALWAYS_INLINE void
+zink_set_atom_dirty(struct zink_context *ctx, enum zink_atom atom, bool dirty)
+{
+   if (dirty)
+      ctx->dirty_atoms |= BITFIELD_BIT(atom);
+   else
+      ctx->dirty_atoms &= ~BITFIELD_BIT(atom);
+}
+
+static ALWAYS_INLINE bool
+zink_is_atom_dirty(const struct zink_context *ctx, enum zink_atom atom)
+{
+   return (ctx->dirty_atoms & BITFIELD_BIT(atom)) != 0;
+}
+
+/* the gfx pipeline state changed: the next draw hashes it and looks up the pipeline again */
+static ALWAYS_INLINE void
+zink_gfx_pipeline_state_dirty(struct zink_context *ctx)
+{
+   ctx->gfx_pipeline_state.dirty = true;
+   zink_mark_atom_dirty(ctx, ZINK_ATOM_PIPELINE);
+}
+
+/* the same, for state which mesh pipelines use too */
+static ALWAYS_INLINE void
+zink_gfx_mesh_pipeline_state_dirty(struct zink_context *ctx)
+{
+   zink_gfx_pipeline_state_dirty(ctx);
+   ctx->gfx_pipeline_state.mesh_dirty = true;
+}
+
+/* the next draw or dispatch emits a barrier for this resource */
+static ALWAYS_INLINE struct set_entry *
+zink_context_add_barrier(struct zink_context *ctx, bool is_compute, struct zink_resource *res)
+{
+   if (!is_compute)
+      zink_mark_atom_dirty(ctx, ZINK_ATOM_BARRIERS);
+   return _mesa_set_add(ctx->need_barriers[is_compute], res);
+}
+
 static inline bool
 zink_fb_clear_enabled(const struct zink_context *ctx, unsigned idx)
 {
@@ -125,6 +171,8 @@ static ALWAYS_INLINE void
 zink_update_dirty_gfx_stages(struct zink_context *ctx, uint32_t pstages)
 {
    ctx->dirty_gfx_stages |= (pstages & BITFIELD_MASK(MESA_SHADER_COMPUTE));
+   if (pstages & BITFIELD_MASK(MESA_SHADER_COMPUTE))
+      zink_mark_atom_dirty(ctx, ZINK_ATOM_PIPELINE);
    ctx->dirty_mesh_stages |= (pstages & (BITFIELD_BIT(MESA_SHADER_FRAGMENT) | BITFIELD_BIT(MESA_SHADER_MESH) | BITFIELD_BIT(MESA_SHADER_TASK)));
 }
 

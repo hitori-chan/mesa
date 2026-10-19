@@ -98,6 +98,42 @@ TEST(FormatTable, get_entry_emu_128bit)
    EXPECT_EQ(PIPE_FORMAT_R32G32_FLOAT, rgba32_float->emulated);
 }
 
+TEST(FormatTable, get_entry_vtx_gate)
+{
+   auto r8_unorm = eil_get_format_entry(PIPE_FORMAT_R8_UNORM);
+   EXPECT_TRUE(r8_unorm->has_vtx);
+   EXPECT_FALSE(r8_unorm->vtx_gated);
+
+   auto r8_uint = eil_get_format_entry(PIPE_FORMAT_R8_UINT);
+   EXPECT_TRUE(r8_uint->has_vtx);
+   EXPECT_TRUE(r8_uint->vtx_gated);
+   EXPECT_EQ(ETNA_FEATURE_HALTI2, r8_uint->vtx_gate);
+}
+
+TEST(FormatTable, get_entry_tex_gate)
+{
+   auto a8_unorm = eil_get_format_entry(PIPE_FORMAT_A8_UNORM);
+   EXPECT_TRUE(a8_unorm->has_tex);
+   EXPECT_FALSE(a8_unorm->tex_gated);
+
+   auto r8_snorm = eil_get_format_entry(PIPE_FORMAT_R8_SNORM);
+   EXPECT_TRUE(r8_snorm->has_tex);
+   EXPECT_TRUE(r8_snorm->tex_gated);
+   EXPECT_EQ(ETNA_FEATURE_HALTI1, r8_snorm->tex_gate);
+}
+
+TEST(FormatTable, get_entry_pe_gate)
+{
+   auto bgra4_unorm = eil_get_format_entry(PIPE_FORMAT_B4G4R4A4_UNORM);
+   EXPECT_TRUE(bgra4_unorm->has_pe);
+   EXPECT_FALSE(bgra4_unorm->pe_gated);
+
+   auto r8_unorm = eil_get_format_entry(PIPE_FORMAT_R8_UNORM);
+   EXPECT_TRUE(r8_unorm->has_pe);
+   EXPECT_TRUE(r8_unorm->pe_gated);
+   EXPECT_EQ(ETNA_FEATURE_HALTI5, r8_unorm->pe_gate);
+}
+
 TEST(Format, is_emulated_z32f)
 {
    /* not defined */
@@ -145,4 +181,52 @@ TEST(Format, format_emulated)
    EXPECT_EQ(PIPE_FORMAT_R32G32_UINT, eil_format_emulated(PIPE_FORMAT_R32G32B32A32_UINT));
    EXPECT_EQ(PIPE_FORMAT_R32G32_SINT, eil_format_emulated(PIPE_FORMAT_R32G32B32A32_SINT));
    EXPECT_EQ(PIPE_FORMAT_R32G32_FLOAT, eil_format_emulated(PIPE_FORMAT_R32G32B32A32_FLOAT));
+}
+
+TEST(Format, format_supports_sampling)
+{
+   etna_core_info info = {};
+
+   /* no gate */
+   EXPECT_TRUE(eil_format_supports_sampling(&info, PIPE_FORMAT_A8_UNORM));
+   /* feature not set */
+   EXPECT_FALSE(eil_format_supports_sampling(&info, PIPE_FORMAT_S8X24_UINT));
+   /* wrong feature */
+   BITSET_SET(info.feature, ETNA_FEATURE_HALTI0);
+   EXPECT_FALSE(eil_format_supports_sampling(&info, PIPE_FORMAT_S8X24_UINT));
+   /* feature set */
+   BITSET_SET(info.feature, ETNA_FEATURE_HALTI2);
+   EXPECT_TRUE(eil_format_supports_sampling(&info, PIPE_FORMAT_S8X24_UINT));
+}
+
+TEST(Format, format_supports_vertex_fetch)
+{
+   etna_core_info info = {};
+
+   /* no gate */
+   EXPECT_TRUE(eil_format_supports_vertex_fetch(&info, PIPE_FORMAT_R8_UNORM));
+   /* feature not set */
+   EXPECT_FALSE(eil_format_supports_vertex_fetch(&info, PIPE_FORMAT_R8_UINT));
+   /* wrong feature */
+   BITSET_SET(info.feature, ETNA_FEATURE_HALTI0);
+   EXPECT_FALSE(eil_format_supports_vertex_fetch(&info, PIPE_FORMAT_R8_UINT));
+   /* feature set */
+   BITSET_SET(info.feature, ETNA_FEATURE_HALTI2);
+   EXPECT_TRUE(eil_format_supports_vertex_fetch(&info, PIPE_FORMAT_R8_UINT));
+}
+
+TEST(Format, format_supports_rendering)
+{
+   etna_core_info info = {};
+
+   /* no gate */
+   EXPECT_TRUE(eil_format_supports_rendering(&info, PIPE_FORMAT_B4G4R4A4_UNORM));
+   /* feature not set */
+   EXPECT_FALSE(eil_format_supports_rendering(&info, PIPE_FORMAT_R8_UINT));
+   /* wrong feature */
+   BITSET_SET(info.feature, ETNA_FEATURE_HALTI0);
+   EXPECT_FALSE(eil_format_supports_rendering(&info, PIPE_FORMAT_R8_UINT));
+   /* feature set */
+   BITSET_SET(info.feature, ETNA_FEATURE_HALTI5);
+   EXPECT_TRUE(eil_format_supports_rendering(&info, PIPE_FORMAT_R8_UINT));
 }

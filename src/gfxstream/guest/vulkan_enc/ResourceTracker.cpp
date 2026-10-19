@@ -57,8 +57,6 @@ PERFETTO_DEFINE_CATEGORIES(perfetto::Category(GFXSTREAM_TRACE_DEFAULT_CATEGORY))
 static void zx_handle_close(zx_handle_t) {}
 #endif
 
-static constexpr uint32_t kDefaultApiVersion = VK_MAKE_VERSION(1, 1, 0);
-
 struct vk_struct_chain_iterator {
     VkBaseOutStructure* value;
 };
@@ -1403,25 +1401,21 @@ void ResourceTracker::transformImpl_VkExternalMemoryProperties_fromhost(
     }
 }
 
-void ResourceTracker::setInstanceInfo(VkInstance instance, uint32_t enabledExtensionCount,
-                                      const char* const* ppEnabledExtensionNames,
-                                      uint32_t apiVersion) {
-    std::lock_guard<std::recursive_mutex> lock(mLock);
-    auto& info = info_VkInstance[instance];
-    info.highestApiVersion = apiVersion;
-}
-
 void ResourceTracker::setDeviceInfo(VkDevice device, VkPhysicalDevice physdev,
                                     const VkPhysicalDeviceProperties& props,
                                     const VkPhysicalDeviceMemoryProperties& memProps,
                                     uint32_t enabledExtensionCount,
                                     const char* const* ppEnabledExtensionNames, const void* pNext) {
+    VK_FROM_HANDLE(gfxstream_vk_device, gfxstream_device, device);
+    if (gfxstream_device) {
+        gfxstream_device->api_version = props.apiVersion;
+    }
+
     std::lock_guard<std::recursive_mutex> lock(mLock);
     auto& info = info_VkDevice[device];
     info.physdev = physdev;
     info.props = props;
     info.memProps = memProps;
-    info.apiVersion = props.apiVersion;
 
     const VkBaseInStructure* extensionCreateInfo =
         reinterpret_cast<const VkBaseInStructure*>(pNext);
@@ -2412,7 +2406,7 @@ void ResourceTracker::on_vkGetPhysicalDeviceMemoryProperties2(
 }
 
 VkResult ResourceTracker::on_vkCreateInstance(void* context, VkResult input_result,
-                                              const VkInstanceCreateInfo* createInfo,
+                                              const VkInstanceCreateInfo*,
                                               const VkAllocationCallbacks*, VkInstance* pInstance) {
     if (input_result != VK_SUCCESS) return input_result;
 
@@ -2421,8 +2415,10 @@ VkResult ResourceTracker::on_vkCreateInstance(void* context, VkResult input_resu
     uint32_t apiVersion;
     input_result = enc->vkEnumerateInstanceVersion(&apiVersion, false /* no lock */);
 
-    setInstanceInfo(*pInstance, createInfo->enabledExtensionCount,
-                    createInfo->ppEnabledExtensionNames, apiVersion);
+    VK_FROM_HANDLE(gfxstream_vk_instance, gfxstream_instance, *pInstance);
+    if (gfxstream_instance) {
+        gfxstream_instance->api_version = apiVersion;
+    }
 
     return input_result;
 }
@@ -7408,7 +7404,16 @@ void ResourceTracker::on_vkCmdPushDescriptorSet2(
 void ResourceTracker::on_vkCmdPushDescriptorSet2KHR(
     void* context, VkCommandBuffer commandBuffer,
     const VkPushDescriptorSetInfo* pPushDescriptorSetInfo) {
-    on_vkCmdPushDescriptorSet2(context, commandBuffer, pPushDescriptorSetInfo);
+    if (!pPushDescriptorSetInfo) return;
+    VkEncoder* enc = (VkEncoder*)context;
+    std::vector<VkDescriptorImageInfo> transformedImageInfos;
+    std::vector<VkWriteDescriptorSet> transformedWrites;
+    sanitizePushDescriptorWrites(pPushDescriptorSetInfo->descriptorWriteCount,
+                                 pPushDescriptorSetInfo->pDescriptorWrites, transformedWrites,
+                                 transformedImageInfos);
+    VkPushDescriptorSetInfo modifiedInfo = *pPushDescriptorSetInfo;
+    modifiedInfo.pDescriptorWrites = transformedWrites.data();
+    enc->vkCmdPushDescriptorSet2KHR(commandBuffer, &modifiedInfo, true);
 }
 
 // VkPushDescriptorSetWithTemplateInfo has an opaque `const void* pData` field
@@ -8065,7 +8070,15 @@ void ResourceTracker::on_vkCmdBindDescriptorSets2(
 void ResourceTracker::on_vkCmdBindDescriptorSets2KHR(
     void* context, VkCommandBuffer commandBuffer,
     const VkBindDescriptorSetsInfo* pBindDescriptorSetsInfo) {
-    on_vkCmdBindDescriptorSets2(context, commandBuffer, pBindDescriptorSetsInfo);
+    if (!pBindDescriptorSetsInfo) return;
+    VkEncoder* enc = (VkEncoder*)context;
+
+    if (mFeatureInfo.hasVulkanBatchedDescriptorSetUpdate) {
+        addPendingDescriptorSets(commandBuffer, pBindDescriptorSetsInfo->descriptorSetCount,
+                                 pBindDescriptorSetsInfo->pDescriptorSets);
+    }
+
+    enc->vkCmdBindDescriptorSets2KHR(commandBuffer, pBindDescriptorSetsInfo, true);
 }
 
 void ResourceTracker::on_vkCmdPipelineBarrier(
@@ -8354,31 +8367,6 @@ VkResult ResourceTracker::on_vkCreateGraphicsPipelines(
     return enc->vkCreateGraphicsPipelines(device, pipelineCache, localCreateInfos.size(),
                                           localCreateInfos.data(), pAllocator, pPipelines,
                                           true /* do lock */);
-}
-
-uint32_t ResourceTracker::getApiVersionFromInstance(VkInstance instance) {
-    std::lock_guard<std::recursive_mutex> lock(mLock);
-    uint32_t api = kDefaultApiVersion;
-
-    auto it = info_VkInstance.find(instance);
-    if (it == info_VkInstance.end()) return api;
-
-    api = it->second.highestApiVersion;
-
-    return api;
-}
-
-uint32_t ResourceTracker::getApiVersionFromDevice(VkDevice device) {
-    std::lock_guard<std::recursive_mutex> lock(mLock);
-
-    uint32_t api = kDefaultApiVersion;
-
-    auto it = info_VkDevice.find(device);
-    if (it == info_VkDevice.end()) return api;
-
-    api = it->second.apiVersion;
-
-    return api;
 }
 
 #ifdef LINUX_GUEST_BUILD

@@ -629,6 +629,7 @@ struct zink_batch_state {
    VkCommandBuffer reordered_cmdbuf;
    VkCommandPool unsynchronized_cmdpool;
    VkCommandBuffer unsynchronized_cmdbuf;
+   bool is_video;
    VkSemaphore signal_semaphore; //external signal semaphore
    struct util_dynarray signal_semaphores; //internal signal semaphores
    struct util_dynarray user_signal_semaphores; //api signal semaphores
@@ -642,6 +643,8 @@ struct zink_batch_state {
    VkSemaphore sparse_semaphore; //current sparse wait semaphore
    struct util_dynarray fences; //zink_tc_fence refs
 
+   VkVideoSessionParametersKHR video_params;
+
    VkSemaphore present;
    struct zink_resource *swapchain;
    struct util_dynarray acquires;
@@ -652,7 +655,7 @@ struct zink_batch_state {
    struct util_queue_fence flush_completed;
 
    struct set programs;
-   struct hash_table dmabuf_exports;
+   struct hash_table exports;
 
 #define BUFFER_HASHLIST_SIZE 32768
    /* buffer_indices_hashlist[hash(bo)] returns -1 if the bo
@@ -1283,6 +1286,7 @@ struct zink_resource_object {
 
    struct set surface_cache;
    simple_mtx_t surface_mtx;
+   VkImageView video_view; //video decode picture view, protected by surface_mtx
 
    VkSampleLocationsInfoEXT zs_evaluate;
    bool needs_zs_evaluate;
@@ -1391,6 +1395,7 @@ struct zink_resource {
    bool subdata; //doing subdata call
    unsigned dt_stride;
 
+   uint8_t plane;
    uint8_t modifiers_count;
    uint64_t *modifiers;
 
@@ -1431,6 +1436,11 @@ struct zink_format_props {
    VkFormatFeatureFlags2 bufferFeatures;
 };
 
+struct zink_video_format_prop {
+   uint32_t videoFormatPropertyCount;
+   VkVideoFormatPropertiesKHR *pVideoFormatProperties;
+};
+
 struct zink_screen {
    struct pipe_screen base;
 
@@ -1448,6 +1458,8 @@ struct zink_screen {
    bool frame_marker_emitted;
    bool driver_name_is_inferred;
    uint64_t curr_batch; //the current batch id
+   uint64_t last_submit_id;
+   bool last_submit_is_video;
    uint32_t last_finished;
    VkSemaphore sem;
    VkFence fence;
@@ -1549,12 +1561,14 @@ struct zink_screen {
    bool can_hic_shader_read;
 
    uint32_t gfx_queue;
+   uint32_t video_decode_queue;
    uint32_t sparse_queue;
    uint32_t max_queues;
    uint32_t timestamp_valid_bits;
    VkDevice dev;
    VkQueue queue; //gfx+compute
    VkQueue queue_sparse;
+   VkQueue queue_video_decode; //video decode
    simple_mtx_t *queue_lock;
    VkDebugUtilsMessengerEXT debugUtilsCallbackHandle;
 
@@ -1625,6 +1639,12 @@ struct zink_screen {
       /* intel driver is somehow broken for srgb-compatible dmabufs...but only in mesa CI */
       bool srgb_dmabufs;
    } driver_workarounds;
+
+   VkImageUsageFlags video_output_usage;
+   bool video_interlaced; //h264 profiles use the interleaved lines picture layout
+   /* indexed by bit depth: 8, 10 */
+   struct zink_video_format_prop video_format_prop_dpb[2];
+   struct zink_video_format_prop video_format_prop_output[2];
 };
 
 static inline struct zink_screen *
@@ -1796,11 +1816,55 @@ enum zink_ds3_state {
    ZINK_DS3_BLEND_LOGIC,
 };
 
+/* state which the next draw sets on the cmdbuf after it changes
+ *
+ * a draw emits its dirty atoms in this order
+ */
+enum zink_atom {
+   /* synchronization, which can end the renderpass */
+   ZINK_ATOM_MEMORY_BARRIER,
+   ZINK_ATOM_STREAMOUT, //dirty for as long as targets are bound
+   ZINK_ATOM_BARRIERS,
+   ZINK_ATOM_GS_QUERIES, //dirty for as long as a query needs zink_query_update_gs_states()
+   ZINK_ATOM_DEBUG_SYNC, //dirty for as long as ZINK_DEBUG=sync
+   ZINK_ATOM_RENDERPASS,
+   /* starting the renderpass can draw, so everything else is set after it */
+   ZINK_ATOM_DRAW_ID, //dirty for as long as the vertex shader reads gl_DrawID
+   ZINK_ATOM_PRIMITIVE,
+   ZINK_ATOM_PIPELINE,
+   ZINK_ATOM_VERTEX_BUFFERS,
+   ZINK_ATOM_VERTEX_INPUT,
+   ZINK_ATOM_DESCRIPTORS,
+   ZINK_ATOM_BINDLESS,
+   ZINK_ATOM_PUSH_CONSTANTS, //dirty for as long as the program needs them for every draw
+   /* dynamic state, which mesh draws emit too */
+   ZINK_ATOM_VIEWPORT,
+   ZINK_ATOM_SCISSOR,
+   ZINK_ATOM_STENCIL_REF,
+   ZINK_ATOM_DSA,
+   ZINK_ATOM_SAMPLE_LOCATIONS,
+   ZINK_ATOM_BLEND_COLOR,
+   ZINK_ATOM_RASTERIZER_DISCARD,
+   ZINK_ATOM_RASTERIZER,
+   ZINK_ATOM_SAMPLE_MASK,
+   ZINK_ATOM_BLEND,
+   ZINK_ATOM_DEPTH_BIAS,
+   ZINK_ATOM_LINE_WIDTH,
+   ZINK_ATOM_COUNT,
+};
+
+#define ZINK_DYNAMIC_STATE_ATOMS BITFIELD_RANGE(ZINK_ATOM_VIEWPORT, ZINK_ATOM_COUNT - ZINK_ATOM_VIEWPORT)
+#define ZINK_DRAW_ATOMS BITFIELD_MASK(ZINK_ATOM_VIEWPORT)
+
+/* draws read and write members all over this struct, and with tc the members marked
+ * "app thread" are used from another thread at the same time: moving or resizing members
+ * changes which of them share a cache line, so benchmark such changes on their own
+ */
 struct zink_context {
    struct pipe_context base;
    struct threaded_context *tc;
    struct slab_child_pool transfer_pool;
-   struct slab_child_pool transfer_pool_unsync;
+   struct slab_child_pool transfer_pool_unsync; //app thread: unsynchronized maps
    struct blitter_context *blitter;
    struct util_debug_callback dbg;
 
@@ -1918,19 +1982,16 @@ struct zink_context {
 
    struct pipe_vertex_buffer vertex_buffers[PIPE_MAX_ATTRIBS];
    unsigned vertex_buffers_count;
-   bool vertex_buffers_dirty;
    bool vertex_buffers_unowned;
 
    struct zink_sampler_state *sampler_states[MESA_SHADER_MESH_STAGES][PIPE_MAX_SAMPLERS];
    struct pipe_sampler_view *sampler_views[MESA_SHADER_MESH_STAGES][PIPE_MAX_SAMPLERS];
 
    struct zink_viewport_state vp_state;
-   bool vp_state_changed;
-   bool scissor_changed;
+   uint32_t dirty_atoms; /* mask of enum zink_atom; read by every draw */
 
    float blend_constants[4];
 
-   bool sample_locations_changed;
    bool sample_locations_enabled;
    VkSampleLocationEXT vk_sample_locations[PIPE_MAX_SAMPLE_LOCATION_GRID_SIZE * PIPE_MAX_SAMPLE_LOCATION_GRID_SIZE];
    uint8_t sample_locations[2 * 4 * 8 * 16];
@@ -2061,6 +2122,7 @@ struct zink_context {
    struct pipe_stream_output_target *so_targets[PIPE_MAX_SO_BUFFERS];
    bool dirty_so_targets;
 
+   /* app thread: tc calls create_blend_state and create_vertex_elements_state directly */
    uint32_t blend_state_counter;
    uint32_t vertex_element_state_counter;
 
@@ -2071,19 +2133,10 @@ struct zink_context {
    bool is_device_lost;
    bool primitive_restart;
    bool blitting : 1;
+   bool video_batch : 1;
    bool blit_scissor : 1;
    bool blit_nearest : 1;
    bool unordered_blitting : 1;
-   bool vertex_state_changed : 1;
-   bool blend_state_changed : 1;
-   bool blend_color_changed : 1;
-   bool sample_mask_changed : 1;
-   bool rast_state_changed : 1;
-   bool depth_bias_changed : 1;
-   bool line_width_changed : 1;
-   bool dsa_state_changed : 1;
-   bool stencil_ref_changed : 1;
-   bool rasterizer_discard_changed : 1;
    bool rp_tc_info_updated : 1;
    bool last_work_was_compute : 1;
    bool needs_transfer_sync : 1;

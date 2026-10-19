@@ -2149,8 +2149,6 @@ static const nir_shader_compiler_options nir_options = {
         .lower_umax = true,
         .lower_umin = true,
         .lower_isign = true,
-        .lower_uadd_carry = true,
-        .lower_usub_borrow = true,
         .has_fsub = true,
         .has_isub = true,
         .has_texture_scaling = true,
@@ -2159,6 +2157,7 @@ static const nir_shader_compiler_options nir_options = {
         .max_samples = 4,
         .force_indirect_unrolling = (nir_var_shader_in | nir_var_shader_out | nir_var_function_temp),
         .scalarize_ddx = true,
+        .lower_int64_options = (nir_lower_int64_options)~0,
 };
 
 const struct nir_shader_compiler_options *
