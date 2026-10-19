@@ -170,15 +170,6 @@ esl_speclm_imageblock(struct util_dynarray *out, const struct esl_tile *tile)
    esl_u64(out, v);
 }
 
-/* The vertex entry's 0x77-family instruction after ldshdr, every field set
- * (its tree is in neither libLLVM_32023 nor AGXMetalG15X_M1) */
-static void
-esl_vertex_config(struct util_dynarray *out)
-{
-   esl_u64(out, 0xFFFFFFFFFFFFFEF7ull);
-   esl_u16(out, 0xFFFF);
-}
-
 /* G15's pixel fences: demo15's fragment shader waits on 0x200 and then 0xC
  * and signals both at its end, and its entry program releases 0x2F3. Every
  * fence is released once, the shader's by the shader, the others by the entry
@@ -350,22 +341,14 @@ agx_esl_from_usc(struct util_dynarray *out, const uint8_t *usc,
       esl_spectpr(out, code ? code->stack_size : 0, code ? code->cr_count : 0);
       break;
 
-   case AGX_ESL_VERTEX: {
-      /* Apple's vertex programs (the 2026-10-16 triangle): specLM, ldshdr,
-       * specTPR; demo15's: ldshdr and the 0x6F7 word. Experiments:
-       * AGX_G15_VS=l (Apple's specLM first), t (no specTPR), c (no 0x6F7
-       * word) */
-      const char *vs = getenv("AGX_G15_VS");
-      if (vs && strchr(vs, 'l'))
-         esl_speclm(out, 0);
+   case AGX_ESL_VERTEX:
+      /* Apple's vertex programs (the 2026-10-16 triangle) have specLM,
+       * ldshdr and specTPR. demo15's has a 0x6F7-family word with every
+       * field set after ldshdr: after the specTPR it loses the stack, so a
+       * spilling vertex program reads its spills back wrong. */
       esl_ldshdr(out, main_va, code ? code->main_size : 0);
-      if (!(vs && strchr(vs, 't')))
-         esl_spectpr(out, code ? code->stack_size : 0,
-                     code ? code->cr_count : 0);
-      if (!(vs && strchr(vs, 'c')))
-         esl_vertex_config(out);
+      esl_spectpr(out, code ? code->stack_size : 0, code ? code->cr_count : 0);
       break;
-   }
 
    case AGX_ESL_FRAGMENT:
       /* Apple's fragment programs have a specTPR after ldshdr */
