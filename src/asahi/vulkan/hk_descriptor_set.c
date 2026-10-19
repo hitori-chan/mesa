@@ -246,13 +246,17 @@ set_is_g15(struct hk_descriptor_set *set)
 static void
 write_storage_desc_g15(struct hk_descriptor_set *set, uint32_t binding,
                        uint32_t elem, const struct agx_texture_packed *tex,
-                       const struct agx_pbe_packed *pbe)
+                       const struct agx_pbe_packed *pbe,
+                       const struct agx_pbe_g15_software_packed *sw)
 {
    struct hk_storage_image_descriptor_g15 desc = {};
 
    if (tex) {
       desc.tex = *tex;
       desc.pbe = *pbe;
+
+      if (sw)
+         memcpy(desc.pbe_pad, sw, sizeof(desc.pbe_pad));
    } else {
       agx_set_null_texture_g15(&desc.tex);
       agx_set_null_pbe_g15(&desc.pbe);
@@ -274,9 +278,10 @@ write_storage_image_view_desc(struct hk_descriptor_set *set,
          VK_FROM_HANDLE(hk_image_view, view, info->imageView);
          assert(view->plane_count == 1);
          write_storage_desc_g15(set, binding, elem, &view->planes[0].ro_storage,
-                                &view->planes[0].storage);
+                                &view->planes[0].storage,
+                                &view->planes[0].storage_g15_sw);
       } else {
-         write_storage_desc_g15(set, binding, elem, NULL, NULL);
+         write_storage_desc_g15(set, binding, elem, NULL, NULL, NULL);
       }
       return;
    }
@@ -346,9 +351,10 @@ write_buffer_view_desc(struct hk_descriptor_set *set,
    if (set_is_g15(set)) {
       if (bufferView != VK_NULL_HANDLE) {
          VK_FROM_HANDLE(hk_buffer_view, view, bufferView);
-         write_storage_desc_g15(set, binding, elem, &view->tex, &view->pbe);
+         write_storage_desc_g15(set, binding, elem, &view->tex, &view->pbe,
+                                NULL);
       } else {
-         write_storage_desc_g15(set, binding, elem, NULL, NULL);
+         write_storage_desc_g15(set, binding, elem, NULL, NULL, NULL);
       }
       return;
    }

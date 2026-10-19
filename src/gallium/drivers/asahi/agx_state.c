@@ -1877,7 +1877,7 @@ agx_compile_variant(struct agx_device *dev, struct pipe_context *pctx,
       NIR_PASS(_, nir, agx_nir_lower_fs_active_samples_to_register);
    }
 
-   NIR_PASS(_, nir, agx_nir_lower_multisampled_image_store);
+   NIR_PASS(_, nir, agx_nir_lower_multisampled_image_store, false);
 
    struct agx_compiled_shader *compiled = agx_compile_nir(
       dev, nir, &pctx->debug, so->type, false, so->type != MESA_SHADER_FRAGMENT,
@@ -2871,7 +2871,7 @@ agx_build_meta_shader_internal(struct agx_context *ctx,
    if (!prolog) {
       agx_preprocess_nir(b.shader);
       NIR_PASS(_, b.shader, agx_nir_lower_texture);
-      NIR_PASS(_, b.shader, agx_nir_lower_multisampled_image_store);
+      NIR_PASS(_, b.shader, agx_nir_lower_multisampled_image_store, false);
    }
 
    struct agx_compiled_shader *shader = agx_compile_nir(

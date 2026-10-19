@@ -27,6 +27,10 @@ struct hk_image_view {
          layered_background, emrt_texture;
 
       struct agx_pbe_packed storage, eot, layered_eot, emrt_pbe;
+
+      /* G15: the fourth word of the storage and spilled render target PBEs'
+       * 32 B slots (pack_pbe_g15) */
+      struct agx_pbe_g15_software_packed storage_g15_sw, emrt_g15_sw;
    } planes[3];
 };
 
