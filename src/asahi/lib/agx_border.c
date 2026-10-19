@@ -82,11 +82,14 @@ get_channel_info(enum pipe_format format, unsigned channel)
       return (struct channel){UTIL_FORMAT_TYPE_FLOAT, false, 16};
 
    default:
-      /* ASTC as the other 8-bit compressed formats (not verified) */
+      /* ASTC: G15 reads a unorm border as 12 bits per channel (8-bit words
+       * read 255 / 4095, dEQP-VK sampler custom borders) and an sRGB one as
+       * the other sRGB formats
+       */
       if (util_format_description(format)->layout == UTIL_FORMAT_LAYOUT_ASTC) {
-         bool srgb = util_format_is_srgb(format) && channel < 3;
+         bool srgb = util_format_is_srgb(format);
          return (struct channel){UTIL_FORMAT_TYPE_UNSIGNED, true,
-                                 srgb ? 12 : 8};
+                                 (!srgb || channel < 3) ? 12 : 8};
       }
 
       assert(
@@ -164,15 +167,16 @@ agx_pack_border(struct agx_border_packed *out, const uint32_t in[4],
    uint8_t channel_map[4] = {0};
 
    /* Determine the in-memory order of the format. That is the inverse of the
-    * format swizzle. If a component is replicated, we use the first component,
-    * by looping backwards and overwriting.
+    * format swizzle: component i comes from channel swizzle[i] (a rotation
+    * such as A4R4G4B4's is not its own inverse). If a channel is replicated,
+    * we use the first component, by looping backwards and overwriting.
     */
    for (int i = 3; i >= 0; --i) {
       static_assert(PIPE_SWIZZLE_X == 0, "known ordering");
       static_assert(PIPE_SWIZZLE_W == 3, "known ordering");
 
       if (desc->swizzle[i] <= PIPE_SWIZZLE_W)
-         channel_map[i] = desc->swizzle[i];
+         channel_map[desc->swizzle[i]] = i;
    }
 
    agx_pack(out, BORDER, cfg) {
