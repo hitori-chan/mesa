@@ -365,14 +365,19 @@ agx_vdm_draw_size(enum agx_chip chip, struct agx_draw draw)
 static inline GLOBAL uint32_t *
 agx_vdm_barrier(GLOBAL uint32_t *out, enum agx_chip chip)
 {
+   /* G15: Metal's barrier word is 0x21000960. Without bit 24, a transform
+    * feedback draw's buffer reads as stale in a later indirect draw's command
+    * fetch, and bit 20 does not stand in for it.
+    */
    agx_push(out, VDM_BARRIER, cfg) {
       cfg.unk_4 = (chip == AGX_CHIP_G13X);
       cfg.unk_5 = true;
       cfg.unk_6 = true;
       cfg.unk_8 = true;
       cfg.unk_11 = true;
-      cfg.unk_20 = true;
-      cfg.unk_24 = (chip == AGX_CHIP_G13X) || (chip == AGX_CHIP_G14X);
+      cfg.unk_20 = chip < AGX_CHIP_G15G;
+      cfg.unk_24 = (chip == AGX_CHIP_G13X) || (chip == AGX_CHIP_G14X) ||
+                   (chip >= AGX_CHIP_G15G);
       cfg.unk_26 = (chip == AGX_CHIP_G13X);
    }
 
