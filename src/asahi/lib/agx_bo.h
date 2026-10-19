@@ -48,8 +48,6 @@ enum agx_va_flags {
 
    /* VA allocated that way should be replayable when possible. */
    AGX_VA_CAPTURE = (1 << 2),
-   /* VA must be inside the image heap (G15), otherwise unrestricted. */
-   AGX_VA_IMAGE = (1 << 3),
 };
 
 struct agx_va {
