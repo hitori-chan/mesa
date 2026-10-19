@@ -1526,6 +1526,23 @@ agx_translate_bindless_handle(agx_builder *b, nir_src *handle, agx_index *base)
    return agx_src_index(&intr->src[0]);
 }
 
+/* G15: a sampler handle (bindless_sampler_agx) as an index into the sampler
+ * table at the "descriptor set" uniform pair, a constant below 256 as an
+ * immediate */
+static agx_index
+agx_translate_sampler_g15(agx_builder *b, nir_src *handle, agx_index *base)
+{
+   nir_intrinsic_instr *intr = nir_src_as_intrinsic(*handle);
+   assert(intr->intrinsic == nir_intrinsic_bindless_sampler_agx);
+
+   *base = agx_uniform(nir_intrinsic_desc_set(intr), AGX_SIZE_64);
+
+   if (nir_src_is_const(intr->src[1]) && nir_src_as_uint(intr->src[1]) < 256)
+      return agx_immediate(nir_src_as_uint(intr->src[1]));
+
+   return agx_src_index(&intr->src[1]);
+}
+
 /* G15: a preamble runs in the entry program, which cannot read back the
  * uniforms it writes; it reads pushed word N from register N +
  * AGX_G15_PUSH_REG instead, where the entry program loaded it (agx_esl.c) */
@@ -2012,9 +2029,23 @@ agx_emit_image_load(agx_builder *b, agx_index dst, nir_intrinsic_instr *intr)
 
    agx_index coords = agx_emit_collect(b, coord_comps, coord);
    agx_index tmp = agx_vec_temp(b->shader, dst.size, sparse ? 8 : 4);
+   agx_index sampler = agx_immediate(0), sampler_base = agx_null();
+
+   /* G15 reads an image as a fetch with the txf sampler, whose handle its
+    * drivers put in the sample index's place (lower_image_load_g15). An
+    * image_load, unlike a texture_load, stays in order with the image
+    * writes; at most a read-only image's load became a txf. */
+   if (b->shader->key->dev.gpu_generation >= 15 && !is_ms) {
+      b->shader->out->uses_sampler_heap = true;
+      sampler = agx_translate_sampler_g15(b, &intr->src[2], &sampler_base);
+
+      /* As agx_emit_tex: after the pixel fence */
+      if (b->shader->stage == MESA_SHADER_FRAGMENT)
+         agx_wait_pixel_mask(b, 0x200);
+   }
 
    agx_instr *I = agx_image_load_to(b, tmp, coords, lod, bindless, texture,
-                                    agx_immediate(0), agx_null(), agx_null(),
+                                    sampler, agx_null(), sampler_base,
                                     agx_tex_dim(dim, is_array), lod_mode, 0,
                                     false, sparse, nir_is_coherent(intr));
    I->mask = agx_expand_tex_to(b, &intr->def, tmp, !sparse);
@@ -3134,18 +3165,12 @@ agx_emit_tex(agx_builder *b, nir_tex_instr *instr)
          b->shader->out->uses_sampler_heap = true;
          nir_intrinsic_instr *intr = nir_src_as_intrinsic(instr->src[i].src);
          if (intr && intr->intrinsic == nir_intrinsic_bindless_sampler_agx) {
-            /* Heap offset; on G15 the index into the sampler table at the
-             * "descriptor set" uniform */
-            sampler = agx_src_index(&intr->src[1]);
-
-            if (g15) {
-               sampler_base =
-                  agx_uniform(nir_intrinsic_desc_set(intr), AGX_SIZE_64);
-
-               if (nir_src_is_const(intr->src[1]) &&
-                   nir_src_as_uint(intr->src[1]) < 256)
-                  sampler = agx_immediate(nir_src_as_uint(intr->src[1]));
-            }
+            /* Heap offset; on G15 the index into the sampler table */
+            if (g15)
+               sampler = agx_translate_sampler_g15(b, &instr->src[i].src,
+                                                   &sampler_base);
+            else
+               sampler = agx_src_index(&intr->src[1]);
          } else {
             sampler = index;
          }

@@ -171,8 +171,10 @@ agx_optimizer_inline_imm(agx_instr **defs, agx_instr *I, bool g15)
       }
 
       /* G15 fetches at the level F28's immediate gives: an integer, and the
-       * level is the one source of a fetch that can be an immediate */
-      if (I->op == AGX_OPCODE_TEXTURE_LOAD) {
+       * level is the one source of a fetch that can be an immediate (an
+       * image load is a fetch there) */
+      if (I->op == AGX_OPCODE_TEXTURE_LOAD ||
+          (g15 && I->op == AGX_OPCODE_IMAGE_LOAD)) {
          if (!g15 || s != 1)
             continue;
 
@@ -595,11 +597,13 @@ agx_optimizer_forward(agx_context *ctx)
           I->op == AGX_OPCODE_FCMP)
          agx_optimizer_fmov(defs, I);
 
-      /* Inline immediates if we can. TODO: systematic */
-      if (I->op != AGX_OPCODE_COLLECT && I->op != AGX_OPCODE_IMAGE_LOAD &&
+      /* Inline immediates if we can (a G15 image load's level).
+       * TODO: systematic */
+      bool g15 = ctx->key && ctx->key->dev.gpu_generation >= 15;
+      if (I->op != AGX_OPCODE_COLLECT &&
+          (I->op != AGX_OPCODE_IMAGE_LOAD || g15) &&
           I->op != AGX_OPCODE_UNIFORM_STORE && I->op != AGX_OPCODE_EXPORT)
-         agx_optimizer_inline_imm(
-            defs, I, ctx->key && ctx->key->dev.gpu_generation >= 15);
+         agx_optimizer_inline_imm(defs, I, g15);
 
       if (I->op == AGX_OPCODE_IF_ICMP) {
          agx_optimizer_if_not(defs, I);
