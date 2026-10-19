@@ -278,11 +278,12 @@ libagx_buffer_texel_address(constant const struct agx_pbe_packed *ptr,
 }
 
 /*
- * G15: the PBE is G15's (the address is the image's VA in the image heap; a
- * buffer's offset is in it; the level in the extended word) and the software
- * words sit in the slot's fourth word (PBE G15 software). A multisampled image
- * is bound as a linear 2D view of its samples, as on G13, with its own
- * software words (PBE G15 software MSAA); only its sample index is wanted.
+ * G15: the PBE is G15's (the address is the image's VA, the one its texture
+ * descriptor holds; a buffer's offset is in it; the level in the extended
+ * word) and the software words sit in the slot's fourth word (PBE G15
+ * software). A multisampled image is bound as a linear 2D view of its samples,
+ * as on G13, with its own software words (PBE G15 software MSAA); only its
+ * sample index is wanted.
  */
 uint64_t
 libagx_image_texel_address_g15(constant const struct agx_pbe_packed *ptr,
