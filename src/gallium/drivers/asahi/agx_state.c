@@ -1849,7 +1849,7 @@ agx_compile_variant(struct agx_device *dev, struct pipe_context *pctx,
       if (nir->info.fs.uses_fbfetch_output) {
          struct agx_tilebuffer_layout tib = agx_build_tilebuffer_layout(
             key->rt_formats, ARRAY_SIZE(key->rt_formats), key->nr_samples, true,
-            false);
+            dev->params.gpu_generation >= 15);
 
          if (dev->debug & AGX_DBG_SMALLTILE)
             tib.tile_size = 16 * 16;
@@ -2596,6 +2596,7 @@ agx_update_fs(struct agx_batch *batch)
       .epilog.fs.nr_samples = nr_samples,
       .epilog.fs.link = ctx->fs->epilog_key,
       .epilog.fs.force_small_tile = dev->debug & AGX_DBG_SMALLTILE,
+      .epilog.fs.g15 = dev->params.gpu_generation >= 15,
 
       .main = ctx->fs,
       .nr_samples_shaded = ctx->fs->epilog_key.sample_shading ? nr_samples : 0,
@@ -2933,10 +2934,14 @@ agx_nr_tex_descriptors(struct agx_batch *batch, struct agx_compiled_shader *cs)
 {
    unsigned n = agx_nr_tex_descriptors_without_spilled_rts(cs);
 
-   /* We add on texture/PBE descriptors for spilled render targets */
+   /* We add on texture/PBE descriptors for spilled render targets. G15 reads
+    * them with the txf sampler after all eight targets' pairs
+    * (agx_nir_lower_tilebuffer). */
    bool spilled_rt = cs->stage == MESA_SHADER_FRAGMENT &&
                      agx_tilebuffer_spills(&batch->tilebuffer_layout);
-   if (spilled_rt)
+   if (spilled_rt && batch->tilebuffer_layout.g15)
+      n += (AGX_MAX_RENDER_TARGETS * 2) + 1;
+   else if (spilled_rt)
       n += (batch->key.nr_cbufs * 2);
 
    return n;
@@ -2999,6 +3004,12 @@ agx_upload_spilled_rt_descriptors(uint8_t *out, struct agx_batch *batch)
 
       agx_pack_texture(texture, rsrc, surf->format, &sampler_view);
       agx_batch_upload_pbe(batch, pbe, &view, false, false, true, true);
+   }
+
+   if (batch->tilebuffer_layout.g15) {
+      agx_pack_txf_sampler(
+         (struct agx_sampler_packed *)(out +
+                                       (2 * AGX_MAX_RENDER_TARGETS) * stride));
    }
 }
 
@@ -3710,14 +3721,21 @@ agx_build_bg_eot(struct agx_batch *batch, bool store, bool partial_render)
       /* Upload texture/PBE descriptors for each render target so we can clear
        * spilled render targets.
        */
-      struct agx_ptr descs = agx_pool_alloc_aligned(
-         &batch->pool, AGX_TEXTURE_LENGTH * 2 * batch->key.nr_cbufs, 64);
+      size_t size = g15 ? agx_tex_desc_stride(batch) *
+                             ((2 * AGX_MAX_RENDER_TARGETS) + 1)
+                        : AGX_TEXTURE_LENGTH * 2 * batch->key.nr_cbufs;
+      struct agx_ptr descs = agx_pool_alloc_aligned(&batch->pool, size, 64);
+      if (g15)
+         memset(descs.cpu, 0, size);
+
       agx_upload_spilled_rt_descriptors(descs.cpu, batch);
 
-      agx_usc_pack(&b, TEXTURE, cfg) {
-         cfg.start = 0;
-         cfg.count = 2 * batch->key.nr_cbufs;
-         cfg.buffer = descs.gpu;
+      if (!g15) {
+         agx_usc_pack(&b, TEXTURE, cfg) {
+            cfg.start = 0;
+            cfg.count = 2 * batch->key.nr_cbufs;
+            cfg.buffer = descs.gpu;
+         }
       }
 
       nr_tex = MAX2(nr_tex, 2 * batch->key.nr_cbufs);
@@ -3940,7 +3958,8 @@ agx_batch_init_state(struct agx_batch *batch)
    batch->tilebuffer_layout = agx_build_tilebuffer_layout(
       formats, batch->key.nr_cbufs,
       util_framebuffer_get_num_samples(&batch->key),
-      util_framebuffer_get_num_layers(&batch->key) > 1, false);
+      util_framebuffer_get_num_layers(&batch->key) > 1,
+      agx_device(batch->ctx->base.screen)->params.gpu_generation >= 15);
 
    if (agx_device(batch->ctx->base.screen)->debug & AGX_DBG_SMALLTILE)
       batch->tilebuffer_layout.tile_size = 16 * 16;
