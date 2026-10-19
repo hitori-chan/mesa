@@ -425,9 +425,9 @@ agx_nir_fs_epilog(nir_builder *b, const void *key_)
    }
 
    /* Now lower the resulting program using the key */
-   struct agx_tilebuffer_layout tib = agx_build_tilebuffer_layout(
-      key->rt_formats, ARRAY_SIZE(key->rt_formats), key->nr_samples, true);
-   tib.g15 = key->g15;
+   struct agx_tilebuffer_layout tib =
+      agx_build_tilebuffer_layout(key->rt_formats, ARRAY_SIZE(key->rt_formats),
+                                  key->nr_samples, true, key->g15);
 
    if (key->force_small_tile)
       tib.tile_size = 16 * 16;
