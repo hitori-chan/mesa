@@ -842,17 +842,15 @@ agx_pack_texture(void *out, struct agx_resource *rsrc,
       cfg.compressed = rsrc->layout.compressed;
       cfg.extended = cfg.compressed;
 
-      uint64_t address = agx_map_texture_gpu(rsrc, first_layer);
+      cfg.address = agx_map_texture_gpu(rsrc, first_layer);
 
       if (state->target == PIPE_BUFFER)
-         address += state->u.buf.offset;
-
-      cfg.address = agx_desc_addr(rsrc, address);
+         cfg.address += state->u.buf.offset;
 
       if (rsrc->layout.compressed) {
-         cfg.acceleration_buffer = agx_desc_addr(
-            rsrc, agx_map_gpu(rsrc) + rsrc->layout.metadata_offset_B +
-                     (first_layer * rsrc->layout.compression_layer_stride_B));
+         cfg.acceleration_buffer =
+            agx_map_gpu(rsrc) + rsrc->layout.metadata_offset_B +
+            (first_layer * rsrc->layout.compression_layer_stride_B);
       }
 
       if (state->target == PIPE_TEXTURE_3D) {
@@ -1323,7 +1321,10 @@ agx_pack_pbe_g15(struct agx_pbe_packed *out, struct agx_resource *tex,
           desc->channel[3].type == UTIL_FORMAT_TYPE_VOID)
          cfg.swizzle_a = AGX_CHANNEL_A;
 
-      cfg.buffer = agx_pbe_addr(tex, agx_map_texture_gpu(tex, layer));
+      /* The VA the texture descriptor holds: the same memory through another
+       * VA (an alias) is not coherent with it within a launch, so a fetch
+       * after an image write read the old texel (texture.md) */
+      cfg.buffer = agx_map_texture_gpu(tex, layer);
       cfg.width = view->resource->width0;
       cfg.height = view->resource->height0;
       cfg.mipmapped = tex->mipmapped;
@@ -1336,8 +1337,7 @@ agx_pack_pbe_g15(struct agx_pbe_packed *out, struct agx_resource *tex,
 
          /* The offset is aligned to 64 B (texture_buffer_offset_alignment);
           * libagx_buffer_image_offset adds word 4, left 0 */
-         cfg.buffer =
-            agx_pbe_addr(tex, agx_map_texture_gpu(tex, 0) + view->u.buf.offset);
+         cfg.buffer = agx_map_texture_gpu(tex, 0) + view->u.buf.offset;
          cfg.width = AGX_TEXTURE_BUFFER_WIDTH;
          cfg.height = MAX2(DIV_ROUND_UP(size_el, cfg.width), 1);
          cfg.stride = (stride_B >> 4) - 1;
