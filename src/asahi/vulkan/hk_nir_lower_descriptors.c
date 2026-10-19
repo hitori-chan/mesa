@@ -1058,7 +1058,7 @@ sampler_after_texture_g15(nir_builder *b, nir_def *handle)
  * agx_nir_lower_texture leaves them (a 1D or buffer image as 2D, a cube as a
  * 2D array), as Gallium's lower_image_load_g15: only a load that may be
  * reordered becomes a txf, another keeps its order as an intrinsic, the txf
- * sampler in the sample index's place. Multisampled loads are left alone.
+ * sampler in the sample index's place, or the LOD's for a multisampled image.
  * Fetches agx_nir_lower_texture took the sampler from (a buffer texture's)
  * get the one after the texture again.
  */
@@ -1093,9 +1093,6 @@ lower_image_load_g15(nir_builder *b, nir_instr *instr, UNUSED void *data)
    enum glsl_sampler_dim dim = nir_intrinsic_image_dim(intr);
    bool array = nir_intrinsic_image_array(intr);
 
-   if (dim == GLSL_SAMPLER_DIM_MS)
-      return false;
-
    if (dim == GLSL_SAMPLER_DIM_CUBE) {
       dim = GLSL_SAMPLER_DIM_2D;
       array = true;
@@ -1104,6 +1101,11 @@ lower_image_load_g15(nir_builder *b, nir_instr *instr, UNUSED void *data)
    nir_def *sampler = sampler_after_texture_g15(b, intr->src[0].ssa);
    if (!sampler)
       return false;
+
+   if (dim == GLSL_SAMPLER_DIM_MS) {
+      nir_src_rewrite(&intr->src[3], sampler);
+      return true;
+   }
 
    if (!(nir_intrinsic_access(intr) & ACCESS_CAN_REORDER)) {
       nir_src_rewrite(&intr->src[2], sampler);
