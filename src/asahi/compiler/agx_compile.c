@@ -770,8 +770,14 @@ agx_emit_load_vary(agx_builder *b, agx_index dest, nir_intrinsic_instr *instr)
 static void
 agx_wait_pixel_mask(agx_builder *b, uint32_t mask)
 {
-   /* Background programs do not need to wait as they are the eldest pixels */
-   if (b->shader->key->fs.ignore_tib_dependencies) {
+   /* Background programs do not need to wait as they are the eldest pixels,
+    * but on G15 a background program's stores before the fences lost the
+    * upper half of 16-byte samples from the 121st 32x16 tile on (a 4-sample
+    * RGBA32 clear, KHR-GL46 direct_state_access.renderbuffers_storage_multisample),
+    * as if a later tile reused tile memory an earlier one still held
+    */
+   if (b->shader->key->fs.ignore_tib_dependencies &&
+       b->shader->key->dev.gpu_generation < 15) {
       assert(b->shader->nir->info.internal);
       return;
    }

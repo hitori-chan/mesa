@@ -364,8 +364,7 @@ agx_esl_from_usc(struct util_dynarray *out, const uint8_t *usc,
       esl_ldshdr(out, main_va, code ? code->main_size : 0);
 
       /* a program that loads render targets has its coordinates in cr (a
-       * clearing one has none, demo15's); it waits for no pixel fence, the
-       * background programs are the eldest pixels */
+       * clearing one has none, demo15's) */
       if (code && (code->cr_count || code->stack_size))
          esl_spectpr(out, code->stack_size, code->cr_count);
       break;
