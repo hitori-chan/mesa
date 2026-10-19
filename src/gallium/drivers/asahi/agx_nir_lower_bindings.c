@@ -184,10 +184,10 @@ lower(nir_builder *b, nir_instr *instr, void *data)
  * G15 has no image load (libLLVM 32023 knows none): an image is read as its
  * texture descriptor by a fetch with the txf sampler, the coordinates as
  * agx_nir_lower_texture leaves them (a 1D or buffer image as 2D, a cube as a
- * 2D array, the layer robust). Multisampled loads are left alone. A txf may
- * be combined with another or moved past an image write, so only a load that
- * may be reordered becomes one; another keeps its order as an intrinsic, the
- * txf sampler in the sample index's place (agx_emit_image_load).
+ * 2D array, the layer robust). A txf may be combined with another or moved
+ * past an image write, so only a load that may be reordered becomes one;
+ * another keeps its order as an intrinsic, the txf sampler in the sample
+ * index's place, or the LOD's for a multisampled image (agx_emit_image_load).
  */
 static bool
 lower_image_load_g15(nir_builder *b, nir_intrinsic_instr *intr)
@@ -198,8 +198,11 @@ lower_image_load_g15(nir_builder *b, nir_intrinsic_instr *intr)
    enum glsl_sampler_dim dim = nir_intrinsic_image_dim(intr);
    bool array = nir_intrinsic_image_array(intr);
 
-   if (dim == GLSL_SAMPLER_DIM_MS)
-      return false;
+   if (dim == GLSL_SAMPLER_DIM_MS) {
+      nir_src_rewrite(&intr->src[3],
+                      nir_load_sampler_handle_agx(b, nir_imm_int(b, 0)));
+      return true;
+   }
 
    if (!(nir_intrinsic_access(intr) & ACCESS_CAN_REORDER)) {
       nir_src_rewrite(&intr->src[2],
@@ -210,6 +213,8 @@ lower_image_load_g15(nir_builder *b, nir_intrinsic_instr *intr)
    if (dim == GLSL_SAMPLER_DIM_CUBE) {
       dim = GLSL_SAMPLER_DIM_2D;
       array = true;
+   } else if (dim == GLSL_SAMPLER_DIM_RECT) {
+      dim = GLSL_SAMPLER_DIM_2D;
    }
 
    assert(dim == GLSL_SAMPLER_DIM_2D || dim == GLSL_SAMPLER_DIM_3D);
