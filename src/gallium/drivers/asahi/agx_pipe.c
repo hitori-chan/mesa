@@ -2315,6 +2315,17 @@ agx_is_format_supported(struct pipe_screen *pscreen, enum pipe_format format,
       if ((usage & PIPE_BIND_RENDER_TARGET) &&
           (!ent.renderable || (tex_format == PIPE_FORMAT_R9G9B9E5_FLOAT)))
          return false;
+
+      /* G15 filters sRGB8 decoded to 12 bits and 10-bit unorm in quarter-LSB
+       * steps (smp.md), short of OpenCL's linear filter tolerances, which
+       * G13 meets. OpenCL 3.0 requires neither format. */
+      const struct util_format_description *desc =
+         util_format_description(tex_format);
+      if ((usage & PIPE_BIND_OPENCL) && (usage & PIPE_BIND_SAMPLER_VIEW) &&
+          agx_device(pscreen)->params.gpu_generation >= 15 &&
+          (util_format_is_srgb(tex_format) ||
+           (desc->channel[0].normalized && desc->channel[0].size == 10)))
+         return false;
    }
 
    if (usage & PIPE_BIND_DEPTH_STENCIL) {
