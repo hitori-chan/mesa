@@ -2813,7 +2813,8 @@
   <!--
    The texture instructions (texture.md): the texture state is entry ts of
    the 32 B array at uniform pair utex (u(2 utex)), the sampler entry ss of
-   the table at pair usmp; the coordinates in cr, one 32-bit slot each: x,
+   the table at pair usmp (rtex, rsmp set: register pairs r(2 utex) and
+   r(2 usmp) instead); the coordinates in cr, one 32-bit slot each: x,
    y, z in slots 0-2, an array's layer in slot 3 (2D and cube arrays
    verified; a multisampled texture's sample index not), a cube's face not
    known (a direction is ignored); bit 84 sample (1) or integer load (0); the
@@ -2849,6 +2850,8 @@
     <immediate name="usmp" bit="96:99"/>
     <immediate name="utex" bit="100:103"/>
     <immediate name="q3" bit="64"/>
+    <modifier name="rtex" bit="83" display="rtex"/>
+    <modifier name="rsmp" bit="82" display="rsmp"/>
     <ins name="texture_gather" display="texture_gather" mode="0000000000000000"/>
     <ins name="texture_gather_2d_array" display="texture_gather_2d_array" mode="0000010000000000"/>
   </group>
@@ -2876,6 +2879,8 @@
     <immediate name="utex" bit="100:103"/>
     <immediate name="q3" bit="64"/>
     <immediate name="offset" bit="75:79 105:110 21"/>
+    <modifier name="rtex" bit="83" display="rtex"/>
+    <modifier name="rsmp" bit="82" display="rsmp"/>
     <ins name="texture_gather_offset" display="texture_gather" mode="0000001000000001"/>
     <ins name="texture_gather_offset_2d_array" display="texture_gather_2d_array" mode="0000001100000001"/>
   </group>
@@ -2898,6 +2903,8 @@
     <src kind="ss" bit="72 32:35 65:67 88"/>
     <immediate name="usmp" bit="96:99"/>
     <immediate name="utex" bit="100:103"/>
+    <modifier name="rtex" bit="83" display="rtex"/>
+    <modifier name="rsmp" bit="82" display="rsmp"/>
     <ins name="texture_sample" display="texture_sample" mode="00000001001"/>
     <ins name="texture_sample_2d_array" display="texture_sample_2d_array" mode="00100001001"/>
     <ins name="texture_sample_3d" display="texture_sample_3d" mode="00000111001"/>
@@ -2924,6 +2931,8 @@
     <immediate name="usmp" bit="96:99"/>
     <immediate name="utex" bit="100:103"/>
     <immediate name="q3" bit="64"/>
+    <modifier name="rtex" bit="83" display="rtex"/>
+    <modifier name="rsmp" bit="82" display="rsmp"/>
     <ins name="texture_sample_auto" display="texture_sample" mode="0000000000000000"/>
     <ins name="texture_sample_auto_1d" display="texture_sample_1d" mode="0000000010000000"/>
     <ins name="texture_sample_auto_1d_array" display="texture_sample_1d_array" mode="0000000010100000"/>
@@ -2954,6 +2963,8 @@
     <immediate name="usmp" bit="96:99"/>
     <immediate name="utex" bit="100:103"/>
     <immediate name="lod" bit="59:63 89:94 20"/>
+    <modifier name="rtex" bit="83" display="rtex"/>
+    <modifier name="rsmp" bit="82" display="rsmp"/>
     <ins name="texture_load" display="texture_load" mode="00100010111"/>
     <ins name="texture_load_2d_array" display="texture_load_2d_array" mode="00110010111"/>
     <ins name="texture_load_3d" display="texture_load_3d" mode="00001111001"/>
@@ -2979,6 +2990,8 @@
     <src kind="ss" bit="72 32:35 65:67 88"/>
     <immediate name="usmp" bit="96:99"/>
     <immediate name="utex" bit="100:103"/>
+    <modifier name="rtex" bit="83" display="rtex"/>
+    <modifier name="rsmp" bit="82" display="rsmp"/>
     <ins name="texture_load_nolod" display="texture_load" mode="0000010010000000"/>
     <ins name="texture_load_nolod_1d" display="texture_load_1d" mode="0000110010000000"/>
     <ins name="texture_load_nolod_1d_array" display="texture_load_1d_array" mode="0000110010100000"/>
@@ -3018,6 +3031,8 @@
     <immediate name="utex" bit="100:103"/>
     <immediate name="q3" bit="64"/>
     <immediate name="offset" bit="75:79 105:110 21"/>
+    <modifier name="rtex" bit="83" display="rtex"/>
+    <modifier name="rsmp" bit="82" display="rsmp"/>
     <ins name="texture_sample_offset" display="texture_sample" mode="0000001000000001"/>
     <ins name="texture_sample_offset_2d_array" display="texture_sample_2d_array" mode="0000001100000001"/>
     <ins name="texture_sample_offset_3d" display="texture_sample_3d" mode="0000001010010001"/>
@@ -3043,6 +3058,8 @@
     <immediate name="utex" bit="100:103"/>
     <immediate name="q3" bit="64"/>
     <immediate name="offset" bit="75:79 105:110 21"/>
+    <modifier name="rtex" bit="83" display="rtex"/>
+    <modifier name="rsmp" bit="82" display="rsmp"/>
     <ins name="texture_sample_l0_offset" display="texture_sample" mode="01000011011"/>
     <ins name="texture_sample_l0_offset_2d_array" display="texture_sample_2d_array" mode="01001011011"/>
     <ins name="texture_sample_l0_offset_3d" display="texture_sample_3d" mode="01110010101"/>
@@ -3068,6 +3085,8 @@
     <immediate name="utex" bit="100:103"/>
     <immediate name="lod" bit="59:63 89:94 20"/>
     <immediate name="offset" bit="75:79 105:110 21"/>
+    <modifier name="rtex" bit="83" display="rtex"/>
+    <modifier name="rsmp" bit="82" display="rsmp"/>
     <ins name="texture_load_offset" display="texture_load" mode="01000000011"/>
     <ins name="texture_load_offset_2d_array" display="texture_load_2d_array" mode="01001000011"/>
     <ins name="texture_load_offset_3d" display="texture_load_3d" mode="01110000011"/>
@@ -3103,6 +3122,8 @@
     <immediate name="q3" bit="64"/>
     <immediate name="offset" bit="75:79 105:110 21"/>
     <immediate name="mode" bit="48:63"/>
+    <modifier name="rtex" bit="83" display="rtex"/>
+    <modifier name="rsmp" bit="82" display="rsmp"/>
   </ins>
 
   <ins name="texture_sample_mode" display="texture_sample" length="14/20">
@@ -3125,6 +3146,8 @@
     <immediate name="q3" bit="64"/>
     <immediate name="offset" bit="75:79 105:110 21"/>
     <immediate name="mode" bit="48:63"/>
+    <modifier name="rtex" bit="83" display="rtex"/>
+    <modifier name="rsmp" bit="82" display="rsmp"/>
   </ins>
 
   <!-- A fetch with its mode code (bits 48:63), as texture_sample_mode: the
@@ -3149,6 +3172,8 @@
     <immediate name="q3" bit="64"/>
     <immediate name="offset" bit="75:79 105:110 21"/>
     <immediate name="mode" bit="48:63"/>
+    <modifier name="rtex" bit="83" display="rtex"/>
+    <modifier name="rsmp" bit="82" display="rsmp"/>
   </ins>
 
   <!-- bitop_unary, op 1 -->

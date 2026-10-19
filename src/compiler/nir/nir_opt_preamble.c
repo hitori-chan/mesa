@@ -234,6 +234,7 @@ can_move_intrinsic(nir_intrinsic_instr *instr, opt_preamble_ctx *ctx)
    case nir_intrinsic_load_const_ir3:
    case nir_intrinsic_load_constant_agx:
    case nir_intrinsic_bindless_image_agx:
+   case nir_intrinsic_bindless_image_base_agx:
    case nir_intrinsic_bindless_sampler_agx:
       return can_move_srcs(&instr->instr, ctx);
 

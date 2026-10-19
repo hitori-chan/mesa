@@ -124,7 +124,9 @@ struct ra_ctx {
 static unsigned
 reserved_size(agx_context *ctx)
 {
-   if (ctx->has_spill_pcopy_reserved)
+   if (ctx->g15_tex_base)
+      return AGX_G15_TEX_BASE_REG + 8;
+   else if (ctx->has_spill_pcopy_reserved)
       return 8;
    else if (ctx->any_quad_divergent_shuffle)
       return 2;
@@ -1076,6 +1078,11 @@ agx_ra_assign_local(struct ra_ctx *rctx)
       BITSET_SET_COUNT(used_regs_gpr, 0, 8);
    }
 
+   /* G15: reserve the texture and sampler table base pairs, past those */
+   if (rctx->shader->g15_tex_base) {
+      BITSET_SET_COUNT(used_regs_gpr, AGX_G15_TEX_BASE_REG, 8);
+   }
+
    agx_foreach_instr_in_block(block, I) {
       rctx->instr = I;
 
@@ -1605,6 +1612,9 @@ agx_ra(agx_context *ctx)
    if (ctx->nir->info.stage == MESA_SHADER_VERTEX ||
        ctx->nir->info.stage == MESA_SHADER_TESS_EVAL)
       ctx->max_reg = MAX2(ctx->max_reg, 6 * 2);
+
+   if (ctx->g15_tex_base)
+      ctx->max_reg = MAX2(ctx->max_reg, AGX_G15_TEX_BASE_REG + 7);
 
    assert(ctx->max_reg <= max_regs);
 

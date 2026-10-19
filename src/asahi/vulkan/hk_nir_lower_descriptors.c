@@ -360,6 +360,14 @@ load_texture_index_g15(nir_builder *b, const struct lower_descriptors_ctx *ctx,
       nir_iadd_imm(b, nir_imul_imm(b, index, binding_layout->stride / 32),
                    (binding_layout->offset + offset_B) / 32);
 
+   /* The texture instructions read 16 bits of the entry: a binding whose
+    * entries all lie below 65536 says so (the backend drops the mask), and the
+    * backend moves the table for the others */
+   uint64_t end_B = binding_layout->offset +
+                    (uint64_t)binding_layout->array_size * binding_layout->stride;
+   if (end_B <= 0x10000 * 32)
+      entry = nir_iand_imm(b, entry, 0xffff);
+
    if (sampler) {
       nir_def *desc_offs_B = nir_imul_imm(b, entry, 32);
       return nir_bindless_sampler_agx(b, desc_offs_B, entry, .desc_set = set);
@@ -1048,6 +1056,15 @@ sampler_after_texture_g15(nir_builder *b, nir_def *handle)
       return NULL;
 
    nir_def *entry = nir_iadd_imm(b, intr->src[0].ssa, 1);
+
+   /* in the same binding, so below 65536 too when the texture's is
+    * (load_texture_index_g15) */
+   nir_scalar index = nir_get_scalar(intr->src[0].ssa, 0);
+   if (nir_scalar_is_alu(index) && nir_scalar_alu_op(index) == nir_op_iand &&
+       nir_scalar_is_const(nir_scalar_chase_alu_src(index, 1)) &&
+       nir_scalar_as_uint(nir_scalar_chase_alu_src(index, 1)) == 0xffff)
+      entry = nir_iand_imm(b, entry, 0xffff);
+
    return nir_bindless_sampler_agx(b, nir_imul_imm(b, entry, 32), entry,
                                    .desc_set = nir_intrinsic_desc_set(intr));
 }

@@ -315,6 +315,7 @@ avoid_instr_g15(const nir_instr *instr, const void *data)
 
    nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
    return intr->intrinsic == nir_intrinsic_bindless_image_agx ||
+          intr->intrinsic == nir_intrinsic_bindless_image_base_agx ||
           intr->intrinsic == nir_intrinsic_bindless_sampler_agx;
 }
 

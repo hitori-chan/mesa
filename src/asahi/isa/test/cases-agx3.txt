@@ -255,6 +255,7 @@ e50c0c1230010900800050000100 texture_sample 0, 0, yzw, r14l_r14h_r15l, ts3, cr20
 050c8c8090801701200000000100 texture_load 4, 0, x, r32l, ts66, cr4, 0, 1, wait 0, ss0, 1, 0, 0
 3dff0c2390241701a00240000100000000000000 texture_load 1, 1, xz, r7_r8, ts95, cr31, 1, 0, wait 0, ss0, 1, 0, 0
 15000c0010a01701000000000100 texture_load 5, 0, x, r1l, ts0, cr0, 0, 0, ss0, 1, 0, 0
+85f00c2092481701000088012400 texture_load 2, 2, x, r16, r7l, cr0, 1, 0, wait 0, r1l, 4, 2, 0, rtex
 bd7acc8a30901701d00240000100000000000000 texture_load 4, 4, xyw, r59h_r60l_r60h, ts191, cr18, 0, 1, ss0, 1, 0, 0
 05408c1410021701000000000100 texture_load 0, 0, z, r32l, ts16, cr32, 0, 0, wait 3, ss0, 1, 0, 0
 5d2f4c2c90c61701c00240000100000000000000 texture_load 6, 1, yz, r21h_r22l, ts139, cr39, 1, 0, wait 4, ss0, 1, 0, 0

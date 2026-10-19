@@ -1517,6 +1517,14 @@ static agx_index
 agx_translate_bindless_handle(agx_builder *b, nir_src *handle, agx_index *base)
 {
    nir_intrinsic_instr *intr = nir_src_as_intrinsic(*handle);
+
+   /* G15: a table base in registers (lower_wide_texture_index_g15) */
+   if (intr->intrinsic == nir_intrinsic_bindless_image_base_agx) {
+      b->shader->g15_tex_base = true;
+      *base = agx_src_index(&intr->src[1]);
+      return agx_src_index(&intr->src[0]);
+   }
+
    assert(intr->intrinsic == nir_intrinsic_bindless_image_agx ||
           intr->intrinsic == nir_intrinsic_bindless_sampler_agx);
 
@@ -1539,6 +1547,14 @@ static agx_index
 agx_translate_sampler_g15(agx_builder *b, nir_src *handle, agx_index *base)
 {
    nir_intrinsic_instr *intr = nir_src_as_intrinsic(*handle);
+
+   /* a table base in registers (lower_wide_texture_index_g15) */
+   if (intr->intrinsic == nir_intrinsic_bindless_image_base_agx) {
+      b->shader->g15_tex_base = true;
+      *base = agx_src_index(&intr->src[1]);
+      return agx_src_index(&intr->src[0]);
+   }
+
    assert(intr->intrinsic == nir_intrinsic_bindless_sampler_agx);
 
    *base = agx_uniform(nir_intrinsic_desc_set(intr), AGX_SIZE_64);
@@ -1547,6 +1563,36 @@ agx_translate_sampler_g15(agx_builder *b, nir_src *handle, agx_index *base)
       return agx_immediate(nir_src_as_uint(intr->src[1]));
 
    return agx_src_index(&intr->src[1]);
+}
+
+/* G15: a texture or sampler table base in registers, or in a uniform pair the
+ * instruction cannot name (it names a pair below r32 or u32), moves to its
+ * reserved pair: the texture's at AGX_G15_TEX_BASE_REG, the sampler's after
+ * it */
+static void
+agx_lower_g15_tex_base(agx_context *ctx)
+{
+   agx_foreach_instr_global(ctx, I) {
+      if (I->op != AGX_OPCODE_TEXTURE_SAMPLE &&
+          I->op != AGX_OPCODE_TEXTURE_LOAD && I->op != AGX_OPCODE_IMAGE_LOAD)
+         continue;
+
+      agx_builder b = agx_init_builder(ctx, agx_before_instr(I));
+      const unsigned srcs[2] = {2, 6};
+
+      for (unsigned i = 0; i < 2; ++i) {
+         agx_index base = I->src[srcs[i]];
+         if (base.type != AGX_INDEX_REGISTER &&
+             (base.type != AGX_INDEX_UNIFORM ||
+              ((base.value & 3) == 0 && base.value < 64)))
+            continue;
+
+         agx_index pair =
+            agx_register(AGX_G15_TEX_BASE_REG + 4 * i, AGX_SIZE_64);
+         agx_mov_to(&b, pair, base);
+         I->src[srcs[i]] = pair;
+      }
+   }
 }
 
 /* G15: a preamble runs in the entry program, which cannot read back the
@@ -2650,6 +2696,7 @@ agx_emit_intrinsic(agx_builder *b, nir_intrinsic_instr *instr)
       return agx_emit_export(b, nir_intrinsic_base(instr), instr->src[0]);
 
    case nir_intrinsic_bindless_image_agx:
+   case nir_intrinsic_bindless_image_base_agx:
    case nir_intrinsic_bindless_sampler_agx:
       /* These must always be chased */
       return NULL;
@@ -3191,8 +3238,11 @@ agx_emit_tex(agx_builder *b, nir_tex_instr *instr)
       case nir_tex_src_sampler_handle:
          b->shader->out->uses_sampler_heap = true;
          nir_intrinsic_instr *intr = nir_src_as_intrinsic(instr->src[i].src);
-         if (intr && intr->intrinsic == nir_intrinsic_bindless_sampler_agx) {
-            /* Heap offset; on G15 the index into the sampler table */
+         if (intr &&
+             (intr->intrinsic == nir_intrinsic_bindless_sampler_agx ||
+              intr->intrinsic == nir_intrinsic_bindless_image_base_agx)) {
+            /* Heap offset; on G15 the index into the sampler table (its base
+             * in registers for a wide index) */
             if (g15)
                sampler = agx_translate_sampler_g15(b, &instr->src[i].src,
                                                    &sampler_base);
@@ -4151,6 +4201,110 @@ lower_bit_size_callback(const nir_instr *instr, UNUSED void *_)
    return 0;
 }
 
+/*
+ * G15's texture instructions read a register index into the texture or sampler
+ * table as 16 bits (texture.md). An index that may reach 65536 takes the table
+ * moved by its high bits instead: the base plus (index & ~0xffff) * 32 entries'
+ * bytes, in registers, which the instructions name in place of the uniform
+ * pair.
+ */
+static bool
+lower_wide_handle_g15(nir_builder *b, nir_src *src, struct hash_table *range_ht)
+{
+   nir_intrinsic_instr *handle = nir_src_as_intrinsic(*src);
+   if (!handle)
+      return false;
+
+   /* a sampler handle's index is its second source */
+   unsigned s;
+   if (handle->intrinsic == nir_intrinsic_bindless_image_agx)
+      s = 0;
+   else if (handle->intrinsic == nir_intrinsic_bindless_sampler_agx)
+      s = 1;
+   else
+      return false;
+
+   nir_scalar index = nir_get_scalar(handle->src[s].ssa, 0);
+   if (nir_unsigned_upper_bound(b->shader, range_ht, index) < 0x10000)
+      return false;
+
+   /* a table's offsets fit 32 bits (2^27 entries) */
+   nir_def *idx = nir_u2u32(b, handle->src[s].ssa);
+   nir_def *base =
+      nir_load_preamble(b, 1, 64, nir_intrinsic_desc_set(handle));
+   nir_def *high = nir_ishl_imm(b, nir_iand_imm(b, idx, 0xffff0000), 5);
+   base = nir_iadd(b, base, nir_u2u64(b, high));
+   nir_src_rewrite(src, nir_bindless_image_base_agx(b, idx, base));
+   return true;
+}
+
+static bool
+lower_wide_texture_index_g15(nir_builder *b, nir_instr *instr, void *data)
+{
+   b->cursor = nir_before_instr(instr);
+
+   if (instr->type == nir_instr_type_tex) {
+      nir_tex_instr *tex = nir_instr_as_tex(instr);
+      bool progress = false;
+
+      for (unsigned i = 0; i < tex->num_srcs; ++i) {
+         if (tex->src[i].src_type == nir_tex_src_texture_handle ||
+             tex->src[i].src_type == nir_tex_src_sampler_handle)
+            progress |= lower_wide_handle_g15(b, &tex->src[i].src, data);
+      }
+
+      return progress;
+   } else if (instr->type == nir_instr_type_intrinsic) {
+      nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+      if (intr->intrinsic != nir_intrinsic_bindless_image_load &&
+          intr->intrinsic != nir_intrinsic_bindless_image_sparse_load)
+         return false;
+
+      /* the image, and the txf sampler in the sample index's or LOD's place
+       * (agx_emit_image_load) */
+      bool progress = false;
+      unsigned nr_srcs = nir_intrinsic_infos[intr->intrinsic].num_srcs;
+      for (unsigned i = 0; i < nr_srcs; ++i)
+         progress |= lower_wide_handle_g15(b, &intr->src[i], data);
+
+      return progress;
+   } else {
+      return false;
+   }
+}
+
+/* G15: a texture index masked to the 16 bits the instructions read (the
+ * drivers' sign of a table below 65536 entries) needs no mask once
+ * lower_wide_texture_index_g15 has seen it */
+static bool
+drop_texture_index_mask_g15(nir_builder *b, nir_intrinsic_instr *intr,
+                            UNUSED void *data)
+{
+   nir_src *src;
+   if (intr->intrinsic == nir_intrinsic_bindless_image_agx)
+      src = &intr->src[0];
+   else if (intr->intrinsic == nir_intrinsic_bindless_sampler_agx)
+      src = &intr->src[1];
+   else
+      return false;
+
+   nir_scalar s = nir_get_scalar(src->ssa, 0);
+   if (!nir_scalar_is_alu(s) || nir_scalar_alu_op(s) != nir_op_iand)
+      return false;
+
+   for (unsigned i = 0; i < 2; ++i) {
+      nir_scalar mask = nir_scalar_chase_alu_src(s, i);
+      if (nir_scalar_is_const(mask) && nir_scalar_as_uint(mask) == 0xffff) {
+         b->cursor = nir_before_instr(&intr->instr);
+         nir_src_rewrite(src,
+                         nir_mov_scalar(b, nir_scalar_chase_alu_src(s, 1 - i)));
+         return true;
+      }
+   }
+
+   return false;
+}
+
 /* The address of a texture or PBE descriptor, for libagx's descriptor crawls
  * (buffer offsets, sizes, texel addresses). G13's handle is a byte offset;
  * G15's counts 32 B entries, as agx_translate_bindless_handle hands it to the
@@ -4403,6 +4557,8 @@ agx_compile_function_nir(nir_shader *nir, nir_function_impl *impl,
    }
 
    agx_validate(ctx, "agx_ra");
+   if (ctx->g15_tex_base)
+      agx_lower_g15_tex_base(ctx);
    agx_lower_64bit_postra(ctx);
 
    /* G15's thread-private stack needs no adjust: the entry program's specTPR
@@ -4784,6 +4940,16 @@ agx_compile_shader_nir_impl(nir_shader *nir, struct agx_shader_key *key,
    NIR_PASS(_, nir, nir_opt_constant_folding);
    NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_load_from_texture_handle,
             nir_metadata_control_flow, key);
+
+   if (key->dev.gpu_generation >= 15) {
+      struct hash_table *range_ht = _mesa_pointer_hash_table_create(NULL);
+      NIR_PASS(_, nir, nir_shader_instructions_pass,
+               lower_wide_texture_index_g15, nir_metadata_control_flow,
+               range_ht);
+      _mesa_hash_table_destroy(range_ht, NULL);
+      NIR_PASS(_, nir, nir_shader_intrinsics_pass, drop_texture_index_mask_g15,
+               nir_metadata_control_flow, NULL);
+   }
 
    NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_sink_address,
             nir_metadata_control_flow, NULL);
