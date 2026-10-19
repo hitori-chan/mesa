@@ -1670,7 +1670,8 @@ static bool
 a3_tex_lod_word(const agx_instr *I)
 {
    agx_index lod = I->src[1];
-   bool load = I->op == AGX_OPCODE_TEXTURE_LOAD;
+   bool load =
+      I->op == AGX_OPCODE_TEXTURE_LOAD || I->op == AGX_OPCODE_IMAGE_LOAD;
 
    if (I->lod_mode == AGX_LOD_MODE_AUTO_LOD_BIAS)
       return true;
@@ -1789,14 +1790,17 @@ a3_tex_grad_words(const agx_instr *I)
 static void
 a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
 {
-   bool load = I->op == AGX_OPCODE_TEXTURE_LOAD;
+   bool load =
+      I->op == AGX_OPCODE_TEXTURE_LOAD || I->op == AGX_OPCODE_IMAGE_LOAD;
    bool auto_lod = I->lod_mode == AGX_LOD_MODE_AUTO_LOD;
    bool grad = I->lod_mode == AGX_LOD_MODE_LOD_GRAD;
    agx_index coords = I->src[0], lod = I->src[1];
    agx_index texture = I->src[3], sampler = I->src[4];
 
-   if (I->op == AGX_OPCODE_IMAGE_LOAD)
-      a3_fail(a, "image load not supported yet");
+   /* An image load is a fetch with the txf sampler (agx_emit_image_load),
+    * which a multisampled one does not have */
+   if (I->op == AGX_OPCODE_IMAGE_LOAD && agx_is_null(I->src[6]))
+      a3_fail(a, "image load without the txf sampler");
    if (I->dim >= ARRAY_SIZE(a3_tex_auto))
       a3_fail(a, "texture dimension");
    if (I->query_lod || I->sparse)
@@ -2021,7 +2025,8 @@ agx3_cr_count(const agx_instr *I)
 {
    switch (I->op) {
    case AGX_OPCODE_TEXTURE_SAMPLE:
-   case AGX_OPCODE_TEXTURE_LOAD: {
+   case AGX_OPCODE_TEXTURE_LOAD:
+   case AGX_OPCODE_IMAGE_LOAD: {
       unsigned n = MAX2(a3_tex_slot(I, a3_tex_coords(I) - 1) + 1,
                         (a3_tex_lod_word(I) || a3_tex_offset_in_word(I)) ? 4
                         : I->shadow                                      ? 3
@@ -2036,8 +2041,6 @@ agx3_cr_count(const agx_instr *I)
        * and the offset's in cr3 */
       return (I->dim == AGX_DIM_2D_ARRAY || I->dim == AGX_DIM_2D_MS_ARRAY) ? 4
                                                                            : 2;
-   case AGX_OPCODE_IMAGE_LOAD:
-      return 2;
    case AGX_OPCODE_IMAGE_WRITE:
       return I->vary_cr + 8;
    case AGX_OPCODE_ST_VARY:
