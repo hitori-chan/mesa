@@ -329,13 +329,14 @@ lower_load(nir_builder *b, nir_intrinsic_instr *intr)
       break;
    }
 
+   /* Three channels: a load of four (a blend's destination) reads alpha 1 */
    case AIL_ISA_FORMAT_RG11B10F:
-      res = nir_trim_vector(
+      res = resize_f32(
          b, nir_format_unpack_11f11f10f(b, load_bytes(b, intr, 4, base)), k);
       break;
 
    case AIL_ISA_FORMAT_RGB9E5:
-      res = nir_trim_vector(
+      res = resize_f32(
          b, nir_format_unpack_r9g9b9e5(b, load_bytes(b, intr, 4, base)), k);
       break;
 
