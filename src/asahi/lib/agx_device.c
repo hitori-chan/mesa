@@ -624,16 +624,12 @@ agx_open_device(void *memctx, struct agx_device *dev)
 
    /* G15: the parameter buffer's blocks in the kernel range and the VDM's
     * streams must be in [64 GiB, 576 GiB) (the 40-bit form). The kernel range
-    * at 512 GiB, user memory below it, and at 1 TiB the heap Honeykrisp binds
-    * images in.
+    * at 512 GiB, user memory below it.
     */
    const uint64_t g15_kernel_start = 512ull << 30;
-   const uint64_t g15_image_start = 1ull << 40;
-   dev->has_image_heap = dev->params.gpu_generation >= 15;
 
-   if (dev->has_image_heap) {
+   if (dev->params.gpu_generation >= 15) {
       assert(kernel_size <= (64ull << 30));
-      assert(dev->params.vm_end >= 2 * g15_image_start);
 
       vm_create.kernel_start = g15_kernel_start;
       vm_create.kernel_end = g15_kernel_start + kernel_size;
@@ -676,9 +672,6 @@ agx_open_device(void *memctx, struct agx_device *dev)
    /* Capture heap overlap with main heap and is allocated in reverse */
    util_vma_heap_init(&dev->capture_heap, user_start, user_size);
    dev->capture_heap.alloc_high = false;
-   if (dev->has_image_heap) {
-      util_vma_heap_init(&dev->image_heap, g15_image_start, g15_image_start);
-   }
 
    dev->vm_id = vm_create.vm_id;
 
@@ -770,8 +763,6 @@ agx_close_device(struct agx_device *dev)
 
    util_vma_heap_finish(&dev->main_heap);
    util_vma_heap_finish(&dev->usc_heap);
-   if (dev->has_image_heap)
-      util_vma_heap_finish(&dev->image_heap);
    glsl_type_singleton_decref();
 
    close(dev->fd);
