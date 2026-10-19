@@ -727,9 +727,8 @@ hk_CmdBeginRendering(VkCommandBuffer commandBuffer,
     * easier.
     */
    render->tilebuffer = agx_build_tilebuffer_layout(
-      formats, render->color_att_count, render->tilebuffer.nr_samples, true);
-   render->tilebuffer.g15 =
-      hk_cmd_buffer_device(cmd)->dev.params.gpu_generation >= 15;
+      formats, render->color_att_count, render->tilebuffer.nr_samples, true,
+      hk_cmd_buffer_device(cmd)->dev.params.gpu_generation >= 15);
 
    const VkRenderingAttachmentLocationInfoKHR ral_info = {
       .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_LOCATION_INFO_KHR,

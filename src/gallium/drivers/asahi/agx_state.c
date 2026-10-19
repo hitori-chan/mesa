@@ -1847,8 +1847,8 @@ agx_compile_variant(struct agx_device *dev, struct pipe_context *pctx,
 
       if (nir->info.fs.uses_fbfetch_output) {
          struct agx_tilebuffer_layout tib = agx_build_tilebuffer_layout(
-            key->rt_formats, ARRAY_SIZE(key->rt_formats), key->nr_samples,
-            true);
+            key->rt_formats, ARRAY_SIZE(key->rt_formats), key->nr_samples, true,
+            false);
 
          if (dev->debug & AGX_DBG_SMALLTILE)
             tib.tile_size = 16 * 16;
@@ -3939,7 +3939,7 @@ agx_batch_init_state(struct agx_batch *batch)
    batch->tilebuffer_layout = agx_build_tilebuffer_layout(
       formats, batch->key.nr_cbufs,
       util_framebuffer_get_num_samples(&batch->key),
-      util_framebuffer_get_num_layers(&batch->key) > 1);
+      util_framebuffer_get_num_layers(&batch->key) > 1, false);
 
    if (agx_device(batch->ctx->base.screen)->debug & AGX_DBG_SMALLTILE)
       batch->tilebuffer_layout.tile_size = 16 * 16;

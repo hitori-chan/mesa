@@ -13,6 +13,13 @@
  */
 #define MAX_BYTES_PER_TILE (32768 - 1)
 
+/* G15's tile memory holds 32 KiB: Metal renders 2 samples of 16 B in 32x32
+ * tiles, and 4 samples in 32x16 at 8 B and at 16 B alike, so a tile also holds
+ * at most 2048 samples (the msaa and msmrt captures, metal-compute.md)
+ */
+#define MAX_BYTES_PER_TILE_G15   32768
+#define MAX_SAMPLES_PER_TILE_G15 2048
+
 /* Maximum bytes per sample in the tilebuffer. Greater allocations require
  * spilling render targets to memory.
  */
@@ -23,13 +30,13 @@
 
 /* Select the largest tile size that fits */
 static uint16_t
-agx_select_tile_size(unsigned px_size_B)
+agx_select_tile_size(unsigned px_size_B, unsigned max_B)
 {
-   assert(px_size_B <= (MAX_BYTES_PER_TILE / MIN_TILE_SIZE_PX));
+   assert(px_size_B <= (max_B / MIN_TILE_SIZE_PX));
 
-   return ((px_size_B * 32 * 32) <= MAX_BYTES_PER_TILE)   ? (32 * 32)
-          : ((px_size_B * 32 * 16) <= MAX_BYTES_PER_TILE) ? (32 * 16)
-                                                          : MIN_TILE_SIZE_PX;
+   return ((px_size_B * 32 * 32) <= max_B)   ? (32 * 32)
+          : ((px_size_B * 32 * 16) <= max_B) ? (32 * 16)
+                                             : MIN_TILE_SIZE_PX;
 }
 
 static inline unsigned
@@ -55,12 +62,15 @@ format_align_B(enum pipe_format format)
 
 struct agx_tilebuffer_layout
 agx_build_tilebuffer_layout(const enum pipe_format *formats, uint8_t nr_cbufs,
-                            uint8_t nr_samples, bool layered)
+                            uint8_t nr_samples, bool layered, bool g15)
 {
    struct agx_tilebuffer_layout tib = {
       .nr_samples = nr_samples,
       .layered = layered,
+      .g15 = g15,
    };
+
+   unsigned max_B = g15 ? MAX_BYTES_PER_TILE_G15 : MAX_BYTES_PER_TILE;
 
    uint32_t offset_B = 0;
    uint8_t order[] = {0, 1, 2, 3, 4, 5, 6, 7};
@@ -89,9 +99,9 @@ agx_build_tilebuffer_layout(const enum pipe_format *formats, uint8_t nr_cbufs,
        * need to spill it to memory. Otherwise, allocate it to the tilebuffer.
        */
       unsigned new_offset_B = start_B + size_B;
-      bool fits = (new_offset_B <= MAX_BYTES_PER_SAMPLE) &&
-                  (ALIGN_POT(new_offset_B, 8) * MIN_TILE_SIZE_PX *
-                   nr_samples) <= MAX_BYTES_PER_TILE;
+      bool fits =
+         (new_offset_B <= MAX_BYTES_PER_SAMPLE) &&
+         (ALIGN_POT(new_offset_B, 8) * MIN_TILE_SIZE_PX * nr_samples) <= max_B;
       if (fits) {
          tib._offset_B[rt] = start_B;
          offset_B = new_offset_B;
@@ -109,7 +119,10 @@ agx_build_tilebuffer_layout(const enum pipe_format *formats, uint8_t nr_cbufs,
       offset_B = MAX2(offset_B, 1);
 
    tib.sample_size_B = align(offset_B, 8);
-   tib.tile_size = agx_select_tile_size(tib.sample_size_B * nr_samples);
+   tib.tile_size = agx_select_tile_size(tib.sample_size_B * nr_samples, max_B);
+
+   while (g15 && tib.tile_size * nr_samples > MAX_SAMPLES_PER_TILE_G15)
+      tib.tile_size /= 2;
 
    agx_tilebuffer_pack_usc(&tib);
    return tib;
@@ -129,11 +142,9 @@ agx_tilebuffer_set_samples(struct agx_tilebuffer_layout *tib,
 {
    assert(tib->nr_samples == 0 && "must not be initialized");
 
-   bool g15 = tib->g15;
    *tib = agx_build_tilebuffer_layout(tib->logical_format,
                                       ARRAY_SIZE(tib->logical_format),
-                                      nr_samples, tib->layered);
-   tib->g15 = g15;
+                                      nr_samples, tib->layered, tib->g15);
 }
 
 enum pipe_format
