@@ -620,10 +620,10 @@ agx_usc_words_precomp(GLOBAL uint32_t *out, CONST struct agx_shader *s,
 
 /* This prototype is sufficient for sizing the output */
 static inline unsigned
-libagx_draw_robust_index_vdm_size()
+libagx_draw_robust_index_vdm_size(enum agx_chip chip)
 {
    struct agx_draw draw = agx_draw_indexed(0, 0, 0, 0, 0, 0, 0, 0, 0);
-   return agx_vdm_draw_size(0, draw);
+   return agx_vdm_draw_size(chip, draw);
 }
 
 static inline unsigned
