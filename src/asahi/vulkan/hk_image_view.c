@@ -348,8 +348,7 @@ pack_texture(struct hk_image_view *view, unsigned view_plane,
       return;
    }
 
-   uint64_t base_addr =
-      agx_image_desc_va(&dev->dev, hk_image_base_address(image, image_plane));
+   uint64_t base_addr = hk_image_base_address(image, image_plane);
 
    agx_pack(out, TEXTURE, cfg) {
       cfg.dimension = translate_image_view_type(
@@ -637,8 +636,7 @@ pack_pbe(struct hk_device *dev, struct hk_image_view *view, unsigned view_plane,
    struct hk_image *image = container_of(view->vk.image, struct hk_image, vk);
    const uint8_t image_plane = view->planes[view_plane].image_plane;
    struct ail_layout *layout = &image->planes[image_plane].layout;
-   uint64_t base_addr =
-      agx_image_desc_va(&dev->dev, hk_image_base_address(image, image_plane));
+   uint64_t base_addr = hk_image_base_address(image, image_plane);
 
    unsigned level = view->vk.base_mip_level;
    unsigned layer = view->vk.base_array_layer;
