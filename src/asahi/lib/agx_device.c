@@ -95,9 +95,6 @@ agx_bo_free(struct agx_device *dev, struct agx_bo *bo)
     */
    agx_va_free(dev, bo->va, false);
 
-   /* The alias in the image heap is reused by the next BO, so unbind it */
-   agx_va_free(dev, bo->image_va, true);
-
    if (bo->prime_fd != -1)
       close(bo->prime_fd);
 
@@ -626,9 +623,9 @@ agx_open_device(void *memctx, struct agx_device *dev)
    uint64_t user_size = vm_create.kernel_start - user_start;
 
    /* G15: the parameter buffer's blocks in the kernel range and the VDM's
-    * streams must be in [64 GiB, 576 GiB) (the 40-bit form), and images in
-    * [1 TiB, 2 TiB) (a PBE's address is relative to 1 TiB). The kernel range
-    * at 512 GiB, user memory below it, an image heap of aliases at 1 TiB.
+    * streams must be in [64 GiB, 576 GiB) (the 40-bit form). The kernel range
+    * at 512 GiB, user memory below it, and at 1 TiB the heap Honeykrisp binds
+    * images in.
     */
    const uint64_t g15_kernel_start = 512ull << 30;
    const uint64_t g15_image_start = 1ull << 40;
