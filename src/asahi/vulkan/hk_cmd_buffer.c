@@ -616,6 +616,9 @@ hk_spilled_rt_descs_g15(struct hk_cmd_buffer *cmd, uint8_t *dst)
              sizeof(struct agx_texture_packed));
       memcpy(dst + 64 * i + 32, &iview->planes[0].emrt_pbe,
              sizeof(struct agx_pbe_packed));
+      memcpy(dst + 64 * i + 32 + sizeof(struct agx_pbe_packed),
+             &iview->planes[0].emrt_g15_sw,
+             sizeof(struct agx_pbe_g15_software_packed));
    }
 }
 
