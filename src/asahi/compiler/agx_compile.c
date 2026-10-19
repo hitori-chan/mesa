@@ -958,6 +958,31 @@ agx_emit_load(agx_builder *b, agx_index dest, nir_intrinsic_instr *instr)
    if (!sign_extend)
       offset = agx_abs(offset);
 
+   /* G15's i16 device_load writes 16-bit registers (AGX3.xml memreg type 0),
+    * where G13's zero-extends each component to its register. A 16-bit load
+    * into 32-bit registers loads 16-bit components and zero-extends them.
+    */
+   if (b->shader->key->dev.gpu_generation >= 15 && fmt == AGX_FORMAT_I16 &&
+       dest.size == AGX_SIZE_32) {
+      agx_index halves = agx_vec_temp(b->shader, AGX_SIZE_16, nr);
+      agx_index comps[4];
+
+      assert(nr <= 4);
+      agx_device_load_to(b, halves, addr, offset, fmt, BITFIELD_MASK(nr),
+                         shift, nir_is_coherent(instr));
+      agx_emit_split(b, comps, halves, nr);
+
+      for (unsigned c = 0; c < nr; ++c) {
+         agx_index wide = agx_temp(b->shader, AGX_SIZE_32);
+         agx_mov_to(b, wide, comps[c]);
+         comps[c] = wide;
+      }
+
+      agx_emit_collect_to(b, dest, nr, comps);
+      agx_emit_cached_split(b, dest, nr);
+      return;
+   }
+
    agx_device_load_to(b, dest, addr, offset, fmt, BITFIELD_MASK(nr), shift,
                       nir_is_coherent(instr));
    agx_emit_cached_split(b, dest, nr);
