@@ -870,14 +870,6 @@ agx_nir_lower_texture_gen(nir_shader *s, bool g15)
    return lower_texture(s, g15, g15);
 }
 
-/* Honeykrisp's G15 images keep G13's atomics path; its texture descriptors
- * are G15's */
-bool
-agx_nir_lower_texture_queries_gen(nir_shader *s, bool g15)
-{
-   return lower_texture(s, false, g15);
-}
-
 bool
 agx_nir_lower_texture(nir_shader *s)
 {
@@ -885,9 +877,9 @@ agx_nir_lower_texture(nir_shader *s)
 }
 
 static bool
-lower_multisampled_store(nir_builder *b, nir_intrinsic_instr *intr,
-                         UNUSED void *data)
+lower_multisampled_store(nir_builder *b, nir_intrinsic_instr *intr, void *data)
 {
+   const bool *g15 = data;
    b->cursor = nir_before_instr(&intr->instr);
 
    if (intr->intrinsic != nir_intrinsic_bindless_image_store)
@@ -896,7 +888,7 @@ lower_multisampled_store(nir_builder *b, nir_intrinsic_instr *intr,
    if (nir_intrinsic_image_dim(intr) != GLSL_SAMPLER_DIM_MS)
       return false;
 
-   nir_def *index_px = nir_u2u32(b, image_texel_address(b, intr, true, false));
+   nir_def *index_px = nir_u2u32(b, image_texel_address(b, intr, true, *g15));
    nir_def *coord2d = coords_for_buffer_texture(b, index_px);
 
    nir_src_rewrite(&intr->src[1], nir_pad_vector(b, coord2d, 4));
@@ -907,10 +899,10 @@ lower_multisampled_store(nir_builder *b, nir_intrinsic_instr *intr,
 }
 
 bool
-agx_nir_lower_multisampled_image_store(nir_shader *s)
+agx_nir_lower_multisampled_image_store(nir_shader *s, bool g15)
 {
    return nir_shader_intrinsics_pass(s, lower_multisampled_store,
-                                     nir_metadata_control_flow, NULL);
+                                     nir_metadata_control_flow, &g15);
 }
 
 /*

@@ -334,6 +334,19 @@
   </struct>
 
   <!--
+   The same for a multisampled image, which a store or an atomic reaches
+   through a linear 2D view of its samples (G13's scheme): the image has one
+   level, and the samples sit together per pixel.
+  -->
+  <struct name="PBE G15 software MSAA" size="8">
+    <field name="Aligned width" size="16" start="0" type="uint"/>
+    <field name="Tile width" size="4" start="27" type="uint" modifier="log2"/>
+    <field name="Tile height" size="4" start="31" type="uint" modifier="log2"/>
+    <field name="Layer stride" size="27" start="35" type="uint" modifier="shr(7)"/>
+    <field name="Sample count log2" size="2" start="62" type="uint"/>
+  </struct>
+
+  <!--
    G15's texture read state, from Apple's TextureGen4::encodeImageReadState.
    The hardware reads 32 bytes per texture (the table's stride, verified);
    the fourth word only carries compression. Word 0 bits 55:0 are G13's;
