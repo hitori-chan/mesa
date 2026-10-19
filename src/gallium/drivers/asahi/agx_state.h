@@ -983,39 +983,6 @@ agx_map_texture_gpu(struct agx_resource *rsrc, unsigned z)
           (uint64_t)ail_get_layer_offset_B(&rsrc->layout, z);
 }
 
-/*
- * The address a texture descriptor holds for addr, an address inside the
- * resource's BO. On G15 images are reached through their BO's alias in the
- * image heap, and the descriptor holds the address relative to 1 TiB (assumed
- * as Honeykrisp does, not verified; also for texel buffers).
- */
-static inline uint64_t
-agx_desc_addr(struct agx_resource *rsrc, uint64_t addr)
-{
-   struct agx_device *dev = rsrc->bo->dev;
-
-   if (!dev->has_image_heap)
-      return addr;
-
-   return agx_image_desc_va(dev, agx_bo_image_addr(dev, rsrc->bo, addr));
-}
-
-/*
- * The address a PBE descriptor holds. G15's holds the VA itself (44 bits), and
- * images are written through their BO's alias in the image heap, as
- * Honeykrisp's are (the verified targets were above 1 TiB).
- */
-static inline uint64_t
-agx_pbe_addr(struct agx_resource *rsrc, uint64_t addr)
-{
-   struct agx_device *dev = rsrc->bo->dev;
-
-   if (!dev->has_image_heap)
-      return addr;
-
-   return agx_bo_image_addr(dev, rsrc->bo, addr);
-}
-
 void agx_decompress(struct agx_context *ctx, struct agx_resource *rsrc,
                     const char *reason);
 

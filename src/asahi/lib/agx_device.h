@@ -252,19 +252,6 @@ agx_vdm_ptr(const struct agx_device *dev, struct agx_ptr ptr)
    return ptr;
 }
 
-/* G15: the address an image descriptor holds, relative to 1 TiB (a PBE's,
- * boot #158; a texture's is assumed to match, not verified)
- */
-static inline uint64_t
-agx_image_desc_va(const struct agx_device *dev, uint64_t addr)
-{
-   if (!dev->has_image_heap)
-      return addr;
-
-   assert(addr >= (1ull << 40) && addr < (2ull << 40));
-   return addr - (1ull << 40);
-}
-
 /* G15: a pipeline (entry program) pointer as the CDM's launch and the VDM's
  * vertex and fragment shader dwords hold it: VA bits [47:38] at bit 22 of the
  * first word, VA bits [37:6] in the second
