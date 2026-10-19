@@ -809,11 +809,53 @@ lower_cube_g15(nir_builder *b, nir_tex_instr *tex, UNUSED void *data)
  * direction is projected onto its face here, as Apple's compiler does for
  * cubedir. The hardware filters across the faces (seamless).
  */
+/*
+ * G15 has no known minimum-LOD form for a cube read: a fragment shader's
+ * implicit-LOD cube sample with a minimum LOD becomes a sample with its
+ * direction's derivatives, scaled by 2^bias, which lower_txd_cube_map turns
+ * into an explicit LOD clamped to the minimum (dEQP-VK textureclamp cubes).
+ */
+static bool
+cube_min_lod_to_txd(nir_builder *b, nir_tex_instr *tex, UNUSED void *data)
+{
+   if (tex->sampler_dim != GLSL_SAMPLER_DIM_CUBE ||
+       (tex->op != nir_texop_tex && tex->op != nir_texop_txb) ||
+       nir_tex_instr_src_index(tex, nir_tex_src_min_lod) < 0 ||
+       !nir_shader_supports_implicit_lod(b->shader))
+      return false;
+
+   b->cursor = nir_before_instr(&tex->instr);
+   nir_def *dir = nir_trim_vector(b, nir_get_tex_src(tex, nir_tex_src_coord), 3);
+   nir_def *dx = nir_ddx(b, dir), *dy = nir_ddy(b, dir);
+
+   nir_def *bias = nir_steal_tex_src(tex, nir_tex_src_bias);
+   if (bias) {
+      nir_def *scale = nir_fexp2(b, nir_f2fN(b, bias, dir->bit_size));
+      dx = nir_fmul(b, dx, scale);
+      dy = nir_fmul(b, dy, scale);
+   }
+
+   nir_tex_instr_add_src(tex, nir_tex_src_ddx, dx);
+   nir_tex_instr_add_src(tex, nir_tex_src_ddy, dy);
+   tex->op = nir_texop_txd;
+   return true;
+}
+
 bool
 agx_nir_lower_cube_g15(nir_shader *s)
 {
-   return nir_shader_tex_pass(s, lower_cube_g15, nir_metadata_control_flow,
-                              NULL);
+   bool progress = false;
+
+   if (nir_shader_tex_pass(s, cube_min_lod_to_txd, nir_metadata_control_flow,
+                           NULL)) {
+      nir_lower_tex_options options = {.lower_txd_cube_map = true};
+      NIR_PASS(_, s, nir_lower_tex, &options);
+      progress = true;
+   }
+
+   progress |= nir_shader_tex_pass(s, lower_cube_g15,
+                                   nir_metadata_control_flow, NULL);
+   return progress;
 }
 
 /* g15: image atomics crawl G15's PBE (libagx_image_texel_address_g15);
