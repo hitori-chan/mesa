@@ -463,8 +463,8 @@ pack_texture(struct hk_image_view *view, unsigned view_plane,
  *
  * The address is the plane's VA as it is, 44 bits of it (G13's descriptor
  * has 36 and a level; demo15 sets "level 1" for the 1 TiB bit of its
- * target's address). The image heap's alias addresses are above 1 TiB, so
- * they are not relative to it.
+ * target's address), the VA the texture descriptor holds: through another VA
+ * of the same memory a fetch does not see an image write in the same launch.
  *
  * A multisampled image is stored to (an image store, an atomic or a spilled
  * render target) through a linear 2D view of its samples, as on G13: G15 has

@@ -122,12 +122,6 @@ struct agx_device {
    struct util_vma_heap main_heap;
    struct util_vma_heap usc_heap;
 
-   /* G15: a PBE's address is relative to 1 TiB, so images get an alias in
-    * [1 TiB, 2 TiB). User memory stays below 512 GiB, where the VDM's 40-bit
-    * form (VA - 64 GiB) and the 40-bit descriptor fields reach it.
-    */
-   struct util_vma_heap image_heap;
-   bool has_image_heap;
    uint64_t guard_size;
 
    /* To emulate sparse-resident buffers, we map buffers in both the bottom half
@@ -238,7 +232,7 @@ agx_has_soft_fault(struct agx_device *dev)
 static inline uint64_t
 agx_vdm_va(const struct agx_device *dev, uint64_t addr)
 {
-   if (!dev->has_image_heap)
+   if (dev->params.gpu_generation < 15)
       return addr;
 
    assert(addr >= (64ull << 30) && addr < (576ull << 30));

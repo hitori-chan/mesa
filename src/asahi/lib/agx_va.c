@@ -11,8 +11,6 @@ agx_vma_heap(struct agx_device *dev, enum agx_va_flags flags)
 {
    if (flags & AGX_VA_USC)
       return &dev->usc_heap;
-   else if ((flags & AGX_VA_IMAGE) && dev->has_image_heap)
-      return &dev->image_heap;
    else
       return &dev->main_heap;
 }

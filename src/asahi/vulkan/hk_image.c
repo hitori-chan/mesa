@@ -354,8 +354,7 @@ hk_GetPhysicalDeviceImageFormatProperties2(
    if (pImageFormatInfo->flags & (VK_IMAGE_CREATE_SPARSE_ALIASED_BIT |
                                   VK_IMAGE_CREATE_SPARSE_BINDING_BIT |
                                   VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT)) {
-      /* G15: a sparse image's descriptors are not packed yet (its texture
-       * and PBE through the image heap) */
+      /* G15: a sparse image's descriptors are not packed yet */
       if (pdev->dev.params.gpu_generation >= 15)
          return VK_ERROR_FORMAT_NOT_SUPPORTED;
 
@@ -1348,32 +1347,6 @@ hk_image_plane_bind(struct hk_device *dev, struct hk_image_plane *plane,
                              plane->nil.pte_kind);
 #endif
       UNREACHABLE("todo");
-   } else if (dev->dev.has_image_heap) {
-      /* G15: alias the plane in the image heap, from the page that holds its
-       * start to the end of the memory (agx_device.h)
-       */
-      uint64_t page_B = *offset_B & ~(uint64_t)(AIL_PAGESIZE - 1);
-      uint64_t size_B = mem->bo->size - page_B;
-
-      plane->va =
-         agx_va_alloc(&dev->dev, size_B, AIL_PAGESIZE, AGX_VA_IMAGE, 0);
-      if (plane->va &&
-          agx_bo_bind(&dev->dev, mem->bo, plane->va->addr, size_B, page_B,
-                      DRM_ASAHI_BIND_READ | DRM_ASAHI_BIND_WRITE)) {
-         agx_va_free(&dev->dev, plane->va, false);
-         plane->va = NULL;
-      }
-
-      if (plane->va) {
-         plane->addr = plane->va->addr + (*offset_B - page_B);
-      } else {
-         /* PBE and texture addresses must be in the image heap */
-         mesa_loge("g15: aliasing an image in the image heap failed");
-         plane->addr = mem->bo->va->addr + *offset_B;
-      }
-
-      plane->map = agx_bo_map(mem->bo) + *offset_B;
-      plane->rem = mem->bo->size - (*offset_B);
    } else {
       plane->addr = mem->bo->va->addr + *offset_B;
       plane->map = agx_bo_map(mem->bo) + *offset_B;

@@ -45,9 +45,6 @@ enum agx_va_flags {
 
    /* VA must be fixed, otherwise allocated by the driver. */
    AGX_VA_FIXED = (1 << 1),
-
-   /* VA must be inside the image heap (G15), otherwise unrestricted. */
-   AGX_VA_IMAGE = (1 << 2),
 };
 
 struct agx_va {
