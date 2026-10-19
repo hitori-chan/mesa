@@ -166,7 +166,7 @@ TEST(Tilebuffer, Layouts)
          ;
 
       struct agx_tilebuffer_layout actual = agx_build_tilebuffer_layout(
-         tests[i].formats, nr_cbufs, tests[i].nr_samples, false);
+         tests[i].formats, nr_cbufs, tests[i].nr_samples, false, false);
 
       ASSERT_EQ(tests[i].layout.sample_size_B, actual.sample_size_B)
          << tests[i].name;
