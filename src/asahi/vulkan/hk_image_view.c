@@ -523,6 +523,7 @@ pack_pbe_g15(struct hk_device *dev, struct hk_image_view *view,
       cfg.layout = agx_translate_layout(layout->tiling);
       cfg.channels = ail_pixel_format[p_format].channels;
       cfg.type = ail_pixel_format[p_format].type;
+      cfg.srgb = util_format_is_srgb(p_format);
 
       assert(desc->nr_channels >= 1 && desc->nr_channels <= 4);
 

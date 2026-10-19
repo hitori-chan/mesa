@@ -102,6 +102,7 @@ pack_buffer_view_g15(struct hk_buffer_view *view, enum pipe_format format,
       cfg.layout = AGX_LAYOUT_LINEAR;
       cfg.channels = ail_pixel_format[format].channels;
       cfg.type = ail_pixel_format[format].type;
+      cfg.srgb = util_format_is_srgb(format);
 
       assert(desc->nr_channels >= 1 && desc->nr_channels <= 4);
 
