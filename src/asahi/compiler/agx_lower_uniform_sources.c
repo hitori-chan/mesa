@@ -105,6 +105,42 @@ agx_g15_stale_uniform_base(agx_context *ctx, agx_instr *I, unsigned s)
           I->src[s].value >= ctx->key->reserved_preamble;
 }
 
+/*
+ * G15's shuffles read their value from a register only. Its rcp, rsqrt, log2,
+ * exp2 and sin read a uniform the preamble wrote as it was before: a main
+ * program's rcp of the preamble's uniforms got the values a previous program
+ * left there, while the ALU operations reading them got the new ones (KHR-GL46
+ * shader_subroutine.four_subroutines_with_two_uniforms). Uniforms the entry
+ * program loaded are not known to be safe either, so they move too.
+ */
+static bool
+agx_g15_register_only(agx_context *ctx, agx_instr *I, unsigned s)
+{
+   if (ctx->key->dev.gpu_generation < 15 || I->src[s].type != AGX_INDEX_UNIFORM)
+      return false;
+
+   switch (I->op) {
+   case AGX_OPCODE_SHUFFLE:
+   case AGX_OPCODE_SHUFFLE_XOR:
+   case AGX_OPCODE_SHUFFLE_UP:
+   case AGX_OPCODE_SHUFFLE_DOWN:
+   case AGX_OPCODE_QUAD_SHUFFLE:
+   case AGX_OPCODE_QUAD_SHUFFLE_XOR:
+   case AGX_OPCODE_QUAD_SHUFFLE_UP:
+   case AGX_OPCODE_QUAD_SHUFFLE_DOWN:
+      return s == 0;
+   case AGX_OPCODE_RCP:
+   case AGX_OPCODE_RSQRT:
+   case AGX_OPCODE_SRSQRT:
+   case AGX_OPCODE_LOG2:
+   case AGX_OPCODE_EXP2:
+   case AGX_OPCODE_SIN_PT_2:
+      return true;
+   default:
+      return false;
+   }
+}
+
 void
 agx_lower_uniform_sources(agx_context *ctx)
 {
@@ -112,8 +148,11 @@ agx_lower_uniform_sources(agx_context *ctx)
       agx_builder b = agx_init_builder(ctx, agx_before_instr(I));
 
       agx_foreach_src(I, s) {
-         if (agx_g15_stale_uniform_base(ctx, I, s)) {
-            agx_replace_src(I, s, agx_mov(&b, I->src[s]));
+         if (agx_g15_stale_uniform_base(ctx, I, s) ||
+             agx_g15_register_only(ctx, I, s)) {
+            agx_index idx = I->src[s];
+            idx.abs = idx.neg = false;
+            agx_replace_src(I, s, agx_mov(&b, idx));
             continue;
          }
 
