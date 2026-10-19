@@ -2256,20 +2256,35 @@ a3_mov_cr(struct a3 *a, const agx_instr *I, unsigned cr, agx_index value,
  * texel_view_compatible's decompress pass). The st_vars take their crs in
  * turn, as Apple's vertex shaders take a cr per output, and the image writes
  * take tuples from cr8 in turn, clear of the crs other instructions write
- * from cr0, as Apple's shaders give each write its own tuple. A cr still
- * being read is reused only after a wait for group 0, as is one another
- * instruction writes. A loop's back edge may bring the last iteration's.
+ * from cr0, as Apple's shaders give each write its own tuple, or the next
+ * one free when that one is still being read. A cr still being read is
+ * reused only after a wait for group 0, as is one another instruction
+ * writes. A block starts with the crs still being read at the end of each
+ * predecessor and of the block before it (a SIMD group runs both sides of a
+ * branch, one after the other): a wait on one side does not cover the other
+ * (dEQP-VK descriptorset_random: a write in one branch, a wait in another,
+ * and the write after the join stored zero to texel (0, 0)). A loop's back
+ * edge may bring the last iteration's.
  */
 void
 agx3_assign_crs(agx_context *ctx)
 {
    unsigned next_vary = 0, next_imgw = 0;
-   uint64_t pending = 0;
+   uint64_t *pending_out = calloc(ctx->num_blocks, sizeof(uint64_t));
+   unsigned *order = calloc(ctx->num_blocks, sizeof(unsigned));
+   agx_block *prev = NULL;
+   unsigned n = 0;
+
+   agx_foreach_block(ctx, block)
+      order[block->index] = n++;
 
    agx_foreach_block(ctx, block) {
+      uint64_t pending = prev ? pending_out[prev->index] : 0;
       agx_foreach_predecessor(block, pred) {
-         if ((*pred)->index >= block->index)
+         if (order[(*pred)->index] >= order[block->index])
             pending = ~0ull;
+         else
+            pending |= pending_out[(*pred)->index];
       }
 
       agx_foreach_instr_in_block(block, I) {
@@ -2281,7 +2296,15 @@ agx3_assign_crs(agx_context *ctx)
             I->vary_cr = (next_vary++) % A3_VARY_CRS;
             crs = BITFIELD64_BIT(I->vary_cr);
          } else if (I->op == AGX_OPCODE_IMAGE_WRITE) {
-            I->vary_cr = 8 * (1 + (next_imgw++) % A3_IMGW_TUPLES);
+            unsigned t = next_imgw++;
+            for (unsigned i = 0; i < A3_IMGW_TUPLES; ++i) {
+               unsigned cr = 8 * (1 + (t + i) % A3_IMGW_TUPLES);
+               if (!(pending & BITFIELD64_RANGE(cr, 8))) {
+                  t += i;
+                  break;
+               }
+            }
+            I->vary_cr = 8 * (1 + t % A3_IMGW_TUPLES);
             crs = BITFIELD64_RANGE(I->vary_cr, 8);
          } else {
             /* Another instruction's crs (a vertex shader's texture fetch after
@@ -2298,7 +2321,13 @@ agx3_assign_crs(agx_context *ctx)
          if (I->op == AGX_OPCODE_ST_VARY || I->op == AGX_OPCODE_IMAGE_WRITE)
             pending |= crs;
       }
+
+      pending_out[block->index] = pending;
+      prev = block;
    }
+
+   free(pending_out);
+   free(order);
 }
 
 /* st_vary: G15 stores a varying from a coordinate register that an ALU
