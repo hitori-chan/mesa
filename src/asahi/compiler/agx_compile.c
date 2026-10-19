@@ -1409,8 +1409,11 @@ lower_tex_min_lod_g15(nir_builder *b, nir_tex_instr *tex, void *data)
  * scaled by the size (the 32 B descriptor: width at bit 28, height at 42,
  * depth at 110), plus the bias; x clamps it to the sampler's LOD range (its
  * state's 9:0 and 19:10, q4.6) and the texture's levels (last level at bit
- * 176 when mipmapped, bit 58). A cube is face-local here (cube array mode),
- * its LOD that of the face. A null descriptor (agx_set_null_texture_g15, at
+ * 176 when mipmapped, bit 58). A cube's query keeps its direction
+ * (lower_cube_g15): its footprint is that of the face coordinates, the
+ * quotient rule's derivatives as nir_lower_tex's lower_gradient_cube_map
+ * takes them (dEQP-VK textureQueryLod cubes read the direction's x and y as
+ * a 2D coordinate). A null descriptor (agx_set_null_texture_g15, at
  * the zero page) queries 0, as G13's hardware query of it: its 1x1x1 size
  * gave a fragment's 3D query of gl_FragCoord.xyz, whose z slopes, a small
  * positive LOD (dEQP-VK robustness2's null_descriptor 3D fragment cases).
@@ -1451,8 +1454,42 @@ lower_tex_lod_g15(nir_builder *b, nir_tex_instr *tex, void *data)
    nir_def *first = nir_ubitfield_extract_imm(b, w5, 12, 4);
    size = nir_u2f32(b, nir_umax_imm(b, nir_ushr(b, size, first), 1));
 
-   nir_def *dx = nir_fmul(b, nir_ddx(b, coord), size);
-   nir_def *dy = nir_fmul(b, nir_ddy(b, coord), size);
+   nir_def *dx, *dy;
+   if (tex->sampler_dim == GLSL_SAMPLER_DIM_CUBE) {
+      nir_def *p = nir_trim_vector(b, tex->src[ci].src.ssa, 3);
+      nir_def *ddx = nir_ddx(b, p), *ddy = nir_ddy(b, p);
+      nir_def *a = nir_fabs(b, p);
+      nir_def *ax = nir_channel(b, a, 0), *ay = nir_channel(b, a, 1);
+      nir_def *az = nir_channel(b, a, 2);
+      nir_def *is_z = nir_fge(b, az, nir_fmax(b, ax, ay));
+      nir_def *is_y = nir_fge(b, ay, nir_fmax(b, ax, az));
+
+      /* The major axis last: z, else y (xzy), else x (yzx) */
+      unsigned xzy[3] = {0, 2, 1}, yzx[3] = {1, 2, 0};
+      nir_def *v[3] = {p, ddx, ddy};
+      for (unsigned i = 0; i < 3; ++i) {
+         v[i] = nir_bcsel(b, is_z, v[i],
+                          nir_bcsel(b, is_y, nir_swizzle(b, v[i], xzy, 3),
+                                    nir_swizzle(b, v[i], yzx, 3)));
+      }
+
+      /* d(Q.xy / Q.z) in the face's [-1, 1], to texels: half the size */
+      nir_def *rcp = nir_frcp(b, nir_channel(b, v[0], 2));
+      nir_def *q = nir_fmul(b, nir_trim_vector(b, v[0], 2), rcp);
+      nir_def *half = nir_fmul_imm(b, size, 0.5);
+      nir_def *d[2];
+      for (unsigned i = 0; i < 2; ++i) {
+         nir_def *dq = v[1 + i];
+         nir_def *dz = nir_fmul(b, q, nir_channel(b, dq, 2));
+         d[i] = nir_fmul(b, rcp, nir_fsub(b, nir_trim_vector(b, dq, 2), dz));
+         d[i] = nir_fmul(b, d[i], half);
+      }
+      dx = d[0];
+      dy = d[1];
+   } else {
+      dx = nir_fmul(b, nir_ddx(b, coord), size);
+      dy = nir_fmul(b, nir_ddy(b, coord), size);
+   }
    nir_def *rho2 = nir_fmax(b, nir_fdot(b, dx, dx), nir_fdot(b, dy, dy));
    nir_def *lod = nir_fmul_imm(b, nir_flog2(b, rho2), 0.5);
 
