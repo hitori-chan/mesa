@@ -441,6 +441,7 @@ translate_pipeline_stat_bit(enum pipe_statistics_query_index pipe)
 struct lower_uvs_args {
    mesa_shader_stage sw_stage;
    unsigned nr_vbos;
+   bool g15;
 };
 
 static bool
@@ -467,6 +468,23 @@ lower_uvs_index(nir_builder *b, nir_intrinsic_instr *intrin, void *data)
 
    case nir_intrinsic_load_sample_positions_agx:
       return lower_sysval_to_root_table(b, intrin, draw.ppp_multisamplectl);
+
+   case nir_intrinsic_load_samples_log2_agx: {
+      if (!args->g15)
+         return false;
+
+      /* G15 has no readable sample count (draws.md, Multisampling): as in
+       * Gallium, 1, 2 and 4 samples are told apart by the size of
+       * PPP_MULTISAMPLECTL, one nonzero byte per sample from sample 0 */
+      b->cursor = nir_instr_remove(&intrin->instr);
+      unsigned offset = hk_root_descriptor_offset(draw.ppp_multisamplectl);
+      nir_def *ctl = load_root(b, 1, 32, nir_imm_int(b, offset), 4);
+      nir_def *log2 = nir_iadd(b, nir_b2i32(b, nir_uge_imm(b, ctl, 0x100)),
+                               nir_b2i32(b, nir_uge_imm(b, ctl, 0x10000)));
+      nir_def_rewrite_uses(&intrin->def,
+                           nir_u2uN(b, log2, intrin->def.bit_size));
+      return true;
+   }
 
    case nir_intrinsic_load_depth_never_agx:
       return lower_sysval_to_root_table(b, intrin, draw.force_never_in_shader);
@@ -589,11 +607,13 @@ lower_uvs_index(nir_builder *b, nir_intrinsic_instr *intrin, void *data)
 }
 
 bool
-hk_lower_uvs_index(nir_shader *s, mesa_shader_stage sw_stage, unsigned nr_vbos)
+hk_lower_uvs_index(nir_shader *s, mesa_shader_stage sw_stage, unsigned nr_vbos,
+                   bool g15)
 {
    struct lower_uvs_args args = {
       .sw_stage = sw_stage,
       .nr_vbos = nr_vbos,
+      .g15 = g15,
    };
    return nir_shader_intrinsics_pass(s, lower_uvs_index,
                                      nir_metadata_control_flow, &args);

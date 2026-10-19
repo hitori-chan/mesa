@@ -345,7 +345,7 @@ hk_buffer_addr_format(VkPipelineRobustnessBufferBehaviorEXT robustness)
 }
 
 bool hk_lower_uvs_index(nir_shader *s, mesa_shader_stage sw_stage,
-                        unsigned nr_vbos);
+                        unsigned nr_vbos, bool g15);
 
 bool
 hk_nir_lower_descriptors(nir_shader *nir,
