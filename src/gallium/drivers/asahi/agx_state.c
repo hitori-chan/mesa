@@ -1266,12 +1266,12 @@ target_is_array(enum pipe_texture_target target)
 
 /*
  * G15's PBE descriptor (cmdbuf.xml's "PBE G15"; Honeykrisp's pack_pbe_g15).
- * Only what Apple's encoder and demo15 settle is packed: uncompressed images
- * without multisampling, linear with one layer or twiddled; buffers as linear
- * 2D images AGX_TEXTURE_BUFFER_WIDTH texels wide like their textures, and 3D
- * images with their depth in the layer count, as the texture's depth field
- * (both not verified on G15). The rest fails here rather than reaching the
- * hardware as a G13 descriptor.
+ * Only what Apple's encoder and demo15 settle is packed: uncompressed images,
+ * linear with one layer or twiddled, multisampled for the end-of-tile block
+ * writes, 3D images with their depth in the layer count as Apple's encoder
+ * packs them; buffers as linear 2D images AGX_TEXTURE_BUFFER_WIDTH texels wide
+ * like their textures (not verified on G15). The rest fails here rather than
+ * reaching the hardware as a G13 descriptor.
  */
 static void
 agx_pack_pbe_g15(struct agx_pbe_packed *out, struct agx_resource *tex,
