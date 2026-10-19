@@ -1303,6 +1303,7 @@ agx_pack_pbe_g15(struct agx_pbe_packed *out, struct agx_resource *tex,
                              : agx_translate_layout(tex->layout.tiling);
       cfg.channels = ail_pixel_format[view->format].channels;
       cfg.type = ail_pixel_format[view->format].type;
+      cfg.srgb = util_format_is_srgb(view->format);
 
       assert(desc->nr_channels >= 1 && desc->nr_channels <= 4);
 
