@@ -1235,6 +1235,117 @@ lower_interleave_g15(nir_builder *b, nir_alu_instr *alu, void *data)
    return true;
 }
 
+static void
+two_sum(nir_builder *b, nir_def *p, nir_def *q, nir_def **s, nir_def **e)
+{
+   *s = nir_fadd(b, p, q);
+   nir_def *bb = nir_fsub(b, *s, p);
+   *e = nir_fadd(b, nir_fsub(b, p, nir_fsub(b, *s, bb)), nir_fsub(b, q, bb));
+}
+
+/*
+ * G15's fp32 fma flushes a result that is tiny before rounding, even one that
+ * rounds to 2^-126 (vkcompute f32fma, 2026-10-20); the product itself is not
+ * flushed. An exact fma (SPV_KHR_fma, OpenCL's fma) that came out zero from
+ * two nonzero factors redoes the fma scaled by 2^64, s = fma(x 2^64, y,
+ * c 2^64) with x the smaller factor, and its error (ErrFma, Boldo and Muller)
+ * decides the round to nearest at the boundary: the result is +-2^-126 if
+ * s 2^-64 rounds there, else the zero stands. A c of 2^64 or more cannot give
+ * a zero this way. The redo sits behind a branch on the zero: OpenCL's fma
+ * and libclc's math take this path on every call, and inline the redo was
+ * about 25 instructions an fma.
+ */
+static bool
+lower_ffma32_exact_g15(nir_builder *b, nir_alu_instr *alu)
+{
+   b->cursor = nir_before_instr(&alu->instr);
+   uint32_t fp_math_ctrl = b->fp_math_ctrl;
+   b->fp_math_ctrl |= nir_fp_exact;
+
+   nir_def *a = nir_ssa_for_alu_src(b, alu, 0);
+   nir_def *y = nir_ssa_for_alu_src(b, alu, 1);
+   nir_def *c = nir_ssa_for_alu_src(b, alu, 2);
+   nir_def *r = nir_ffma(b, a, y, c);
+
+   nir_if *nif = nir_push_if(b, nir_feq_imm(b, r, 0));
+   nif->control = nir_selection_control_dont_flatten;
+   nir_def *redo = nir_iand(b, nir_flt_imm(b, nir_fabs(b, c), 0x1p64),
+                            nir_iand(b, nir_fneu_imm(b, a, 0),
+                                     nir_fneu_imm(b, y, 0)));
+
+   nir_def *a_small = nir_fge(b, nir_fabs(b, y), nir_fabs(b, a));
+   nir_def *xs = nir_fmul_imm(b, nir_bcsel(b, a_small, a, y), 0x1p64);
+   nir_def *ys = nir_bcsel(b, a_small, y, a);
+   nir_def *cs = nir_fmul_imm(b, c, 0x1p64);
+   nir_def *s = nir_ffma(b, xs, ys, cs);
+
+   nir_def *u1 = nir_fmul(b, xs, ys);
+   nir_def *u2 = nir_ffma(b, xs, ys, nir_fneg(b, u1));
+   nir_def *a1, *z, *b1, *b2, *r2, *r3;
+   two_sum(b, cs, u2, &a1, &z);
+   two_sum(b, u1, a1, &b1, &b2);
+   nir_def *g = nir_fadd(b, nir_fsub(b, b1, s), b2);
+   two_sum(b, g, z, &r2, &r3);
+   nir_def *err = nir_bcsel(b, nir_fneu_imm(b, r2, 0), r2, r3);
+
+   nir_def *abs_s = nir_fabs(b, s);
+   nir_def *tie = nir_feq_imm(b, abs_s, 0x1.fffffep-63);
+   nir_def *away = nir_ior(b, nir_feq_imm(b, err, 0),
+                           nir_ige_imm(b, nir_ixor(b, err, s), 0));
+   nir_def *up =
+      nir_ior(b, nir_fge_imm(b, abs_s, 0x1p-62), nir_iand(b, tie, away));
+   nir_def *min = nir_ior_imm(b, nir_iand_imm(b, s, 0x80000000), 0x00800000);
+   nir_def *fixed = nir_bcsel(b, nir_iand(b, redo, up), min, r);
+
+   nir_pop_if(b, NULL);
+   nir_def_replace(&alu->def, nir_if_phi(b, fixed, r));
+   b->fp_math_ctrl = fp_math_ctrl;
+   return true;
+}
+
+/* The exact fp32 fmas are gathered first: each redo splits its block. An
+ * OpenCL kernel (physical addressing) needs none: its CTS finds that the
+ * device flushes a result tiny before rounding and checks fma() so (the
+ * math_brute_force tininess probe), and fma() is always exact there, where
+ * the redo's branch made it eight times slower.
+ */
+static bool
+agx_nir_lower_ffma32_exact_g15(nir_shader *nir)
+{
+   if (mesa_shader_stage_is_compute(nir->info.stage) && nir->info.cs.ptr_size)
+      return false;
+
+   struct util_dynarray fmas;
+   util_dynarray_init(&fmas, NULL);
+
+   nir_foreach_function_impl(impl, nir) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_alu)
+               continue;
+
+            nir_alu_instr *alu = nir_instr_as_alu(instr);
+            if (alu->op == nir_op_ffma && alu->def.bit_size == 32 &&
+                (alu->fp_math_ctrl & nir_fp_exact) == nir_fp_exact)
+               util_dynarray_append(&fmas, alu);
+         }
+      }
+   }
+
+   bool progress = false;
+   util_dynarray_foreach(&fmas, nir_alu_instr *, alu) {
+      nir_builder b = nir_builder_create(nir_cf_node_get_function(
+         &(*alu)->instr.block->cf_node));
+      progress |= lower_ffma32_exact_g15(&b, *alu);
+   }
+
+   nir_foreach_function_impl(impl, nir)
+      nir_progress(progress, impl, nir_metadata_none);
+
+   util_dynarray_fini(&fmas);
+   return progress;
+}
+
 /*
  * G15 takes a multisampled fetch's sample index at bit 12 of the layer word,
  * an array's layer in its low bits (smp.md, Dimensions and arrays): Apple's
@@ -4992,6 +5103,9 @@ agx_compile_shader_nir_impl(nir_shader *nir, struct agx_shader_key *key,
    if (key->dev.gpu_generation >= 15)
       NIR_PASS(_, nir, nir_shader_alu_pass, lower_interleave_g15,
                nir_metadata_control_flow, NULL);
+
+   if (key->dev.gpu_generation >= 15)
+      NIR_PASS(_, nir, agx_nir_lower_ffma32_exact_g15);
 
    /* Late sysval lowering creates large loads. Load lowering creates unpacks */
    nir_lower_mem_access_bit_sizes_options lower_mem_access_options = {
