@@ -1388,10 +1388,15 @@ st_api_query_versions(struct pipe_frontend_screen *fscreen,
                       int *gl_es1_version,
                       int *gl_es2_version)
 {
-   *gl_core_version = get_version(fscreen->screen, options, API_OPENGL_CORE);
-   *gl_compat_version = get_version(fscreen->screen, options, API_OPENGL_COMPAT);
-   *gl_es1_version = get_version(fscreen->screen, options, API_OPENGLES);
-   *gl_es2_version = get_version(fscreen->screen, options, API_OPENGLES2);
+   /* An API left out of the build cannot make a context (_mesa_initialize_context) */
+   *gl_core_version =
+      HAVE_OPENGL ? get_version(fscreen->screen, options, API_OPENGL_CORE) : 0;
+   *gl_compat_version =
+      HAVE_OPENGL ? get_version(fscreen->screen, options, API_OPENGL_COMPAT) : 0;
+   *gl_es1_version =
+      HAVE_OPENGL_ES_1 ? get_version(fscreen->screen, options, API_OPENGLES) : 0;
+   *gl_es2_version =
+      HAVE_OPENGL_ES_2 ? get_version(fscreen->screen, options, API_OPENGLES2) : 0;
 }
 
 
