@@ -110,6 +110,8 @@ agx_translate_layout(enum ail_tiling tiling)
       return AGX_LAYOUT_TWIDDLED;
    case AIL_TILING_LINEAR:
       return AGX_LAYOUT_LINEAR;
+   case AIL_TILING_INTERCHANGE:
+      return AGX_LAYOUT_INTERCHANGE;
    }
 
    UNREACHABLE("Invalid tiling");
