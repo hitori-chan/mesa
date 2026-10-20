@@ -230,10 +230,28 @@ hk_can_compress(const struct agx_device *dev, VkFormat format, unsigned plane,
    if (dev->debug & AGX_DBG_NOCOMPRESS)
       return false;
 
-   /* G15's compressed images (the PBE's and texture's acceleration buffer
-    * words) are not understood yet */
-   if (dev->params.gpu_generation >= 15)
-      return false;
+   /* G15 compresses only when asked, as Gallium (ASAHI_MESA_DEBUG=compress,
+    * depth and stencil too with compresszs), and no image a copy writes: its
+    * copies write with imgwci, which cannot write a compressed image */
+   if (dev->params.gpu_generation >= 15) {
+      if (!(dev->debug & AGX_DBG_COMPRESS) ||
+          (vk_format_is_depth_or_stencil(format) &&
+           !(dev->debug & AGX_DBG_COMPRESSZS)))
+         return false;
+
+      if (usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) {
+         perf_debug_dev(dev, "No compression: G15 copy destination");
+         return false;
+      }
+
+      /* A copy reads a compressed image through its own format, and the
+       * minifloats' roundtrip through theirs is not exact (hk_cmd_meta.c) */
+      enum pipe_format p = hk_format_to_pipe_format(format);
+      if (p == PIPE_FORMAT_R11G11B10_FLOAT || p == PIPE_FORMAT_R9G9B9E5_FLOAT) {
+         perf_debug_dev(dev, "No compression: G15 minifloat copies");
+         return false;
+      }
+   }
 
    /* TODO: Handle compression with sparse. This should be doable but it's a bit
     * subtle. Correctness first.
@@ -386,6 +404,22 @@ hk_GetPhysicalDeviceImageFormatProperties2(
 
    if (pImageFormatInfo->tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT &&
        pImageFormatInfo->type != VK_IMAGE_TYPE_2D)
+      return VK_ERROR_FORMAT_NOT_SUPPORTED;
+
+   /* The compressed modifier serves only the usages compression takes
+    * (hk_modifier_features)
+    */
+   const VkPhysicalDeviceImageDrmFormatModifierInfoEXT *mod_info =
+      vk_find_struct_const(pImageFormatInfo->pNext,
+                           PHYSICAL_DEVICE_IMAGE_DRM_FORMAT_MODIFIER_INFO_EXT);
+
+   if (pImageFormatInfo->tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT &&
+       mod_info &&
+       mod_info->drmFormatModifier ==
+          DRM_FORMAT_MOD_APPLE_GPU_TILED_COMPRESSED &&
+       !hk_can_compress(&pdev->dev, pImageFormatInfo->format, 0, 64, 64, 1,
+                        pImageFormatInfo->flags, pImageFormatInfo->usage,
+                        pImageFormatInfo->pNext))
       return VK_ERROR_FORMAT_NOT_SUPPORTED;
 
    if (ycbcr_info && pImageFormatInfo->type != VK_IMAGE_TYPE_2D)
@@ -1355,6 +1389,28 @@ hk_image_plane_bind(struct hk_device *dev, struct hk_image_plane *plane,
    *offset_B += plane->layout.size_B;
 }
 
+/*
+ * G15 decodes a zeroed subtile mode as a compressed block, so a compressed
+ * image not yet written would read back garbage where an uncompressed one
+ * reads its memory. As Gallium at creation, mark every subtile uncompressed
+ * when the image is bound (Apple's memory is always mapped), but only in memory
+ * Honeykrisp allocated: imported memory holds its exporter's image, and an
+ * alias shares its contents with an image already bound.
+ */
+static void
+hk_image_plane_init_metadata(struct hk_device *dev,
+                             struct hk_image_plane *plane)
+{
+   const struct ail_layout *layout = &plane->layout;
+
+   if (dev->dev.params.gpu_generation < 15 || !layout->compressed)
+      return;
+
+   memset((uint8_t *)plane->map + layout->metadata_offset_B,
+          ail_subtile_uncompressed_mode(layout->format),
+          layout->compression_layer_stride_B * layout->depth_px);
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL
 hk_BindImageMemory2(VkDevice device, uint32_t bindInfoCount,
                     const VkBindImageMemoryInfo *pBindInfos)
@@ -1363,6 +1419,7 @@ hk_BindImageMemory2(VkDevice device, uint32_t bindInfoCount,
    for (uint32_t i = 0; i < bindInfoCount; ++i) {
       VK_FROM_HANDLE(hk_device_memory, mem, pBindInfos[i].memory);
       VK_FROM_HANDLE(hk_image, image, pBindInfos[i].image);
+      bool alias = image->vk.create_flags & VK_IMAGE_CREATE_ALIAS_BIT;
 
       /* Ignore this struct on Android, we cannot access swapchain structures
        * there. */
@@ -1374,10 +1431,14 @@ hk_BindImageMemory2(VkDevice device, uint32_t bindInfoCount,
          assert(swapchain_info && swapchain_info->swapchain != VK_NULL_HANDLE);
          mem = hk_device_memory_from_handle(wsi_common_get_memory(
             swapchain_info->swapchain, swapchain_info->imageIndex));
+
+         /* The swapchain's own image is bound to it already */
+         alias = true;
       }
 #endif
 
       assert(mem);
+      bool init_metadata = !alias && !mem->vk.import_handle_type;
       uint64_t offset_B = pBindInfos[i].memoryOffset;
       if (image->disjoint) {
          const VkBindImagePlaneMemoryInfo *plane_info = vk_find_struct_const(
@@ -1385,9 +1446,15 @@ hk_BindImageMemory2(VkDevice device, uint32_t bindInfoCount,
          uint8_t plane =
             hk_image_aspects_to_plane(image, plane_info->planeAspect);
          hk_image_plane_bind(dev, &image->planes[plane], mem, &offset_B);
+
+         if (init_metadata)
+            hk_image_plane_init_metadata(dev, &image->planes[plane]);
       } else {
          for (unsigned plane = 0; plane < image->plane_count; plane++) {
             hk_image_plane_bind(dev, &image->planes[plane], mem, &offset_B);
+
+            if (init_metadata)
+               hk_image_plane_init_metadata(dev, &image->planes[plane]);
          }
       }
 
