@@ -277,6 +277,10 @@ hk_FreeMemory(VkDevice device, VkDeviceMemory _mem,
    if (mem->bo->flags & (AGX_BO_SHAREABLE | AGX_BO_SHARED))
       hk_remove_ext_bo(dev, mem->bo);
 
+   /* A placed mapping beside the BO's own goes with the memory */
+   if (mem->map && mem->map != mem->bo->_map)
+      munmap(mem->map, mem->bo->size);
+
    agx_bo_unreference(&dev->dev, mem->bo);
 
    vk_device_memory_destroy(&dev->vk, pAllocator, &mem->vk);
@@ -330,7 +334,19 @@ hk_MapMemory2KHR(VkDevice device, const VkMemoryMapInfoKHR *pMemoryMapInfo,
                        "Memory object already mapped.");
    }
 
-   mem->map = agx_bo_map_placed(mem->bo, fixed_addr);
+   /* The BO may be mapped already: the BO cache keeps mappings, and binding
+    * an image maps its memory. Place a second mapping then, and leave the
+    * one the driver uses.
+    */
+   if (fixed_addr && mem->bo->_map && mem->bo->_map != fixed_addr) {
+      void *bo_map = mem->bo->_map;
+      mem->bo->_map = NULL;
+      mem->map = agx_bo_map_placed(mem->bo, fixed_addr);
+      mem->bo->_map = bo_map;
+   } else {
+      mem->map = agx_bo_map_placed(mem->bo, fixed_addr);
+   }
+
    assert(!fixed_addr || mem->map == fixed_addr);
    *ppData = mem->map + offset;
 
@@ -346,22 +362,25 @@ hk_UnmapMemory2KHR(VkDevice device,
    if (mem == NULL)
       return VK_SUCCESS;
 
+   /* A placed mapping beside the BO's own (hk_MapMemory2KHR) */
+   bool beside = mem->map && mem->map != mem->bo->_map;
+   void *map = beside ? mem->map : mem->bo->_map;
+
    if (pMemoryUnmapInfo->flags & VK_MEMORY_UNMAP_RESERVE_BIT_EXT) {
       VK_FROM_HANDLE(hk_device, dev, device);
 
-      void *err = mmap(mem->bo->_map, mem->bo->size, PROT_NONE,
+      void *err = mmap(map, mem->bo->size, PROT_NONE,
                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
       if (err == MAP_FAILED) {
          return vk_errorf(dev, VK_ERROR_MEMORY_MAP_FAILED,
                           "Failed to map over original mapping");
       }
-      mem->bo->_map = NULL;
-   } else {
-      if (mem->bo->_map) {
-         munmap(mem->bo->_map, mem->bo->size);
-         mem->bo->_map = NULL;
-      }
+   } else if (map) {
+      munmap(map, mem->bo->size);
    }
+
+   if (!beside)
+      mem->bo->_map = NULL;
 
    mem->map = NULL;
 
