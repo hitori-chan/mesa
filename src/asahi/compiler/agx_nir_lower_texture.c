@@ -436,13 +436,16 @@ image_texel_address(nir_builder *b, nir_intrinsic_instr *intr,
    nir_def *coord = intr->src[1].ssa;
 
    /* For atomics, we always infer the format. We only go down this path with
-    * formatless intrinsics when lowering multisampled image stores, but that
-    * uses the return_index path that ignores the block size.
+    * formatless intrinsics when lowering multisampled image stores, whose
+    * return_index path needs the block size only to step a layer: G15 takes
+    * a formatless one's from its PBE (block size 0 here).
     */
    enum pipe_format format = nir_intrinsic_format(intr);
    assert(return_index || format != PIPE_FORMAT_NONE);
 
-   nir_def *blocksize_B = nir_imm_int(b, util_format_get_blocksize(format));
+   nir_def *blocksize_B = nir_imm_int(
+      b, g15 && format == PIPE_FORMAT_NONE ? 0
+                                           : util_format_get_blocksize(format));
 
    enum glsl_sampler_dim dim = nir_intrinsic_image_dim(intr);
    bool layered = nir_intrinsic_image_array(intr) ||

@@ -1405,6 +1405,8 @@ agx_pack_pbe_g15_software(uint8_t *out, const struct pipe_image_view *view)
          cfg.tile_height = tile_size.height_el;
          cfg.layer_stride = tex->layout.layer_stride_B;
          cfg.sample_count_log2 = util_logbase2(tex->base.nr_samples);
+         cfg.sample_size_log2 =
+            util_logbase2(util_format_get_blocksize(view->format));
       }
       return;
    }
