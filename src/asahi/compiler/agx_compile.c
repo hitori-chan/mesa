@@ -865,13 +865,68 @@ agx_coverage_word_g15(agx_builder *b, agx_index target, agx_index live)
    return agx_imad(b, active, tt, l, 0);
 }
 
+/* A partly live target is split: its dead samples are killed, then its live
+ * ones tested with every sample live. Both forms are known per sample on a
+ * multisampled target, the kill from the colour sample mask cases, the test
+ * from zs_emit (dEQP-VK renderpass2 multisample: gl_SampleMask = ~0 << i);
+ * one movmsk testing some samples of a target and killing the others is not,
+ * and the stencil twins of those depth cases take it and fail. On a known
+ * single-sampled target that movmsk is the pixel's own (boots #326-#329),
+ * and a whole pixel's discard makes every sample live or none.
+ */
+static bool
+agx_whole_live_g15(nir_scalar s)
+{
+   if (nir_scalar_is_const(s)) {
+      unsigned c = nir_scalar_as_uint(s) & 0xf;
+      return c == 0 || c == 0xf;
+   }
+
+   if (!nir_scalar_is_alu(s))
+      return false;
+
+   switch (nir_scalar_alu_op(s)) {
+   case nir_op_bcsel:
+      return agx_whole_live_g15(nir_scalar_chase_alu_src(s, 1)) &&
+             agx_whole_live_g15(nir_scalar_chase_alu_src(s, 2));
+   case nir_op_ixor:
+      return agx_whole_live_g15(nir_scalar_chase_alu_src(s, 0)) &&
+             agx_whole_live_g15(nir_scalar_chase_alu_src(s, 1));
+   case nir_op_inot:
+   case nir_op_u2u8:
+   case nir_op_u2u16:
+   case nir_op_u2u32:
+      return agx_whole_live_g15(nir_scalar_chase_alu_src(s, 0));
+   default:
+      return false;
+   }
+}
+
 static agx_instr *
 agx_emit_sample_mask_g15(agx_builder *b, nir_intrinsic_instr *instr)
 {
-   agx_index cr0 = agx_coverage_word_g15(b, agx_src_index(&instr->src[0]),
-                                         agx_src_index(&instr->src[1]));
+   agx_index target = agx_src_index(&instr->src[0]);
+   agx_index live = agx_src_index(&instr->src[1]);
 
-   return agx_sample_mask(b, cr0, agx_zero());
+   bool is_const = nir_src_is_const(instr->src[1]);
+   unsigned c = is_const ? nir_src_as_uint(instr->src[1]) & 0xf : 0;
+
+   if (b->shader->key->fs.nr_samples != 1 &&
+       !agx_whole_live_g15(nir_get_scalar(instr->src[1].ssa, 0))) {
+      agx_index t = agx_temp(b->shader, AGX_SIZE_16);
+      agx_mov_to(b, t, target);
+
+      agx_index dead = is_const ? agx_and(b, t, agx_immediate(~c & 0xf))
+                                : agx_andn2(b, t, live);
+      agx_sample_mask(b, agx_coverage_word_g15(b, dead, agx_immediate(0)),
+                      agx_zero());
+
+      target = agx_and(b, t, is_const ? agx_immediate(c) : live);
+      live = agx_immediate(0xf);
+   }
+
+   return agx_sample_mask(b, agx_coverage_word_g15(b, target, live),
+                          agx_zero());
 }
 
 static agx_instr *
