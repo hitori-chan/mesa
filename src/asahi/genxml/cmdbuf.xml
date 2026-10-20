@@ -312,6 +312,9 @@
 
     <!-- Twiddled: the layers, minus 1 -->
     <field name="Layers" size="16" start="108" type="uint" modifier="minus(1)"/>
+
+    <!-- Interchange: the width in 16-pixel tiles, minus 1 -->
+    <field name="Stride in tiles" size="16" start="108" type="uint" modifier="minus(1)"/>
     <field name="Page-aligned layers" size="1" start="124" type="bool"/>
 
     <!-- An image write converts to sRGB, as G13's bit. Apple's encoder
@@ -394,6 +397,8 @@
     <!-- Linear: the row stride in 16-byte units, minus 1 -->
     <field name="Stride" size="16" start="110" type="hex" modifier="shr(4)"/>
     <field name="Depth" size="14" start="110" type="uint" modifier="minus(1)"/>
+    <!-- Interchange: the width in 16-pixel tiles, minus 1 -->
+    <field name="Stride in tiles" size="16" start="110" type="uint" modifier="minus(1)"/>
     <field name="Page-aligned layers" size="1" start="126" type="bool"/>
     <!-- Read the next word (set with several mip levels or compression) -->
     <field name="Extended" size="1" start="127" type="bool"/>

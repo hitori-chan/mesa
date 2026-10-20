@@ -84,6 +84,7 @@ void agx_init_state_functions(struct pipe_context *ctx);
 const static char *s_tiling[] = {
    [AIL_TILING_LINEAR] = "LINR",
    [AIL_TILING_GPU] = "GPU",
+   [AIL_TILING_INTERCHANGE] = "IX",
 };
 
 #define rsrc_debug(res, ...)                                                   \
@@ -449,10 +450,56 @@ agx_compression_allowed(const struct agx_resource *pres)
    return true;
 }
 
+/*
+ * Apple Interchange, which the display controller scans out compressed: G15
+ * only, with ASAHI_MESA_DEBUG=compress,ix, for 32-bit RGB formats.
+ */
+static bool
+agx_interchange_offered(const struct agx_device *dev, enum pipe_format format)
+{
+   if (dev->params.gpu_generation < 15 || !(dev->debug & AGX_DBG_IX) ||
+       !(dev->debug & AGX_DBG_COMPRESS))
+      return false;
+
+   switch (format) {
+   case PIPE_FORMAT_R8G8B8X8_UNORM:
+   case PIPE_FORMAT_R8G8B8A8_UNORM:
+   case PIPE_FORMAT_B8G8R8X8_UNORM:
+   case PIPE_FORMAT_B8G8R8A8_UNORM:
+   case PIPE_FORMAT_A8R8G8B8_UNORM:
+   case PIPE_FORMAT_A8B8G8R8_UNORM:
+   case PIPE_FORMAT_X8R8G8B8_UNORM:
+   case PIPE_FORMAT_X8B8G8R8_UNORM:
+   case PIPE_FORMAT_A2R10G10B10_UNORM:
+   case PIPE_FORMAT_A2B10G10R10_UNORM:
+   case PIPE_FORMAT_R10G10B10X2_UNORM:
+   case PIPE_FORMAT_R10G10B10A2_UNORM:
+   case PIPE_FORMAT_B10G10R10X2_UNORM:
+   case PIPE_FORMAT_B10G10R10A2_UNORM:
+      return true;
+   default:
+      return false;
+   }
+}
+
+static bool
+agx_interchange_allowed(const struct agx_resource *pres)
+{
+   return agx_interchange_offered(agx_device(pres->base.screen),
+                                  pres->base.format) &&
+          pres->base.target == PIPE_TEXTURE_2D && pres->base.last_level == 0 &&
+          pres->base.array_size == 1 && pres->base.nr_samples <= 1 &&
+          agx_twiddled_allowed(pres) && agx_compression_allowed(pres);
+}
+
 static uint64_t
 agx_select_modifier_from_list(const struct agx_resource *pres,
                               const uint64_t *modifiers, int count)
 {
+   if (agx_interchange_allowed(pres) &&
+       drm_find_modifier(DRM_FORMAT_MOD_APPLE_INTERCHANGE, modifiers, count))
+      return DRM_FORMAT_MOD_APPLE_INTERCHANGE;
+
    if (agx_twiddled_allowed(pres) && agx_compression_allowed(pres) &&
        drm_find_modifier(DRM_FORMAT_MOD_APPLE_GPU_TILED_COMPRESSED, modifiers,
                          count))
@@ -2380,18 +2427,27 @@ agx_query_dmabuf_modifiers(struct pipe_screen *screen, enum pipe_format format,
                            int max, uint64_t *modifiers,
                            unsigned int *external_only, int *out_count)
 {
-   int i;
+   uint64_t mods[ARRAY_SIZE(agx_best_modifiers) + 1];
+   int n = 0, i;
+
+   for (i = 0; i < ARRAY_SIZE(agx_best_modifiers); i++) {
+      mods[n++] = agx_best_modifiers[i];
+
+      if (agx_best_modifiers[i] == DRM_FORMAT_MOD_APPLE_GPU_TILED_COMPRESSED &&
+          agx_interchange_offered(agx_device(screen), format))
+         mods[n++] = DRM_FORMAT_MOD_APPLE_INTERCHANGE;
+   }
 
    if (max == 0) {
-      *out_count = ARRAY_SIZE(agx_best_modifiers);
+      *out_count = n;
       return;
    }
 
-   for (i = 0; i < ARRAY_SIZE(agx_best_modifiers) && i < max; i++) {
+   for (i = 0; i < n && i < max; i++) {
       if (external_only)
          external_only[i] = 0;
 
-      modifiers[i] = agx_best_modifiers[i];
+      modifiers[i] = mods[i];
    }
 
    /* Return the number of modifiers copied */
@@ -2404,6 +2460,9 @@ agx_is_dmabuf_modifier_supported(struct pipe_screen *screen, uint64_t modifier,
 {
    if (external_only)
       *external_only = false;
+
+   if (modifier == DRM_FORMAT_MOD_APPLE_INTERCHANGE)
+      return agx_interchange_offered(agx_device(screen), format);
 
    for (unsigned i = 0; i < ARRAY_SIZE(agx_best_modifiers); ++i) {
       if (agx_best_modifiers[i] == modifier)
