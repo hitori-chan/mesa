@@ -672,8 +672,6 @@ radv_shader_spirv_to_nir(const struct radv_compiler_info *compiler_info, struct 
 
    if (nir->info.uses_abort) {
       nir_lower_abort_options abort_options = {
-         .buffer_addr = compiler_info->debug.shader_abort->buffer_addr,
-         .max_buffer_size = compiler_info->debug.shader_abort->buffer_size,
          .ptr_bit_size = 64,
       };
 
@@ -2734,6 +2732,7 @@ radv_shader_combine_cfg_tes_gs(const struct radv_device *device, const struct ra
 struct radv_shader_binary_layout {
    void *stats;
    void *code;
+   void *symbols;
    void *ir;
    void *disasm;
    void *debug_info;
@@ -2751,6 +2750,9 @@ radv_shader_binary_get_layout(struct radv_shader_binary_legacy *binary)
 
    layout.code = binary->data + offset;
    offset += binary->code_size;
+
+   layout.symbols = binary->data + offset;
+   offset += binary->symbols_size;
 
    layout.ir = binary->data + offset;
    offset += binary->ir_size;
@@ -2794,6 +2796,34 @@ radv_shader_get_code(struct radv_device *device, const struct radv_shader *shade
       struct radv_shader_binary_legacy *bin = (struct radv_shader_binary_legacy *)shader->binary;
       struct radv_shader_binary_layout layout = radv_shader_binary_get_layout(bin);
       memcpy(dest_ptr, layout.code, bin->code_size);
+
+      if (bin->symbols_size) {
+         struct aco_symbol *symbols = layout.symbols;
+         unsigned num_symbols = bin->symbols_size / sizeof(struct aco_symbol);
+
+         for (unsigned i = 0; i < num_symbols; i++) {
+            uint32_t *symbol_data = (uint32_t *)dest_ptr + symbols[i].offset;
+
+            switch (symbols[i].id) {
+            case aco_symbol_const_data_addr:
+               /* RADV never inserts code between the shader end and constant data,
+                * so we don't have to do anything here.
+                */
+               break;
+            case aco_symbol_abort_buffer_addr_lo:
+               *symbol_data = device->shader_abort.buffer_addr;
+               break;
+            case aco_symbol_abort_buffer_addr_hi:
+               *symbol_data = device->shader_abort.buffer_addr >> 32;
+               break;
+            case aco_symbol_abort_buffer_size:
+               *symbol_data = device->shader_abort.buffer_size;
+               break;
+            default:
+               UNREACHABLE("unimplemented shader symbol");
+            }
+         }
+      }
    }
 
    return true;
@@ -3369,11 +3399,13 @@ radv_aco_build_shader_binary(void **bin, const aco_callback_params *params)
 
    uint32_t debug_info_size = params->debug_info_count * sizeof(struct ac_shader_debug_info);
    uint32_t stats_size = params->stats ? sizeof(struct amd_stats) : 0;
+   uint32_t symbols_size = params->num_symbols * sizeof(struct aco_symbol);
 
    size_t size = params->ir_size;
    size += debug_info_size;
    size += params->disasm_size;
    size += stats_size;
+   size += symbols_size;
    size += params->code_dw * sizeof(uint32_t) + sizeof(struct radv_shader_binary_legacy);
 
    /* We need to calloc to prevent uninitialized data because this will be used
@@ -3390,6 +3422,7 @@ radv_aco_build_shader_binary(void **bin, const aco_callback_params *params)
    legacy_binary->ir_size = params->ir_size;
    legacy_binary->disasm_size = params->disasm_size;
    legacy_binary->debug_info_size = debug_info_size;
+   legacy_binary->symbols_size = symbols_size;
 
    struct radv_shader_binary_layout layout = radv_shader_binary_get_layout(legacy_binary);
 
@@ -3397,6 +3430,9 @@ radv_aco_build_shader_binary(void **bin, const aco_callback_params *params)
       amd_stats_serialize(layout.stats, params->stats);
 
    memcpy(layout.code, params->code, params->code_dw * sizeof(uint32_t));
+
+   if (symbols_size)
+      memcpy(layout.symbols, params->symbols, symbols_size);
 
    if (params->ir_size)
       memcpy(layout.ir, params->ir_str, params->ir_size);
@@ -3705,7 +3741,6 @@ radv_create_vs_prolog(struct radv_device *device, const struct radv_vs_prolog_ke
    stage.info.wave_size = key->wave32 ? 32 : 64;
    stage.info.vs.needs_instance_id = true;
    stage.info.vs.needs_base_instance = true;
-   stage.info.vs.needs_draw_id = true;
    stage.info.vs.use_per_attribute_vb_descs = true;
    stage.info.vs.vb_desc_usage_mask = BITFIELD_MASK(key->num_attributes);
    stage.info.vs.has_prolog = true;
@@ -3986,23 +4021,6 @@ radv_compute_spi_ps_input(enum amd_gfx_level gfx_level, const struct radv_graphi
    }
 
    return spi_ps_input;
-}
-
-const struct radv_userdata_info *
-radv_get_user_sgpr_info(const struct radv_shader *shader, int idx)
-{
-   return &shader->info.user_sgprs_locs.shader_data[idx];
-}
-
-uint32_t
-radv_get_user_sgpr_loc(const struct radv_shader *shader, int idx)
-{
-   const struct radv_userdata_info *loc = radv_get_user_sgpr_info(shader, idx);
-
-   if (loc->sgpr_idx == -1)
-      return 0;
-
-   return shader->info.user_data_0 + loc->sgpr_idx * 4;
 }
 
 uint32_t
