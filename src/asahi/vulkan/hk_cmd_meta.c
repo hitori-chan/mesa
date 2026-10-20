@@ -636,9 +636,10 @@ build_image_copy_shader(const struct vk_meta_image_copy_key *key)
 
 /*
  * G15 copies into an image with image writes (imgwci, layered on the
- * hardware): its block write's layer operand is not known (imgwblk,
- * agx_pack3.c), and its images are never compressed, which the block write
- * serves.
+ * hardware): a compute kernel's block writes have not run on G15, whose
+ * imgwblk takes the descriptor's address in a uniform rather than a bindless
+ * handle (agx_pack3.c), and Honeykrisp compresses no G15 image, which the
+ * block write would serve.
  */
 static bool
 hk_meta_block_copies(struct vk_device *device)
