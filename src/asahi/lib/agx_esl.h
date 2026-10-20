@@ -7,6 +7,8 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <string.h>
+#include "util/macros.h"
 #include "util/u_dynarray.h"
 
 /*
@@ -43,6 +45,23 @@ enum agx_esl_stage {
    AGX_ESL_BACKGROUND,
    AGX_ESL_END_OF_TILE,
 };
+
+/* ldshdr's low 23 bits: the shader's VA follows, bits 46:6 from bit 23 and bit
+ * 47 at bit 64, then its size class */
+#define AGX_ESL_LDSHDR 0x2A0177
+
+/* The shader the ldshdr at p loads, 0 if p holds another instruction */
+static inline uint64_t
+agx_esl_ldshdr_va(const uint8_t *p)
+{
+   uint64_t w;
+   memcpy(&w, p, sizeof(w));
+
+   if ((w & BITFIELD64_MASK(23)) != AGX_ESL_LDSHDR)
+      return 0;
+
+   return ((w >> 23) << 6) | ((uint64_t)(p[8] & 1) << 47);
+}
 
 /* Append the entry program for the USC words at usc (code offsets are
  * relative to shader_base) to out. Returns false for a word G15 does not
