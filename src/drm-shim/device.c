@@ -443,8 +443,8 @@ drm_shim_init_iomem_region(off64_t offset, size_t size,
  * fd.
  */
 void *
-drm_shim_mmap(struct shim_fd *shim_fd, size_t length, int prot, int flags,
-              int fd, off64_t offset)
+drm_shim_mmap(struct shim_fd *shim_fd, void *addr, size_t length, int prot,
+              int flags, int fd, off64_t offset)
 {
    if (shim_device.iomem_region.mmap &&
        offset >= shim_device.iomem_region.start &&
@@ -465,5 +465,5 @@ drm_shim_mmap(struct shim_fd *shim_fd, size_t length, int prot, int flags,
    /* The offset we pass to mmap must be aligned to the page size */
    assert((bo->mem_addr & (shim_page_size - 1)) == 0);
 
-   return mmap(NULL, length, prot, flags, shim_device.mem_fd, bo->mem_addr);
+   return mmap(addr, length, prot, flags, shim_device.mem_fd, bo->mem_addr);
 }
