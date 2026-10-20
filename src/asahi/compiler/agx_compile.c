@@ -1040,7 +1040,9 @@ agx_emit_load(agx_builder *b, agx_index dest, nir_intrinsic_instr *instr)
             idx = agx_immediate((offset.value << shift) + c);
             idx_shift = 0;
          } else if (c > 0) {
-            idx = agx_iadd(b, agx_immediate(c), offset, shift);
+            /* As wide as the offset: a 16-bit sum wraps past 64 KiB */
+            idx = agx_temp(b->shader, offset.size);
+            agx_iadd_to(b, idx, agx_immediate(c), offset, shift);
             idx_shift = 0;
          }
 
