@@ -739,12 +739,13 @@ hk_upload_esl(struct hk_cmd_buffer *cmd, struct hk_shader *s,
       .pix_wait_mask = linked->b.pix_wait_mask,
    };
 
-   /* The hardware stage: geometry and tessellation run as compute kernels
-    * and a hardware vertex shader (TODO: their kernels' entry programs) */
+   /* The hardware stage, as Gallium's: geometry and tessellation run as
+    * compute kernels (the software vertex and evaluation shaders, the
+    * control shader, the geometry kernels) and a hardware vertex shader */
    enum agx_esl_stage stage =
-      s->info.stage == MESA_SHADER_FRAGMENT         ? AGX_ESL_FRAGMENT
-      : mesa_shader_stage_is_compute(s->info.stage) ? AGX_ESL_COMPUTE
-                                                    : AGX_ESL_VERTEX;
+      s->b.info.stage == MESA_SHADER_FRAGMENT ? AGX_ESL_FRAGMENT
+      : s->b.info.stage == MESA_SHADER_VERTEX ? AGX_ESL_VERTEX
+                                              : AGX_ESL_COMPUTE;
 
    return hk_upload_esl_code(cmd, &code, stage, usc);
 }
