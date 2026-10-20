@@ -65,6 +65,25 @@ struct agx_bg_eot_key {
    unsigned g15_sampler_uniform;
 };
 
+/* G15: places a loading program's sampler uniform (above) */
+static inline void
+agx_bg_eot_key_set_g15_sampler(struct agx_bg_eot_key *key)
+{
+   bool loads = false;
+   unsigned first_free = 4;
+
+   for (unsigned rt = 0; rt < ARRAY_SIZE(key->op); ++rt) {
+      loads |= key->op[rt] == AGX_BG_LOAD;
+      if (key->op[rt] == AGX_BG_CLEAR)
+         first_free = 4 + 8 * (rt + 1);
+   }
+
+   if (loads) {
+      key->g15_sampler_uniform = first_free;
+      assert(first_free <= AGX_G15_MAX_BG_SAMPLER_UNIFORM);
+   }
+}
+
 struct agx_bg_eot_shader {
    struct agx_bg_eot_key key;
    struct agx_shader_info info;
