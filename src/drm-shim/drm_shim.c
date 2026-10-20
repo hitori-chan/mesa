@@ -857,7 +857,7 @@ mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
 
    struct shim_fd *shim_fd = drm_shim_fd_lookup(fd);
    if (shim_fd)
-      return drm_shim_mmap(shim_fd, length, prot, flags, fd, offset);
+      return drm_shim_mmap(shim_fd, addr, length, prot, flags, fd, offset);
 
    return real_mmap(addr, length, prot, flags, fd, offset);
 }
@@ -869,7 +869,7 @@ mmap64(void* addr, size_t length, int prot, int flags, int fd, off64_t offset)
 
    struct shim_fd *shim_fd = drm_shim_fd_lookup(fd);
    if (shim_fd)
-      return drm_shim_mmap(shim_fd, length, prot, flags, fd, offset);
+      return drm_shim_mmap(shim_fd, addr, length, prot, flags, fd, offset);
 
    return real_mmap64(addr, length, prot, flags, fd, offset);
 }
