@@ -62,9 +62,8 @@ struct asahi_bind {
    struct shim_bo *bo;
 };
 
-#define MAX_BINDS 4096
-static struct asahi_bind binds[MAX_BINDS];
-static unsigned nr_binds, nr_submits;
+static struct asahi_bind *binds;
+static unsigned nr_binds, max_binds, nr_submits;
 
 struct asahi_device {
    uint64_t next_offset;
@@ -153,7 +152,11 @@ asahi_ioctl_vm_bind(int fd, unsigned long request, void *arg)
       if (op->flags & DRM_ASAHI_BIND_UNBIND)
          continue;
 
-      assert(nr_binds < MAX_BINDS);
+      if (nr_binds == max_binds) {
+         max_binds = MAX2(max_binds * 2, 4096);
+         binds = realloc(binds, max_binds * sizeof(*binds));
+         assert(binds);
+      }
       binds[nr_binds++] = (struct asahi_bind){
          .addr = op->addr,
          .range = op->range,
