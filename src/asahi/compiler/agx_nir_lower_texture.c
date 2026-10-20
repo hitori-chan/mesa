@@ -828,7 +828,8 @@ cube_min_lod_to_txd(nir_builder *b, nir_tex_instr *tex, UNUSED void *data)
       return false;
 
    b->cursor = nir_before_instr(&tex->instr);
-   nir_def *dir = nir_trim_vector(b, nir_get_tex_src(tex, nir_tex_src_coord), 3);
+   nir_def *dir =
+      nir_trim_vector(b, nir_get_tex_src(tex, nir_tex_src_coord), 3);
    nir_def *dx = nir_ddx(b, dir), *dy = nir_ddy(b, dir);
 
    nir_def *bias = nir_steal_tex_src(tex, nir_tex_src_bias);
@@ -856,8 +857,8 @@ agx_nir_lower_cube_g15(nir_shader *s)
       progress = true;
    }
 
-   progress |= nir_shader_tex_pass(s, lower_cube_g15,
-                                   nir_metadata_control_flow, NULL);
+   progress |=
+      nir_shader_tex_pass(s, lower_cube_g15, nir_metadata_control_flow, NULL);
    return progress;
 }
 

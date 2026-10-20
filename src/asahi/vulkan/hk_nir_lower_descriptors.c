@@ -363,8 +363,9 @@ load_texture_index_g15(nir_builder *b, const struct lower_descriptors_ctx *ctx,
    /* The texture instructions read 16 bits of the entry: a binding whose
     * entries all lie below 65536 says so (the backend drops the mask), and the
     * backend moves the table for the others */
-   uint64_t end_B = binding_layout->offset +
-                    (uint64_t)binding_layout->array_size * binding_layout->stride;
+   uint64_t end_B =
+      binding_layout->offset +
+      (uint64_t)binding_layout->array_size * binding_layout->stride;
    if (end_B <= 0x10000 * 32)
       entry = nir_iand_imm(b, entry, 0xffff);
 

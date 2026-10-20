@@ -2241,7 +2241,7 @@ a3_mov_cr(struct a3 *a, const agx_instr *I, unsigned cr, agx_index value,
    a3_emit(a, emission);
 }
 
-#define A3_VARY_CRS 8
+#define A3_VARY_CRS    8
 #define A3_IMGW_TUPLES 2
 
 /* G15's st_var and image write read their coordinate registers after they

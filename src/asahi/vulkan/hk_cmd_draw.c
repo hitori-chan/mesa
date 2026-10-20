@@ -736,10 +736,10 @@ hk_CmdBeginRendering(VkCommandBuffer commandBuffer,
    render->cr.eot.main =
       hk_build_bg_eot(cmd, pRenderingInfo, true, false, incomplete_render_area);
 
-   render->cr.bg.partial = hk_build_bg_eot(cmd, pRenderingInfo, false, true,
-                                           incomplete_render_area);
-   render->cr.eot.partial = hk_build_bg_eot(cmd, pRenderingInfo, true, true,
-                                            incomplete_render_area);
+   render->cr.bg.partial =
+      hk_build_bg_eot(cmd, pRenderingInfo, false, true, incomplete_render_area);
+   render->cr.eot.partial =
+      hk_build_bg_eot(cmd, pRenderingInfo, true, true, incomplete_render_area);
 
    render->cr.isp_bgobjvals = 0x300;
 

@@ -3704,9 +3704,9 @@ agx_build_bg_eot(struct agx_batch *batch, bool store, bool partial_render)
       /* Upload texture/PBE descriptors for each render target so we can clear
        * spilled render targets.
        */
-      size_t size = g15 ? agx_tex_desc_stride(batch) *
-                             ((2 * AGX_MAX_RENDER_TARGETS) + 1)
-                        : AGX_TEXTURE_LENGTH * 2 * batch->key.nr_cbufs;
+      size_t size =
+         g15 ? agx_tex_desc_stride(batch) * ((2 * AGX_MAX_RENDER_TARGETS) + 1)
+             : AGX_TEXTURE_LENGTH * 2 * batch->key.nr_cbufs;
       struct agx_ptr descs = agx_pool_alloc_aligned(&batch->pool, size, 64);
       if (g15)
          memset(descs.cpu, 0, size);

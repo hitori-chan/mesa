@@ -1160,7 +1160,8 @@ hk_meta_copy_image2(struct vk_command_buffer *cmd, struct vk_meta_device *meta,
              * to follow the source.
              */
             VkFormat aspect_fmt = aspect_format(src_image->format, 1 << aspect);
-            VkFormat canonical = canonical_format(aspect_fmt, hk_meta_g15(device));
+            VkFormat canonical =
+               canonical_format(aspect_fmt, hk_meta_g15(device));
             uint32_t blocksize_B =
                util_format_get_blocksize(hk_format_to_pipe_format(canonical));
 
@@ -1181,10 +1182,10 @@ hk_meta_copy_image2(struct vk_command_buffer *cmd, struct vk_meta_device *meta,
                .block_size = blocksize_B,
                .nr_samples = dst_image->samples,
                .src_format = hk_format_to_pipe_format(canonical),
-               .dst_format = canonical_format_pipe(
-                  hk_format_to_pipe_format(
-                     aspect_format(dst_image->format, dst_aspect_mask)),
-                  hk_meta_g15(device)),
+               .dst_format =
+                  canonical_format_pipe(hk_format_to_pipe_format(aspect_format(
+                                           dst_image->format, dst_aspect_mask)),
+                                        hk_meta_g15(device)),
 
                /* TODO: MSAA path */
                .block_based = (dst_image->image_type != VK_IMAGE_TYPE_1D) &&

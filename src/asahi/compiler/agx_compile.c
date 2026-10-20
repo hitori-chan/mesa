@@ -773,8 +773,8 @@ agx_wait_pixel_mask(agx_builder *b, uint32_t mask)
    /* Background programs do not need to wait as they are the eldest pixels,
     * but on G15 a background program's stores before the fences lost the
     * upper half of 16-byte samples from the 121st 32x16 tile on (a 4-sample
-    * RGBA32 clear, KHR-GL46 direct_state_access.renderbuffers_storage_multisample),
-    * as if a later tile reused tile memory an earlier one still held
+    * RGBA32 clear in renderbuffers_storage_multisample), as if a later tile
+    * reused tile memory an earlier one still held
     */
    if (b->shader->key->fs.ignore_tib_dependencies &&
        b->shader->key->dev.gpu_generation < 15) {
@@ -2275,10 +2275,10 @@ agx_emit_image_load(agx_builder *b, agx_index dst, nir_intrinsic_instr *intr)
          agx_wait_pixel_mask(b, 0x200);
    }
 
-   agx_instr *I = agx_image_load_to(b, tmp, coords, lod, bindless, texture,
-                                    sampler, agx_null(), sampler_base,
-                                    agx_tex_dim(dim, is_array), lod_mode, 0,
-                                    false, sparse, nir_is_coherent(intr));
+   agx_instr *I =
+      agx_image_load_to(b, tmp, coords, lod, bindless, texture, sampler,
+                        agx_null(), sampler_base, agx_tex_dim(dim, is_array),
+                        lod_mode, 0, false, sparse, nir_is_coherent(intr));
    I->mask = agx_expand_tex_to(b, &intr->def, tmp, !sparse);
 
    b->shader->out->uses_txf = true;
@@ -4388,8 +4388,7 @@ lower_wide_handle_g15(nir_builder *b, nir_src *src, struct hash_table *range_ht)
 
    /* a table's offsets fit 32 bits (2^27 entries) */
    nir_def *idx = nir_u2u32(b, handle->src[s].ssa);
-   nir_def *base =
-      nir_load_preamble(b, 1, 64, nir_intrinsic_desc_set(handle));
+   nir_def *base = nir_load_preamble(b, 1, 64, nir_intrinsic_desc_set(handle));
    nir_def *high = nir_ishl_imm(b, nir_iand_imm(b, idx, 0xffff0000), 5);
    base = nir_iadd(b, base, nir_u2u64(b, high));
    nir_src_rewrite(src, nir_bindless_image_base_agx(b, idx, base));
