@@ -389,8 +389,19 @@ agx_vdm_draw(GLOBAL uint32_t *out, enum agx_chip chip, struct agx_draw draw,
    }
 
    if (draw.indexed) {
+      /* G15: the index of the last word the fetch may read, counted from the
+       * word holding the first index, as Apple's drawIndexedPrimitives writes
+       * it. A count reads one word past the buffer, into the guard page when
+       * the buffer ends its BO.
+       */
       agx_push(out, INDEX_LIST_BUFFER_SIZE, cfg) {
-         cfg.size = align(agx_draw_index_range_B(draw), 4);
+         if (chip >= AGX_CHIP_G15G) {
+            uint32_t words =
+               DIV_ROUND_UP(agx_draw_index_range_B(draw) + (ib & 3), 4);
+            cfg.size = words ? (words - 1) * 4 : 0;
+         } else {
+            cfg.size = align(agx_draw_index_range_B(draw), 4);
+         }
       }
 
       if (chip >= AGX_CHIP_G15G) {
