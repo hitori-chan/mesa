@@ -271,6 +271,71 @@ agx_cdm_launch(GLOBAL uint32_t *out, enum agx_chip chip, struct agx_grid grid,
    return out;
 }
 
+/* G15: an entry program's VA as its pipeline words split it (cmdbuf.xml) */
+static inline uint32_t
+agx_g15_pipeline_hi(uint64_t va)
+{
+   assert((va & 63) == 0 && va < (1ull << 48));
+   return va >> 38;
+}
+
+static inline uint32_t
+agx_g15_pipeline_lo(uint64_t va)
+{
+   return va >> 6;
+}
+
+static inline uint64_t
+agx_g15_pipeline_va(uint32_t hi, uint32_t lo)
+{
+   return ((uint64_t)hi << 38) | ((uint64_t)lo << 6);
+}
+
+/* G15: the launch points at the entry program, a full VA, which loads what
+ * G13's launch word counts (metal-compute.md). Indirect launches have not run
+ * on the hardware.
+ */
+static inline GLOBAL uint32_t *
+agx_cdm_launch_g15(GLOBAL uint32_t *out, struct agx_grid grid,
+                   struct agx_workgroup wg, uint64_t va)
+{
+   agx_push(out, CDM_LAUNCH_G15, cfg) {
+      cfg.mode = grid.mode;
+      cfg.multidimensional =
+         agx_is_indirect(grid) || grid.count[1] > 1 || grid.count[2] > 1;
+      cfg.pipeline_hi = agx_g15_pipeline_hi(va);
+      cfg.pipeline_lo = agx_g15_pipeline_lo(va);
+   }
+
+   agx_push(out, CDM_DISTRIBUTION_G15, cfg) {
+      cfg.cluster_group = 1;
+      cfg.unknown_30 = true;
+   }
+
+   if (agx_is_indirect(grid)) {
+      agx_push(out, CDM_INDIRECT_G15, cfg) {
+         cfg.address_hi = grid.ptr >> 32;
+         cfg.address_lo = grid.ptr & BITFIELD_MASK(32);
+      }
+   } else {
+      agx_push(out, CDM_GLOBAL_SIZE, cfg) {
+         cfg.x = grid.count[0];
+         cfg.y = grid.count[1];
+         cfg.z = grid.count[2];
+      }
+   }
+
+   if (grid.mode != AGX_CDM_MODE_INDIRECT_LOCAL) {
+      agx_push(out, CDM_LOCAL_SIZE, cfg) {
+         cfg.x = wg.x;
+         cfg.y = wg.y;
+         cfg.z = wg.z;
+      }
+   }
+
+   return out;
+}
+
 static inline GLOBAL uint32_t *
 agx_vdm_draw(GLOBAL uint32_t *out, enum agx_chip chip, struct agx_draw draw,
              enum agx_primitive topology)
@@ -387,6 +452,25 @@ agx_vdm_barrier(GLOBAL uint32_t *out, enum agx_chip chip)
 static inline GLOBAL uint32_t *
 agx_cdm_barrier(GLOBAL uint32_t *out, enum agx_chip chip)
 {
+   /* G15: Metal's barrier after a launch is 0x60000160. Without bit 4 an
+    * image a launch writes reads as stale in the next job's texture fetches;
+    * without bits 0 and 1 a launch can read what the launch before it has
+    * not finished writing, mostly while other processes keep the GPU busy
+    * (metal-compute.md).
+    */
+   if (chip >= AGX_CHIP_G15G) {
+      agx_push(out, CDM_BARRIER, cfg) {
+         cfg.unk_0 = true;
+         cfg.unk_1 = true;
+         cfg.unk_4 = true;
+         cfg.unk_5 = true;
+         cfg.unk_6 = true;
+         cfg.unk_8 = true;
+      }
+
+      return out;
+   }
+
    agx_push(out, CDM_BARRIER, cfg) {
       cfg.unk_5 = true;
       cfg.unk_6 = true;

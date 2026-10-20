@@ -76,6 +76,8 @@ def print_line(category, op):
         return f'print_{op.kind}(ctx, r, {extract_bits(op)}, false);'
     elif category == 'src':
         return f'print_{op.kind}(ctx, r, {extract_bits(op)}, true);'
+    elif category == 'imm' and op.kind == 'hex':
+        return f'print_hex_immediate(ctx, ({extract_bits(op)}) << {op.shift});'
     elif category == 'imm':
         signed = 'true' if op.kind == 'signed' else 'false'
         return f'print_immediate(ctx, {signed}, {extract_bits(op)}, {op.bits.size()});'
