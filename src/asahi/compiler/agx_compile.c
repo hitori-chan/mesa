@@ -1521,21 +1521,21 @@ lower_tex_min_lod_g15(nir_builder *b, nir_tex_instr *tex, void *data)
 }
 
 /*
- * G15 has no LOD query: Apple's compiler has no intrinsic for one (none of
- * libLLVM_32023's llvm.agx.* names), so its AIR lowering computes it. Here
- * the LOD is log2 of the larger footprint of the coordinates' derivatives
- * scaled by the size (the 32 B descriptor: width at bit 28, height at 42,
- * depth at 110), plus the bias; x clamps it to the sampler's LOD range (its
- * state's 9:0 and 19:10, q4.6) and the texture's levels (last level at bit
+ * G15's LOD query, smp bit 85 (Apple's compiler sets it for an smp intrinsic's
+ * query flag), is not run: its result layout is not traced. Here the LOD is
+ * computed instead: log2 of the larger footprint of the coordinates'
+ * derivatives scaled by the size (the 32 B descriptor: width at bit 28, height
+ * at 42, depth at 110), plus the bias; x clamps it to the sampler's LOD range
+ * (its state's 9:0 and 19:10, q4.6) and the texture's levels (last level at bit
  * 176 when mipmapped, bit 58). A cube's query keeps its direction
- * (lower_cube_g15): its footprint is that of the face coordinates, the
- * quotient rule's derivatives as nir_lower_tex's lower_gradient_cube_map
- * takes them (dEQP-VK textureQueryLod cubes read the direction's x and y as
- * a 2D coordinate). A null descriptor (agx_set_null_texture_g15, at
- * the zero page) queries 0, as G13's hardware query of it: its 1x1x1 size
- * gave a fragment's 3D query of gl_FragCoord.xyz, whose z slopes, a small
- * positive LOD (dEQP-VK robustness2's null_descriptor 3D fragment cases).
- * Not verified on the hardware otherwise.
+ * (lower_cube_g15): its footprint is that of the face coordinates, the quotient
+ * rule's derivatives as nir_lower_tex's lower_gradient_cube_map takes them
+ * (dEQP-VK textureQueryLod cubes read the direction's x and y as a 2D
+ * coordinate). A null descriptor (agx_set_null_texture_g15, at the zero page)
+ * queries 0, as G13's hardware query of it: its 1x1x1 size gave a fragment's 3D
+ * query of gl_FragCoord.xyz, whose z slopes, a small positive LOD (dEQP-VK
+ * robustness2's null_descriptor 3D fragment cases). Not verified on the
+ * hardware otherwise.
  */
 static bool
 lower_tex_lod_g15(nir_builder *b, nir_tex_instr *tex, void *data)
