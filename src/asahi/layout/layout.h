@@ -35,6 +35,12 @@ enum ail_tiling {
     * Fully twiddled.
     */
    AIL_TILING_TWIDDLED,
+
+   /**
+    * Apple Interchange: 16x16 pixel tiles in raster order, always compressed.
+    * Only 2D single-level single-sample 32-bit images, for scanout sharing.
+    */
+   AIL_TILING_INTERCHANGE,
 };
 
 /*
@@ -565,6 +571,8 @@ ail_drm_modifier_to_tiling(uint64_t modifier)
    case DRM_FORMAT_MOD_APPLE_GPU_TILED:
    case DRM_FORMAT_MOD_APPLE_GPU_TILED_COMPRESSED:
       return AIL_TILING_GPU;
+   case DRM_FORMAT_MOD_APPLE_INTERCHANGE:
+      return AIL_TILING_INTERCHANGE;
    default:
       UNREACHABLE("Unsupported modifier");
    }
@@ -578,6 +586,7 @@ ail_is_drm_modifier_compressed(uint64_t modifier)
    case DRM_FORMAT_MOD_APPLE_GPU_TILED:
       return false;
    case DRM_FORMAT_MOD_APPLE_GPU_TILED_COMPRESSED:
+   case DRM_FORMAT_MOD_APPLE_INTERCHANGE:
       return true;
    default:
       UNREACHABLE("Unsupported modifier");

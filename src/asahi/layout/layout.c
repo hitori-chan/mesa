@@ -214,6 +214,30 @@ ail_initialize_gpu_tiled(struct ail_layout *layout)
    layout->size_B = (uint64_t)layout->layer_stride_B * layout->depth_px;
 }
 
+/*
+ * Interchange tiles are 16x16 pixels whatever the bit depth, in raster order
+ * with no padding between them. The data is a multiple of 1 KiB, so the
+ * metadata follows it directly, as the display driver expects.
+ */
+static void
+ail_initialize_interchange(struct ail_layout *layout)
+{
+   assert(ail_get_block_size_B(layout) == 4 && "32-bit formats only");
+   assert(util_format_get_blockwidth(layout->format) == 1);
+   assert(util_format_get_blockheight(layout->format) == 1);
+   assert(layout->levels == 1 && layout->depth_px == 1);
+   assert(layout->compressed && "Interchange is always compressed");
+
+   unsigned w_tl = DIV_ROUND_UP(layout->width_px, 16);
+   unsigned h_tl = DIV_ROUND_UP(layout->height_px, 16);
+
+   layout->tilesize_el[0] = (struct ail_tile){16, 16};
+   layout->stride_el[0] = w_tl * 16;
+   layout->level_offsets_B[1] = (uint64_t)w_tl * h_tl * 16 * 16 * 4;
+   layout->layer_stride_B = layout->level_offsets_B[1];
+   layout->size_B = layout->layer_stride_B;
+}
+
 static void
 ail_initialize_twiddled(struct ail_layout *layout)
 {
@@ -372,6 +396,9 @@ ail_make_miptree(struct ail_layout *layout)
       break;
    case AIL_TILING_TWIDDLED:
       ail_initialize_twiddled(layout);
+      break;
+   case AIL_TILING_INTERCHANGE:
+      ail_initialize_interchange(layout);
       break;
    default:
       UNREACHABLE("Unsupported tiling");
