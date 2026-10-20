@@ -2,6 +2,7 @@
  * Copyright 2024 Valve Corporation
  * SPDX-License-Identifier: MIT
  */
+#include "asahi/compiler/agx_nir_texture.h"
 #include "compiler/libcl/libcl.h"
 #include "compiler/nir/nir_defines.h"
 #include "compiler/shader_enums.h"
@@ -137,6 +138,86 @@ libagx_decompress(constant struct libagx_decompress_images *images,
    }
 
    /* We've replaced the body buffer. Mark the tile as uncompressed. */
+   if (cl_local_id.x == 0) {
+      metadata[index_tl] = tile_uncompressed;
+   }
+}
+
+uint64_t libagx_image_texel_address_g15(
+   constant const struct agx_pbe_packed *ptr, uint4 coord, uint sample_idx,
+   uint bytes_per_sample_B, bool is_1d, bool is_msaa, bool is_layered,
+   bool return_index);
+
+/*
+ * G15: the handles index the table of 32 B entries at the first argument
+ * (struct libagx_decompress_images_g15), and an image load names the txf
+ * sampler in the sample index's place, or the LOD's for a multisampled image
+ * (agx_emit_image_load). A multisampled image is written through the linear
+ * 2D view of its samples its uncompressed PBE describes, at the index
+ * libagx_image_texel_address_g15 computes from the PBE's software word, as
+ * agx_nir_lower_multisampled_image_store lowers a store.
+ */
+KERNEL(32)
+libagx_decompress_g15(constant struct libagx_decompress_images_g15 *images,
+                      global uint64_t *metadata, uint64_t tile_uncompressed,
+                      uint32_t metadata_layer_stride_tl,
+                      uint16_t metadata_width_tl, uint16_t metadata_height_tl,
+                      uint blocksize_B, uint log2_samples__3)
+{
+   uint samples = 1 << log2_samples__3;
+   uint index_tl = index_metadata(cl_group_id, metadata_width_tl,
+                                  metadata_height_tl, metadata_layer_stride_tl);
+
+   if (metadata[index_tl] == tile_uncompressed)
+      return;
+
+   uint2 coord_sa = (cl_group_id.xy * 16);
+   uint offs_y_sa = cl_local_id.x >> 1;
+   uint offs_x_sa = (cl_local_id.x & 1) ? 8 : 0;
+   int4 img_coord_sa =
+      (int4)(coord_sa.x + offs_x_sa, coord_sa.y + offs_y_sa, cl_group_id.z, 0);
+
+   uint compressed = nir_bindless_image_agx(0, 0);
+   uint uncompressed = nir_bindless_image_agx(1, 0);
+   uint16_t txf = nir_bindless_sampler_agx(2 * 32, 2, 0);
+
+   uint4 texels[8];
+   for (uint i = 0; i < 8; ++i) {
+      int4 c_sa = img_coord_sa + (int4)(i, 0, 0, 0);
+      if (samples == 1) {
+         texels[i] = nir_bindless_image_load(compressed, c_sa, txf, 0,
+                                             GLSL_SAMPLER_DIM_2D, true, 0,
+                                             ACCESS_IN_BOUNDS, nir_type_uint32);
+      } else {
+         texels[i] = nir_bindless_image_load(
+            compressed, decompose_px(c_sa, samples), sample_id(c_sa, samples),
+            txf, GLSL_SAMPLER_DIM_MS, true, 0, ACCESS_IN_BOUNDS,
+            nir_type_uint32);
+      }
+   }
+
+   sub_group_barrier(CLK_LOCAL_MEM_FENCE);
+
+   for (uint i = 0; i < 8; ++i) {
+      int4 c_sa = img_coord_sa + (int4)(i, 0, 0, 0);
+      if (samples == 1) {
+         nir_bindless_image_store(uncompressed, c_sa, 0, texels[i], 0,
+                                  GLSL_SAMPLER_DIM_2D, true, 0,
+                                  ACCESS_NON_READABLE, nir_type_uint32);
+      } else {
+         uint index_sa = libagx_image_texel_address_g15(
+            &images->uncompressed, as_uint4(decompose_px(c_sa, samples)),
+            sample_id(c_sa, samples), blocksize_B, false, true, true, true);
+
+         int4 c = (int4)(index_sa % AGX_TEXTURE_BUFFER_WIDTH,
+                         index_sa / AGX_TEXTURE_BUFFER_WIDTH, 0, 0);
+
+         nir_bindless_image_store(uncompressed, c, 0, texels[i], 0,
+                                  GLSL_SAMPLER_DIM_2D, false, 0,
+                                  ACCESS_NON_READABLE, nir_type_uint32);
+      }
+   }
+
    if (cl_local_id.x == 0) {
       metadata[index_tl] = tile_uncompressed;
    }
