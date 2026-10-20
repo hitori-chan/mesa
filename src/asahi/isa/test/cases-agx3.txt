@@ -1586,3 +1586,9 @@ d70454040000         zs_emit  cr2, 0, s
 ef0054201e0a090a0040 sttps    0, i16, xy, r16l_r16h, ^r15, 0, 1, 0
 6f0054040402512000000200 ldtps    1, i32, x, r2, r2, 0, 0, 0
 ef005418c00217080000 sttps    0, i32, xyzw, r12_r13_r14_r15, 704, 0, 0, 0
+77002a4180040000     speclm   2, 0, 1, threadgroup, 4
+f7002a00015000500000 spectpr  2, 20, 20
+77002a434b000000     speclm   2, 1, 45, imageblock, 0
+7700aa0841000000     speclm   1, 4, 4, imageblock, 0
+77012a84f7ff23000400 ldshdr   0x11fffbc200, 2
+f7002a00010000000000 spectpr  2, 0, 0
