@@ -220,10 +220,10 @@ pack_texture_g15(struct hk_image_view *view, unsigned view_plane,
 
    bool ms = view->vk.image->samples > 1;
 
-   if (layout->compressed || plane->sparse_map ||
+   if (layout->compressed ||
        (layout->tiling == AIL_TILING_LINEAR && (layers > 1 || ms))) {
-      mesa_loge("G15: a compressed, sparse, linear multisampled or linear "
-                "layered texture is not supported yet");
+      mesa_loge("G15: a compressed, linear multisampled or linear layered "
+                "texture is not supported yet");
       assert(0);
    }
 
@@ -261,6 +261,20 @@ pack_texture_g15(struct hk_image_view *view, unsigned view_plane,
          cfg.height = layout->height_px;
          cfg.first_level = level;
          cfg.last_level = level + view->vk.level_count - 1;
+      }
+
+      /* A sparse resident image reads through its sparse page table, which
+       * is G13's (pack_texture explains the mip tail and the level offset)
+       */
+      if (plane->sparse_map && level < layout->mip_tail_first_lod) {
+         unsigned page = 0;
+         if (denom.x > 1)
+            page = ail_bytes_to_pages(layout->level_offsets_B[level]);
+
+         cfg.mode = AGX_IMAGE_MODE_SPARSE;
+         cfg.address = plane->sparse_map->va->addr +
+                       ail_page_to_sparse_index_el(layout, layer, page) *
+                          AIL_SPARSE_ELSIZE_B;
       }
 
       /* The level word comes with the mipmapped bit, as Apple's (texture.md) */
