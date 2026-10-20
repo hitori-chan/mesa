@@ -176,6 +176,14 @@ print_immediate(struct disasm_ctx *ctx, bool is_signed, uint64_t value,
       fprintf(ctx->fp, "%" PRIu64, value);
 }
 
+/* An address, shifted back into place */
+static void
+print_hex_immediate(struct disasm_ctx *ctx, uint64_t value)
+{
+   introduce_operand(ctx);
+   fprintf(ctx->fp, "0x%" PRIx64, value);
+}
+
 static void
 _print_enum(struct disasm_ctx *ctx, const char **arr, unsigned n,
             unsigned value)
