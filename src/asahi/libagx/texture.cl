@@ -283,7 +283,8 @@ libagx_buffer_texel_address(constant const struct agx_pbe_packed *ptr,
  * word) and the software words sit in the slot's fourth word (PBE G15
  * software). A multisampled image is bound as a linear 2D view of its samples,
  * as on G13, with its own software words (PBE G15 software MSAA); only its
- * sample index is wanted.
+ * sample index is wanted. A formatless store passes a block size of 0 and
+ * steps a layer by the view's texel size from those words.
  */
 uint64_t
 libagx_image_texel_address_g15(constant const struct agx_pbe_packed *ptr,
@@ -317,8 +318,10 @@ libagx_image_texel_address_g15(constant const struct agx_pbe_packed *ptr,
    }
 
    if (is_layered) {
-      total_px += coord[is_1d ? 1 : 2] *
-                  ((sw.layer_stride / bytes_per_sample_B) >> samples_log2);
+      uint layer_sa = bytes_per_sample_B
+                         ? sw.layer_stride / bytes_per_sample_B
+                         : sw.layer_stride >> ms.sample_size_log2;
+      total_px += coord[is_1d ? 1 : 2] * (layer_sa >> samples_log2);
    }
 
    uint total_sa = (total_px << samples_log2) + sample_idx;
