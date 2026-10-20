@@ -913,14 +913,35 @@ hk_CmdBeginRendering(VkCommandBuffer commandBuffer,
                unsigned layer = view->vk.base_array_layer;
                uint64_t base = hk_image_base_address(image, image_plane);
 
+               struct agx_grid grid =
+                  agx_3d(ail_metadata_width_tl(layout, level) * 32,
+                         ail_metadata_height_tl(layout, level), layer_count);
+
+               /* G15's kernel indexes 32 B slots and fetches with the txf
+                * sampler; a multisampled image is stored at the index its
+                * PBE's software word gives (compression.h) */
+               if (hk_cmd_buffer_device(cmd)->dev.params.gpu_generation >= 15) {
+                  struct libagx_decompress_images_g15 imgs = {
+                     .compressed = view->planes[plane].emrt_texture,
+                     .uncompressed = view->planes[plane].emrt_pbe,
+                  };
+
+                  static_assert(sizeof(imgs.uncompressed_sw) ==
+                                sizeof(view->planes[plane].emrt_g15_sw));
+                  memcpy(imgs.uncompressed_sw, &view->planes[plane].emrt_g15_sw,
+                         sizeof(imgs.uncompressed_sw));
+                  agx_pack_txf_sampler(&imgs.txf);
+
+                  libagx_decompress_g15(
+                     cmd, grid, AGX_BARRIER_ALL | AGX_PREGFX, layout, layer,
+                     level, base, hk_pool_upload(cmd, &imgs, sizeof(imgs), 64));
+                  continue;
+               }
+
                struct libagx_decompress_images imgs = {
                   .compressed = view->planes[plane].emrt_texture,
                   .uncompressed = view->planes[plane].emrt_pbe,
                };
-
-               struct agx_grid grid =
-                  agx_3d(ail_metadata_width_tl(layout, level) * 32,
-                         ail_metadata_height_tl(layout, level), layer_count);
 
                libagx_decompress(cmd, grid, AGX_BARRIER_ALL | AGX_PREGFX,
                                  layout, layer, level, base,

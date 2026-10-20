@@ -230,10 +230,28 @@ hk_can_compress(const struct agx_device *dev, VkFormat format, unsigned plane,
    if (dev->debug & AGX_DBG_NOCOMPRESS)
       return false;
 
-   /* G15's compressed images (the PBE's and texture's acceleration buffer
-    * words) are not understood yet */
-   if (dev->params.gpu_generation >= 15)
-      return false;
+   /* G15 compresses only when asked, as Gallium (ASAHI_MESA_DEBUG=compress,
+    * depth and stencil too with compresszs), and no image a copy writes: its
+    * copies write with imgwci, which cannot write a compressed image */
+   if (dev->params.gpu_generation >= 15) {
+      if (!(dev->debug & AGX_DBG_COMPRESS) ||
+          (vk_format_is_depth_or_stencil(format) &&
+           !(dev->debug & AGX_DBG_COMPRESSZS)))
+         return false;
+
+      if (usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) {
+         perf_debug_dev(dev, "No compression: G15 copy destination");
+         return false;
+      }
+
+      /* A copy reads a compressed image through its own format, and the
+       * minifloats' roundtrip through theirs is not exact (hk_cmd_meta.c) */
+      enum pipe_format p = hk_format_to_pipe_format(format);
+      if (p == PIPE_FORMAT_R11G11B10_FLOAT || p == PIPE_FORMAT_R9G9B9E5_FLOAT) {
+         perf_debug_dev(dev, "No compression: G15 minifloat copies");
+         return false;
+      }
+   }
 
    /* TODO: Handle compression with sparse. This should be doable but it's a bit
     * subtle. Correctness first.
@@ -382,6 +400,22 @@ hk_GetPhysicalDeviceImageFormatProperties2(
 
    if (pImageFormatInfo->tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT &&
        pImageFormatInfo->type != VK_IMAGE_TYPE_2D)
+      return VK_ERROR_FORMAT_NOT_SUPPORTED;
+
+   /* The compressed modifier serves only the usages compression takes
+    * (hk_modifier_features)
+    */
+   const VkPhysicalDeviceImageDrmFormatModifierInfoEXT *mod_info =
+      vk_find_struct_const(pImageFormatInfo->pNext,
+                           PHYSICAL_DEVICE_IMAGE_DRM_FORMAT_MODIFIER_INFO_EXT);
+
+   if (pImageFormatInfo->tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT &&
+       mod_info &&
+       mod_info->drmFormatModifier ==
+          DRM_FORMAT_MOD_APPLE_GPU_TILED_COMPRESSED &&
+       !hk_can_compress(&pdev->dev, pImageFormatInfo->format, 0, 64, 64, 1,
+                        pImageFormatInfo->flags, pImageFormatInfo->usage,
+                        pImageFormatInfo->pNext))
       return VK_ERROR_FORMAT_NOT_SUPPORTED;
 
    if (ycbcr_info && pImageFormatInfo->type != VK_IMAGE_TYPE_2D)

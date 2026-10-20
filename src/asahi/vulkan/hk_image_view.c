@@ -198,9 +198,10 @@ hk_image_view_plane_format(struct hk_image_view *view, unsigned view_plane)
 
 /*
  * G15's texture descriptor (cmdbuf.xml's "Texture G15"), as Gallium packs it:
- * uncompressed, linear with one layer or twiddled, a multisampled one
- * twiddled with (samples >> 2) & 3, the raw VA (texture.md). The rest fails
- * here rather than reaching the hardware misread.
+ * linear with one layer or twiddled, a multisampled one twiddled with
+ * (samples >> 2) & 3, a compressed one with its metadata in the extended word,
+ * the raw VA (texture.md). The rest fails here rather than reaching the
+ * hardware misread.
  */
 static void
 pack_texture_g15(struct hk_image_view *view, unsigned view_plane,
@@ -220,10 +221,9 @@ pack_texture_g15(struct hk_image_view *view, unsigned view_plane,
 
    bool ms = view->vk.image->samples > 1;
 
-   if (layout->compressed ||
-       (layout->tiling == AIL_TILING_LINEAR && (layers > 1 || ms))) {
-      mesa_loge("G15: a compressed, linear multisampled or linear layered "
-                "texture is not supported yet");
+   if (layout->tiling == AIL_TILING_LINEAR && (layers > 1 || ms)) {
+      mesa_loge("G15: a linear multisampled or linear layered texture is not "
+                "supported yet");
       assert(0);
    }
 
@@ -292,6 +292,13 @@ pack_texture_g15(struct hk_image_view *view, unsigned view_plane,
       /* (samples >> 2) & 3, the dimension says multisampled (texture.md) */
       if (ms)
          cfg.samples = agx_translate_sample_count(view->vk.image->samples);
+
+      if (layout->compressed) {
+         cfg.compressed = true;
+         cfg.extended = true;
+         cfg.acceleration_buffer = base_addr + layout->metadata_offset_B +
+                                   (layer * layout->compression_layer_stride_B);
+      }
    }
 }
 
@@ -469,11 +476,13 @@ pack_texture(struct hk_image_view *view, unsigned view_plane,
 
 /*
  * G15's PBE descriptor (cmdbuf.xml's "PBE G15"). What Apple's encoder and
- * noopwafel's demo15 settle is packed: uncompressed images, linear (the one
- * the hardware ran: a 2D RGBA8 target) or twiddled, one layer for linear,
- * multisampled (the sample count and the multisampled dimensions) and 3D (the
- * depth in the layer count). Compressed images and linear arrays are not
- * decoded (a warning says so).
+ * noopwafel's demo15 settle is packed: images linear (the one the hardware
+ * ran: a 2D RGBA8 target) or twiddled, one layer for linear, compressed with
+ * the metadata in the extended word as Gallium packs it, multisampled (the
+ * sample count and the multisampled dimensions) and 3D (the depth in the layer
+ * count). A spilled render target's PBE (EMRT) writes the image uncompressed,
+ * after its in-place decompression. Linear arrays are not decoded (a warning
+ * says so).
  *
  * The address is the plane's VA as it is, 44 bits of it (G13's descriptor
  * has 36 and a level; demo15 sets "level 1" for the 1 TiB bit of its
@@ -518,16 +527,20 @@ pack_pbe_g15(struct hk_device *dev, struct hk_image_view *view,
 
    bool msaa = view->vk.image->samples > 1;
    bool msaa_view = msaa && !eot;
+   /* Every view packs a storage PBE, but no storage image is compressed
+    * (hk_can_compress): that one, like a spilled target's, is uncompressed */
+   bool compressed = layout->compressed && usage != HK_DESC_USAGE_EMRT &&
+                     usage != HK_DESC_USAGE_STORAGE;
    struct hk_3d denom = view_denominator(view);
+
+   assert(!(compressed && msaa_view) && "no compressed multisampled view");
 
    /* What Apple's encoder does for these is not decoded: the descriptor is
     * packed as for a plain image */
    static bool warned;
-   if (!warned && (layout->compressed ||
-                   (layout->tiling == AIL_TILING_LINEAR && layers > 1))) {
+   if (!warned && layout->tiling == AIL_TILING_LINEAR && layers > 1) {
       warned = true;
-      fprintf(stderr, "G15: the PBE of a compressed or linear layered image is "
-                      "a guess\n");
+      fprintf(stderr, "G15: the PBE of a linear layered image is a guess\n");
    }
 
    agx_pack(out, PBE_G15, cfg) {
@@ -601,11 +614,19 @@ pack_pbe_g15(struct hk_device *dev, struct hk_image_view *view,
          cfg.page_aligned_layers = layout->page_aligned_layers;
 
          /* The level and the count of levels go in the extended word; Apple
-          * sets it when either is not the default (not verified) */
-         if (level != 0 || image->vk.mip_levels > 1) {
+          * sets it when either is not the default (not verified), and with
+          * the metadata */
+         if (level != 0 || image->vk.mip_levels > 1 || compressed) {
             cfg.extended = true;
             cfg.level = level;
             cfg.levels = image->vk.mip_levels;
+         }
+
+         if (compressed) {
+            cfg.compressed = true;
+            cfg.acceleration_buffer =
+               base_addr + layout->metadata_offset_B +
+               (layer * layout->compression_layer_stride_B);
          }
       }
    }
