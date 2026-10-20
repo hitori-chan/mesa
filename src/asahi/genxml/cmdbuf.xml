@@ -341,10 +341,12 @@
   <!--
    The same for a multisampled image, which a store or an atomic reaches
    through a linear 2D view of its samples (G13's scheme): the image has one
-   level, and the samples sit together per pixel.
+   level, and the samples sit together per pixel. The view's texel size steps
+   a layer, since a copy's store has no format.
   -->
   <struct name="PBE G15 software MSAA" size="8">
     <field name="Aligned width" size="16" start="0" type="uint"/>
+    <field name="Sample size log2" size="3" start="16" type="uint"/>
     <field name="Tile width" size="4" start="27" type="uint" modifier="log2"/>
     <field name="Tile height" size="4" start="31" type="uint" modifier="log2"/>
     <field name="Layer stride" size="27" start="35" type="uint" modifier="shr(7)"/>
