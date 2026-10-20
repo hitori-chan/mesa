@@ -1119,7 +1119,6 @@ jay_emit_fb_write(struct nir_to_jay_state *nj, nir_intrinsic_instr *intr)
       src0_alpha = jay_null();
    }
 
-   /* TODO: splitting for dual source, etc */
    unsigned width = b->shader->dispatch_width;
 
    unsigned op;
@@ -1129,7 +1128,7 @@ jay_emit_fb_write(struct nir_to_jay_state *nj, nir_intrinsic_instr *intr)
               XE2_DATAPORT_RENDER_TARGET_WRITE_SIMD16_DUAL_SOURCE :
               BRW_DATAPORT_RENDER_TARGET_WRITE_SIMD8_DUAL_SOURCE_SUBSPAN01;
    } else {
-      assert((width < 32 || devinfo->ver >= 20) && "todo: splitting");
+      width = MIN2(width, devinfo->ver >= 20 ? 32 : 16);
 
       op = width == 32 ?
               XE2_DATAPORT_RENDER_TARGET_WRITE_SIMD32_SINGLE_SOURCE :
@@ -1647,8 +1646,10 @@ jay_emit_mem_access_lsc(struct nir_to_jay_state *nj, nir_intrinsic_instr *intr)
             .nr_srcs = jay_is_null(data) ? 1 : 2, .dst = tmp, .type = data_type,
             .src_type = { offset_type, data_type }, .uniform = uniform,
             .pure = nir_intrinsic_can_reorder(intr),
-            .bindless = surf_type == LSC_ADDR_SURFTYPE_BSS, .ex_desc = ex_desc,
-            .ex_desc_imm = ex_desc_imm, .skip_helpers = skip_helpers,
+            .bindless = surf_type == LSC_ADDR_SURFTYPE_BSS ||
+                        surf_type == LSC_ADDR_SURFTYPE_SS,
+            .ex_desc = ex_desc, .ex_desc_imm = ex_desc_imm,
+            .skip_helpers = skip_helpers,
             .use_raw_ex_desc = surf_type == LSC_ADDR_SURFTYPE_SS);
 
    if (has_dest && !jay_defs_equivalent(tmp, dst)) {
@@ -2371,6 +2372,7 @@ jay_emit_intrinsic(struct nir_to_jay_state *nj, nir_intrinsic_instr *intr)
    case nir_intrinsic_image_load:
    case nir_intrinsic_image_store:
    case nir_intrinsic_load_global:
+   case nir_intrinsic_load_global_block_intel:
    case nir_intrinsic_load_global_constant:
    case nir_intrinsic_load_global_constant_uniform_block_intel:
    case nir_intrinsic_load_global_intel:
@@ -2388,6 +2390,7 @@ jay_emit_intrinsic(struct nir_to_jay_state *nj, nir_intrinsic_instr *intr)
    case nir_intrinsic_ssbo_atomic:
    case nir_intrinsic_ssbo_atomic_swap:
    case nir_intrinsic_store_global:
+   case nir_intrinsic_store_global_block_intel:
    case nir_intrinsic_store_global_intel:
    case nir_intrinsic_store_urb_lsc_intel:
    case nir_intrinsic_store_scratch_intel:
@@ -3059,7 +3062,7 @@ jay_emit_intrinsic(struct nir_to_jay_state *nj, nir_intrinsic_instr *intr)
    default:
 #ifndef NDEBUG
       assert(intr->intrinsic < nir_num_intrinsics);
-      fprintf(stdout, "intrinsic: %s\n",
+      fprintf(stderr, "intrinsic: %s\n",
               nir_intrinsic_infos[intr->intrinsic].name);
 #endif
       UNREACHABLE("unknown intrinsic");
@@ -4880,9 +4883,9 @@ jay_compile_simd(const struct intel_device_info *devinfo,
 
    if (debug) {
       /* We can't use nir_print_shader since it reindexes SSA defs. */
-      fprintf(stdout, "NIR right before from_nir:\n\n");
-      nir_print_shader_annotated(nir, stdout, NULL);
-      fflush(stdout);
+      fprintf(stderr, "NIR right before from_nir:\n\n");
+      nir_print_shader_annotated(nir, stderr, NULL);
+      fflush(stderr);
    }
 
    jay_shader *s = jay_new_shader(NULL, nir->info.stage);
@@ -4929,8 +4932,8 @@ jay_compile_simd(const struct intel_device_info *devinfo,
    }
 
    if (debug) {
-      fprintf(stdout, "Jay SIMD%u shader:\n\n", simd_width);
-      jay_print(stdout, s);
+      fprintf(stderr, "Jay SIMD%u shader:\n\n", simd_width);
+      jay_print(stderr, s);
    }
 
    if (!(jay_debug & JAY_DBG_NOOPT)) {
@@ -4953,7 +4956,7 @@ jay_compile_simd(const struct intel_device_info *devinfo,
     */
    if (bail_if_inefficient && s->num_regs[MEM] > 0) {
       if (debug) {
-         fprintf(stdout,
+         fprintf(stderr,
                  "Jay SIMD%u shader skipped due to num_regs[MEM] = %u > 0.\n",
                  simd_width, s->num_regs[MEM]);
       }
@@ -4964,8 +4967,8 @@ jay_compile_simd(const struct intel_device_info *devinfo,
    JAY_PASS(s, jay_schedule);
 
    if (debug) {
-      fprintf(stdout, "Jay shader:\n\n");
-      jay_print(stdout, s);
+      fprintf(stderr, "Jay shader:\n\n");
+      jay_print(stderr, s);
    }
 
    JAY_PASS(s, jay_register_allocate);
@@ -5014,8 +5017,8 @@ jay_compile_simd(const struct intel_device_info *devinfo,
    }
 
    if (debug) {
-      fprintf(stdout, "Jay shader (post-RA):\n\n");
-      jay_print(stdout, s);
+      fprintf(stderr, "Jay shader (post-RA):\n\n");
+      jay_print(stderr, s);
       jay_print_partition(s);
    }
 
@@ -5045,7 +5048,7 @@ jay_compile_simd(const struct intel_device_info *devinfo,
       const char *shader_name =
          ralloc_asprintf(s, "%s SIMD%u", _mesa_shader_stage_to_abbrev(s->stage),
                          s->dispatch_width);
-      genisa_stats_fprintf(stdout, shader_name, stats);
+      genisa_stats_fprintf(stderr, shader_name, stats);
    }
 
    if (s->stage == MESA_SHADER_FRAGMENT) {

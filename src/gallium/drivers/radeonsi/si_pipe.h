@@ -1279,7 +1279,12 @@ struct si_context {
       struct ac_spm spm;
       struct pipe_fence_handle *last_fence;
       enum rgp_sqtt_marker_event_type next_event;
-      bool enabled;
+      enum {
+         SQTT_STATUS_OFF,
+         SQTT_STATUS_TRACING,
+         SQTT_STATUS_STOPPING
+      } status;
+      bool presents;
       struct si_sqtt_timestamp timestamp;
       uint64_t device_id;
       uint32_t cb_id;

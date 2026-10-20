@@ -3665,9 +3665,14 @@ v3dv_CmdBindIndexBuffer2KHR(VkCommandBuffer commandBuffer,
 {
    V3DV_FROM_HANDLE(v3dv_cmd_buffer, cmd_buffer, commandBuffer);
 
-   assert(buffer != VK_NULL_HANDLE);
-
-   if (size == VK_WHOLE_SIZE) {
+   /* VK_KHR_maintenance6: a null buffer is legal. Per spec, offset must be 0
+    * in that case and size is ignored, and every index fetch returns 0.
+    */
+   if (buffer == VK_NULL_HANDLE) {
+      assert(offset == 0);
+      offset = 0;
+      size = 0;
+   } else if (size == VK_WHOLE_SIZE) {
       assert(v3dv_buffer_from_handle(buffer)->size >= offset);
       size = v3dv_buffer_from_handle(buffer)->size - offset;
    }
@@ -4084,6 +4089,39 @@ v3dv_CmdPushConstants(VkCommandBuffer commandBuffer,
    cmd_buffer->state.dirty |= V3DV_CMD_DIRTY_PUSH_CONSTANTS |
                               V3DV_CMD_DIRTY_PUSH_CONSTANTS_UBO;
    cmd_buffer->state.dirty_push_constants_stages |= stageFlags;
+}
+
+VKAPI_ATTR void VKAPI_CALL
+v3dv_CmdBindDescriptorSets2KHR(VkCommandBuffer commandBuffer,
+                               const VkBindDescriptorSetsInfoKHR *pInfo)
+{
+   if (pInfo->stageFlags & VK_SHADER_STAGE_ALL_GRAPHICS) {
+      v3dv_CmdBindDescriptorSets(commandBuffer,
+                                 VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                 pInfo->layout, pInfo->firstSet,
+                                 pInfo->descriptorSetCount,
+                                 pInfo->pDescriptorSets,
+                                 pInfo->dynamicOffsetCount,
+                                 pInfo->pDynamicOffsets);
+   }
+
+   if (pInfo->stageFlags & VK_SHADER_STAGE_COMPUTE_BIT) {
+      v3dv_CmdBindDescriptorSets(commandBuffer,
+                                 VK_PIPELINE_BIND_POINT_COMPUTE,
+                                 pInfo->layout, pInfo->firstSet,
+                                 pInfo->descriptorSetCount,
+                                 pInfo->pDescriptorSets,
+                                 pInfo->dynamicOffsetCount,
+                                 pInfo->pDynamicOffsets);
+   }
+}
+
+VKAPI_ATTR void VKAPI_CALL
+v3dv_CmdPushConstants2KHR(VkCommandBuffer commandBuffer,
+                          const VkPushConstantsInfoKHR *pInfo)
+{
+   v3dv_CmdPushConstants(commandBuffer, pInfo->layout, pInfo->stageFlags,
+                         pInfo->offset, pInfo->size, pInfo->pValues);
 }
 
 void
