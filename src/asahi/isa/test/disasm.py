@@ -135,7 +135,9 @@ def disasm(raw_in):
         return length, "<unknown instr>"
 
     def show(category, x):
-        if category == 'imm':
+        if category == 'imm' and x.kind == 'hex':
+            return hex(x.bits.extract(raw) << x.shift)
+        elif category == 'imm':
             return map_value(x.bits.extract(raw), x.kind, x.bits.size())
         elif category == 'mod':
             return map_mod(x.bits.extract(raw), x)

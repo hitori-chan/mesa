@@ -247,26 +247,6 @@ agx_vdm_ptr(const struct agx_device *dev, struct agx_ptr ptr)
    return ptr;
 }
 
-/* G15: a pipeline (entry program) pointer as the CDM's launch and the VDM's
- * vertex and fragment shader dwords hold it: VA bits [47:38] at bit 22 of the
- * first word, VA bits [37:6] in the second
- */
-#define AGX_G15_PIPELINE_LENGTH 8
-
-/* A fragment program's first word: Apple sets bit 6 with depth or stencil
- * output and with fragment atomics (draws.md)
- */
-#define AGX_G15_PIPELINE_ZS_OUT BITFIELD_BIT(6)
-
-static inline void
-agx_g15_pipeline(void *out, uint64_t va)
-{
-   assert((va & 63) == 0);
-   uint32_t w[2] = {((va >> 38) & BITFIELD_MASK(10)) << 22,
-                    (uint32_t)(va >> 6)};
-   memcpy(out, w, sizeof(w));
-}
-
 static uint32_t
 agx_usc_addr(struct agx_device *dev, uint64_t addr)
 {

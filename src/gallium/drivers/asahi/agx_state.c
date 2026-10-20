@@ -3448,52 +3448,6 @@ agx_build_pipeline(struct agx_batch *batch, struct agx_compiled_shader *cs,
    return agx_usc_addr(dev, t.gpu);
 }
 
-/*
- * G15: the launch block (spec: metal-compute.md; hk_cdm_launch_g15). The
- * launch points at the entry program, a full VA. The mode is G13's (word 0
- * bits 28:27): an indirect global launch reads the threadgroup counts at the
- * VA, as Metal's dispatchThreadgroupsWithIndirectBuffer does; an indirect
- * local one the threadgroup size as well. Indirect launches are not verified
- * on the hardware.
- */
-static uint32_t *
-agx_cdm_launch_g15(uint32_t *out, struct agx_device *dev, struct agx_grid grid,
-                   struct agx_workgroup wg, uint32_t usc)
-{
-   bool indirect = agx_is_indirect(grid);
-   bool multi = indirect || grid.count[1] > 1 || grid.count[2] > 1;
-
-   *(out++) = (multi ? BITFIELD_BIT(19) : 0) | (grid.mode << 27);
-   agx_g15_pipeline(out, dev->shader_base + usc);
-   out += AGX_G15_PIPELINE_LENGTH / 4;
-   *(out++) = 0x40000001;
-
-   if (indirect) {
-      *(out++) = (grid.ptr >> 32) & BITFIELD_MASK(16);
-      *(out++) = grid.ptr;
-   } else {
-      *(out++) = grid.count[0];
-      *(out++) = grid.count[1];
-      *(out++) = grid.count[2];
-   }
-
-   if (grid.mode != AGX_CDM_MODE_INDIRECT_LOCAL) {
-      *(out++) = wg.x & BITFIELD_MASK(11);
-      *(out++) = wg.y & BITFIELD_MASK(11);
-      *(out++) = wg.z & BITFIELD_MASK(11);
-   }
-
-   /* G15C: Metal's barrier after a launch (0x60000160) with bits 0, 1 and 4,
-    * which G13's barrier sets (agx_cdm_barrier). Without bit 4 an image a
-    * launch writes reads as stale in the next job's texture fetches
-    * (dEQP-GLES31 image_load_store.2d.store, kernel #272); without bits 0 and
-    * 1 a launch can read what the launch before it has not finished writing,
-    * mostly when other processes keep the GPU busy (transform feedback and
-    * tessellation at --jobs 8). */
-   *(out++) = 0x60000173;
-   return out;
-}
-
 static void
 agx_launch_internal(struct agx_batch *batch, struct agx_grid grid,
                     struct agx_workgroup wg,
@@ -3509,7 +3463,8 @@ agx_launch_internal(struct agx_batch *batch, struct agx_grid grid,
       if (!usc) {
          fprintf(stderr, "G15: dispatch skipped (no entry program)\n");
       } else {
-         out = agx_cdm_launch_g15(out, dev, grid, wg, usc);
+         out = agx_cdm_launch_g15(out, grid, wg, dev->shader_base + usc);
+         out = agx_cdm_barrier(out, dev->chip);
       }
    } else {
       out = agx_cdm_launch(out, dev->chip, grid, wg, launch, usc);
@@ -4136,10 +4091,13 @@ agx_encode_state(struct agx_batch *batch, uint8_t *out)
       uint32_t pipeline = agx_build_pipeline(
          batch, vs, ctx->gs ? NULL : ctx->linked.vs, MESA_SHADER_VERTEX, 0, 0);
 
-      /* G15: word 1 is the entry program's VA, 8 bytes */
       if (dev->params.gpu_generation >= 15) {
-         agx_g15_pipeline(out, dev->shader_base + pipeline);
-         out += AGX_G15_PIPELINE_LENGTH;
+         uint64_t va = dev->shader_base + pipeline;
+
+         agx_push(out, VDM_STATE_VERTEX_SHADER_WORD_1_G15, cfg) {
+            cfg.pipeline_hi = agx_g15_pipeline_hi(va);
+            cfg.pipeline_lo = agx_g15_pipeline_lo(va);
+         }
       } else {
          agx_push(out, VDM_STATE_VERTEX_SHADER_WORD_1, cfg) {
             cfg.pipeline = pipeline;
@@ -4236,7 +4194,8 @@ agx_encode_state(struct agx_batch *batch, uint8_t *out)
    if (g15) {
       size += AGX_FRAGMENT_CONTROL_LENGTH * (fc + fc2);
       size += dirty.varying_counts_32 ? AGX_VARYING_COUNTS_LENGTH : 0;
-      size += dirty.fragment_shader ? AGX_G15_PIPELINE_LENGTH : 0;
+      size +=
+         dirty.fragment_shader ? AGX_FRAGMENT_SHADER_PIPELINE_G15_LENGTH : 0;
    }
 
    struct agx_ptr T =
@@ -4396,11 +4355,13 @@ agx_encode_state(struct agx_batch *batch, uint8_t *out)
       bool zs_out = g15 && ctx->linked.fs->writes_zs;
 
       if (g15) {
-         agx_ppp_validate(&ppp, AGX_G15_PIPELINE_LENGTH);
-         agx_g15_pipeline(ppp.head, dev->shader_base + pipeline);
-         if (zs_out)
-            ((uint32_t *)ppp.head)[0] |= AGX_G15_PIPELINE_ZS_OUT;
-         ppp.head += AGX_G15_PIPELINE_LENGTH;
+         uint64_t va = dev->shader_base + pipeline;
+
+         agx_ppp_push(&ppp, FRAGMENT_SHADER_PIPELINE_G15, cfg) {
+            cfg.depth_stencil_output = zs_out;
+            cfg.pipeline_hi = agx_g15_pipeline_hi(va);
+            cfg.pipeline_lo = agx_g15_pipeline_lo(va);
+         }
       }
 
       agx_ppp_push(&ppp, FRAGMENT_SHADER_WORD_3, cfg) {
@@ -5915,7 +5876,7 @@ agx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
       (AGX_VDM_STATE_LENGTH * 2) + (AGX_PPP_STATE_LENGTH * MAX_PPP_UPDATES) +
          AGX_VDM_STATE_RESTART_INDEX_LENGTH +
          AGX_VDM_STATE_VERTEX_SHADER_WORD_0_LENGTH +
-         AGX_VDM_STATE_VERTEX_SHADER_WORD_1_LENGTH + AGX_G15_PIPELINE_LENGTH +
+         AGX_VDM_STATE_VERTEX_SHADER_WORD_1_G15_LENGTH +
          AGX_VDM_STATE_VERTEX_OUTPUTS_LENGTH +
          AGX_VDM_STATE_VERTEX_UNKNOWN_LENGTH + 4 /* padding */ +
          AGX_INDEX_LIST_LENGTH + AGX_INDEX_LIST_BUFFER_LO_LENGTH +

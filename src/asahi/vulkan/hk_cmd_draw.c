@@ -2560,7 +2560,8 @@ hk_flush_ppp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
    if (g15) {
       size += AGX_FRAGMENT_CONTROL_LENGTH * (fc + fc2);
       size += dirty.varying_counts_32 ? AGX_VARYING_COUNTS_LENGTH : 0;
-      size += dirty.fragment_shader ? AGX_G15_PIPELINE_LENGTH : 0;
+      size +=
+         dirty.fragment_shader ? AGX_FRAGMENT_SHADER_PIPELINE_G15_LENGTH : 0;
    }
 
    /* Otherwise, allocate enough space for the update and push it. */
@@ -2765,11 +2766,13 @@ hk_flush_ppp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
       bool zs_out = g15 && linked_fs->b.writes_zs;
 
       if (g15) {
-         agx_ppp_validate(&ppp, AGX_G15_PIPELINE_LENGTH);
-         agx_g15_pipeline(ppp.head, dev->dev.shader_base + pipeline);
-         if (zs_out)
-            ((uint32_t *)ppp.head)[0] |= AGX_G15_PIPELINE_ZS_OUT;
-         ppp.head += AGX_G15_PIPELINE_LENGTH;
+         uint64_t va = dev->dev.shader_base + pipeline;
+
+         agx_ppp_push(&ppp, FRAGMENT_SHADER_PIPELINE_G15, cfg) {
+            cfg.depth_stencil_output = zs_out;
+            cfg.pipeline_hi = agx_g15_pipeline_hi(va);
+            cfg.pipeline_lo = agx_g15_pipeline_lo(va);
+         }
       }
 
       agx_ppp_push(&ppp, FRAGMENT_SHADER_WORD_3, cfg) {
@@ -3366,10 +3369,13 @@ hk_flush_dynamic_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
 
       uint32_t pipeline = hk_upload_usc_words(cmd, hw_vs, linked_hw_vs);
 
-      /* G15: word 1 is the entry program's VA, 8 bytes */
       if (dev->dev.params.gpu_generation >= 15) {
-         agx_g15_pipeline(out, dev->dev.shader_base + pipeline);
-         out += AGX_G15_PIPELINE_LENGTH;
+         uint64_t va = dev->dev.shader_base + pipeline;
+
+         agx_push(out, VDM_STATE_VERTEX_SHADER_WORD_1_G15, cfg) {
+            cfg.pipeline_hi = agx_g15_pipeline_hi(va);
+            cfg.pipeline_lo = agx_g15_pipeline_lo(va);
+         }
       } else {
          agx_push(out, VDM_STATE_VERTEX_SHADER_WORD_1, cfg) {
             cfg.pipeline = pipeline;
