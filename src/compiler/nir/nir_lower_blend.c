@@ -819,13 +819,18 @@ nir_blend_advanced(
    nir_def *src_a = nir_channel(b, src, 3);
    nir_def *dst_a = nir_channel(b, dst, 3);
 
-   /* Unpremultiply */
+   /* Unpremultiply. A component equal to its alpha is exactly 1: through a
+    * reciprocal it may round below, as 96/255 over itself does with a
+    * correctly rounded one, and flip a branch such as COLORBURN's Cd >= 1.
+    */
    nir_def *src_rgb_unpre;
    if (options->rt[rt].src_premultiplied) {
       src_rgb_unpre = nir_bcsel(b,
                                 nir_feq_imm(b, src_a, 0.0),
                                 imm3(b, 0.0),
-                                nir_fdiv(b, src_rgb, src_a));
+                                nir_bcsel(b, nir_feq(b, src_rgb, src_a),
+                                          imm3(b, 1.0),
+                                          nir_fdiv(b, src_rgb, src_a)));
    } else {
       src_rgb_unpre = src_rgb;
    }
@@ -835,7 +840,9 @@ nir_blend_advanced(
       dst_rgb_unpre = nir_bcsel(b,
                                 nir_feq_imm(b, dst_a, 0.0),
                                 imm3(b, 0.0),
-                                nir_fdiv(b, dst_rgb, dst_a));
+                                nir_bcsel(b, nir_feq(b, dst_rgb, dst_a),
+                                          imm3(b, 1.0),
+                                          nir_fdiv(b, dst_rgb, dst_a)));
    } else {
       dst_rgb_unpre = dst_rgb;
    }
