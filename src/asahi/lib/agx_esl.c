@@ -173,7 +173,7 @@ esl_ldshdr(struct util_dynarray *out, uint64_t va, unsigned size)
    static const uint8_t size_class[4] = {2, 0, 1, 3};
    assert((va & 63) == 0 && va < BITFIELD64_BIT(48));
 
-   esl_u64(out, 0x2A0177 | ((va >> 6) << 23));
+   esl_u64(out, AGX_ESL_LDSHDR | ((va >> 6) << 23));
    esl_u16(out, ((va >> 47) & 1) | (size_class[MIN2(size >> 7, 3)] << 1));
 }
 
