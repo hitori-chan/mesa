@@ -26,14 +26,20 @@
 
 const char *targets[] = {"g13g", "g13x", "g15"};
 
-/* Kernels G15 has no build of: the helper program's doorbells, stack
- * mappings and core ID, and decompression's image loads (G15 has neither the
- * helper nor compression yet). Their entries are NULL. */
+/* Kernels a target has no build of, whose entries are NULL: on G15 the helper
+ * program's doorbells, stack mappings and core ID (G15 has no helper yet), and
+ * decompression, which G15 does in libagx_decompress_g15, built for it alone
+ * (its handles index G15's tables). */
 static bool
 skip_for_target(const nir_function *func, const char *target)
 {
-   return !strcmp(target, "g15") && (!strcmp(func->name, "libagx_helper") ||
-                                     !strcmp(func->name, "libagx_decompress"));
+   bool g15 = !strcmp(target, "g15");
+
+   if (!strcmp(func->name, "libagx_decompress_g15"))
+      return !g15;
+
+   return g15 && (!strcmp(func->name, "libagx_helper") ||
+                  !strcmp(func->name, "libagx_decompress"));
 }
 
 #define foreach_target(target)                                                 \

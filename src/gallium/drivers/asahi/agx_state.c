@@ -651,10 +651,11 @@ target_is_cube(enum pipe_texture_target target)
 }
 
 /*
- * G15's texture descriptor (cmdbuf.xml's "Texture G15", 32 B slots). Only what
- * the hardware has shown is packed: uncompressed, single-sampled textures,
- * linear with one layer or twiddled; the levels in the extended word. The
- * rest fails here rather than reaching the hardware misread.
+ * G15's texture descriptor (cmdbuf.xml's "Texture G15", 32 B slots): linear
+ * with one layer or twiddled, the levels in the extended word. A compressed
+ * image's metadata goes in the extended word too, as Apple's encoder puts it
+ * (texture.md); its layout is G13's, which G15's Metal driver shares. The rest
+ * fails here rather than reaching the hardware misread.
  */
 static void
 agx_pack_texture_g15(void *out, struct agx_resource *rsrc,
@@ -669,10 +670,10 @@ agx_pack_texture_g15(void *out, struct agx_resource *rsrc,
 
    /* A multisampled texture is never linear on G15 (Apple's encoder has no
     * linear multisampled dimension, texture.md) */
-   if (rsrc->layout.compressed || (rsrc->layout.tiling == AIL_TILING_LINEAR &&
-                                   (layers > 1 || rsrc->base.nr_samples > 1))) {
-      fprintf(stderr, "G15: texture of a compressed, linear multisampled or "
-                      "linear layered image is not supported yet\n");
+   if (rsrc->layout.tiling == AIL_TILING_LINEAR &&
+       (layers > 1 || rsrc->base.nr_samples > 1)) {
+      fprintf(stderr, "G15: texture of a linear multisampled or linear "
+                      "layered image is not supported yet\n");
       assert(0);
    }
 
@@ -760,6 +761,14 @@ agx_pack_texture_g15(void *out, struct agx_resource *rsrc,
       /* (samples >> 2) & 3, the dimension says multisampled (texture.md) */
       if (rsrc->base.nr_samples > 1)
          cfg.samples = agx_translate_sample_count(rsrc->base.nr_samples);
+
+      if (rsrc->layout.compressed) {
+         cfg.compressed = true;
+         cfg.extended = true;
+         cfg.acceleration_buffer =
+            agx_map_gpu(rsrc) + rsrc->layout.metadata_offset_B +
+            (first_layer * rsrc->layout.compression_layer_stride_B);
+      }
    }
 }
 
@@ -1264,18 +1273,20 @@ target_is_array(enum pipe_texture_target target)
 
 /*
  * G15's PBE descriptor (cmdbuf.xml's "PBE G15"; Honeykrisp's pack_pbe_g15).
- * Only what Apple's encoder and demo15 settle is packed: uncompressed images,
- * linear with one layer or twiddled, multisampled for the end-of-tile block
- * writes, 3D images with their depth in the layer count as Apple's encoder
- * packs them; buffers as linear 2D images AGX_TEXTURE_BUFFER_WIDTH texels wide
- * like their textures (not verified on G15). The rest fails here rather than
- * reaching the hardware as a G13 descriptor.
+ * Only what Apple's encoder and demo15 settle is packed: images linear with one
+ * layer or twiddled, compressed as their textures (the metadata in the
+ * extended word), multisampled for the end-of-tile block writes, 3D images
+ * with their depth in the layer count as Apple's encoder packs them; buffers
+ * as linear 2D images AGX_TEXTURE_BUFFER_WIDTH texels wide like their textures
+ * (not verified on G15). A spilled render target's PBE (emrt) writes the image
+ * uncompressed, after its in-place decompression. The rest fails here rather
+ * than reaching the hardware as a G13 descriptor.
  */
 static void
 agx_pack_pbe_g15(struct agx_pbe_packed *out, struct agx_resource *tex,
                  const struct pipe_image_view *view,
                  enum pipe_texture_target target, unsigned level,
-                 unsigned layer, bool block_access)
+                 unsigned layer, bool block_access, bool emrt)
 {
    const struct util_format_description *desc =
       util_format_description(view->format);
@@ -1287,11 +1298,12 @@ agx_pack_pbe_g15(struct agx_pbe_packed *out, struct agx_resource *tex,
     * (texture.md); image stores reach a multisampled image through a linear
     * 2D view of its samples, as on G13 */
    bool ms_view = ms && !block_access;
-   if (tex->layout.compressed ||
+   bool compressed = tex->layout.compressed && !emrt;
+   if ((compressed && ms_view) ||
        (ms && !ms_view && tex->layout.tiling == AIL_TILING_LINEAR) ||
        (tex->layout.tiling == AIL_TILING_LINEAR && layers > 1)) {
-      fprintf(stderr, "G15: PBE of a compressed image or a linear layered "
-                      "image is not supported yet\n");
+      fprintf(stderr, "G15: PBE of a compressed multisampled view or a linear "
+                      "layered image is not supported yet\n");
       assert(0);
    }
 
@@ -1377,6 +1389,18 @@ agx_pack_pbe_g15(struct agx_pbe_packed *out, struct agx_resource *tex,
       /* (samples >> 2) & 3, as the read state (texture.md) */
       if (ms && !ms_view)
          cfg.samples = agx_translate_sample_count(tex->base.nr_samples);
+
+      /* Apple's encoder sets the extended word with the metadata, the levels
+       * beside it */
+      if (compressed) {
+         cfg.compressed = true;
+         cfg.extended = true;
+         cfg.level = level;
+         cfg.levels = tex->base.last_level + 1;
+         cfg.acceleration_buffer =
+            agx_map_gpu(tex) + tex->layout.metadata_offset_B +
+            (layer * tex->layout.compression_layer_stride_B);
+      }
    }
 }
 
@@ -1455,7 +1479,8 @@ agx_batch_upload_pbe(struct agx_batch *batch, struct agx_pbe_packed *out,
    unsigned layer = is_buffer ? 0 : view->u.tex.first_layer;
 
    if (agx_device(batch->ctx->base.screen)->params.gpu_generation >= 15) {
-      agx_pack_pbe_g15(out, tex, view, target, level, layer, block_access);
+      agx_pack_pbe_g15(out, tex, view, target, level, layer, block_access,
+                       emrt);
       return;
    }
 
@@ -3142,9 +3167,17 @@ agx_upload_textures(struct agx_batch *batch, struct agx_compiled_shader *cs,
           (sampler_view.target == PIPE_TEXTURE_3D && internal))
          sampler_view.target = PIPE_TEXTURE_2D_ARRAY;
 
-      agx_pack_texture(texture, agx_resource(view->resource), view->format,
-                       &sampler_view);
-      agx_batch_upload_pbe(batch, pbe, view, false, false, false, false);
+      struct agx_resource *rsrc = agx_resource(view->resource);
+      agx_pack_texture(texture, rsrc, view->format, &sampler_view);
+
+      /* A read-only image's PBE goes unused, and G15 has none for a compressed
+       * multisampled view (agx_pack_pbe_g15)
+       */
+      if (g15 && !(view->shader_access & PIPE_IMAGE_ACCESS_WRITE) &&
+          rsrc->layout.compressed && util_res_sample_count(&rsrc->base) > 1)
+         agx_set_null_pbe(pbe);
+      else
+         agx_batch_upload_pbe(batch, pbe, view, false, false, false, false);
 
       if (g15)
          agx_pack_pbe_g15_software((uint8_t *)pbe + AGX_PBE_LENGTH, view);
@@ -6105,20 +6138,39 @@ agx_decompress_inplace(struct agx_batch *batch, struct pipe_surface *surf,
    if (!batch->cdm.bo)
       batch->cdm = agx_encoder_allocate(batch, dev);
 
-   struct agx_ptr images = agx_pool_alloc_aligned(
-      &batch->pool, sizeof(struct libagx_decompress_images), 64);
-   struct libagx_decompress_images *img = images.cpu;
-
    struct pipe_sampler_view sampler_view = sampler_view_for_surface(surf);
    sampler_view.target = PIPE_TEXTURE_2D_ARRAY;
    struct pipe_image_view view = image_view_for_surface(surf);
-   agx_pack_texture(&img->compressed, rsrc, surf->format, &sampler_view);
-   agx_batch_upload_pbe(batch, &img->uncompressed, &view, false, true, true,
-                        true);
 
    struct agx_grid grid = agx_3d(ail_metadata_width_tl(layout, level) * 32,
                                  ail_metadata_height_tl(layout, level),
                                  surf->last_layer - surf->first_layer + 1);
+
+   if (dev->params.gpu_generation >= 15) {
+      struct agx_ptr images = agx_pool_alloc_aligned(
+         &batch->pool, sizeof(struct libagx_decompress_images_g15), 64);
+      struct libagx_decompress_images_g15 *img = images.cpu;
+
+      memset(img, 0, sizeof(*img));
+      agx_pack_texture(&img->compressed, rsrc, surf->format, &sampler_view);
+      agx_batch_upload_pbe(batch, &img->uncompressed, &view, false, true, true,
+                           true);
+      agx_pack_pbe_g15_software((uint8_t *)img->uncompressed_sw, &view);
+      agx_pack_txf_sampler(&img->txf);
+
+      libagx_decompress_g15(batch, grid, AGX_BARRIER_ALL, layout,
+                            surf->first_layer, level, agx_map_gpu(rsrc),
+                            images.gpu);
+      return;
+   }
+
+   struct agx_ptr images = agx_pool_alloc_aligned(
+      &batch->pool, sizeof(struct libagx_decompress_images), 64);
+   struct libagx_decompress_images *img = images.cpu;
+
+   agx_pack_texture(&img->compressed, rsrc, surf->format, &sampler_view);
+   agx_batch_upload_pbe(batch, &img->uncompressed, &view, false, true, true,
+                        true);
 
    libagx_decompress(batch, grid, AGX_BARRIER_ALL, layout, surf->first_layer,
                      level, agx_map_gpu(rsrc), images.gpu);

@@ -413,8 +413,16 @@ agx_compression_allowed(const struct agx_resource *pres)
       return false;
    }
 
-   /* G15's compressed descriptors are not known (texture.md) */
-   if (agx_device(pres->base.screen)->params.gpu_generation >= 15) {
+   /* G15 compresses only when asked: colour images with
+    * ASAHI_MESA_DEBUG=compress, depth and stencil too with compresszs. Apple's
+    * depth and stencil attachments are always compressed, the render job's
+    * fields in G13's layout (draws.md); Mesa's have not run compressed.
+    */
+   uint32_t debug = agx_device(pres->base.screen)->debug;
+   if (agx_device(pres->base.screen)->params.gpu_generation >= 15 &&
+       (!(debug & AGX_DBG_COMPRESS) ||
+        (util_format_is_depth_or_stencil(pres->base.format) &&
+         !(debug & AGX_DBG_COMPRESSZS)))) {
       rsrc_debug(pres, "No compression: G15\n");
       return false;
    }
@@ -872,6 +880,14 @@ agx_alloc_staging(struct pipe_screen *screen, struct agx_resource *rsc,
       break;
    }
 
+   /* G15's linear textures are 2D with one layer (agx_linear_allowed), which
+    * agx_transfer_map leaves a staging blit */
+   if (agx_device(screen)->params.gpu_generation >= 15) {
+      assert(box->depth == 1);
+      tmpl.target = PIPE_TEXTURE_2D;
+      tmpl.array_size = 1;
+   }
+
    tmpl.last_level = 0;
 
    /* Linear is incompatible with depth/stencil, so we convert */
@@ -943,6 +959,14 @@ agx_transfer_map(struct pipe_context *pctx, struct pipe_resource *resource,
    /* Can't transfer out of bounds mip levels */
    if (level >= rsrc->layout.levels)
       return NULL;
+
+   /* G15's staging resources hold one layer (agx_alloc_staging), so a
+    * compressed level mapped across layers is decompressed first: free for a
+    * texture not yet written, as most uploads are */
+   if (agx_device(pctx->screen)->params.gpu_generation >= 15 &&
+       box->depth > 1 &&
+       ail_is_level_logically_compressed(&rsrc->layout, level))
+      agx_decompress(ctx, rsrc, "Layered transfer");
 
    /* For compression, we use a staging blit as we do not implement AGX
     * compression in software. In some cases, we could use this path for
@@ -2512,12 +2536,6 @@ agx_screen_create(int fd, struct renderonly *ro,
     */
    if (driQueryOptionb(config->options, "asahi_no_fp16"))
       agx_screen->dev.debug |= AGX_DBG_NO16;
-
-   /* G15's compressed images (the PBE's and texture's acceleration buffer
-    * words) are not understood yet
-    */
-   if (agx_screen->dev.params.gpu_generation >= 15)
-      agx_screen->dev.debug |= AGX_DBG_NOCOMPRESS;
 
    int ret =
       drmSyncobjCreate(agx_device(screen)->fd, 0, &agx_screen->flush_syncobj);
