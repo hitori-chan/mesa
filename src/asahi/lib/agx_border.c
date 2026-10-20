@@ -170,8 +170,13 @@ agx_pack_border(struct agx_border_packed *out, const uint32_t in[4],
     * format swizzle: component i comes from channel swizzle[i] (a rotation
     * such as A4R4G4B4's is not its own inverse). If a channel is replicated,
     * we use the first component, by looping backwards and overwriting.
+    *
+    * A depth or stencil format's swizzle names its Z and S components, but the
+    * border holds either value in its first component, so every channel takes
+    * that.
     */
-   for (int i = 3; i >= 0; --i) {
+   for (int i = 3; i >= 0 && desc->colorspace != UTIL_FORMAT_COLORSPACE_ZS;
+        --i) {
       static_assert(PIPE_SWIZZLE_X == 0, "known ordering");
       static_assert(PIPE_SWIZZLE_W == 3, "known ordering");
 

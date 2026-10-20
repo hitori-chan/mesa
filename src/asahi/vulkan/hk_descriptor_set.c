@@ -54,13 +54,17 @@ write_desc(struct hk_descriptor_set *set, uint32_t binding, uint32_t elem,
 }
 
 /* The format a G15 custom border is packed for: the view's (a combined
- * descriptor), else the sampler's. A sampler made without one, written alone,
+ * descriptor), else the sampler's. A stencil view reads its S8 plane, also the
+ * stencil of a combined format. A sampler made without one, written alone,
  * gets the border's 32-bit words as they are (not verified).
  */
 static enum pipe_format
 g15_border_format(const struct hk_sampler *sampler, struct hk_image_view *view,
                   unsigned plane)
 {
+   if (view && view->vk.aspects == VK_IMAGE_ASPECT_STENCIL_BIT)
+      return PIPE_FORMAT_S8_UINT;
+
    if (view)
       return hk_image_view_plane_format(view, plane);
 
