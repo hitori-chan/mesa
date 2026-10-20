@@ -77,6 +77,8 @@ static const struct debug_named_value agx_debug_options[] = {
    {"nosoft",    AGX_DBG_NOSOFT,   "Disable soft fault optimizations"},
    {"nomerge",   AGX_DBG_NOMERGE,  "Disable control stream merging"},
    {"linear",    AGX_DBG_LINEAR,   "Prefer linear layouts where allowed"},
+   {"compress",  AGX_DBG_COMPRESS, "Allow lossless compression on G15 (colour images)"},
+   {"compresszs",AGX_DBG_COMPRESSZS,"With compress, also depth and stencil on G15"},
    {"bodumpverbose", AGX_DBG_BODUMPVERBOSE,   "Include extra info with dumps"},
    DEBUG_NAMED_VALUE_END
 };
