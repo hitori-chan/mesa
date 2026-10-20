@@ -50,63 +50,9 @@ hk_cdm_cache_flush(struct hk_device *dev, struct hk_cs *cs)
    assert(cs->current + AGX_CDM_BARRIER_LENGTH < cs->end &&
           "caller must ensure space");
 
-   if (dev->dev.params.gpu_generation >= 15) {
-      uint32_t *out = cs->current;
-      /* G15C: Metal's barrier after a launch with bits 0, 1 and 4, as
-       * Gallium's agx_cdm_launch_g15 (the next launch waits for this one's
-       * writes, and image writes are visible to later texture fetches) */
-      *(out++) = 0x60000173;
-      cs->current = out;
-   } else
-      cs->current = agx_cdm_barrier(cs->current, dev->dev.chip);
+   cs->current = agx_cdm_barrier(cs->current, dev->dev.chip);
 
    cs->stats.flushes++;
-}
-
-/* G15: the launch block (spec: metal-compute.md); the launch points at the
- * entry program, a full VA. The mode is G13's (word 0 bits 28:27, as
- * agx_cdm_launch_g15 in Gallium; indirect launches not verified on the
- * hardware). The low bits of word 0 and word 1
- * can hold per-thread stack and spill counts (Apple's
- * ComputeProgramVariant::finalize), but Apple's kernels leave them 0: the
- * entry program's specTPR sizes the per-thread memory. AGX_MESA_G15_LAUNCH_W0
- * / _W1 set them for experiments. */
-static uint32_t *
-hk_cdm_launch_g15(struct hk_device *dev, uint32_t *out, struct agx_grid grid,
-                  struct agx_workgroup wg, uint32_t usc)
-{
-   uint64_t va = dev->dev.shader_base + usc;
-   bool indirect = agx_is_indirect(grid);
-   bool multi = indirect || grid.count[1] > 1 || grid.count[2] > 1;
-   const char *e;
-
-   uint32_t w0 = (multi ? BITFIELD_BIT(19) : 0) | (grid.mode << 27);
-   if ((e = getenv("AGX_MESA_G15_LAUNCH_W0")))
-      w0 = (w0 & ~0x1FFFu) | (atoi(e) & 0x1FFFu);
-   *(out++) = w0;
-
-   agx_g15_pipeline(out, va);
-   if ((e = getenv("AGX_MESA_G15_LAUNCH_W1")))
-      out[0] = (out[0] & ~0x7FFFFu) | (atoi(e) & 0x7FFFFu);
-   out += AGX_G15_PIPELINE_LENGTH / 4;
-   *(out++) = 0x40000001;
-
-   if (indirect) {
-      *(out++) = (grid.ptr >> 32) & BITFIELD_MASK(16);
-      *(out++) = grid.ptr;
-   } else {
-      *(out++) = grid.count[0];
-      *(out++) = grid.count[1];
-      *(out++) = grid.count[2];
-   }
-
-   if (grid.mode != AGX_CDM_MODE_INDIRECT_LOCAL) {
-      *(out++) = wg.x & BITFIELD_MASK(11);
-      *(out++) = wg.y & BITFIELD_MASK(11);
-      *(out++) = wg.z & BITFIELD_MASK(11);
-   }
-
-   return out;
 }
 
 void
@@ -124,7 +70,8 @@ hk_dispatch_with_usc_launch(struct hk_device *dev, struct hk_cs *cs,
          return;
       }
 
-      cs->current = hk_cdm_launch_g15(dev, cs->current, grid, wg, usc);
+      cs->current =
+         agx_cdm_launch_g15(cs->current, grid, wg, dev->dev.shader_base + usc);
    } else {
       cs->current =
          agx_cdm_launch(cs->current, dev->dev.chip, grid, wg, launch, usc);
