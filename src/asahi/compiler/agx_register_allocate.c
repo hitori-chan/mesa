@@ -113,7 +113,34 @@ struct ra_ctx {
 
    /* Maximum number of registers that RA is allowed to use */
    unsigned bound[RA_CLASSES];
+
+   /* G15: the SSA values read as a texture or sampler index, which must sit
+    * below AGX_G15_TEX_INDEX_REGS, or NULL if the bound is that low anyway
+    */
+   BITSET_WORD *low_only;
 };
+
+/* G15 reads a texture or sampler index from a 16-bit register of the low 64
+ * (a3_tex_index in agx_pack3.c), so below 128 halves of the 188 it has
+ */
+#define AGX_G15_TEX_INDEX_REGS (128)
+
+static bool
+ra_low_only(struct ra_ctx *rctx, agx_index idx)
+{
+   return rctx->low_only && idx.type == AGX_INDEX_NORMAL && !idx.memory &&
+          BITSET_TEST(rctx->low_only, idx.value);
+}
+
+/* The registers SSA value ssa of class cls may take */
+static unsigned
+ra_bound(struct ra_ctx *rctx, enum ra_class cls, unsigned ssa)
+{
+   if (cls == RA_GPR && rctx->low_only && BITSET_TEST(rctx->low_only, ssa))
+      return MIN2(rctx->bound[cls], AGX_G15_TEX_INDEX_REGS);
+   else
+      return rctx->bound[cls];
+}
 
 /*
  * RA treats the nesting counter, the divergent shuffle temporary, and the
@@ -331,9 +358,9 @@ agx_calc_register_demand(agx_context *ctx, bool remat)
 
 static bool
 find_regs_simple(struct ra_ctx *rctx, enum ra_class cls, unsigned count,
-                 unsigned align, unsigned *out)
+                 unsigned align, unsigned bound, unsigned *out)
 {
-   for (unsigned reg = 0; reg + count <= rctx->bound[cls]; reg += align) {
+   for (unsigned reg = 0; reg + count <= bound; reg += align) {
       if (!BITSET_TEST_COUNT(rctx->used_regs[cls], reg, count)) {
          *out = reg;
          return true;
@@ -354,14 +381,17 @@ find_regs_simple(struct ra_ctx *rctx, enum ra_class cls, unsigned count,
  *
  * Precondition: such a region exists.
  *
- * Postcondition: at least one register in the returned region is already free.
+ * Postcondition: at least one register in the returned region is already free,
+ * or (only for a value bound below the register file) the region holds whole
+ * values which may move anywhere. *region_size is the region's size, larger
+ * than size only when those values are.
  */
 static unsigned
-find_best_region_to_evict(struct ra_ctx *rctx, unsigned size,
-                          BITSET_WORD *already_evicted)
+find_best_region_to_evict(struct ra_ctx *rctx, unsigned size, unsigned bound,
+                          BITSET_WORD *already_evicted, unsigned *region_size)
 {
    assert(util_is_power_of_two_or_zero(size) && "precondition");
-   assert((rctx->bound[RA_GPR] % size) == 0 &&
+   assert((bound % size) == 0 &&
           "register file size must be aligned to the maximum vector size");
 
    /* Useful for testing RA */
@@ -370,7 +400,9 @@ find_best_region_to_evict(struct ra_ctx *rctx, unsigned size,
    unsigned best_base = ~0;
    unsigned best_moves = invert ? 0 : ~0;
 
-   for (unsigned base = 0; base + size <= rctx->bound[RA_GPR]; base += size) {
+   *region_size = size;
+
+   for (unsigned base = 0; base + size <= bound; base += size) {
       /* The first k registers are preallocated and unevictable, so must be
        * skipped. By itself, this does not pose a problem. We are allocating n
        * registers, but this region has at most n-k free.  Since there are at
@@ -418,7 +450,47 @@ find_best_region_to_evict(struct ra_ctx *rctx, unsigned size,
       }
    }
 
-   assert(best_base < rctx->bound[RA_GPR] &&
+   /* G15: a value bound below the register file may find every register
+    * there taken. Take a full region of whole values that may move anywhere:
+    * there are enough free registers above for them, as for any region. The
+    * values there may be larger than this one: it takes the start of the region
+    * and the rest is free for what moves.
+    */
+   if (best_base >= bound && bound < rctx->bound[RA_GPR]) {
+      for (unsigned region = size; region <= 16 && region <= bound;
+           region *= 2) {
+         unsigned base = ~0;
+
+         for (unsigned reg = reserved_size(rctx->shader); reg < bound;) {
+            /* Free only in a region skipped above */
+            if (!BITSET_TEST(rctx->used_regs[RA_GPR], reg)) {
+               base = ~0;
+               reg++;
+               continue;
+            }
+
+            unsigned ssa = rctx->reg_to_ssa[reg];
+            unsigned end = reg + rctx->ncomps[ssa];
+
+            if ((reg % region) == 0)
+               base = reg;
+
+            bool movable = !BITSET_TEST(already_evicted, reg) &&
+                           ra_bound(rctx, RA_GPR, ssa) == rctx->bound[RA_GPR];
+
+            if (base == ~0 || !movable || end > base + region) {
+               base = ~0;
+            } else if (end == base + region) {
+               *region_size = region;
+               return base;
+            }
+
+            reg = end;
+         }
+      }
+   }
+
+   assert(best_base < bound &&
           "not enough registers (should have spilled already)");
    return best_base;
 }
@@ -493,10 +565,12 @@ assign_regs_by_copying(struct ra_ctx *rctx, agx_index dest, const agx_instr *I,
       /* We need to shuffle some variables to make room. Look for a range of
        * the register file that is partially blocked.
        */
-      unsigned new_reg = find_best_region_to_evict(rctx, nr, clobbered);
+      unsigned region_size;
+      unsigned new_reg = find_best_region_to_evict(
+         rctx, nr, ra_bound(rctx, RA_GPR, ssa), clobbered, &region_size);
 
       /* Blocked registers need to get reassigned. Add them to the worklist. */
-      for (unsigned i = 0; i < nr; ++i) {
+      for (unsigned i = 0; i < region_size; ++i) {
          if (BITSET_TEST(rctx->used_regs[RA_GPR], new_reg + i)) {
             unsigned blocked_reg = new_reg + i;
             uint32_t blocked_ssa = rctx->reg_to_ssa[blocked_reg];
@@ -522,9 +596,14 @@ assign_regs_by_copying(struct ra_ctx *rctx, agx_index dest, const agx_instr *I,
       }
 
       /* We are going to allocate to this range, so it is now fully used. Mark
-       * it as such so we don't reassign here later.
+       * it as such so we don't reassign here later. What the variable does not
+       * take of a larger region is free.
        */
       BITSET_SET_COUNT(rctx->used_regs[RA_GPR], new_reg, nr);
+      if (region_size > nr) {
+         BITSET_CLEAR_COUNT(rctx->used_regs[RA_GPR], new_reg + nr,
+                            region_size - nr);
+      }
 
       /* The first iteration is special: it is the original allocation of a
        * variable. All subsequent iterations pick a new register for a blocked
@@ -610,7 +689,8 @@ find_regs(struct ra_ctx *rctx, agx_instr *I, unsigned dest_idx, unsigned count,
 
    enum ra_class cls = ra_class_for_index(I->dest[dest_idx]);
 
-   if (find_regs_simple(rctx, cls, count, align, &reg)) {
+   if (find_regs_simple(rctx, cls, count, align,
+                        ra_bound(rctx, cls, I->dest[dest_idx].value), &reg)) {
       return reg;
    } else {
       assert(!rctx->early_killed && "no live range splits with early kill");
@@ -811,7 +891,7 @@ affinity_base_of_collect(struct ra_ctx *rctx, agx_instr *collect, unsigned src)
 
 static bool
 try_coalesce_with(struct ra_ctx *rctx, agx_index ssa, unsigned count,
-                  bool may_be_unvisited, unsigned *out)
+                  unsigned bound, bool may_be_unvisited, unsigned *out)
 {
    assert(ssa.type == AGX_INDEX_NORMAL);
    if (!BITSET_TEST(rctx->visited, ssa.value)) {
@@ -822,7 +902,8 @@ try_coalesce_with(struct ra_ctx *rctx, agx_index ssa, unsigned count,
    unsigned base = rctx->ssa_to_reg[ssa.value];
    enum ra_class cls = ra_class_for_index(ssa);
 
-   if (BITSET_TEST_COUNT(rctx->used_regs[cls], base, count))
+   if (BITSET_TEST_COUNT(rctx->used_regs[cls], base, count) ||
+       base + count > bound)
       return false;
 
    assert(base + count <= rctx->bound[cls] && "invariant");
@@ -841,12 +922,13 @@ pick_regs(struct ra_ctx *rctx, agx_instr *I, unsigned d)
    assert(count >= 1);
 
    unsigned align = count;
+   unsigned bound = ra_bound(rctx, cls, idx.value);
 
    /* Try to allocate entire phi webs compatibly */
    unsigned phi_idx = phi_web_find(rctx->phi_web, idx.value);
    if (rctx->phi_web[phi_idx].assigned) {
       unsigned reg = rctx->phi_web[phi_idx].reg;
-      if ((reg % align) == 0 && reg + align < rctx->bound[cls] &&
+      if ((reg % align) == 0 && reg + align < bound &&
           !BITSET_TEST_COUNT(rctx->used_regs[cls], reg, align))
          return reg;
    }
@@ -857,7 +939,7 @@ pick_regs(struct ra_ctx *rctx, agx_instr *I, unsigned d)
        I->src[0].size == I->dest[0].size) {
 
       unsigned out;
-      if (try_coalesce_with(rctx, I->src[0], count, false, &out))
+      if (try_coalesce_with(rctx, I->src[0], count, bound, false, &out))
          return out;
    }
 
@@ -868,7 +950,8 @@ pick_regs(struct ra_ctx *rctx, agx_instr *I, unsigned d)
          bool may_be_unvisited = rctx->block->loop_header;
 
          unsigned out;
-         if (try_coalesce_with(rctx, I->src[s], count, may_be_unvisited, &out))
+         if (try_coalesce_with(rctx, I->src[s], count, bound, may_be_unvisited,
+                               &out))
             return out;
       }
    }
@@ -881,7 +964,7 @@ pick_regs(struct ra_ctx *rctx, agx_instr *I, unsigned d)
                 "and this is not a phi node, so we have assigned a register");
 
          unsigned base = affinity_base_of_collect(rctx, I, s);
-         if (base >= rctx->bound[cls] || (base + count) > rctx->bound[cls])
+         if (base >= bound || (base + count) > bound)
             continue;
 
          /* Unaligned destinations can happen when dest size > src size */
@@ -899,7 +982,7 @@ pick_regs(struct ra_ctx *rctx, agx_instr *I, unsigned d)
       unsigned reg = collect_phi->imm;
 
       if (!BITSET_TEST_COUNT(rctx->used_regs[cls], reg, align) &&
-          (reg % align) == 0)
+          (reg % align) == 0 && reg + align <= bound)
          return reg;
    }
 
@@ -911,7 +994,7 @@ pick_regs(struct ra_ctx *rctx, agx_instr *I, unsigned d)
             unsigned reg = exp->imm;
 
             if (!BITSET_TEST_COUNT(rctx->used_regs[cls], reg, align) &&
-                (reg % align) == 0)
+                (reg % align) == 0 && reg + align <= bound)
                return reg;
          }
       }
@@ -943,13 +1026,13 @@ pick_regs(struct ra_ctx *rctx, agx_instr *I, unsigned d)
 
          /* Determine where the collect should start relative to the source */
          unsigned base = affinity_base_of_collect(rctx, collect, s);
-         if (base >= rctx->bound[cls])
+         if (base >= bound)
             continue;
 
          unsigned our_reg = base + (our_source * align);
 
          /* Don't allocate past the end of the register file */
-         if ((our_reg + align) > rctx->bound[cls])
+         if ((our_reg + align) > bound)
             continue;
 
          /* If those registers are free, then choose them */
@@ -963,8 +1046,7 @@ pick_regs(struct ra_ctx *rctx, agx_instr *I, unsigned d)
       /* Prefer ranges of the register file that leave room for all sources of
        * the collect contiguously.
        */
-      for (unsigned base = 0;
-           base + (collect->nr_srcs * align) <= rctx->bound[cls];
+      for (unsigned base = 0; base + (collect->nr_srcs * align) <= bound;
            base += collect_align) {
          if (!BITSET_TEST_COUNT(rctx->used_regs[cls], base,
                                 collect->nr_srcs * align))
@@ -976,7 +1058,7 @@ pick_regs(struct ra_ctx *rctx, agx_instr *I, unsigned d)
        * for a register for the source such that the collect base is aligned.
        */
       if (collect_align > align) {
-         for (unsigned reg = offset; reg + collect_align <= rctx->bound[cls];
+         for (unsigned reg = offset; reg + collect_align <= bound;
               reg += collect_align) {
             if (!BITSET_TEST_COUNT(rctx->used_regs[cls], reg, count))
                return reg;
@@ -990,7 +1072,7 @@ pick_regs(struct ra_ctx *rctx, agx_instr *I, unsigned d)
       unsigned out;
 
       agx_foreach_ssa_src(phi, s) {
-         if (try_coalesce_with(rctx, phi->src[s], count, true, &out))
+         if (try_coalesce_with(rctx, phi->src[s], count, bound, true, &out))
             return out;
       }
 
@@ -998,7 +1080,7 @@ pick_regs(struct ra_ctx *rctx, agx_instr *I, unsigned d)
       if (phi->dest[0].has_reg) {
          unsigned base = phi->dest[0].reg;
 
-         if (base + count <= rctx->bound[cls] &&
+         if (base + count <= bound &&
              !BITSET_TEST_COUNT(rctx->used_regs[cls], base, count))
             return base;
       }
@@ -1049,6 +1131,21 @@ try_kill_early_sources(struct ra_ctx *rctx, const agx_instr *I,
    }
 }
 
+/* Whether a split's destinations may take its killed source's registers */
+static bool
+split_in_place_fits(struct ra_ctx *rctx, const agx_instr *I)
+{
+   unsigned reg = rctx->ssa_to_reg[I->src[0].value];
+   unsigned width = agx_size_align_16(agx_split_width(I));
+
+   agx_foreach_ssa_dest(I, d) {
+      if (reg + (d + 1) * width > ra_bound(rctx, RA_GPR, I->dest[d].value))
+         return false;
+   }
+
+   return true;
+}
+
 /** Assign registers to SSA values in a block. */
 
 static void
@@ -1093,7 +1190,8 @@ agx_ra_assign_local(struct ra_ctx *rctx)
       /* Optimization: if a split contains the last use of a vector, the split
        * can be removed by assigning the destinations overlapping the source.
        */
-      if (I->op == AGX_OPCODE_SPLIT && I->src[0].kill) {
+      if (I->op == AGX_OPCODE_SPLIT && I->src[0].kill &&
+          split_in_place_fits(rctx, I)) {
          assert(ra_class_for_index(I->src[0]) == RA_GPR);
          unsigned reg = ssa_to_reg[I->src[0].value];
          unsigned width = agx_size_align_16(agx_split_width(I));
@@ -1138,7 +1236,7 @@ agx_ra_assign_local(struct ra_ctx *rctx)
       /* Search for regions of contiguous killed sources to early-kill. */
       rctx->early_killed = false;
 
-      if (I->nr_dests == 1) {
+      if (I->nr_dests == 1 && !ra_low_only(rctx, I->dest[0])) {
          unsigned first_src = 0;
          unsigned end = 0;
          unsigned start = 0;
@@ -1582,6 +1680,22 @@ agx_ra(agx_context *ctx)
    assert(max_regs >= (6 * 2) && "space for vertex shader preloading");
    assert(max_regs <= max_possible_regs);
 
+   BITSET_WORD *low_only = NULL;
+   if (g15 && max_regs > AGX_G15_TEX_INDEX_REGS) {
+      low_only = BITSET_CALLOC(ctx->alloc);
+
+      agx_foreach_instr_global(ctx, I) {
+         if (I->op != AGX_OPCODE_TEXTURE_SAMPLE &&
+             I->op != AGX_OPCODE_TEXTURE_LOAD && I->op != AGX_OPCODE_IMAGE_LOAD)
+            continue;
+
+         for (unsigned s = 3; s <= 4; ++s) {
+            if (I->src[s].type == AGX_INDEX_NORMAL)
+               BITSET_SET(low_only, I->src[s].value);
+         }
+      }
+   }
+
    unsigned reg_count = 0, mem_slot_count = 0;
 
    /* Assign registers in dominance-order. This coincides with source-order due
@@ -1600,6 +1714,7 @@ agx_ra(agx_context *ctx)
          .visited = visited,
          .bound[RA_GPR] = max_regs,
          .bound[RA_MEM] = AGX_NUM_MODELED_REGS,
+         .low_only = low_only,
          .count[RA_GPR] = &reg_count,
          .count[RA_MEM] = &mem_slot_count,
       });
@@ -1751,4 +1866,5 @@ agx_ra(agx_context *ctx)
    free(sizes);
    free(classes);
    free(visited);
+   free(low_only);
 }
