@@ -77,7 +77,8 @@ typedef struct {
                               enum agx_bo_flags flags);
    int (*bo_bind)(struct agx_device *dev, struct drm_asahi_gem_bind_op *ops,
                   uint32_t count);
-   void (*bo_mmap)(struct agx_device *dev, struct agx_bo *bo, void *fixed_addr);
+   void (*bo_mmap)(struct agx_device *dev, struct agx_bo *bo, void *fixed_addr,
+                   size_t size);
    ssize_t (*get_params)(struct agx_device *dev, void *buf, size_t size);
    int (*submit)(struct agx_device *dev, struct drm_asahi_submit *submit,
                  struct agx_submit_virt *virt);
@@ -208,7 +209,7 @@ static inline void *
 agx_bo_map_placed(struct agx_bo *bo, void *fixed_addr)
 {
    if (!bo->_map)
-      bo->dev->ops.bo_mmap(bo->dev, bo, fixed_addr);
+      bo->dev->ops.bo_mmap(bo->dev, bo, fixed_addr, bo->size);
 
    return bo->_map;
 }
