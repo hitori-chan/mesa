@@ -755,6 +755,8 @@ agx_pack_texture_g15(void *out, struct agx_resource *rsrc,
 
       if (rsrc->layout.tiling == AIL_TILING_LINEAR)
          cfg.stride = ail_get_linear_stride_B(&rsrc->layout, 0) - 16;
+      else if (rsrc->layout.tiling == AIL_TILING_INTERCHANGE)
+         cfg.stride_in_tiles = rsrc->layout.stride_el[0] / 16;
       else
          cfg.page_aligned_layers = rsrc->layout.page_aligned_layers;
 
@@ -1373,6 +1375,9 @@ agx_pack_pbe_g15(struct agx_pbe_packed *out, struct agx_resource *tex,
          assert((ail_get_linear_stride_B(&tex->layout, level) & 15) == 0);
          cfg.stride = (ail_get_linear_stride_B(&tex->layout, level) >> 4) - 1;
          assert(tex->base.last_level == 0);
+      } else if (tex->layout.tiling == AIL_TILING_INTERCHANGE) {
+         assert(layers == 1 && level == 0);
+         cfg.stride_in_tiles = tex->layout.stride_el[0] / 16;
       } else {
          cfg.layers = layers;
          cfg.page_aligned_layers = tex->layout.page_aligned_layers;
