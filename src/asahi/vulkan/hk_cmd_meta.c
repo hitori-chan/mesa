@@ -288,10 +288,11 @@ canonical_format_pipe(enum pipe_format fmt, bool g15)
    /* clang-format on */
 #undef CASE
 
-   /* G15 compresses no image (hk_image.c), so a copy moves bits, through a
-    * format of each size whose roundtrip is exact: through their own formats
-    * the minifloats rounded (dEQP-VK copy_and_blit E5B9G9R9 and B10G11R11
-    * copies)
+   /* G15 compresses no image a copy writes (hk_image.c), so a copy moves bits,
+    * through a format of each size whose roundtrip is exact: through their own
+    * formats the minifloats rounded (dEQP-VK copy_and_blit E5B9G9R9 and
+    * B10G11R11 copies). A compressed source is read in its own compression
+    * class instead (hk_meta_bits).
     */
    if (g15) {
       switch (util_format_get_blocksize(fmt)) {
@@ -360,6 +361,21 @@ static bool
 hk_meta_g15(struct vk_device *device)
 {
    return ((struct hk_device *)device)->dev.params.gpu_generation >= 15;
+}
+
+/*
+ * Whether a copy out of the image moves bits through a format of each size
+ * (canonical_format_pipe): on G15, unless the image is compressed, which the
+ * hardware decompresses only through a format of its compression class.
+ */
+static bool
+hk_meta_bits(struct vk_device *device, struct vk_image *image,
+             VkImageAspectFlags aspect)
+{
+   struct hk_image *img = container_of(image, struct hk_image, vk);
+   uint8_t plane = hk_image_aspects_to_plane(img, aspect);
+
+   return hk_meta_g15(device) && !img->planes[plane].layout.compressed;
 }
 
 static nir_def *
@@ -638,8 +654,8 @@ build_image_copy_shader(const struct vk_meta_image_copy_key *key)
  * G15 copies into an image with image writes (imgwci, layered on the
  * hardware): a compute kernel's block writes have not run on G15, whose
  * imgwblk takes the descriptor's address in a uniform rather than a bindless
- * handle (agx_pack3.c), and Honeykrisp compresses no G15 image, which the
- * block write would serve.
+ * handle (agx_pack3.c), and Honeykrisp compresses no G15 image a copy
+ * writes (hk_can_compress), which the block write would serve.
  */
 static bool
 hk_meta_block_copies(struct vk_device *device)
@@ -803,7 +819,8 @@ hk_meta_copy_image_to_buffer2(struct vk_command_buffer *cmd,
 
          VkImageAspectFlags aspect = region->imageSubresource.aspectMask;
          VkFormat aspect_fmt = aspect_format(image->format, aspect);
-         VkFormat canonical = canonical_format(aspect_fmt, hk_meta_g15(device));
+         VkFormat canonical =
+            canonical_format(aspect_fmt, hk_meta_bits(device, image, aspect));
 
          uint32_t blocksize_B =
             util_format_get_blocksize(hk_format_to_pipe_format(canonical));
@@ -1161,8 +1178,8 @@ hk_meta_copy_image2(struct vk_command_buffer *cmd, struct vk_meta_device *meta,
              * to follow the source.
              */
             VkFormat aspect_fmt = aspect_format(src_image->format, 1 << aspect);
-            VkFormat canonical =
-               canonical_format(aspect_fmt, hk_meta_g15(device));
+            VkFormat canonical = canonical_format(
+               aspect_fmt, hk_meta_bits(device, src_image, 1 << aspect));
             uint32_t blocksize_B =
                util_format_get_blocksize(hk_format_to_pipe_format(canonical));
 
