@@ -3597,19 +3597,8 @@ agx_build_bg_eot(struct agx_batch *batch, bool store, bool partial_render)
    bool g15 = dev->params.gpu_generation >= 15;
    struct agx_ptr g15_tex = {0};
 
-   /* G15: the sampler table's pair goes past the clear colours */
-   bool loads = false;
-   unsigned first_free = 4;
-   for (unsigned rt = 0; rt < PIPE_MAX_COLOR_BUFS && g15; ++rt) {
-      loads |= key.op[rt] == AGX_BG_LOAD;
-      if (key.op[rt] == AGX_BG_CLEAR)
-         first_free = 4 + 8 * (rt + 1);
-   }
-
-   if (loads) {
-      key.g15_sampler_uniform = first_free;
-      assert(first_free <= AGX_G15_MAX_BG_SAMPLER_UNIFORM);
-   }
+   if (g15)
+      agx_bg_eot_key_set_g15_sampler(&key);
 
    for (unsigned rt = 0; rt < PIPE_MAX_COLOR_BUFS; ++rt) {
       if (key.op[rt] == AGX_BG_LOAD) {
@@ -3749,20 +3738,7 @@ agx_build_bg_eot(struct agx_batch *batch, bool store, bool partial_render)
       /* G15's sampler table has 32 B entries; the program reads the first
        * through a uniform pair */
       struct agx_ptr sampler = agx_pool_alloc_aligned(&batch->pool, 32, 64);
-      memset(sampler.cpu, 0, 32);
-
-      agx_pack(sampler.cpu, SAMPLER, cfg) {
-         cfg.minimum_lod = 0.0f;
-         cfg.maximum_lod = INFINITY;
-         cfg.magnify = AGX_FILTER_LINEAR;
-         cfg.minify = AGX_FILTER_NEAREST;
-         cfg.mip_filter = AGX_MIP_FILTER_NONE;
-         cfg.wrap_s = AGX_WRAP_CLAMP_TO_EDGE;
-         cfg.wrap_t = AGX_WRAP_CLAMP_TO_EDGE;
-         cfg.wrap_r = AGX_WRAP_CLAMP_TO_EDGE;
-         cfg.pixel_coordinates = true;
-         cfg.compare_func = AGX_COMPARE_FUNC_ALWAYS;
-      }
+      agx_pack_bg_sampler_g15(sampler.cpu);
 
       agx_usc_uniform(
          &b, key.g15_sampler_uniform, 4,
@@ -4174,29 +4150,9 @@ agx_encode_state(struct agx_batch *batch, uint8_t *out)
    };
 
    bool g15 = dev->params.gpu_generation >= 15;
-
-   /* G15 has no fragment control bits: the front face bit also selects the
-    * fragment control word and the front face 2 bit fragment control 2, in
-    * G13's element order (control, control 2, face, face 2: boot #309). The
-    * 32-bit and 16-bit varying counts are one 8-byte element under the counts
-    * 32 bit, as Apple's Metal driver emits them. */
-   bool fc = dirty.fragment_control, fc2 = dirty.fragment_control_2;
-   if (g15) {
-      dirty.fragment_front_face |= fc;
-      dirty.fragment_front_face_2 |= fc2;
-      fc = dirty.fragment_front_face;
-      fc2 = dirty.fragment_front_face_2;
-      dirty.fragment_control = dirty.fragment_control_2 = false;
-      dirty.varying_counts_16 = false;
-   }
-   size_t size = agx_ppp_update_size(&dirty);
-
-   if (g15) {
-      size += AGX_FRAGMENT_CONTROL_LENGTH * (fc + fc2);
-      size += dirty.varying_counts_32 ? AGX_VARYING_COUNTS_LENGTH : 0;
-      size +=
-         dirty.fragment_shader ? AGX_FRAGMENT_SHADER_PIPELINE_G15_LENGTH : 0;
-   }
+   bool fc, fc2;
+   size_t size =
+      agx_ppp_update_size_gen(&dirty, dev->params.gpu_generation, &fc, &fc2);
 
    struct agx_ptr T =
       agx_pool_alloc_aligned(&batch->pool, size, AGX_PPP_HEADER_ALIGN);
@@ -4314,21 +4270,12 @@ agx_encode_state(struct agx_batch *batch, uint8_t *out)
       uint32_t pipeline = agx_build_pipeline(batch, ctx->fs, ctx->linked.fs,
                                              MESA_SHADER_FRAGMENT, 0, 0);
 
+      bool zs_out = g15 && ctx->linked.fs->writes_zs;
+
       if (g15) {
-         uint64_t cf = dev->shader_base + batch->varyings;
-
-         agx_ppp_push(&ppp, FRAGMENT_SHADER_WORD_0_G15, cfg) {
-            cfg.cf_bindings_high = cf >> 32;
-            cfg.cf_binding_count = ctx->linked.fs->cf.nr_bindings;
-         }
-
-         agx_ppp_push(&ppp, FRAGMENT_SHADER_WORD_1_G15, cfg) {
-            cfg.cf_bindings_low = cf & BITFIELD64_MASK(32);
-         }
-
-         agx_ppp_push(&ppp, FRAGMENT_SHADER_WORD_2, cfg) {
-            cfg.cf_bindings = batch->varyings;
-         }
+         agx_ppp_fragment_shader_g15(&ppp, dev->shader_base, batch->varyings,
+                                     ctx->linked.fs->cf.nr_bindings, pipeline,
+                                     zs_out);
       } else {
          agx_ppp_push(&ppp, FRAGMENT_SHADER_WORD_0, cfg) {
             cfg.uniform_register_count = ctx->fs->b.info.push_count;
@@ -4346,21 +4293,6 @@ agx_encode_state(struct agx_batch *batch, uint8_t *out)
 
          agx_ppp_push(&ppp, FRAGMENT_SHADER_WORD_2, cfg) {
             cfg.cf_bindings = batch->varyings;
-         }
-      }
-
-      /* G15: the entry program's VA follows word 2. With depth or stencil
-       * output Apple sets the first word's bit 6 and word 3 (draws.md).
-       */
-      bool zs_out = g15 && ctx->linked.fs->writes_zs;
-
-      if (g15) {
-         uint64_t va = dev->shader_base + pipeline;
-
-         agx_ppp_push(&ppp, FRAGMENT_SHADER_PIPELINE_G15, cfg) {
-            cfg.depth_stencil_output = zs_out;
-            cfg.pipeline_hi = agx_g15_pipeline_hi(va);
-            cfg.pipeline_lo = agx_g15_pipeline_lo(va);
          }
       }
 

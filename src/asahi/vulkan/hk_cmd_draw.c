@@ -397,21 +397,8 @@ hk_build_bg_eot(struct hk_cmd_buffer *cmd, const VkRenderingInfo *info,
    bool g15 = dev->dev.params.gpu_generation >= 15;
    struct agx_ptr g15_tex = {0};
 
-   if (g15) {
-      bool loads = false;
-      unsigned first_free = 4;
-
-      for (unsigned rt = 0; rt < HK_MAX_RTS; ++rt) {
-         loads |= key.op[rt] == AGX_BG_LOAD;
-         if (key.op[rt] == AGX_BG_CLEAR)
-            first_free = 4 + 8 * (rt + 1);
-      }
-
-      if (loads) {
-         key.g15_sampler_uniform = first_free;
-         assert(first_free <= AGX_G15_MAX_BG_SAMPLER_UNIFORM);
-      }
-   }
+   if (g15)
+      agx_bg_eot_key_set_g15_sampler(&key);
 
    /* Begin building the pipeline */
    size_t usc_size = agx_usc_size(3 + HK_MAX_RTS);
@@ -520,24 +507,11 @@ hk_build_bg_eot(struct hk_cmd_buffer *cmd, const VkRenderingInfo *info,
    }
 
    if (uses_txf && g15) {
-      /* A 32 B sampler table entry, Gallium's background sampler */
       struct agx_ptr sampler = hk_pool_alloc(cmd, 32, 64);
       if (!sampler.cpu)
          return (struct hk_bg_eot){.usc = 0};
 
-      memset(sampler.cpu, 0, 32);
-      agx_pack(sampler.cpu, SAMPLER, cfg) {
-         cfg.minimum_lod = 0.0f;
-         cfg.maximum_lod = INFINITY;
-         cfg.magnify = AGX_FILTER_LINEAR;
-         cfg.minify = AGX_FILTER_NEAREST;
-         cfg.mip_filter = AGX_MIP_FILTER_NONE;
-         cfg.wrap_s = AGX_WRAP_CLAMP_TO_EDGE;
-         cfg.wrap_t = AGX_WRAP_CLAMP_TO_EDGE;
-         cfg.wrap_r = AGX_WRAP_CLAMP_TO_EDGE;
-         cfg.pixel_coordinates = true;
-         cfg.compare_func = AGX_COMPARE_FUNC_ALWAYS;
-      }
+      agx_pack_bg_sampler_g15(sampler.cpu);
 
       agx_usc_uniform(&b, key.g15_sampler_uniform, 4,
                       hk_pool_upload(cmd, &sampler.gpu, 8, 8));
@@ -2535,34 +2509,15 @@ hk_flush_ppp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
 
    dirty.fragment_shader &= !linked_fs->b.no_op;
 
-   /* G15 has no fragment control bits: the face bits also select the
-    * fragment control words, in G13's element order, and the varying counts
-    * are one 8-byte element (see agx_state.c).
-    */
-   bool fc = dirty.fragment_control, fc2 = dirty.fragment_control_2;
-   if (g15) {
-      dirty.fragment_front_face |= fc;
-      dirty.fragment_front_face_2 |= fc2;
-      fc = dirty.fragment_front_face;
-      fc2 = dirty.fragment_front_face_2;
-      dirty.fragment_control = dirty.fragment_control_2 = false;
-      dirty.varying_counts_16 = false;
-   }
-
    /* Calculate the update size. If it equals the header, there is nothing to
     * update so early-exit.
     */
    struct hk_device *dev = hk_cmd_buffer_device(cmd);
-   size_t size = agx_ppp_update_size(&dirty);
+   bool fc, fc2;
+   size_t size = agx_ppp_update_size_gen(&dirty, dev->dev.params.gpu_generation,
+                                         &fc, &fc2);
    if (size == AGX_PPP_HEADER_LENGTH)
       return;
-
-   if (g15) {
-      size += AGX_FRAGMENT_CONTROL_LENGTH * (fc + fc2);
-      size += dirty.varying_counts_32 ? AGX_VARYING_COUNTS_LENGTH : 0;
-      size +=
-         dirty.fragment_shader ? AGX_FRAGMENT_SHADER_PIPELINE_G15_LENGTH : 0;
-   }
 
    /* Otherwise, allocate enough space for the update and push it. */
    assert(size > AGX_PPP_HEADER_LENGTH);
@@ -2731,22 +2686,12 @@ hk_flush_ppp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
       hk_reserve_scratch(cmd, cs, fs);
 
       uint32_t pipeline = hk_upload_usc_words(cmd, fs, linked_fs);
+      bool zs_out = g15 && linked_fs->b.writes_zs;
 
       if (g15) {
-         uint64_t cf = dev->dev.shader_base + gfx->varyings;
-
-         agx_ppp_push(&ppp, FRAGMENT_SHADER_WORD_0_G15, cfg) {
-            cfg.cf_bindings_high = cf >> 32;
-            cfg.cf_binding_count = linked_fs->b.cf.nr_bindings;
-         }
-
-         agx_ppp_push(&ppp, FRAGMENT_SHADER_WORD_1_G15, cfg) {
-            cfg.cf_bindings_low = cf & BITFIELD64_MASK(32);
-         }
-
-         agx_ppp_push(&ppp, FRAGMENT_SHADER_WORD_2, cfg) {
-            cfg.cf_bindings = gfx->varyings;
-         }
+         agx_ppp_fragment_shader_g15(&ppp, dev->dev.shader_base, gfx->varyings,
+                                     linked_fs->b.cf.nr_bindings, pipeline,
+                                     zs_out);
       } else {
          agx_ppp_push_packed(&ppp, &linked_fs->fs_counts,
                              FRAGMENT_SHADER_WORD_0);
@@ -2757,21 +2702,6 @@ hk_flush_ppp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
 
          agx_ppp_push(&ppp, FRAGMENT_SHADER_WORD_2, cfg) {
             cfg.cf_bindings = gfx->varyings;
-         }
-      }
-
-      /* G15: the entry program's VA follows word 2. With depth or stencil
-       * output Apple sets the first word's bit 6 and word 3 (draws.md).
-       */
-      bool zs_out = g15 && linked_fs->b.writes_zs;
-
-      if (g15) {
-         uint64_t va = dev->dev.shader_base + pipeline;
-
-         agx_ppp_push(&ppp, FRAGMENT_SHADER_PIPELINE_G15, cfg) {
-            cfg.depth_stencil_output = zs_out;
-            cfg.pipeline_hi = agx_g15_pipeline_hi(va);
-            cfg.pipeline_lo = agx_g15_pipeline_lo(va);
          }
       }
 
