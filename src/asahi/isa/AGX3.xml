@@ -4901,6 +4901,40 @@
     <modifier name="unk" bit="18 20 22" kind="expect3"/>
   </ins>
 
+  <!--
+   The entry program's own instructions (Apple's entry state loader; Mesa's
+   agx_esl.c emits them, metal-compute.md), from libLLVM 32023's encoder and
+   noopwafel's demo15. speclm sets up threadgroup memory: the sample count's
+   code (2 one, 0 two, 1 four), the sample stride in 8 B, the tile's shape
+   (an index into the encoder's table of width and height), the imageblock
+   flag, and a compute program's threadgroup memory in 64 B units. ldshdr
+   loads the shader at a 64 B aligned VA with a size class. spectpr sizes
+   the per-thread memory: the coordinate registers the shader writes, and
+   the private stack in words, given twice.
+  -->
+  <ins name="speclm" display="speclm" length="8">
+    <exact bit="0:22">01010100000000001110111</exact>
+    <immediate name="samples" bit="23:24"/>
+    <immediate name="stride" bit="25:29"/>
+    <immediate name="shape" bit="30:37"/>
+    <modifier name="imageblock" bit="38"/>
+    <modifier name="threadgroup" bit="39"/>
+    <immediate name="size" bit="40:49"/>
+  </ins>
+
+  <ins name="ldshdr" display="ldshdr" length="10">
+    <exact bit="0:22">01010100000000101110111</exact>
+    <immediate name="va" bit="23:63 64" kind="hex" shift="6"/>
+    <immediate name="size" bit="65:66"/>
+  </ins>
+
+  <ins name="spectpr" display="spectpr" length="10">
+    <exact bit="0:22">01010100000000011110111</exact>
+    <immediate name="cr" bit="31:41"/>
+    <immediate name="stack" bit="42:57"/>
+    <immediate name="stack2" bit="58:73"/>
+  </ins>
+
   <ins name="stop" display="stop" length="4">
     <exact bit="0:31">00000000000000000000000000001110</exact>
   </ins>

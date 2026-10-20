@@ -752,6 +752,14 @@
     <field name="CF bindings" size="30" start="2" type="address" modifier="shr(2)"/>
   </struct>
 
+  <!-- G15: the entry program's VA follows word 2. Apple sets bit 6 with depth
+       or stencil output and with fragment atomics (draws.md) -->
+  <struct name="Fragment Shader Pipeline G15" size="8">
+    <field name="Depth stencil output" size="1" start="6" type="bool"/>
+    <field name="Pipeline hi" size="10" start="22" type="hex"/>
+    <field name="Pipeline lo" size="32" start="1:0" type="hex"/>
+  </struct>
+
   <struct name="Fragment Shader Word 3" size="4">
     <!-- Seems to be set to small values depending on textures? and pushed
          uniforms? Needs investigation -->
@@ -922,6 +930,14 @@
   <struct name="VDM State Vertex Shader Word 1" size="4">
     <field name="Unknown 1:0" size="2" start="0" type="hex"/>
     <field name="Pipeline" size="26" start="6" type="address" modifier="shr(6)"/>
+  </struct>
+
+  <!-- G15: word 1 is the entry program's VA, bits 47:38 at bit 22 of the
+       first word and bits 37:6 in the second, as every G15 pipeline pointer
+       (metal-compute.md) -->
+  <struct name="VDM State Vertex Shader Word 1 G15" size="8">
+    <field name="Pipeline hi" size="10" start="22" type="hex"/>
+    <field name="Pipeline lo" size="32" start="1:0" type="hex"/>
   </struct>
 
   <struct name="VDM State Vertex Outputs" size="4">
@@ -1181,6 +1197,39 @@
     <field name="X" size="32" start="0:0" type="uint"/>
     <field name="Y" size="32" start="1:0" type="uint"/>
     <field name="Z" size="32" start="2:0" type="uint"/>
+  </struct>
+
+  <!-- G15's launch has no register counts: the entry program loads them. Its
+       VA's bits 47:38 are at bit 22 of word 1, bits 37:6 in word 2. The stack
+       and spill counts (8 per 4 bytes) parallel the entry program's specTPR,
+       which sizes the per-thread memory, and Apple leaves them 0.
+       Multidimensional is clear for a grid of one row (y and z below 2), and
+       Complex is the shader's complexity hint (metal-compute.md) -->
+  <struct name="CDM Launch G15" size="12">
+    <field name="Stack" size="13" start="0" type="uint"/>
+    <field name="Multidimensional" size="1" start="19" type="bool"/>
+    <field name="Complex" size="1" start="23" type="bool"/>
+    <field name="Mode" size="2" start="27" type="CDM Mode"/>
+    <field name="Block Type" size="3" start="29" type="CDM Block Type" exact="Launch"/>
+    <field name="Spill" size="19" start="1:0" type="uint"/>
+    <field name="Pipeline hi" size="10" start="1:22" type="hex"/>
+    <field name="Pipeline lo" size="32" start="2:0" type="hex"/>
+  </struct>
+
+  <!-- G15: how the threadgroups spread over the clusters, after the launch
+       word. Metal's default is cluster group 1 with distribution 0 (and bit
+       30); distributions 5 and 6 and cluster groups 4 to 7 are its modes -->
+  <struct name="CDM Distribution G15" size="4">
+    <field name="Cluster group" size="3" start="0" type="uint"/>
+    <field name="Distribution" size="3" start="3" type="uint"/>
+    <field name="Unknown 30" size="1" start="30" type="bool"/>
+    <field name="Multiple AGCs" size="1" start="31" type="bool"/>
+  </struct>
+
+  <!-- G15: an indirect launch's VA, bits 47:32 then 31:0 -->
+  <struct name="CDM Indirect G15" size="8">
+    <field name="Address hi" size="16" start="0" type="hex"/>
+    <field name="Address lo" size="32" start="1:0" type="hex"/>
   </struct>
 
   <struct name="CDM Barrier" size="4">
