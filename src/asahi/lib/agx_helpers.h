@@ -405,6 +405,34 @@ agx_fill_decompress_args(struct ail_layout *layout, unsigned layer,
       agx_fill_decompress_args(layout, layer, level, ptr, images),             \
       util_logbase2(layout->sample_count_sa))
 
+/* G15's kernel takes the same arguments, and the pixel size a multisampled
+ * image's store needs */
+static struct libagx_decompress_g15_args
+agx_fill_decompress_args_g15(struct ail_layout *layout, unsigned layer,
+                             unsigned level, uint64_t ptr, uint64_t images)
+{
+   struct libagx_decompress_args a =
+      agx_fill_decompress_args(layout, layer, level, ptr, images);
+
+   return (struct libagx_decompress_g15_args){
+      .images = a.images,
+      .metadata = a.metadata,
+      .tile_uncompressed = a.tile_uncompressed,
+      .metadata_layer_stride_tl = a.metadata_layer_stride_tl,
+      .metadata_width_tl = a.metadata_width_tl,
+      .metadata_height_tl = a.metadata_height_tl,
+      .blocksize_B = util_format_get_blocksize(layout->format),
+   };
+}
+
+#undef libagx_decompress_g15
+#define libagx_decompress_g15(context, grid, barrier, layout, layer, level,    \
+                              ptr, images)                                     \
+   libagx_decompress_g15_struct(                                               \
+      context, grid, barrier,                                                  \
+      agx_fill_decompress_args_g15(layout, layer, level, ptr, images),         \
+      util_logbase2(layout->sample_count_sa))
+
 struct agx_border_packed;
 
 void agx_pack_border(struct agx_border_packed *out, const uint32_t in[4],
