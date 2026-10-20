@@ -612,6 +612,8 @@ pack_pbe_g15(struct hk_device *dev, struct hk_image_view *view,
          cfg.tile_height = tile.height_el;
          cfg.layer_stride = layout->layer_stride_B;
          cfg.sample_count_log2 = util_logbase2(view->vk.image->samples);
+         cfg.sample_size_log2 =
+            util_logbase2(util_format_get_blocksize(p_format));
       }
    } else {
       agx_pack(sw, PBE_G15_SOFTWARE, cfg) {
