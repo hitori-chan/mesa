@@ -34,10 +34,25 @@ hk_modifier_features(const struct agx_device *dev, uint64_t mod,
       return 0;
    }
 
-   /* Don't advertise compression for the uncompressable */
-   if (mod == DRM_FORMAT_MOD_APPLE_GPU_TILED_COMPRESSED &&
-       !hk_can_compress_format(dev, vk_format))
-      return 0;
+   /* Don't advertise compression for the uncompressable, nor for the usages
+    * compression refuses (hk_can_compress): storage, and G15's copy
+    * destinations
+    */
+   if (mod == DRM_FORMAT_MOD_APPLE_GPU_TILED_COMPRESSED) {
+      if (!hk_can_compress_format(dev, vk_format))
+         return 0;
+
+      VkFormatFeatureFlags2 features =
+         props->optimalTilingFeatures &
+         ~(VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT |
+           VK_FORMAT_FEATURE_STORAGE_IMAGE_ATOMIC_BIT);
+
+      if (dev->params.gpu_generation >= 15)
+         features &= ~(VK_FORMAT_FEATURE_TRANSFER_DST_BIT |
+                       VK_FORMAT_FEATURE_BLIT_DST_BIT);
+
+      return features;
+   }
 
    if (mod == DRM_FORMAT_MOD_LINEAR)
       return props->linearTilingFeatures;
