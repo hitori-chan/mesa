@@ -42,6 +42,17 @@ main(int argc, const char **argv)
       return 1;
    }
 
+   /* An optional second argument selects the ISA: agx2 (default) or agx3 */
+   signed (*disassemble_instr)(BITSET_WORD *, FILE *, unsigned, bool) =
+      agx2_disassemble_instr;
+
+   if (argc >= 3 && !strcmp(argv[2], "agx3")) {
+      disassemble_instr = agx3_disassemble_instr;
+   } else if (argc >= 3 && strcmp(argv[2], "agx2")) {
+      fprintf(stderr, "Unknown ISA %s\n", argv[2]);
+      return 1;
+   }
+
    FILE *fp = fopen(argv[1], "r");
 
    if (fp == NULL) {
@@ -49,7 +60,7 @@ main(int argc, const char **argv)
       return 1;
    }
 
-   char line[128];
+   char line[512];
    unsigned nr_fail = 0, nr_pass = 0;
 
    while (fgets(line, sizeof(line), fp) != NULL) {
@@ -61,8 +72,10 @@ main(int argc, const char **argv)
       if (len <= 1)
          continue;
 
-      /* Parse the hex */
-      uint8_t code[16];
+      /* Parse the hex. Zero-pad to the longest instruction the disassembler
+       * reads, so nothing depends on stale bytes.
+       */
+      uint8_t code[32] = {0};
       const char *cursor = line;
       const char *end = line + len;
       uint32_t i = 0;
@@ -78,7 +91,7 @@ main(int argc, const char **argv)
          ++cursor;
 
       FILE *outputp = open_memstream(&output, &sz);
-      signed ret = agx2_disassemble_instr((void *)code, outputp, 0, false);
+      signed ret = disassemble_instr((void *)code, outputp, 0, false);
       unsigned instr_len = abs(ret);
       fclose(outputp);
 

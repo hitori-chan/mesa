@@ -1,10 +1,17 @@
 # Copyright 2025 Valve Corporation
 # SPDX-License-Identifier: MIT
 
-from isa import isa
+import isa as isa_module
 import math
 import sys
 import binascii
+
+# The ISA being disassembled: AGX2 unless select() picks another XML
+isa = isa_module.isa
+
+def select(xmlfile):
+    global isa
+    isa = isa_module.load(xmlfile)
 
 def match_instr(raw):
     for key in isa.instrs:
@@ -54,7 +61,7 @@ def operand(desc, length):
     base = desc.get('base')
     kind = desc.get('kind')
     cache = desc.get('cache', False)
-    discard = desc.get('discard', False)
+    discard = desc.get('discard', False) or desc.get('lu', False)
 
     hint = desc.get('hint')
     if hint is not None:
@@ -65,26 +72,29 @@ def operand(desc, length):
         else:
             assert(hint == 1)
 
-    assert(not (cache and discard))
-    hint = '^' if discard else '$' if cache else ''
-    suffixes = ''.join(['.' + x for x in ['abs', 'neg', 'sx'] if desc.get(x, 0) != 0])
+    hint = ('^' if discard else '') + ('$' if cache else '')
+    suffixes = ''.join(['.' + x for x in ['bfloat', 'abs', 'neg', 'sx', 'sat'] if desc.get(x, 0) != 0])
 
     if kind == None:
         return None
-    elif kind in ['cf', 'ts', 'ss']:
+    elif kind in ['cf', 'ts', 'ss', 'cr']:
         assert(count == 1)
-        return f'{kind}{base}' + suffixes
+        return hint + f'{kind}{base}' + suffixes
     elif kind == 'fimm':
         return str(decode_float_immediate(base)) + suffixes
     elif kind in ['imm', 'signed']:
+        if desc.get('hex', 0):
+            return hex(base) + suffixes
         return map_value(base, kind, length) + suffixes
+
+    hl = 'hl' if desc.get('hl', 0) else ''
 
     def m(offs):
         assert(size == 16 or size == 32 or size == 64)
         reg = base + (offs * (size // 16))
         whole = reg >> 1
         part = reg & 1
-        prefix = kind[0]
+        prefix = {'reg': 'r', 'uniform': 'u', 'stack': 'st'}[kind]
 
         if size == 16:
             part_str = 'h' if part != 0 else 'l'
@@ -93,14 +103,14 @@ def operand(desc, length):
             assert(part == 0)
             return f'{"d" if size == 64 else ""}{prefix}{whole}'
 
-    return hint + '_'.join([m(x) for x in range(count)]) + suffixes
+    return hint + '_'.join([m(x) for x in range(count)]) + hl + suffixes
 
 def map_op(v, kind, raw, ins, length):
     for c in isa.encodings[kind].cases:
         if (v & c.exact.mask) == c.exact.value:
             desc = {}
             if c.kind is not None:
-                length = c.kind.bits.size()
+                length = c.kind.bits.size() + c.kind.shift
                 desc['kind'] = c.kind.name
                 desc['base'] = c.kind.bits.extract(v) << c.kind.shift
                 if c.kind.kind == 'signed':
@@ -108,27 +118,45 @@ def map_op(v, kind, raw, ins, length):
 
             for mod in c.modifiers:
                 desc[mod.name] = mod.bits.extract(v)
+                if mod.table is not None:
+                    desc[mod.name] = mod.table[desc[mod.name]]
 
             for prop in c.properties:
                 desc[prop] = int(c.properties[prop])
 
             return operand(desc, length)
 
+    # No case matched: an invalid encoding
+    return f'XXX{v:#x}'
+
 def disasm(raw_in):
     length, instr, raw = match_instr(raw_in)
     if instr is None:
         return length, "<unknown instr>"
 
-    imms = [map_value(imm.bits.extract(raw), imm.kind, imm.bits.size()) for imm in instr.immediates]
-    mods = [map_mod(mod.bits.extract(raw), mod) for mod in instr.modifiers if mod.name != 'length']
-    dests = [map_op(d.bits.extract(raw), d.kind, raw, instr, d.bits.size()) for d in instr.dests]
-    srcs = [map_op(s.bits.extract(raw), s.kind, raw, instr, s.bits.size()) for s in instr.sources]
+    def show(category, x):
+        if category == 'imm' and x.kind == 'hex':
+            return hex(x.bits.extract(raw) << x.shift)
+        elif category == 'imm':
+            return map_value(x.bits.extract(raw), x.kind, x.bits.size())
+        elif category == 'mod':
+            return map_mod(x.bits.extract(raw), x)
 
-    dests = ['_' if x is None else str(x) for x in dests]
-    srcs = [str(x) for x in srcs if x is not None]
-    imms = [str(x) for x in imms if x is not None]
-    mods = [str(x) for x in mods if x is not None]
-    end = ', '.join(dests + srcs + imms + mods)
+        op = map_op(x.bits.extract(raw), x.kind, raw, instr, x.bits.size())
+        if category == 'dest' and op is None:
+            return '_'
+        return op
+
+    if isa.ordered:
+        ops = instr.ordered
+    else:
+        ops = [('dest', x) for x in instr.dests] + \
+              [('src', x) for x in instr.sources] + \
+              [('imm', x) for x in instr.immediates] + \
+              [('mod', x) for x in instr.modifiers if x.name != 'length']
+
+    ops = [show(c, x) for c, x in ops]
+    end = ', '.join([str(x) for x in ops if x is not None])
     if end != "":
         end = " " + end
 
@@ -143,6 +171,9 @@ def disasm(raw_in):
     return length, asm
 
 if __name__ == '__main__':
+    if len(sys.argv) > 2:
+        select(sys.argv[2])
+
     prog = open(sys.argv[1], 'rb').read()
     print("")
     i = 0

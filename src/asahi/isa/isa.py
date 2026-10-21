@@ -8,6 +8,9 @@ import sys
 import copy
 import os
 
+# Longest instruction, in bits (AGX3 texture instructions are 20 bytes)
+MAX_BITS = 192
+
 def ensure(cond, msg):
     if not cond:
         print(msg)
@@ -18,6 +21,7 @@ class BitRange:
         assert(start <= end)
         self.start = start
         self.end = end
+        self.const = None
 
         if self.start >= 0:
             self.size = end - start + 1
@@ -25,7 +29,9 @@ class BitRange:
             self.mask = self.size_mask << start
 
     def parse(spec: str):
-        if ':' in spec:
+        if spec.startswith('='):
+            return ConstRange(spec[1:])
+        elif ':' in spec:
             start, end = [int(x) for x in spec.split(':')]
             return BitRange(start, end)
         else:
@@ -39,6 +45,24 @@ class BitRange:
             return f'{self.start}'
         else:
             return f'{self.start}:{self.end}'
+
+# A constant inserted into a concatenated field, written "=0101" (MSB first,
+# like <exact>). It reads no instruction bits: it supplies the value of a field
+# an instruction lacks, so one operand encoding can serve several layouts.
+class ConstRange:
+    def __init__(self, bits):
+        assert(len(bits) > 0 and all(b in '01' for b in bits))
+        self.bits = bits
+        self.const = int(bits, 2)
+        self.size = len(bits)
+        self.size_mask = (1 << self.size) - 1
+        self.mask = 0
+
+    def specialize(self, length):
+        return self
+
+    def __repr__(self):
+        return f'={self.bits}'
 
 class Bits:
     def __init__(self, spec = None):
@@ -65,7 +89,10 @@ class Bits:
         n = 0
 
         for r in self.ranges:
-            accum |= ((x >> r.start) & r.size_mask) << n
+            if r.const is not None:
+                accum |= r.const << n
+            else:
+                accum |= ((x >> r.start) & r.size_mask) << n
             n += r.size
 
         return accum
@@ -97,8 +124,8 @@ def deposit_bits(mask, value):
     accum = 0
     value_i = 0
 
-    assert(mask < (1 << 128))
-    for m in range(128):
+    assert(mask < (1 << MAX_BITS))
+    for m in range(MAX_BITS):
         if mask & (1 << m):
             if (value & (1 << value_i)) != 0:
                 accum |= (1 << m)
@@ -172,6 +199,7 @@ class EncodingCase:
         self.modifiers = []
         self.kind = None
         self.properties = {}
+        self.carry = 0
 
         for ch in el:
             if ch.tag in ["exact", "zero"]:
@@ -183,11 +211,18 @@ class EncodingCase:
                 self.modifiers.append(Modifier(ch, ch.attrib['name']))
             elif ch.tag == "property":
                 self.properties[ch.attrib['name']] = ch.text or '1'
+            elif ch.tag == "carry":
+                # Bits the encoder may set that the disassembler does not
+                # model: desc-dependent flags or don't-cares, proven by the
+                # applegpu-checked corpus. The packer owns them (carry_mask);
+                # the disassembler ignores them.
+                self.carry = Bits(ch.attrib['bit']).mask()
 
     def union(self, other):
         self.exact.union(other.exact)
         self.modifiers = other.modifiers + self.modifiers
         self.properties.update(other.properties)
+        self.carry |= other.carry
 
         assert(self.kind is None or other.kind is None)
         self.kind = self.kind or other.kind
@@ -211,6 +246,14 @@ class Modifier:
         self.kind = el.get('kind', 'int')
         self.bits = Bits(el.attrib['bit'])
 
+        # Optional lookup table mapping the raw field to the value (operand
+        # encodings only, e.g. a register count from a write mask)
+        table = el.get('table')
+        self.table = [int(x) for x in table.split()] if table else None
+        if self.table is not None:
+            ensure(len(self.table) == (1 << self.bits.size()),
+                   f'Table of {name} must have {1 << self.bits.size()} entries')
+
 class Instruction:
     def __init__(self, xml, name, display, substitutions, defs):
         length = [int(x) for x in xml.attrib['length'].split('/')]
@@ -220,29 +263,36 @@ class Instruction:
         srcs = []
         imms = []
 
+        # Every operand in document order, for ISAs printed in that order
+        ordered = []
+
+        def add(lst, category, x):
+            lst.append(x)
+            ordered.append((category, x))
+
         for el in xml:
             if el.tag in ["exact", "zero"]:
                 exact.union(Exact(el, substitutions))
             elif el.tag == "immediate":
-                imms.append(Immediate(el, el.attrib['name']))
+                add(imms, 'imm', Immediate(el, el.attrib['name']))
             elif el.tag == "src":
-                srcs.append(Operand(el, False))
+                add(srcs, 'src', Operand(el, False))
             elif el.tag == "dest":
-                dests.append(Operand(el, True))
+                add(dests, 'dest', Operand(el, True))
             elif el.tag == "modifier":
-                mods.append(Modifier(el, el.attrib['name']))
+                add(mods, 'mod', Modifier(el, el.attrib['name']))
             elif el.tag in defs:
                 d = defs[el.tag]
                 if isinstance(d, Operand):
                     spec = d.specialize(length[-1] * 8)
                     if spec.is_dest:
-                        dests.append(spec)
+                        add(dests, 'dest', spec)
                     else:
-                        srcs.append(spec)
+                        add(srcs, 'src', spec)
                 elif isinstance(d, Modifier):
-                    mods.append(d)
+                    add(mods, 'mod', d)
                 elif isinstance(d, Immediate):
-                    imms.append(d)
+                    add(imms, 'imm', d)
                 else:
                     assert(0)
             elif el.tag == 'ins':
@@ -269,6 +319,8 @@ class Instruction:
         self.dests = dests
         self.sources = srcs
         self.immediates = imms
+        self.ordered = [(c, x) for c, x in ordered
+                        if not (c == 'mod' and x.name == 'length')]
 
     def mask(self):
         mask = self.exact.mask
@@ -282,6 +334,10 @@ class ISA:
         self.instrs = {}
         self.encodings = {}
         defs = {}
+
+        # By default, operands print as destinations, sources, immediates,
+        # then modifiers. ordered="true" prints them in document order.
+        self.ordered = el.get('ordered', 'false') == 'true'
 
         for child in el:
             name = child.get('name')
@@ -317,5 +373,8 @@ class ISA:
                         ensure(ins.name not in self.instrs, f'Multiple instructions named {ins.name}')
                         self.instrs[ins.name] = ins
 
+def load(xmlfile):
+    return ISA(ET.parse(xmlfile).getroot())
+
 xmlfile = os.path.join(os.path.dirname(__file__), 'AGX2.xml')
-isa = ISA(ET.parse(xmlfile).getroot())
+isa = load(xmlfile)
