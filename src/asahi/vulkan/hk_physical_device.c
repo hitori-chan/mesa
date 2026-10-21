@@ -287,8 +287,7 @@ hk_get_device_features(
       .shaderFloat64 = false,
       .shaderInt64 = true,
       .shaderInt16 = true,
-      /* G15's sparse texture reads (the residency code) are not packed yet */
-      .shaderResourceResidency = dev->params.gpu_generation < 15,
+      .shaderResourceResidency = true,
       .shaderResourceMinLod = true,
       .sparseBinding = true,
 
