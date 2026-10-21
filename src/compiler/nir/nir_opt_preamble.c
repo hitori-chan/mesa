@@ -234,6 +234,7 @@ can_move_intrinsic(nir_intrinsic_instr *instr, opt_preamble_ctx *ctx)
    case nir_intrinsic_load_const_ir3:
    case nir_intrinsic_load_constant_agx:
    case nir_intrinsic_bindless_image_agx:
+   case nir_intrinsic_bindless_image_base_agx:
    case nir_intrinsic_bindless_sampler_agx:
       return can_move_srcs(&instr->instr, ctx);
 
@@ -266,6 +267,10 @@ can_move_instr(nir_instr *instr, opt_preamble_ctx *ctx)
     * if we are not, we must be able to speculate instructions to move them.
     */
    if (ctx->nonuniform_cf_nesting > 0 && !instr_can_speculate(instr))
+      return false;
+
+   if (ctx->options->can_move_instr_cb &&
+       !ctx->options->can_move_instr_cb(instr, ctx->options->cb_data))
       return false;
 
    switch (instr->type) {

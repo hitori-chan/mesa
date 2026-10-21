@@ -7417,6 +7417,11 @@ typedef struct nir_opt_preamble_options {
     */
    nir_instr_filter_cb avoid_instr_cb;
 
+   /* Optional: return false for an instruction that must stay in the shader.
+    * Nothing that depends on it moves either.
+    */
+   nir_instr_filter_cb can_move_instr_cb;
+
    const void *cb_data;
 } nir_opt_preamble_options;
 

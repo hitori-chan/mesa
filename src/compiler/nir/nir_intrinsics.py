@@ -2732,6 +2732,12 @@ load("exported_agx", [], [BASE], [CAN_ELIMINATE])
 intrinsic("bindless_image_agx", [1], dest_comp=1, bit_sizes=[32],
           indices=[DESC_SET], flags=[CAN_ELIMINATE, CAN_REORDER])
 
+# AGX G15 bindless image handle: an index (first source) into the table at a
+# 64-bit base held in registers (second source), for an index past the 16 bits
+# G15's texture instructions read.
+intrinsic("bindless_image_base_agx", [1, 1], dest_comp=1, bit_sizes=[32],
+          flags=[CAN_ELIMINATE, CAN_REORDER])
+
 # AGX-specific bindless sampler handle specifier. Takes both a byte offset into the
 # descriptor set (first source) and an index into the global heap (second
 # source) to allow optimal pushing heuristics.
