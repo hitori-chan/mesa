@@ -280,6 +280,123 @@
     <field name="Buffer offset (sw)" size="32" start="128" type="uint"/>
   </struct>
 
+  <!--
+   G15's PBE descriptor, from Apple's PBEStateEncoderGen9<kAGXRevG15> (the
+   Metal driver builds a 32-byte one per render target; the fourth word is
+   only read for multisampled and compressed images). Word 0 is G13's. The
+   address takes 44 bits of VA >> 4 (G13's 36 bits and level are two
+   fields), the linear stride is a count of 16-byte units, and the mip
+   levels move to the extended word. Verified against noopwafel's demo15
+   descriptor (linear 2D RGBA8, whose "level 1" is address bit 40) on the
+   hardware; the rest is from the encoder only.
+  -->
+  <struct name="PBE G15" size="24">
+    <field name="Dimension" size="4" start="0" type="Texture dimension"/>
+    <field name="Layout" size="2" start="4" type="Layout"/>
+    <field name="Channels" size="7" start="6" type="Channels"/>
+    <field name="Type" size="3" start="13" type="Texture Type"/>
+    <field name="Swizzle R" size="2" start="16" type="Channel"/>
+    <field name="Swizzle G" size="2" start="18" type="Channel"/>
+    <field name="Swizzle B" size="2" start="20" type="Channel"/>
+    <field name="Swizzle A" size="2" start="22" type="Channel"/>
+    <field name="Width" size="14" start="24" type="uint" modifier="minus(1)"/>
+    <field name="Height" size="14" start="38" type="uint" modifier="minus(1)"/>
+    <field name="Samples" size="1" start="56" type="Sample Count"/>
+    <field name="Mipmapped" size="1" start="58" type="bool"/>
+    <field name="Compressed" size="1" start="59" type="bool"/>
+    <field name="Mode" size="2" start="60" type="Image Mode"/>
+    <field name="Buffer" size="44" start="64" type="address" modifier="shr(4)"/>
+
+    <!-- Linear: the row stride in 16-byte units, minus 1 -->
+    <field name="Stride" size="16" start="108" type="uint"/>
+
+    <!-- Twiddled: the layers, minus 1 -->
+    <field name="Layers" size="16" start="108" type="uint" modifier="minus(1)"/>
+    <field name="Page-aligned layers" size="1" start="124" type="bool"/>
+
+    <!-- An image write converts to sRGB, as G13's bit. Apple's encoder
+         (StateFields 0x2126945CC) sets 125:126 for an sRGB format only: 1,
+         or 2 or 3 for some formats not identified; RG8 sRGB takes 1 -->
+    <field name="sRGB" size="1" start="125" type="bool"/>
+
+    <!-- Read the next word (set with several mip levels) -->
+    <field name="Extended" size="1" start="127" type="bool"/>
+    <field name="Level" size="4" start="172" type="uint"/>
+    <field name="Levels" size="4" start="176" type="uint" modifier="minus(1)"/>
+  </struct>
+
+  <!--
+   For software: what an image atomic's texel address needs of a G15 image
+   (libagx_image_texel_address_g15), in the fourth word of its PBE's 32-byte
+   slot, which the hardware reads only for multisampled and compressed images.
+   G13 keeps these in its PBE's third word, which G15 reads for mip levels.
+  -->
+  <struct name="PBE G15 software" size="8">
+    <field name="Level offset" size="27" start="0" type="uint" modifier="shr(7)"/>
+    <field name="Tile width" size="4" start="27" type="uint" modifier="log2"/>
+    <field name="Tile height" size="4" start="31" type="uint" modifier="log2"/>
+    <field name="Layer stride" size="27" start="35" type="uint" modifier="shr(7)"/>
+  </struct>
+
+  <!--
+   The same for a multisampled image, which a store or an atomic reaches
+   through a linear 2D view of its samples (G13's scheme): the image has one
+   level, and the samples sit together per pixel. The view's texel size steps
+   a layer, since a copy's store has no format.
+  -->
+  <struct name="PBE G15 software MSAA" size="8">
+    <field name="Aligned width" size="16" start="0" type="uint"/>
+    <field name="Sample size log2" size="3" start="16" type="uint"/>
+    <field name="Tile width" size="4" start="27" type="uint" modifier="log2"/>
+    <field name="Tile height" size="4" start="31" type="uint" modifier="log2"/>
+    <field name="Layer stride" size="27" start="35" type="uint" modifier="shr(7)"/>
+    <field name="Sample count log2" size="2" start="62" type="uint"/>
+  </struct>
+
+  <!--
+   G15's texture read state, from Apple's TextureGen4::encodeImageReadState.
+   The hardware reads 32 bytes per texture (the table's stride, verified);
+   the fourth word only carries compression. Word 0 bits 55:0 are G13's;
+   samples, mipmapping and compression move into word 0's top byte, the
+   address is the raw VA (44 bits of VA >> 4) and the levels move to the
+   extended word. Verified for linear 2D RGBA8 (boots #252, #256).
+  -->
+  <struct name="Texture G15" size="24">
+    <field name="Dimension" size="4" start="0" type="Texture dimension"/>
+    <field name="Layout" size="2" start="4" type="Layout"/>
+    <field name="Channels" size="7" start="6" type="Channels"/>
+    <field name="Type" size="3" start="13" type="Texture Type"/>
+    <field name="Swizzle R" size="3" start="16" type="Channel"/>
+    <field name="Swizzle G" size="3" start="19" type="Channel"/>
+    <field name="Swizzle B" size="3" start="22" type="Channel"/>
+    <field name="Swizzle A" size="3" start="25" type="Channel"/>
+    <field name="Width" size="14" start="28" type="uint" modifier="minus(1)"/>
+    <field name="Height" size="14" start="42" type="uint" modifier="minus(1)"/>
+    <!-- (samples >> 2) & 3 (Apple's encoder): 2 and 4 samples are "Sample
+         Count"'s codes, the dimension marks a multisampled texture -->
+    <field name="Samples" size="2" start="56" type="uint"/>
+    <field name="Mipmapped" size="1" start="58" type="bool"/>
+    <field name="Compressed" size="1" start="59" type="bool"/>
+    <!-- Sparse, G13's bits 104:107 moved: bit 60 sparse, 61:62 the page
+         size (1 16 KiB, 2 64 KiB, 3 256 KiB), so mode "Sparse" is 16 KiB
+         pages, with the address the sparse page table's; bit 63 what an
+         unmapped page reads (Apple's sparseSurfaceDefaultValue) -->
+    <field name="Mode" size="2" start="60" type="Image Mode"/>
+    <field name="Sparse default" size="1" start="63" type="bool"/>
+    <field name="Address" size="44" start="64" type="address" modifier="shr(4)"/>
+    <field name="sRGB" size="1" start="108" type="bool"/>
+    <field name="sRGB 2-channel" size="1" start="109" type="bool"/>
+    <!-- Linear: the row stride in 16-byte units, minus 1 -->
+    <field name="Stride" size="16" start="110" type="hex" modifier="shr(4)"/>
+    <field name="Depth" size="14" start="110" type="uint" modifier="minus(1)"/>
+    <field name="Page-aligned layers" size="1" start="126" type="bool"/>
+    <!-- Read the next word (set with several mip levels or compression) -->
+    <field name="Extended" size="1" start="127" type="bool"/>
+    <field name="Acceleration buffer" size="44" start="128" type="address" modifier="shr(4)"/>
+    <field name="First level" size="4" start="172" type="uint"/>
+    <field name="Last level" size="4" start="176" type="uint"/>
+  </struct>
+
   <struct name="Texture" size="24">
     <field name="Dimension" size="4" start="0" type="Texture dimension"/>
     <field name="Layout" size="2" start="4" type="Layout"/>
@@ -625,8 +742,28 @@
     <field name="Pipeline" size="26" start="6" type="address" modifier="shr(6)"/>
   </struct>
 
+  <!-- G15 has no register counts: words 0 and 1 hold the CF binding
+       table's VA, as Apple's emitFragmentProgramVariantAndArguments builds
+       them -->
+  <struct name="Fragment Shader Word 0 G15" size="4">
+    <field name="CF bindings high" size="16" start="0" type="hex"/>
+    <field name="CF binding count" size="7" start="16" type="uint"/>
+  </struct>
+
+  <struct name="Fragment Shader Word 1 G15" size="4">
+    <field name="CF bindings low" size="30" start="2" type="address" modifier="shr(2)"/>
+  </struct>
+
   <struct name="Fragment Shader Word 2" size="4">
     <field name="CF bindings" size="30" start="2" type="address" modifier="shr(2)"/>
+  </struct>
+
+  <!-- G15: the entry program's VA follows word 2. Apple sets bit 6 with depth
+       or stencil output and with fragment atomics (draws.md) -->
+  <struct name="Fragment Shader Pipeline G15" size="8">
+    <field name="Depth stencil output" size="1" start="6" type="bool"/>
+    <field name="Pipeline hi" size="10" start="22" type="hex"/>
+    <field name="Pipeline lo" size="32" start="1:0" type="hex"/>
   </struct>
 
   <struct name="Fragment Shader Word 3" size="4">
@@ -801,6 +938,14 @@
     <field name="Pipeline" size="26" start="6" type="address" modifier="shr(6)"/>
   </struct>
 
+  <!-- G15: word 1 is the entry program's VA, bits 47:38 at bit 22 of the
+       first word and bits 37:6 in the second, as every G15 pipeline pointer
+       (metal-compute.md) -->
+  <struct name="VDM State Vertex Shader Word 1 G15" size="8">
+    <field name="Pipeline hi" size="10" start="22" type="hex"/>
+    <field name="Pipeline lo" size="32" start="1:0" type="hex"/>
+  </struct>
+
   <struct name="VDM State Vertex Outputs" size="4">
     <field name="Output count 1" size="8" start="0" type="uint"/>
     <field name="Output count 2" size="8" start="8" type="uint"/>
@@ -905,6 +1050,13 @@
 
   <struct name="Index List: Buffer size" size="4">
     <field name="Size" size="32" start="0" type="uint" modifier="shr(2)"/>
+  </struct>
+
+  <!-- G15: an indexed draw ends with the index buffer address's bits 47:40
+       (Apple's G15 drawIndexedPrimitives writes it after the size; G13X's
+       does not) -->
+  <struct name="Index List: Buffer top" size="4">
+    <field name="Buffer top" size="8" start="0" type="hex"/>
   </struct>
 
   <struct name="Index List: Indirect buffer" size="8">
@@ -1051,6 +1203,39 @@
     <field name="X" size="32" start="0:0" type="uint"/>
     <field name="Y" size="32" start="1:0" type="uint"/>
     <field name="Z" size="32" start="2:0" type="uint"/>
+  </struct>
+
+  <!-- G15's launch has no register counts: the entry program loads them. Its
+       VA's bits 47:38 are at bit 22 of word 1, bits 37:6 in word 2. The stack
+       and spill counts (8 per 4 bytes) parallel the entry program's specTPR,
+       which sizes the per-thread memory, and Apple leaves them 0.
+       Multidimensional is clear for a grid of one row (y and z below 2), and
+       Complex is the shader's complexity hint (metal-compute.md) -->
+  <struct name="CDM Launch G15" size="12">
+    <field name="Stack" size="13" start="0" type="uint"/>
+    <field name="Multidimensional" size="1" start="19" type="bool"/>
+    <field name="Complex" size="1" start="23" type="bool"/>
+    <field name="Mode" size="2" start="27" type="CDM Mode"/>
+    <field name="Block Type" size="3" start="29" type="CDM Block Type" exact="Launch"/>
+    <field name="Spill" size="19" start="1:0" type="uint"/>
+    <field name="Pipeline hi" size="10" start="1:22" type="hex"/>
+    <field name="Pipeline lo" size="32" start="2:0" type="hex"/>
+  </struct>
+
+  <!-- G15: how the threadgroups spread over the clusters, after the launch
+       word. Metal's default is cluster group 1 with distribution 0 (and bit
+       30); distributions 5 and 6 and cluster groups 4 to 7 are its modes -->
+  <struct name="CDM Distribution G15" size="4">
+    <field name="Cluster group" size="3" start="0" type="uint"/>
+    <field name="Distribution" size="3" start="3" type="uint"/>
+    <field name="Unknown 30" size="1" start="30" type="bool"/>
+    <field name="Multiple AGCs" size="1" start="31" type="bool"/>
+  </struct>
+
+  <!-- G15: an indirect launch's VA, bits 47:32 then 31:0 -->
+  <struct name="CDM Indirect G15" size="8">
+    <field name="Address hi" size="16" start="0" type="hex"/>
+    <field name="Address lo" size="32" start="1:0" type="hex"/>
   </struct>
 
   <struct name="CDM Barrier" size="4">
