@@ -273,7 +273,7 @@ void agx3_emit_sample_loop_header(struct util_dynarray *out);
 void agx3_emit_sample_loop_footer(struct util_dynarray *out,
                                   unsigned nr_samples, unsigned footer_offset,
                                   unsigned loop_begin);
-unsigned agx3_instr_length(const uint8_t *code);
+unsigned agx3_instr_length(const uint8_t *code, size_t size);
 
 struct agx_shader_part {
    struct agx_shader_info info;

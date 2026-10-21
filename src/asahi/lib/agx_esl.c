@@ -275,8 +275,8 @@ esl_preamble(struct util_dynarray *out, const struct agx_esl_code *code,
       if (p[0] == 0x0e && p[1] == 0 && p[2] == 0 && p[3] == 0)
          return true;
 
-      unsigned len = agx3_instr_length(p);
-      if (!len || p + len > end)
+      unsigned len = agx3_instr_length(p, end - p);
+      if (!len)
          return false;
 
       memcpy(util_dynarray_grow_bytes(out, 1, len), p, len);

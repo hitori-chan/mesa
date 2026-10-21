@@ -508,7 +508,7 @@ a3_check(const struct a3 *a, uint8_t *out)
       }
    }
 
-   return agx3_instr_length(out) == a->length;
+   return agx3_instr_length(out, AGX3_MAX_BYTES) == a->length;
 }
 
 static void
@@ -3511,12 +3511,13 @@ agx3_emit_sample_loop_footer(struct util_dynarray *out, unsigned nr_samples,
    }
 }
 
-/* The length of the AGX3 instruction at code, 0 if none matches */
+/* The length of the AGX3 instruction in the size bytes at code, 0 if none
+ * matches within them */
 unsigned
-agx3_instr_length(const uint8_t *code)
+agx3_instr_length(const uint8_t *code, size_t size)
 {
    uint64_t raw[3] = {0};
-   for (unsigned i = 0; i < AGX3_MAX_BYTES; i++)
+   for (unsigned i = 0; i < MIN2(size, AGX3_MAX_BYTES); i++)
       raw[i / 8] |= (uint64_t)code[i] << (8 * (i % 8));
 
    for (unsigned i = 0; i < AGX3_NUM_INSTRS; i++) {
@@ -3539,7 +3540,7 @@ agx3_instr_length(const uint8_t *code)
          r[2] = 0;
       }
 
-      if ((r[0] & spec->exact[0]) == spec->value[0] &&
+      if (length <= size && (r[0] & spec->exact[0]) == spec->value[0] &&
           (r[1] & spec->exact[1]) == spec->value[1] &&
           (r[2] & spec->exact[2]) == spec->value[2])
          return length;
