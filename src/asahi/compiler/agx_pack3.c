@@ -1804,8 +1804,8 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
       a3_fail(a, "image load without the txf sampler");
    if (I->dim >= ARRAY_SIZE(a3_tex_auto))
       a3_fail(a, "texture dimension");
-   if (I->query_lod || I->sparse)
-      a3_fail(a, "texture query or sparse");
+   if (I->query_lod)
+      a3_fail(a, "texture LOD query");
    /* A cube is read in cube array mode (agx_nir_lower_cube_g15), whose cr2
     * (z) is free for the reference as a 2D array's is */
    if (I->shadow && I->dim != AGX_DIM_2D && I->dim != AGX_DIM_2D_ARRAY &&
@@ -1813,6 +1813,9 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
       a3_fail(a, "texture compare other than 2D, 2D array or cube array");
 
    bool gather = I->gather != AGX_GATHER_NONE;
+   /* A sparse read's mask carries its residency code in bit 4, which the
+    * hardware writes after the components (bit 81, texture.md) */
+   unsigned mask = I->mask & 0xf;
    bool off_word = a3_tex_offset_in_word(I);
    agx_index offset = off_word ? a3_tex_offset_word(I) : I->src[5];
    /* A fetch's level is F28's 12-bit immediate (Apple's loads have 0), in
@@ -1833,7 +1836,7 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
       a3_fail(a, "texture_load with an automatic LOD");
    if (coords.size != AGX_SIZE_32 || a3_tex_coords(I) > 4)
       a3_fail(a, "texture coordinates are not 32-bit or more than four");
-   if (I->mask == 0 || I->mask > 15)
+   if (mask == 0 || (I->mask > 15 && !I->sparse))
       a3_fail(a, "texture result mask");
    if (off_word &&
        (offset.type != AGX_INDEX_REGISTER || offset.size != AGX_SIZE_32))
@@ -1989,10 +1992,12 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
       a3_set(a, TEX_DST,
              a3_reg(a, TEX_DST, I->dest[0], 0, 0, a3_tex_mask[0xf]));
    } else {
-      a3_set(a, TEX_MASK, a3_tex_mask[I->mask]);
+      a3_set(a, TEX_MASK, a3_tex_mask[mask]);
       a3_set(a, TEX_DST,
-             a3_reg(a, TEX_DST, I->dest[0], 0, 0, a3_tex_mask[I->mask]));
+             a3_reg(a, TEX_DST, I->dest[0], 0, 0, a3_tex_mask[mask]));
    }
+   if (I->sparse)
+      a3_set(a, a3_op_at_bit(a, 81), 1);
    a3_set(a, TEX_TS, a3_tex_index(a, TEX_TS, A3_TS, texture));
    a3_set(a, TEX_CR, a3_kind_value(a, TEX_CR, A3_CR, 0, 0));
    a3_set(a, TEX_Q1, 1);
