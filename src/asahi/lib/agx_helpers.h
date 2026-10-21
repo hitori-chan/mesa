@@ -11,6 +11,7 @@
 #include "agx_abi.h"
 #include "agx_pack.h"
 #include "agx_ppp.h"
+#include "libagx_dgc.h"
 #include "libagx_shaders.h"
 
 #define AGX_MAX_OCCLUSION_QUERIES (32768)
@@ -54,6 +55,27 @@ agx_pack_txf_sampler(struct agx_sampler_packed *out)
       cfg.wrap_t = AGX_WRAP_CLAMP_TO_BORDER;
       cfg.wrap_r = AGX_WRAP_CLAMP_TO_BORDER;
       cfg.border_colour = AGX_BORDER_COLOUR_TRANSPARENT_BLACK;
+   }
+}
+
+/* G15: the sampler a background program loads its render targets with, a
+ * 32 B sampler table entry (agx_bg_eot.h) */
+static inline void
+agx_pack_bg_sampler_g15(void *out)
+{
+   memset(out, 0, 32);
+
+   agx_pack(out, SAMPLER, cfg) {
+      cfg.minimum_lod = 0.0f;
+      cfg.maximum_lod = INFINITY;
+      cfg.magnify = AGX_FILTER_LINEAR;
+      cfg.minify = AGX_FILTER_NEAREST;
+      cfg.mip_filter = AGX_MIP_FILTER_NONE;
+      cfg.wrap_s = AGX_WRAP_CLAMP_TO_EDGE;
+      cfg.wrap_t = AGX_WRAP_CLAMP_TO_EDGE;
+      cfg.wrap_r = AGX_WRAP_CLAMP_TO_EDGE;
+      cfg.pixel_coordinates = true;
+      cfg.compare_func = AGX_COMPARE_FUNC_ALWAYS;
    }
 }
 
@@ -200,6 +222,39 @@ agx_ppp_fragment_face_2(struct agx_ppp_update *ppp,
    agx_ppp_push_packed(ppp, &packed, FRAGMENT_FACE_2);
 }
 
+/*
+ * G15's fragment shader words before word 3: the coefficient bindings' VA,
+ * their offset as on G13, then the entry program's VA. With depth or stencil
+ * output Apple sets the pipeline word's bit 6 and word 3 (draws.md).
+ */
+static inline void
+agx_ppp_fragment_shader_g15(struct agx_ppp_update *ppp, uint64_t shader_base,
+                            uint32_t cf_bindings, unsigned nr_cf_bindings,
+                            uint32_t pipeline, bool zs_out)
+{
+   uint64_t cf = shader_base + cf_bindings;
+   uint64_t va = shader_base + pipeline;
+
+   agx_ppp_push(ppp, FRAGMENT_SHADER_WORD_0_G15, cfg) {
+      cfg.cf_bindings_high = cf >> 32;
+      cfg.cf_binding_count = nr_cf_bindings;
+   }
+
+   agx_ppp_push(ppp, FRAGMENT_SHADER_WORD_1_G15, cfg) {
+      cfg.cf_bindings_low = cf & BITFIELD64_MASK(32);
+   }
+
+   agx_ppp_push(ppp, FRAGMENT_SHADER_WORD_2, cfg) {
+      cfg.cf_bindings = cf_bindings;
+   }
+
+   agx_ppp_push(ppp, FRAGMENT_SHADER_PIPELINE_G15, cfg) {
+      cfg.depth_stencil_output = zs_out;
+      cfg.pipeline_hi = agx_g15_pipeline_hi(va);
+      cfg.pipeline_lo = agx_g15_pipeline_lo(va);
+   }
+}
+
 static inline uint32_t
 agx_pack_line_width(float line_width)
 {
@@ -217,7 +272,22 @@ agx_pack_line_width(float line_width)
  * Accordingly, the caller must pass some address that lives at least as long as
  * the texture descriptor itself.
  */
-static void
+static inline void
+agx_set_null_texture_g15(struct agx_texture_packed *tex)
+{
+   agx_pack(tex, TEXTURE_G15, cfg) {
+      cfg.layout = AGX_LAYOUT_TWIDDLED;
+      cfg.channels = AGX_CHANNELS_R8;
+      cfg.type = AGX_TEXTURE_TYPE_UNORM /* don't care */;
+      cfg.swizzle_r = AGX_CHANNEL_0;
+      cfg.swizzle_g = AGX_CHANNEL_0;
+      cfg.swizzle_b = AGX_CHANNEL_0;
+      cfg.swizzle_a = AGX_CHANNEL_0;
+      cfg.address = AGX_ZERO_PAGE_ADDRESS;
+   }
+}
+
+static inline void
 agx_set_null_texture(struct agx_texture_packed *tex)
 {
    agx_pack(tex, TEXTURE, cfg) {
@@ -239,6 +309,25 @@ agx_set_null_pbe(struct agx_pbe_packed *pbe)
       cfg.width = 1;
       cfg.height = 1;
       cfg.levels = 1;
+      cfg.layout = AGX_LAYOUT_TWIDDLED;
+      cfg.channels = AGX_CHANNELS_R8;
+      cfg.type = AGX_TEXTURE_TYPE_UNORM /* don't care */;
+      cfg.swizzle_r = AGX_CHANNEL_R;
+      cfg.swizzle_g = AGX_CHANNEL_R;
+      cfg.swizzle_b = AGX_CHANNEL_R;
+      cfg.swizzle_a = AGX_CHANNEL_R;
+      cfg.buffer = AGX_SCRATCH_PAGE_ADDRESS;
+   }
+}
+
+/* G15's (cmdbuf.xml's "PBE G15"): writes land in the scratch page, as G13's
+ * (not verified on the hardware) */
+static inline void
+agx_set_null_pbe_g15(struct agx_pbe_packed *pbe)
+{
+   agx_pack(pbe, PBE_G15, cfg) {
+      cfg.width = 1;
+      cfg.height = 1;
       cfg.layout = AGX_LAYOUT_TWIDDLED;
       cfg.channels = AGX_CHANNELS_R8;
       cfg.type = AGX_TEXTURE_TYPE_UNORM /* don't care */;

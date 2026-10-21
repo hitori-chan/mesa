@@ -26,6 +26,11 @@ extern "C" {
 /* u0-u255 inclusive, as pairs of 16-bits */
 #define AGX_NUM_UNIFORMS (512)
 
+/* G15: the reserved pairs r4:r5 and r6:r7 that a texture and a sampler table
+ * base in registers, or in uniforms past u32, move to before their
+ * instruction, which names pairs below r32 or u32 (halfregs) */
+#define AGX_G15_TEX_BASE_REG (8)
+
 /* Semi-arbitrary limit for spill slot allocation */
 #define AGX_NUM_MODELED_REGS_LOG2 (11)
 #define AGX_NUM_MODELED_REGS      (1 << AGX_NUM_MODELED_REGS_LOG2)
@@ -373,6 +378,10 @@ typedef struct {
       uint32_t bfi_mask;
       uint16_t pixel_offset;
       uint16_t zs;
+
+      /* G15: the coordinate register an st_vary stores from, or the first of
+       * an image_write's tuple */
+      uint8_t vary_cr;
       int16_t stack_size;
       enum agx_sr sr;
       enum agx_round round;
@@ -408,7 +417,10 @@ typedef struct {
    bool explicit_coords : 1;
 
    /* TODO: Handle iter ops more efficient */
-   enum agx_interpolation interpolation : 2;
+   enum agx_interpolation interpolation : 3;
+
+   /* G15's flag on the iteration of W's coefficients */
+   bool perspective : 1;
 
    /* TODO: Handle loads more efficiently */
    bool coherent : 1;
@@ -427,7 +439,7 @@ typedef struct {
    bool saturate : 1;
    unsigned mask : 4;
 
-   unsigned padding : 8;
+   unsigned padding : 6;
 } agx_instr;
 
 static inline void
@@ -487,6 +499,11 @@ typedef struct {
    bool is_preamble;
    unsigned scratch_size_B;
 
+   /* G15: register allocation stopped because the preamble needs more
+    * registers than G15 has and cannot spill (agx_ra)
+    */
+   bool ra_failed;
+
    struct list_head blocks; /* list of agx_block */
    struct agx_shader_info *out;
    struct agx_shader_key *key;
@@ -534,10 +551,19 @@ typedef struct {
     */
    agx_index preloaded[AGX_NUM_REGS];
 
+   /* G15: the vertex and instance IDs read from their special registers, or
+    * NULL
+    */
+   agx_index vertex_id_sr, instance_id_sr;
+
    /* Beginning of our stack allocation used for spilling, below that is
     * NIR-level scratch.
     */
    unsigned spill_base_B;
+
+   /* G15: a texture or sampler table base in registers, which goes through
+    * the reserved pairs at AGX_G15_TEX_BASE_REG */
+   bool g15_tex_base;
 
    /* Beginning of stack allocation used for parallel copy lowering */
    bool has_spill_pcopy_reserved;
@@ -1042,6 +1068,14 @@ void agx_opt_register_cache(agx_context *ctx);
 void agx_opt_break_if(agx_context *ctx);
 void agx_opt_jmp_none(agx_context *ctx);
 void agx_pack_binary(agx_context *ctx, struct util_dynarray *emission);
+void agx3_pack_instr(struct util_dynarray *emission,
+                     struct util_dynarray *fixups, const agx_instr *I,
+                     unsigned scratch_B);
+void agx3_fixup_branches(struct util_dynarray *emission,
+                         struct util_dynarray *fixups);
+unsigned agx3_stack_size(const agx_instr *I, unsigned scratch_B);
+unsigned agx3_cr_count(const agx_instr *I);
+void agx3_assign_crs(agx_context *ctx);
 
 #ifndef NDEBUG
 void agx_validate(agx_context *ctx, const char *after_str);
@@ -1092,7 +1126,7 @@ void agx_emit_parallel_copies(agx_builder *b, struct agx_copy *copies,
 void agx_compute_liveness(agx_context *ctx);
 void agx_liveness_ins_update(struct u_sparse_bitset *live, agx_instr *I);
 
-bool agx_nir_opt_preamble(nir_shader *s, unsigned *sizes);
+bool agx_nir_opt_preamble(nir_shader *s, unsigned *sizes, bool g15);
 bool agx_nir_lower_load_mask(nir_shader *shader);
 bool agx_nir_lower_ubo(nir_shader *shader);
 bool agx_nir_lower_shared_bitsize(nir_shader *shader);

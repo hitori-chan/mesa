@@ -372,6 +372,13 @@ agx_linear_allowed(const struct agx_resource *pres)
       if (pres->base.bind & PIPE_BIND_SHADER_IMAGE)
          return false;
 
+      /* G15's descriptors hold a linear texture's stride where a layered
+       * one's layer count goes, so a linear texture has one layer (Apple's
+       * linear textures are 2D only, texture.md) */
+      if (agx_device(pres->base.screen)->params.gpu_generation >= 15 &&
+          pres->base.array_size > 1)
+         return false;
+
       break;
 
    /* No other texture type can specify a stride */
@@ -403,6 +410,12 @@ agx_compression_allowed(const struct agx_resource *pres)
    /* Allow disabling compression for debugging */
    if (agx_device(pres->base.screen)->debug & AGX_DBG_NOCOMPRESS) {
       rsrc_debug(pres, "No compression: disabled\n");
+      return false;
+   }
+
+   /* G15's compressed descriptors are not known (texture.md) */
+   if (agx_device(pres->base.screen)->params.gpu_generation >= 15) {
+      rsrc_debug(pres, "No compression: G15\n");
       return false;
    }
 
@@ -466,6 +479,11 @@ agx_select_best_modifier(const struct agx_resource *pres)
        pres->base.bind & (PIPE_BIND_SCANOUT | PIPE_BIND_SHARED)) {
       return DRM_FORMAT_MOD_LINEAR;
    }
+
+   /* Debug: the layout the G15 hardware has run (ASAHI_MESA_DEBUG=linear) */
+   if (agx_linear_allowed(pres) &&
+       (agx_device(pres->base.screen)->debug & AGX_DBG_LINEAR))
+      return DRM_FORMAT_MOD_LINEAR;
 
    if (agx_twiddled_allowed(pres)) {
       if (agx_compression_allowed(pres))
@@ -1101,6 +1119,16 @@ agx_clear(struct pipe_context *pctx, unsigned buffers,
       union pipe_color_union clamped =
          util_clamp_color(batch->key.cbufs[rt].format, color);
 
+      /* An X channel holds 1, as the tilebuffer store writes it */
+      const struct util_format_description *desc =
+         util_format_description(batch->key.cbufs[rt].format);
+      if (desc->nr_channels == 4 && desc->swizzle[3] == PIPE_SWIZZLE_1) {
+         if (util_format_is_pure_integer(batch->key.cbufs[rt].format))
+            clamped.ui[3] = 1;
+         else
+            clamped.f[3] = 1.0f;
+      }
+
       batch->uploaded_clear_color[rt] = agx_pool_upload_aligned(
          &batch->pool, clamped.f, sizeof(clamped.f), 16);
    }
@@ -1220,9 +1248,9 @@ build_timestamp_offset(struct agx_batch *batch, unsigned offset)
 
 static void
 agx_cmdbuf(struct agx_device *dev, struct drm_asahi_cmd_render *c,
-           struct agx_pool *pool, struct agx_batch *batch,
-           struct pipe_framebuffer_state *framebuffer, uint64_t encoder_ptr,
-           uint64_t scissor_ptr, uint64_t depth_bias_ptr,
+           struct drm_asahi_cmd_render_g15 *g15, struct agx_pool *pool,
+           struct agx_batch *batch, struct pipe_framebuffer_state *framebuffer,
+           uint64_t encoder_ptr, uint64_t scissor_ptr, uint64_t depth_bias_ptr,
            uint64_t visibility_result_ptr, struct asahi_bg_eot pipeline_clear,
            struct asahi_bg_eot pipeline_load,
            struct asahi_bg_eot pipeline_store, bool clear_pipeline_textures,
@@ -1375,6 +1403,22 @@ agx_cmdbuf(struct agx_device *dev, struct drm_asahi_cmd_render *c,
    c->eot.usc = pipeline_store.usc | 4;
    c->partial_bg.usc = pipeline_load.usc | 4;
    c->partial_eot.usc = pipeline_store.usc | 4;
+
+   /* G15 takes each program as the binding word and the entry program's VA,
+    * and ignores the fields above. The binding words are demo15's (the
+    * background's 0xFFFF800000000040, the end of tile's 0); their meaning is
+    * not traced.
+    */
+   if (g15) {
+      const uint64_t bg_binding = 0xFFFF800000000040ull;
+
+      *g15 = (struct drm_asahi_cmd_render_g15){
+         .bg = {bg_binding, pipeline_clear.usc},
+         .eot = {0, pipeline_store.usc},
+         .partial_bg = {bg_binding, pipeline_load.usc},
+         .partial_eot = {0, pipeline_store.usc},
+      };
+   }
 
    agx_tilebuffer_set_drm_cmd(c, tib);
 
@@ -1546,7 +1590,8 @@ agx_flush_compute(struct agx_context *ctx, struct agx_batch *batch,
 
 static void
 agx_flush_render(struct agx_context *ctx, struct agx_batch *batch,
-                 struct drm_asahi_cmd_render *cmdbuf)
+                 struct drm_asahi_cmd_render *cmdbuf,
+                 struct drm_asahi_cmd_render_g15 *cmdbuf_g15)
 {
    struct agx_device *dev = agx_device(ctx->base.screen);
 
@@ -1596,11 +1641,12 @@ agx_flush_render(struct agx_context *ctx, struct agx_batch *batch,
     */
    agx_batch_add_bo(batch, batch->vdm.bo);
 
-   agx_cmdbuf(
-      dev, cmdbuf, &batch->pool, batch, &batch->key, batch->vdm.bo->va->addr,
-      scissor, zbias, agx_get_occlusion_heap(batch), pipeline_background,
-      pipeline_background_partial, pipeline_store, clear_pipeline_textures,
-      batch->clear_depth, batch->clear_stencil, &batch->tilebuffer_layout);
+   agx_cmdbuf(dev, cmdbuf, cmdbuf_g15, &batch->pool, batch, &batch->key,
+              batch->vdm.bo->va->addr, scissor, zbias,
+              agx_get_occlusion_heap(batch), pipeline_background,
+              pipeline_background_partial, pipeline_store,
+              clear_pipeline_textures, batch->clear_depth, batch->clear_stencil,
+              &batch->tilebuffer_layout);
 }
 
 void
@@ -1610,8 +1656,10 @@ agx_flush_batch(struct agx_context *ctx, struct agx_batch *batch)
    assert(!agx_batch_is_submitted(batch));
 
    struct drm_asahi_cmd_render render;
+   struct drm_asahi_cmd_render_g15 render_g15;
    struct drm_asahi_cmd_compute compute;
    bool has_vdm = false, has_cdm = false;
+   bool g15 = agx_device(ctx->base.screen)->params.gpu_generation >= 15;
 
    if (batch->cdm.bo) {
       agx_flush_compute(ctx, batch, &compute);
@@ -1619,7 +1667,7 @@ agx_flush_batch(struct agx_context *ctx, struct agx_batch *batch)
    }
 
    if (batch->vdm.bo && (batch->clear || batch->initialized)) {
-      agx_flush_render(ctx, batch, &render);
+      agx_flush_render(ctx, batch, &render, g15 ? &render_g15 : NULL);
       has_vdm = true;
    }
 
@@ -1629,7 +1677,8 @@ agx_flush_batch(struct agx_context *ctx, struct agx_batch *batch)
    }
 
    agx_batch_submit(ctx, batch, has_cdm ? &compute : NULL,
-                    has_vdm ? &render : NULL);
+                    has_vdm ? &render : NULL,
+                    has_vdm && g15 ? &render_g15 : NULL);
 }
 
 static void
@@ -2266,6 +2315,17 @@ agx_is_format_supported(struct pipe_screen *pscreen, enum pipe_format format,
       if ((usage & PIPE_BIND_RENDER_TARGET) &&
           (!ent.renderable || (tex_format == PIPE_FORMAT_R9G9B9E5_FLOAT)))
          return false;
+
+      /* G15 filters sRGB8 decoded to 12 bits and 10-bit unorm in quarter-LSB
+       * steps (smp.md), short of OpenCL's linear filter tolerances, which
+       * G13 meets. OpenCL 3.0 requires neither format. */
+      const struct util_format_description *desc =
+         util_format_description(tex_format);
+      if ((usage & PIPE_BIND_OPENCL) && (usage & PIPE_BIND_SAMPLER_VIEW) &&
+          agx_device(pscreen)->params.gpu_generation >= 15 &&
+          (util_format_is_srgb(tex_format) ||
+           (desc->channel[0].normalized && desc->channel[0].size == 10)))
+         return false;
    }
 
    if (usage & PIPE_BIND_DEPTH_STENCIL) {
@@ -2450,6 +2510,12 @@ agx_screen_create(int fd, struct renderonly *ro,
     */
    if (driQueryOptionb(config->options, "asahi_no_fp16"))
       agx_screen->dev.debug |= AGX_DBG_NO16;
+
+   /* G15's compressed images (the PBE's and texture's acceleration buffer
+    * words) are not understood yet
+    */
+   if (agx_screen->dev.params.gpu_generation >= 15)
+      agx_screen->dev.debug |= AGX_DBG_NOCOMPRESS;
 
    int ret =
       drmSyncobjCreate(agx_device(screen)->fd, 0, &agx_screen->flush_syncobj);

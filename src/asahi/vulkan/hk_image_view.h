@@ -27,8 +27,16 @@ struct hk_image_view {
          layered_background, emrt_texture;
 
       struct agx_pbe_packed storage, eot, layered_eot, emrt_pbe;
+
+      /* G15: the fourth word of the storage and spilled render target PBEs'
+       * 32 B slots (pack_pbe_g15) */
+      struct agx_pbe_g15_software_packed storage_g15_sw, emrt_g15_sw;
    } planes[3];
 };
 
 VK_DEFINE_NONDISP_HANDLE_CASTS(hk_image_view, vk.base, VkImageView,
                                VK_OBJECT_TYPE_IMAGE_VIEW)
+
+/* The format the hardware descriptors of a view plane name */
+enum pipe_format hk_image_view_plane_format(struct hk_image_view *view,
+                                            unsigned view_plane);

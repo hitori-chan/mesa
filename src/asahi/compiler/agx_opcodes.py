@@ -105,6 +105,7 @@ SPARSE = immediate("sparse", "bool")
 QUERY_LOD = immediate("query_lod", "bool")
 COHERENT = immediate("coherent", "bool")
 SCOREBOARD = immediate("scoreboard")
+PERSPECTIVE = immediate("perspective", "bool")
 ICOND = immediate("icond", "enum agx_icond")
 FCOND = immediate("fcond", "enum agx_fcond")
 NEST = immediate("nest")
@@ -145,6 +146,14 @@ SR = enum("sr", {
    144: 'helper_op',
    146: 'helper_arg_l',
    147: 'helper_arg_h',
+
+   # G15 only (the numbers are not hardware encodings): its vertex and
+   # instance IDs are special registers, where G13 preloads r5 and r6
+   256: 'vertex_id',
+   257: 'instance_id',
+   # the tile's layer, which Apple's end-of-tile program reads for its
+   # layered block writes (G13 reads threadgroup_position_in_grid.z)
+   258: 'layer_id',
 })
 
 ATOMIC_OPC = enum("atomic_opc", {
@@ -167,6 +176,8 @@ INTERPOLATION = enum("interpolation", {
     2: 'centroid',
     # We translate sample -> sample_register at pack time for simplicity
     3: 'sample_register',
+    # G15: at the coordinates in the second source (itrcoords' result)
+    4: 'coords',
 })
 
 SIMD_OP = enum("simd_op", {
@@ -258,15 +269,16 @@ op("icmp", _, srcs = 2, imms = [ICOND, INVERT_COND])
 op("fcmp", _, srcs = 2, imms = [FCOND, INVERT_COND])
 
 # sources are coordinates, LOD, texture bindless base (zero for texture state
-# registers), texture, sampler, shadow/offset
+# registers), texture, sampler, shadow/offset, and on G15 the sampler table's
+# base (a 64-bit uniform; null on G13, which has sampler state registers)
 op("texture_sample",
       encoding = (0x31, 8, 10), # XXX WRONG SIZE
-      srcs = 6, imms = [DIM, LOD_MODE, MASK, SCOREBOARD, OFFSET, SHADOW,
+      srcs = 7, imms = [DIM, LOD_MODE, MASK, SCOREBOARD, OFFSET, SHADOW,
                         QUERY_LOD, GATHER, SPARSE])
 for memory, can_reorder in [("texture", True), ("image", False)]:
     coherency = [COHERENT] if not can_reorder else []
     op(f"{memory}_load", encoding = (0x71, 8, 10), # XXX WRONG SIZE
-       srcs = 6, imms = [DIM, LOD_MODE, MASK, SCOREBOARD, OFFSET, SPARSE] + coherency,
+       srcs = 7, imms = [DIM, LOD_MODE, MASK, SCOREBOARD, OFFSET, SPARSE] + coherency,
        can_reorder = can_reorder,
        schedule_class = "none" if can_reorder else "load")
 
@@ -368,12 +380,18 @@ op("bitop", (0x7E, 6, _), srcs = 2, imms = [TRUTH_TABLE])
 op("intl", (0x3E, 6, _), srcs = 2, imms = [])
 op("convert", (0x3E | L, 6, _), srcs = 2, imms = [ROUND]) 
 
-# Sources are the coeffient register and the sample index (if applicable)
-op("iter", (0x21, 8, _), srcs = 2, imms = [CHANNELS, INTERPOLATION])
+# Sources are the coeffient register and the sample index (if applicable).
+# perspective is G15's flag on the iteration of W's coefficients, which its
+# compiler follows with a reciprocal (G13 has iterproj instead).
+op("iter", (0x21, 8, _), srcs = 2, imms = [CHANNELS, INTERPOLATION, PERSPECTIVE])
 
 # Sources are the coeffient register for the varying, the coefficient register
 # for W, and the sample index (if applicable)
 op("iterproj", (0x21, 8, _), srcs = 3, imms = [CHANNELS, INTERPOLATION])
+
+# G15: the interpolation coordinates (a 32-bit register) of a sample by its
+# index or of the centroid, from a 32-bit register (agx_pack3.c)
+op("itrcoords", _, srcs = 1, imms = [INTERPOLATION])
 
 op("ldcf", (0xA1, 8, _), srcs = 1, imms = [CHANNELS])
 op("st_vary", None, dests = 0, srcs = 2, can_eliminate = False)

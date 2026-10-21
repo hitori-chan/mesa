@@ -95,14 +95,39 @@ struct agx_shader_info {
    /* Scratch memory allocation in bytes for main/preamble respectively */
    unsigned scratch_size, preamble_scratch_size;
 
+   /* G15: the stack registers in bytes per thread (specTPR) */
+   unsigned stack_size;
+
+   /* G15: the coordinate registers (cr) the shader uses, the highest written
+    * plus one: the specTPR backs each with 8 bytes per thread (Apple's
+    * kernels and render programs, 2026-10-16) */
+   unsigned cr_count;
+
    /* Size in bytes of the main sahder */
    unsigned main_size;
+
+   /* G15: the pixel fences (wait_pix masks) the shader waits on. A fragment
+    * program signals them at its end, and its entry program releases all the
+    * others (demo15's fragment shader waits 0x20C and signals it, its entry
+    * program releases 0x2F3).
+    */
+   uint16_t pix_wait_mask;
+
+   /* G15: the fences of pix_wait_mask the program releases itself before its
+    * end (fence 1 right after zs_emit, as Apple's depth-output shader)
+    */
+   uint16_t pix_signal_mask;
 
    /* Does the shader have a preamble? If so, it is at offset preamble_offset.
     * The main shader is at offset main_offset. The preamble is executed first.
     */
    bool has_preamble;
    unsigned preamble_offset, main_offset;
+
+   /* G15: the preamble did not fit in the registers, so the shader is
+    * compiled again without one (agx_compile_shader_nir)
+    */
+   bool preamble_too_big;
 
    /* Does the shader read the tilebuffer? */
    bool reads_tib;
@@ -118,6 +143,9 @@ struct agx_shader_info {
 
    /* Does the shader control the sample mask? */
    bool writes_sample_mask;
+
+   /* Does the shader write depth or stencil (zs_emit)? */
+   bool writes_zs;
 
    /* Depth layout, never equal to NONE */
    enum gl_frag_depth_layout depth_layout;
@@ -175,6 +203,10 @@ struct agx_precompiled_kernel_info {
    uint16_t local_size;
    uint16_t imageblock_stride;
    bool uses_txf;
+
+   /* G15's entry program (lib/agx_esl.c) */
+   uint32_t stack_size;
+   uint32_t cr_count;
 };
 
 static inline struct agx_precompiled_kernel_info
@@ -197,8 +229,51 @@ agx_compact_kernel_info(struct agx_shader_info *info)
       .local_size = info->local_size,
       .imageblock_stride = info->imageblock_stride,
       .uses_txf = info->uses_txf,
+      .stack_size = info->stack_size,
+      .cr_count = info->cr_count,
    };
 }
+
+/* G15: a preamble reads pushed uniform word N from register N +
+ * AGX_G15_PUSH_REG, where the entry program loads it (lib/agx_esl.c) */
+#define AGX_G15_PUSH_REG 2
+
+/* Only the words below this go through those registers: a fragment program
+ * whose entry program wrote r95 hung the GPU, one that stopped at r94 ran
+ * (boots #391-#393: shaders with 40 promoted constants, whose loads reach
+ * word 93; synthetic ones with 80 to 120), so the entry program stays
+ * below r90 */
+#define AGX_G15_PUSH_WORDS 88
+
+/* The registers a G15 program may use, in 16-bit halves: r0-r93. A main
+ * program that used r97 hung the GPU and one that stopped at r81 ran; an entry
+ * program that wrote r95 hung and one that stopped at r94 ran
+ * (compute-program.md, Registers). Apple's compiler gives G15C 96 GPRs
+ * (AGCLLVMG15TargetLowerer +0x42C = 0x60), and no shader of the QuartzCore
+ * corpus uses a register above r93. The allocator spills the rest to the
+ * thread-private stack. Its register file is a multiple of 8 halves (16 with a
+ * 6-word gradient vector), so it ends at r91 (r87) in practice, which still
+ * holds the pushed words a preamble reads in place (r2 to r89).
+ * AGX_G15_MAX_REG=N makes rN the highest register instead, for an experiment
+ * (in the same steps; the disk cache ignores it). */
+#define AGX_G15_MAX_HALFREGS 188
+
+/* G15 (AGX3) building blocks for the entry program, from the compiler's
+ * G15 packer (agx_pack3.c). Registers and uniforms are 32-bit indices. */
+struct util_dynarray;
+void agx3_emit_mov_imm(struct util_dynarray *out, unsigned reg, uint32_t imm);
+void agx3_emit_load(struct util_dynarray *out, unsigned slot, unsigned dst,
+                    unsigned base, unsigned index16, unsigned count);
+void agx3_emit_wait(struct util_dynarray *out, unsigned slot);
+void agx3_emit_uniform_store(struct util_dynarray *out, unsigned uniform,
+                             unsigned src);
+void agx3_emit_stop(struct util_dynarray *out);
+void agx3_emit_signal_pix(struct util_dynarray *out, unsigned mask);
+void agx3_emit_sample_loop_header(struct util_dynarray *out);
+void agx3_emit_sample_loop_footer(struct util_dynarray *out,
+                                  unsigned nr_samples, unsigned footer_offset,
+                                  unsigned loop_begin);
+unsigned agx3_instr_length(const uint8_t *code);
 
 struct agx_shader_part {
    struct agx_shader_info info;
@@ -256,6 +331,13 @@ struct agx_fs_shader_key {
 
    /* Base coefficient register. 0 for API shaders but nonzero for FS prolog */
    uint8_t cf_base;
+
+   /* The tilebuffer's sample count, or 0 if the shader does not know it (a
+    * main fragment shader is compiled before the render pass is). G15 takes
+    * the sample mask of a tile access literally: all samples is
+    * (1 << nr_samples) - 1, not G13's 0xFF.
+    */
+   uint8_t nr_samples;
 };
 
 struct agx_device_key {
@@ -268,6 +350,12 @@ struct agx_device_key {
     * kernel, but that's functionally a hardware feature.
     */
    bool soft_fault;
+
+   /* GPU generation (13, 14 or 15). 0 is G13/G14 machine code, which is what
+    * shaders built without a device (e.g. precompiled libagx) get. G15 (M3)
+    * has its own instruction encoding, AGX3.
+    */
+   uint8_t gpu_generation;
 };
 
 struct agx_shader_key {
@@ -309,6 +397,11 @@ struct agx_shader_key {
     */
    bool secondary;
 
+   /* Set for a vertex shader linked after a vertex prolog, which exports the
+    * vertex and instance IDs. G15 reads them from special registers otherwise.
+    */
+   bool vs_prolog;
+
    union {
       struct agx_fs_shader_key fs;
    };
@@ -318,6 +411,7 @@ uint64_t agx_gather_texcoords(nir_shader *nir);
 
 void agx_preprocess_nir(nir_shader *nir);
 bool agx_nir_lower_discard_zs_emit(nir_shader *s);
+bool agx_nir_lower_stencil_only_g15(nir_shader *s);
 bool agx_nir_lower_sample_mask(nir_shader *s);
 bool agx_nir_lower_interpolation(nir_shader *s);
 

@@ -12,6 +12,7 @@
 #include "hk_physical_device.h"
 
 #include "asahi/lib/agx_bo.h"
+#include "util/os_misc.h"
 #include "util/u_atomic.h"
 
 #include <inttypes.h>
@@ -259,6 +260,18 @@ fail_alloc:
    return result;
 }
 
+/* A placed mapping covers the memory, which may be smaller than its BO: the BO
+ * cache hands out BOs up to twice the size asked for. Its granule is the page,
+ * the placed alignment the device advertises.
+ */
+static size_t
+hk_placed_map_size(const struct hk_device_memory *mem)
+{
+   uint64_t page = 16384;
+   os_get_page_size(&page);
+   return align64(mem->vk.size, page);
+}
+
 VKAPI_ATTR void VKAPI_CALL
 hk_FreeMemory(VkDevice device, VkDeviceMemory _mem,
               const VkAllocationCallbacks *pAllocator)
@@ -276,6 +289,10 @@ hk_FreeMemory(VkDevice device, VkDeviceMemory _mem,
 
    if (mem->bo->flags & (AGX_BO_SHAREABLE | AGX_BO_SHARED))
       hk_remove_ext_bo(dev, mem->bo);
+
+   /* A placed mapping beside the BO's own goes with the memory */
+   if (mem->map && mem->map != mem->bo->_map)
+      munmap(mem->map, hk_placed_map_size(mem));
 
    agx_bo_unreference(&dev->dev, mem->bo);
 
@@ -330,7 +347,25 @@ hk_MapMemory2KHR(VkDevice device, const VkMemoryMapInfoKHR *pMemoryMapInfo,
                        "Memory object already mapped.");
    }
 
-   mem->map = agx_bo_map_placed(mem->bo, fixed_addr);
+   /* A placed mapping is a mapping of its own, of the memory's size: the BO
+    * may be mapped already (the BO cache keeps mappings, and binding an image
+    * maps its memory), and may be larger than the memory. The driver keeps
+    * using the BO's own mapping.
+    */
+   if (fixed_addr) {
+      void *bo_map = mem->bo->_map;
+      mem->bo->_map = NULL;
+      dev->dev.ops.bo_mmap(&dev->dev, mem->bo, fixed_addr,
+                           hk_placed_map_size(mem));
+      mem->map = mem->bo->_map;
+      mem->bo->_map = bo_map;
+   } else {
+      mem->map = agx_bo_map(mem->bo);
+   }
+
+   if (mem->map == NULL)
+      return vk_error(dev, VK_ERROR_MEMORY_MAP_FAILED);
+
    assert(!fixed_addr || mem->map == fixed_addr);
    *ppData = mem->map + offset;
 
@@ -346,22 +381,26 @@ hk_UnmapMemory2KHR(VkDevice device,
    if (mem == NULL)
       return VK_SUCCESS;
 
+   /* A placed mapping beside the BO's own (hk_MapMemory2KHR) */
+   bool beside = mem->map && mem->map != mem->bo->_map;
+   void *map = beside ? mem->map : mem->bo->_map;
+   size_t size = beside ? hk_placed_map_size(mem) : mem->bo->size;
+
    if (pMemoryUnmapInfo->flags & VK_MEMORY_UNMAP_RESERVE_BIT_EXT) {
       VK_FROM_HANDLE(hk_device, dev, device);
 
-      void *err = mmap(mem->bo->_map, mem->bo->size, PROT_NONE,
+      void *err = mmap(map, size, PROT_NONE,
                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
       if (err == MAP_FAILED) {
          return vk_errorf(dev, VK_ERROR_MEMORY_MAP_FAILED,
                           "Failed to map over original mapping");
       }
-      mem->bo->_map = NULL;
-   } else {
-      if (mem->bo->_map) {
-         munmap(mem->bo->_map, mem->bo->size);
-         mem->bo->_map = NULL;
-      }
+   } else if (map) {
+      munmap(map, size);
    }
+
+   if (!beside)
+      mem->bo->_map = NULL;
 
    mem->map = NULL;
 

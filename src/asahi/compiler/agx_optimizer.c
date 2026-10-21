@@ -134,7 +134,7 @@ image_write_source_can_be_immediate(agx_instr *I, unsigned s)
 }
 
 static void
-agx_optimizer_inline_imm(agx_instr **defs, agx_instr *I)
+agx_optimizer_inline_imm(agx_instr **defs, agx_instr *I, bool g15)
 {
    agx_foreach_ssa_src(I, s) {
       agx_index src = I->src[s];
@@ -150,7 +150,40 @@ agx_optimizer_inline_imm(agx_instr **defs, agx_instr *I)
 
       bool float_src = agx_is_float_src(I, s);
 
+      /* G15 takes a constant texel offset as F42's 12-bit immediate, x, y
+       * and z as nibbles at bits 0, 4 and 8; the IR's offset is in the LOD
+       * word's layout (x at 12, y at 28, z at 0: lower_tex_offset_g15) */
+      if (g15 && s == 5 &&
+          (I->op == AGX_OPCODE_TEXTURE_SAMPLE ||
+           I->op == AGX_OPCODE_TEXTURE_LOAD)) {
+         uint64_t w = def->imm;
+
+         if (I->offset && !I->shadow && !(w & ~0xf000f00full)) {
+            unsigned f42 =
+               ((w >> 12) & 0xf) | (((w >> 28) & 0xf) << 4) | ((w & 0xf) << 8);
+
+            /* the 32-bit word it stands for */
+            I->src[s] = agx_immediate(f42);
+            I->src[s].size = AGX_SIZE_32;
+         }
+
+         continue;
+      }
+
+      /* G15 fetches at the level F28's immediate gives: an integer, and the
+       * level is the one source of a fetch that can be an immediate (an
+       * image load is a fetch there) */
+      if (I->op == AGX_OPCODE_TEXTURE_LOAD ||
+          (g15 && I->op == AGX_OPCODE_IMAGE_LOAD)) {
+         if (!g15 || s != 1)
+            continue;
+
+         float_src = false;
+      }
+
       if (I->op == AGX_OPCODE_ST_TILE && s == 0)
+         continue;
+      if (I->op == AGX_OPCODE_ITRCOORDS)
          continue;
       if (I->op == AGX_OPCODE_ZS_EMIT && s != 0)
          continue;
@@ -344,6 +377,10 @@ agx_optimizer_copyprop(agx_context *ctx, agx_instr **defs, agx_instr *I)
 
       /* Immediate inlining happens elsewhere */
       if (def->src[0].type == AGX_INDEX_IMMEDIATE)
+         continue;
+
+      /* G15's itrcoords is packed from a GPR only */
+      if (I->op == AGX_OPCODE_ITRCOORDS)
          continue;
 
       /* ALU instructions cannot take 64-bit */
@@ -560,11 +597,13 @@ agx_optimizer_forward(agx_context *ctx)
           I->op == AGX_OPCODE_FCMP)
          agx_optimizer_fmov(defs, I);
 
-      /* Inline immediates if we can. TODO: systematic */
-      if (I->op != AGX_OPCODE_COLLECT && I->op != AGX_OPCODE_IMAGE_LOAD &&
-          I->op != AGX_OPCODE_TEXTURE_LOAD &&
+      /* Inline immediates if we can (a G15 image load's level).
+       * TODO: systematic */
+      bool g15 = ctx->key && ctx->key->dev.gpu_generation >= 15;
+      if (I->op != AGX_OPCODE_COLLECT &&
+          (I->op != AGX_OPCODE_IMAGE_LOAD || g15) &&
           I->op != AGX_OPCODE_UNIFORM_STORE && I->op != AGX_OPCODE_EXPORT)
-         agx_optimizer_inline_imm(defs, I);
+         agx_optimizer_inline_imm(defs, I, g15);
 
       if (I->op == AGX_OPCODE_IF_ICMP) {
          agx_optimizer_if_not(defs, I);

@@ -76,6 +76,7 @@ static const struct debug_named_value agx_debug_options[] = {
    {"1queue",    AGX_DBG_1QUEUE,   "Force usage of a single queue for multiple contexts"},
    {"nosoft",    AGX_DBG_NOSOFT,   "Disable soft fault optimizations"},
    {"nomerge",   AGX_DBG_NOMERGE,  "Disable control stream merging"},
+   {"linear",    AGX_DBG_LINEAR,   "Prefer linear layouts where allowed"},
    {"bodumpverbose", AGX_DBG_BODUMPVERBOSE,   "Include extra info with dumps"},
    DEBUG_NAMED_VALUE_END
 };
@@ -228,7 +229,8 @@ agx_bo_alloc(struct agx_device *dev, size_t size, size_t align,
 }
 
 static void
-agx_bo_mmap(struct agx_device *dev, struct agx_bo *bo, void *fixed_addr)
+agx_bo_mmap(struct agx_device *dev, struct agx_bo *bo, void *fixed_addr,
+            size_t size)
 {
    assert(bo->_map == NULL && "not double mapped");
 
@@ -243,14 +245,13 @@ agx_bo_mmap(struct agx_device *dev, struct agx_bo *bo, void *fixed_addr)
    }
 
    flags = MAP_SHARED | (fixed_addr ? MAP_FIXED : 0);
-   bo->_map = os_mmap(fixed_addr, bo->size, PROT_READ | PROT_WRITE, flags,
-                      dev->fd, gem_mmap_offset.offset);
+   bo->_map = os_mmap(fixed_addr, size, PROT_READ | PROT_WRITE, flags, dev->fd,
+                      gem_mmap_offset.offset);
    if (bo->_map == MAP_FAILED) {
       bo->_map = NULL;
-      fprintf(stderr,
-              "mmap failed: result=%p size=0x%llx fd=%i offset=0x%llx %m\n",
-              bo->_map, (long long)bo->size, dev->fd,
-              (long long)gem_mmap_offset.offset);
+      fprintf(
+         stderr, "mmap failed: result=%p size=0x%llx fd=%i offset=0x%llx %m\n",
+         bo->_map, (long long)size, dev->fd, (long long)gem_mmap_offset.offset);
    }
 }
 
@@ -621,6 +622,20 @@ agx_open_device(void *memctx, struct agx_device *dev)
 
    uint64_t user_size = vm_create.kernel_start - user_start;
 
+   /* G15: the parameter buffer's blocks in the kernel range and the VDM's
+    * streams must be in [64 GiB, 576 GiB) (the 40-bit form). The kernel range
+    * at 512 GiB, user memory below it.
+    */
+   const uint64_t g15_kernel_start = 512ull << 30;
+
+   if (dev->params.gpu_generation >= 15) {
+      assert(kernel_size <= (64ull << 30));
+
+      vm_create.kernel_start = g15_kernel_start;
+      vm_create.kernel_end = g15_kernel_start + kernel_size;
+      user_size = g15_kernel_start - user_start;
+   }
+
    int ret = asahi_simple_ioctl(dev, DRM_IOCTL_ASAHI_VM_CREATE, &vm_create);
    if (ret) {
       fprintf(stderr, "DRM_IOCTL_ASAHI_VM_CREATE failed: %m\n");
@@ -635,8 +650,13 @@ agx_open_device(void *memctx, struct agx_device *dev)
    /* ...so when we cut user size in half to emulate sparse buffers... */
    user_size /= 2;
 
-   /* ...or maybe in quarters if necessary to disambiguate */
-   if (user_size == user_start) {
+   /* ...or maybe in quarters if necessary to disambiguate. With user_start
+    * a power of two, the window [user_start, user_start + user_size) must
+    * fit on one side of the sparse bit, so user_size must be a strictly
+    * smaller power of two. On G15 (a 4 TiB user VA space) the rounded size
+    * is larger than user_start and has to be cut further.
+    */
+   while (user_size >= user_start) {
       user_size /= 2;
    }
 
@@ -653,13 +673,21 @@ agx_open_device(void *memctx, struct agx_device *dev)
 
    glsl_type_singleton_init_or_ref();
 
-   if (agx_gather_device_key(dev).needs_g13x_coherency == U_TRISTATE_YES) {
+   if (dev->params.gpu_generation >= 15) {
+      dev->libagx_programs = libagx_g15;
+   } else if (agx_gather_device_key(dev).needs_g13x_coherency ==
+              U_TRISTATE_YES) {
       dev->libagx_programs = libagx_g13x;
    } else {
       dev->libagx_programs = libagx_g13g;
    }
 
-   if (dev->params.gpu_generation >= 14 && dev->params.num_clusters_total > 1) {
+   if (dev->params.gpu_generation >= 15 && dev->params.num_clusters_total > 1) {
+      dev->chip = AGX_CHIP_G15X;
+   } else if (dev->params.gpu_generation >= 15) {
+      dev->chip = AGX_CHIP_G15G;
+   } else if (dev->params.gpu_generation >= 14 &&
+              dev->params.num_clusters_total > 1) {
       dev->chip = AGX_CHIP_G14X;
    } else if (dev->params.gpu_generation >= 14) {
       dev->chip = AGX_CHIP_G14G;
@@ -956,5 +984,6 @@ agx_gather_device_key(struct agx_device *dev)
    return (struct agx_device_key){
       .needs_g13x_coherency = u_tristate_make(g13x_coh),
       .soft_fault = agx_has_soft_fault(dev),
+      .gpu_generation = dev->params.gpu_generation,
    };
 }

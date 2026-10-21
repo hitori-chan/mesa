@@ -18,14 +18,23 @@
 #include <agx_pack.h>
 
 #include "asahi/isa/disasm.h"
+#include "asahi/libagx/libagx_dgc.h"
 #include "util/u_hexdump.h"
+#include "agx_esl.h"
 #include "decode.h"
 
 struct libagxdecode_config lib_config;
 
 static void
-agx_disassemble(void *_code, size_t maxlen, FILE *fp)
+agx_disassemble(void *_code, size_t maxlen, FILE *fp, unsigned gpu_generation)
 {
+   /* AGX3.xml does not describe every G15 instruction yet: the disassembly
+    * flags what it does not know */
+   if (gpu_generation >= 15) {
+      agx3_disassemble(_code, maxlen, fp);
+      return;
+   }
+
    bool errors = agx2_disassemble(_code, maxlen, fp);
    assert(!errors);
 }
@@ -323,7 +332,7 @@ agxdecode_usc(struct agxdecode_ctx *ctx, const uint8_t *map,
       size_t size =
          agxdecode_grab_mapped(ctx, decode_usc(ctx, ctrl.code), &buf);
 
-      agx_disassemble(buf, size, agxdecode_dump_stream);
+      agx_disassemble(buf, size, agxdecode_dump_stream, params->gpu_generation);
       return STATE_DONE;
    }
 
@@ -336,7 +345,7 @@ agxdecode_usc(struct agxdecode_ctx *ctx, const uint8_t *map,
       size_t size =
          agxdecode_grab_mapped(ctx, decode_usc(ctx, ctrl.code), &buf);
 
-      agx_disassemble(buf, size, agxdecode_dump_stream);
+      agx_disassemble(buf, size, agxdecode_dump_stream, params->gpu_generation);
       agxdecode_log("\n");
 
       return AGX_USC_SHADER_LENGTH;
@@ -420,6 +429,64 @@ agxdecode_usc(struct agxdecode_ctx *ctx, const uint8_t *map,
 #undef USC_CASE
 }
 
+/* G15: a pipeline is an entry program (agx_esl.c) up to its stop, which names
+ * the shader with ldshdr */
+static void
+agxdecode_entry_program(struct agxdecode_ctx *ctx, const char *label,
+                        uint64_t va)
+{
+   void *map;
+   size_t size = agxdecode_grab_mapped(ctx, va, &map);
+   uint8_t *code = map;
+   uint64_t shader = 0;
+
+   fprintf(agxdecode_dump_stream, "%s entry program (%" PRIx64 "):\n", label,
+           va);
+
+   for (size_t i = 0; i < size;) {
+      if (!shader && i + 9 <= size)
+         shader = agx_esl_ldshdr_va(code + i);
+
+      signed n = agx3_disassemble_instr((BITSET_WORD *)(code + i),
+                                        agxdecode_dump_stream, i, true);
+
+      /* stop */
+      if (!memcmp(code + i, (uint8_t[]){0x0e, 0, 0, 0}, 4))
+         break;
+
+      i += abs(n);
+   }
+
+   if (shader) {
+      void *buf;
+      size_t shader_size = agxdecode_grab_mapped(ctx, shader, &buf);
+
+      fprintf(agxdecode_dump_stream, "%s shader (%" PRIx64 "):\n", label,
+              shader);
+      agx3_disassemble(buf, shader_size, agxdecode_dump_stream);
+   }
+
+   agxdecode_log("\n");
+}
+
+static void
+agxdecode_cf_bindings(struct agxdecode_ctx *ctx, uint64_t va, unsigned count)
+{
+   uint8_t buf[128];
+   uint8_t *cf = buf;
+
+   agxdecode_fetch_gpu_array(ctx, va, buf);
+   u_hexdump(agxdecode_dump_stream, cf, 128, false);
+
+   DUMP_CL(CF_BINDING_HEADER, cf, "Coefficient binding header:");
+   cf += AGX_CF_BINDING_HEADER_LENGTH;
+
+   for (unsigned i = 0; i < count; ++i) {
+      DUMP_CL(CF_BINDING, cf, "Coefficient binding:");
+      cf += AGX_CF_BINDING_LENGTH;
+   }
+}
+
 #define PPP_PRINT(map, header_name, struct_name, human)                        \
    if (hdr.header_name) {                                                      \
       if (((map + AGX_##struct_name##_LENGTH) > (base + size))) {              \
@@ -443,6 +510,17 @@ agxdecode_record(struct agxdecode_ctx *ctx, uint64_t va, size_t size,
 
    agx_unpack(agxdecode_dump_stream, map, PPP_HEADER, hdr);
    map += AGX_PPP_HEADER_LENGTH;
+
+   /* G15 has no fragment control bits: the front face bits select the
+    * fragment control words too, which keep G13's place */
+   bool g15 = params->gpu_generation >= 15;
+   if (g15) {
+      if (hdr.fragment_control || hdr.fragment_control_2)
+         fprintf(agxdecode_dump_stream, "XXX: fragment control bit on G15\n");
+
+      hdr.fragment_control = hdr.fragment_front_face;
+      hdr.fragment_control_2 = hdr.fragment_front_face_2;
+   }
 
    PPP_PRINT(map, fragment_control, FRAGMENT_CONTROL, "Fragment control");
    PPP_PRINT(map, fragment_control_2, FRAGMENT_CONTROL, "Fragment control 2");
@@ -488,11 +566,60 @@ agxdecode_record(struct agxdecode_ctx *ctx, uint64_t va, size_t size,
    PPP_PRINT(map, w_clamp, W_CLAMP, "W clamp");
    PPP_PRINT(map, output_select, OUTPUT_SELECT, "Output select");
    PPP_PRINT(map, varying_counts_32, VARYING_COUNTS, "Varying counts 32");
-   PPP_PRINT(map, varying_counts_16, VARYING_COUNTS, "Varying counts 16");
+
+   /* G15: the 32-bit counts' element holds the 16-bit counts too, and bit
+    * 19's word is 0 in Apple's streams */
+   if (g15) {
+      PPP_PRINT(map, varying_counts_32, VARYING_COUNTS, "Varying counts 16");
+
+      if (hdr.varying_counts_16) {
+         fprintf(agxdecode_dump_stream, "Bit 19 word:\n");
+         u_hexdump(agxdecode_dump_stream, map, 4, false);
+         map += 4;
+      }
+   } else {
+      PPP_PRINT(map, varying_counts_16, VARYING_COUNTS, "Varying counts 16");
+   }
    PPP_PRINT(map, cull, CULL, "Cull");
    PPP_PRINT(map, cull_2, CULL_2, "Cull 2");
 
-   if (hdr.fragment_shader) {
+   /* G15: words 0 and 1 hold the CF bindings' VA, and the entry program's
+    * follows word 2 */
+   if (hdr.fragment_shader && g15) {
+      if (map + 24 > base + size) {
+         fprintf(agxdecode_dump_stream, "Buffer overrun in PPP update\n");
+         return;
+      }
+
+      agx_unpack(agxdecode_dump_stream, map, FRAGMENT_SHADER_WORD_0_G15,
+                 frag_0);
+      agx_unpack(agxdecode_dump_stream, map + 4, FRAGMENT_SHADER_WORD_1_G15,
+                 frag_1);
+      agx_unpack(agxdecode_dump_stream, map + 8, FRAGMENT_SHADER_WORD_2,
+                 frag_2);
+      agx_unpack(agxdecode_dump_stream, map + 12, FRAGMENT_SHADER_PIPELINE_G15,
+                 pipeline);
+
+      agxdecode_entry_program(
+         ctx, "Fragment",
+         agx_g15_pipeline_va(pipeline.pipeline_hi, pipeline.pipeline_lo));
+
+      /* Word 2 keeps G13's offset, 0 without bindings */
+      if (frag_2.cf_bindings) {
+         agxdecode_cf_bindings(
+            ctx,
+            ((uint64_t)frag_0.cf_bindings_high << 32) | frag_1.cf_bindings_low,
+            frag_0.cf_binding_count);
+      }
+
+      DUMP_CL(FRAGMENT_SHADER_WORD_0_G15, map, "Fragment shader word 0");
+      DUMP_CL(FRAGMENT_SHADER_WORD_1_G15, map + 4, "Fragment shader word 1");
+      DUMP_CL(FRAGMENT_SHADER_WORD_2, map + 8, "Fragment shader word 2");
+      DUMP_CL(FRAGMENT_SHADER_PIPELINE_G15, map + 12,
+              "Fragment shader pipeline");
+      DUMP_CL(FRAGMENT_SHADER_WORD_3, map + 20, "Fragment shader word 3");
+      map += 24;
+   } else if (hdr.fragment_shader) {
       agx_unpack(agxdecode_dump_stream, map, FRAGMENT_SHADER_WORD_0, frag_0);
       agx_unpack(agxdecode_dump_stream, map + 4, FRAGMENT_SHADER_WORD_1,
                  frag_1);
@@ -503,20 +630,8 @@ agxdecode_record(struct agxdecode_ctx *ctx, uint64_t va, size_t size,
                          &frag_0.sampler_state_register_count);
 
       if (frag_2.cf_bindings) {
-         uint8_t buf[128];
-         uint8_t *cf = buf;
-
-         agxdecode_fetch_gpu_array(ctx, decode_usc(ctx, frag_2.cf_bindings),
-                                   buf);
-         u_hexdump(agxdecode_dump_stream, cf, 128, false);
-
-         DUMP_CL(CF_BINDING_HEADER, cf, "Coefficient binding header:");
-         cf += AGX_CF_BINDING_HEADER_LENGTH;
-
-         for (unsigned i = 0; i < frag_0.cf_binding_count; ++i) {
-            DUMP_CL(CF_BINDING, cf, "Coefficient binding:");
-            cf += AGX_CF_BINDING_LENGTH;
-         }
+         agxdecode_cf_bindings(ctx, decode_usc(ctx, frag_2.cf_bindings),
+                               frag_0.cf_binding_count);
       }
 
       DUMP_CL(FRAGMENT_SHADER_WORD_0, map, "Fragment shader word 0");
@@ -537,6 +652,38 @@ agxdecode_record(struct agxdecode_ctx *ctx, uint64_t va, size_t size,
    assert(map == (base + size) && "invalid size of PPP update");
 }
 
+/* G15's launch: the entry program, the distribution, then G13's sizes */
+static unsigned
+agxdecode_cdm_launch_g15(struct agxdecode_ctx *ctx, const uint8_t *map)
+{
+   const uint8_t *start = map;
+
+   agx_unpack(agxdecode_dump_stream, map, CDM_LAUNCH_G15, launch);
+   DUMP_UNPACKED(CDM_LAUNCH_G15, launch, "Compute\n");
+   agxdecode_entry_program(
+      ctx, "Compute",
+      agx_g15_pipeline_va(launch.pipeline_hi, launch.pipeline_lo));
+   map += AGX_CDM_LAUNCH_G15_LENGTH;
+
+   DUMP_CL(CDM_DISTRIBUTION_G15, map, "Distribution");
+   map += AGX_CDM_DISTRIBUTION_G15_LENGTH;
+
+   if (launch.mode == AGX_CDM_MODE_DIRECT) {
+      DUMP_CL(CDM_GLOBAL_SIZE, map, "Global size");
+      map += AGX_CDM_GLOBAL_SIZE_LENGTH;
+   } else {
+      DUMP_CL(CDM_INDIRECT_G15, map, "Indirect buffer");
+      map += AGX_CDM_INDIRECT_G15_LENGTH;
+   }
+
+   if (launch.mode != AGX_CDM_MODE_INDIRECT_LOCAL) {
+      DUMP_CL(CDM_LOCAL_SIZE, map, "Local size");
+      map += AGX_CDM_LOCAL_SIZE_LENGTH;
+   }
+
+   return map - start;
+}
+
 static unsigned
 agxdecode_cdm(struct agxdecode_ctx *ctx, const uint8_t *map, uint64_t *link,
               bool verbose, decoder_params *params, UNUSED void *data)
@@ -546,6 +693,9 @@ agxdecode_cdm(struct agxdecode_ctx *ctx, const uint8_t *map, uint64_t *link,
 
    switch (block_type) {
    case AGX_CDM_BLOCK_TYPE_LAUNCH: {
+      if (params->gpu_generation >= 15)
+         return agxdecode_cdm_launch_g15(ctx, map);
+
       size_t length =
          AGX_CDM_LAUNCH_WORD_0_LENGTH + AGX_CDM_LAUNCH_WORD_1_LENGTH;
 
@@ -635,9 +785,19 @@ agxdecode_vdm(struct agxdecode_ctx *ctx, const uint8_t *map, uint64_t *link,
    }
 
    case AGX_VDM_BLOCK_TYPE_PPP_STATE_UPDATE: {
+      /* G15: the drivers pad a vertex state update with a zero word */
+      if (params->gpu_generation >= 15 && !memcmp(map, (uint8_t[4]){0}, 4)) {
+         agxdecode_log("Padding\n");
+         return 4;
+      }
+
       agx_unpack(agxdecode_dump_stream, map, PPP_STATE, cmd);
 
       uint64_t address = (((uint64_t)cmd.pointer_hi) << 32) | cmd.pointer_lo;
+
+      /* G15 reads the pointer in the 40-bit form, VA - 64 GiB (agx_vdm_va) */
+      if (params->gpu_generation >= 15)
+         address += 64ull << 30;
 
       if (!lib_config.read_gpu_mem) {
          struct agx_bo *mem =
@@ -679,7 +839,19 @@ agxdecode_vdm(struct agxdecode_ctx *ctx, const uint8_t *map, uint64_t *link,
       VDM_PRINT(vertex_shader_word_0, VERTEX_SHADER_WORD_0,
                 "Vertex shader word 0");
 
-      if (hdr.vertex_shader_word_1_present) {
+      if (hdr.vertex_shader_word_1_present && params->gpu_generation >= 15) {
+         agx_unpack(agxdecode_dump_stream, map,
+                    VDM_STATE_VERTEX_SHADER_WORD_1_G15, word_1);
+         DUMP_UNPACKED(VDM_STATE_VERTEX_SHADER_WORD_1_G15, word_1,
+                       "Vertex shader word 1\n");
+         agxdecode_entry_program(
+            ctx, "Vertex",
+            agx_g15_pipeline_va(word_1.pipeline_hi, word_1.pipeline_lo));
+
+         map += AGX_VDM_STATE_VERTEX_SHADER_WORD_1_G15_LENGTH;
+         length += AGX_VDM_STATE_VERTEX_SHADER_WORD_1_G15_LENGTH;
+         hdr.vertex_shader_word_1_present = false;
+      } else if (hdr.vertex_shader_word_1_present) {
          agx_unpack(agxdecode_dump_stream, map, VDM_STATE_VERTEX_SHADER_WORD_1,
                     word_1);
          fprintf(agxdecode_dump_stream, "Pipeline %X\n",
@@ -696,7 +868,10 @@ agxdecode_vdm(struct agxdecode_ctx *ctx, const uint8_t *map, uint64_t *link,
       VDM_PRINT(tessellation_scale, TESSELLATION_SCALE, "Tessellation scale");
 
 #undef VDM_PRINT
-      return hdr.tessellation_scale_present ? length : ALIGN_POT(length, 8);
+      if (hdr.tessellation_scale_present || params->gpu_generation >= 15)
+         return length;
+      else
+         return ALIGN_POT(length, 8);
    }
 
    case AGX_VDM_BLOCK_TYPE_INDEX_LIST: {
@@ -719,6 +894,11 @@ agxdecode_vdm(struct agxdecode_ctx *ctx, const uint8_t *map, uint64_t *link,
       IDX_PRINT(indirect_buffer, INDIRECT_BUFFER, "Indirect buffer");
       IDX_PRINT(index_buffer_size, BUFFER_SIZE, "Index buffer size");
 
+      if (params->gpu_generation >= 15 && hdr.index_buffer_present) {
+         DUMP_CL(INDEX_LIST_BUFFER_TOP, map, "Index buffer top");
+         length += AGX_INDEX_LIST_BUFFER_TOP_LENGTH;
+      }
+
 #undef IDX_PRINT
       return length;
    }
@@ -727,6 +907,10 @@ agxdecode_vdm(struct agxdecode_ctx *ctx, const uint8_t *map, uint64_t *link,
       agx_unpack(agxdecode_dump_stream, map, VDM_STREAM_LINK, hdr);
       DUMP_UNPACKED(VDM_STREAM_LINK, hdr, "Stream Link\n");
       *link = hdr.target_lo | (((uint64_t)hdr.target_hi) << 32);
+
+      /* G15: the 40-bit form, as the PPP pointers */
+      if (params->gpu_generation >= 15)
+         *link += 64ull << 30;
       return hdr.with_return ? STATE_CALL : STATE_LINK;
    }
 
@@ -794,14 +978,15 @@ agxdecode_sampler_heap(struct agxdecode_ctx *ctx, uint64_t heap, unsigned count)
 }
 
 static void
-agxdecode_helper(struct agxdecode_ctx *ctx, const char *prefix, uint64_t helper)
+agxdecode_helper(struct agxdecode_ctx *ctx, decoder_params *params,
+                 const char *prefix, uint64_t helper)
 {
    if (helper & 1) {
       fprintf(agxdecode_dump_stream, "%s helper program:\n", prefix);
       uint8_t buf[1024];
       agx_disassemble(
          buf, agxdecode_fetch_gpu_array(ctx, decode_usc(ctx, helper & ~1), buf),
-         agxdecode_dump_stream);
+         agxdecode_dump_stream, params->gpu_generation);
    }
 }
 
@@ -834,24 +1019,42 @@ agxdecode_drm_cmd_render(struct agxdecode_ctx *ctx,
    DUMP_FIELD(c, "%d", sample_size_B);
    DUMP_FIELD(c, "%d", utile_width_px);
    DUMP_FIELD(c, "%d", utile_height_px);
-   DUMP_FIELD(c, "0x%x", bg.usc);
-   DUMP_FIELD(c, "0x%x", bg.rsrc_spec);
-   agxdecode_stateful(ctx, decode_usc(ctx, c->bg.usc & ~0x7), "Load pipeline",
-                      agxdecode_usc, verbose, params, NULL);
-   DUMP_FIELD(c, "0x%x", eot.usc);
-   DUMP_FIELD(c, "0x%x", eot.rsrc_spec);
-   agxdecode_stateful(ctx, decode_usc(ctx, c->eot.usc & ~0x7), "Store pipeline",
-                      agxdecode_usc, verbose, params, NULL);
-   DUMP_FIELD(c, "0x%x", partial_bg.usc);
-   DUMP_FIELD(c, "0x%x", partial_bg.rsrc_spec);
-   agxdecode_stateful(ctx, decode_usc(ctx, c->partial_bg.usc & ~0x7),
-                      "Partial reload pipeline", agxdecode_usc, verbose, params,
-                      NULL);
-   DUMP_FIELD(c, "0x%x", partial_eot.usc);
-   DUMP_FIELD(c, "0x%x", partial_eot.rsrc_spec);
-   agxdecode_stateful(ctx, decode_usc(ctx, c->partial_eot.usc & ~0x7),
-                      "Partial store pipeline", agxdecode_usc, verbose, params,
-                      NULL);
+
+   /* G15: struct drm_asahi_cmd_render_g15 follows, with the programs */
+   if (params->gpu_generation >= 15) {
+      struct drm_asahi_cmd_render_g15 *g = (void *)(c + 1);
+      static const char *labels[] = {"Load", "Store", "Partial reload",
+                                     "Partial store"};
+      __u64 *programs[] = {g->bg, g->eot, g->partial_bg, g->partial_eot};
+
+      for (unsigned i = 0; i < ARRAY_SIZE(programs); ++i) {
+         fprintf(agxdecode_dump_stream, "%s binding = 0x%llx\n", labels[i],
+                 programs[i][0]);
+
+         if (programs[i][1])
+            agxdecode_entry_program(ctx, labels[i], programs[i][1]);
+      }
+   } else {
+      DUMP_FIELD(c, "0x%x", bg.usc);
+      DUMP_FIELD(c, "0x%x", bg.rsrc_spec);
+      agxdecode_stateful(ctx, decode_usc(ctx, c->bg.usc & ~0x7),
+                         "Load pipeline", agxdecode_usc, verbose, params, NULL);
+      DUMP_FIELD(c, "0x%x", eot.usc);
+      DUMP_FIELD(c, "0x%x", eot.rsrc_spec);
+      agxdecode_stateful(ctx, decode_usc(ctx, c->eot.usc & ~0x7),
+                         "Store pipeline", agxdecode_usc, verbose, params,
+                         NULL);
+      DUMP_FIELD(c, "0x%x", partial_bg.usc);
+      DUMP_FIELD(c, "0x%x", partial_bg.rsrc_spec);
+      agxdecode_stateful(ctx, decode_usc(ctx, c->partial_bg.usc & ~0x7),
+                         "Partial reload pipeline", agxdecode_usc, verbose,
+                         params, NULL);
+      DUMP_FIELD(c, "0x%x", partial_eot.usc);
+      DUMP_FIELD(c, "0x%x", partial_eot.rsrc_spec);
+      agxdecode_stateful(ctx, decode_usc(ctx, c->partial_eot.usc & ~0x7),
+                         "Partial store pipeline", agxdecode_usc, verbose,
+                         params, NULL);
+   }
 
    DUMP_FIELD(c, "0x%x", isp_zls_pixels);
    DUMP_FIELD(c, "0x%x", isp_bgobjdepth);
@@ -859,8 +1062,8 @@ agxdecode_drm_cmd_render(struct agxdecode_ctx *ctx,
 
    agxdecode_sampler_heap(ctx, c->sampler_heap, c->sampler_count);
 
-   agxdecode_helper(ctx, "Vertex", c->vertex_helper.binary);
-   agxdecode_helper(ctx, "Fragment", c->fragment_helper.binary);
+   agxdecode_helper(ctx, params, "Vertex", c->vertex_helper.binary);
+   agxdecode_helper(ctx, params, "Fragment", c->fragment_helper.binary);
 }
 
 static void
@@ -874,7 +1077,7 @@ agxdecode_drm_cmd_compute(struct agxdecode_ctx *ctx,
                       verbose, params, NULL);
 
    agxdecode_sampler_heap(ctx, c->sampler_heap, c->sampler_count);
-   agxdecode_helper(ctx, "Compute", c->helper.binary);
+   agxdecode_helper(ctx, params, "Compute", c->helper.binary);
 }
 
 static void

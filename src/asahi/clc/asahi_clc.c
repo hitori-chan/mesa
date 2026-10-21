@@ -24,7 +24,17 @@
 #include "util/macros.h"
 #include <sys/mman.h>
 
-const char *targets[] = {"g13g", "g13x"};
+const char *targets[] = {"g13g", "g13x", "g15"};
+
+/* Kernels G15 has no build of: the helper program's doorbells, stack
+ * mappings and core ID, and decompression's image loads (G15 has neither the
+ * helper nor compression yet). Their entries are NULL. */
+static bool
+skip_for_target(const nir_function *func, const char *target)
+{
+   return !strcmp(target, "g15") && (!strcmp(func->name, "libagx_helper") ||
+                                     !strcmp(func->name, "libagx_decompress"));
+}
 
 #define foreach_target(target)                                                 \
    for (const char **target = &targets[0];                                     \
@@ -174,7 +184,7 @@ compile(void *memctx, const uint32_t *spirv, size_t spirv_size)
 
    NIR_PASS(_, nir, agx_nir_lower_texture_early, false /* support_lod_bias */);
    NIR_PASS(_, nir, agx_nir_lower_texture);
-   NIR_PASS(_, nir, agx_nir_lower_multisampled_image_store);
+   NIR_PASS(_, nir, agx_nir_lower_multisampled_image_store, false);
 
    optimize(nir);
 
@@ -336,6 +346,12 @@ main(int argc, char **argv)
             if (strcmp(*target, remap_variant(libfunc, v, *target)))
                continue;
 
+            if (skip_for_target(libfunc, *target)) {
+               fprintf(fp_c, "#define %s_%u_%s NULL\n", libfunc->name, v,
+                       *target);
+               continue;
+            }
+
             struct agx_shader_part compiled;
             bool is_helper = !strcmp(libfunc->name, "libagx_helper");
             struct agx_shader_key key = {
@@ -355,6 +371,9 @@ main(int argc, char **argv)
                key.dev.needs_g13x_coherency =
                   u_tristate_make(!strcmp(*target, "g13x"));
             }
+
+            if (!strcmp(*target, "g15"))
+               key.dev.gpu_generation = 15;
 
             nir_shader *clone = nir_shader_clone(NULL, s);
             agx_compile_shader_nir(clone, &key, &compiled);

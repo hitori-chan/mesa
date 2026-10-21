@@ -30,6 +30,23 @@ struct agx_linked_shader {
    /* Whether the program is a no-op and can be skipped. */
    bool no_op;
 
+   /* G15: the pixel fences the program waits on (it signals them at its end;
+    * its entry program releases the others)
+    */
+   uint16_t pix_wait_mask;
+
+   /* G15: the fences of pix_wait_mask a part releases itself before the end */
+   uint16_t pix_signal_mask;
+
+   /* Whether the program writes depth or stencil (G15's fragment state) */
+   bool writes_zs;
+
+   /* Size in bytes of the linked program (G15's entry program wants it) */
+   unsigned main_size;
+
+   /* G15: coefficient registers the linked program writes (specTPR) */
+   unsigned cr_count;
+
    /* Coefficient register bindings */
    struct agx_varyings_fs cf;
 
@@ -257,6 +274,10 @@ struct agx_fs_epilog_key {
    enum pipe_format rt_formats[8];
    uint8_t nr_samples;
    bool force_small_tile;
+
+   /* G15: texture handles count 32 B entries, spilled render targets are
+    * read by a fetch (agx_tilebuffer_layout::g15) */
+   bool g15;
 };
 
 void agx_nir_vs_prolog(struct nir_builder *b, const void *key_);

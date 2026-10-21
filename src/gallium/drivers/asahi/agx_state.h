@@ -177,6 +177,9 @@ struct PACKED agx_stage_uniforms {
     */
    uint64_t texture_base;
 
+   /* G15: the sampler table (32 B entries, entry 0 the txf sampler) */
+   uint64_t sampler_base;
+
    /* Uniform buffer objects */
    uint64_t ubo_base[PIPE_MAX_CONSTANT_BUFFERS];
    uint32_t ubo_size[PIPE_MAX_CONSTANT_BUFFERS];
@@ -468,6 +471,12 @@ struct agx_zsa {
    struct pipe_depth_stencil_alpha_state base;
    struct agx_fragment_face_packed depth;
    struct agx_fragment_stencil_packed front_stencil, back_stencil;
+
+   /* G15: with neither depth writes nor a stencil test, enable a stencil test
+    * that always passes and masks nothing, as Apple's Metal driver does for a
+    * pass without a depth attachment (without it nothing is drawn).
+    */
+   bool g15_stencil_always;
 
    /* PIPE_CLEAR_* bitmask corresponding to this depth/stencil state */
    uint32_t load, store;
@@ -1008,13 +1017,16 @@ void agx_set_ssbo_uniforms(struct agx_batch *batch, mesa_shader_stage stage);
 bool agx_nir_lower_point_size(nir_shader *nir, bool insert_write);
 
 bool agx_nir_lower_sysvals(nir_shader *shader, mesa_shader_stage desc_stage,
-                           bool lower_draw_params);
+                           bool lower_draw_params, bool g15);
 
 bool agx_nir_layout_uniforms(nir_shader *shader,
                              struct agx_compiled_shader *compiled,
-                             unsigned *push_size);
+                             unsigned *push_size, bool g15);
 
-bool agx_nir_lower_bindings(nir_shader *shader, bool *uses_bindless_samplers);
+bool agx_nir_lower_bindings(nir_shader *shader, bool *uses_bindless_samplers,
+                            bool g15);
+
+bool agx_nir_lower_txf_samplers_g15(nir_shader *shader);
 
 bool agx_batch_is_active(struct agx_batch *batch);
 bool agx_batch_is_submitted(struct agx_batch *batch);
@@ -1070,10 +1082,13 @@ agx_batch_add_bo(struct agx_batch *batch, struct agx_bo *bo)
 
 struct drm_asahi_cmd_compute;
 struct drm_asahi_cmd_render;
+struct drm_asahi_cmd_render_g15;
 
+/* render_g15 is the render command's G15 part, NULL on other generations */
 void agx_batch_submit(struct agx_context *ctx, struct agx_batch *batch,
                       struct drm_asahi_cmd_compute *compute,
-                      struct drm_asahi_cmd_render *render);
+                      struct drm_asahi_cmd_render *render,
+                      struct drm_asahi_cmd_render_g15 *render_g15);
 
 void agx_flush_batch(struct agx_context *ctx, struct agx_batch *batch);
 void agx_flush_batch_for_reason(struct agx_context *ctx,

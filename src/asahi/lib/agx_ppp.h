@@ -69,6 +69,41 @@ agx_ppp_update_size(struct AGX_PPP_HEADER *present)
    return size;
 }
 
+/*
+ * G15 has no fragment control bits: the front face bit also selects the
+ * fragment control word and the front face 2 bit fragment control 2, in G13's
+ * element order (control, control 2, face, face 2: boot #309). The 32-bit and
+ * 16-bit varying counts are one 8-byte element under the counts 32 bit, as
+ * Apple's Metal driver emits them, and the fragment shader words end with the
+ * entry program's VA. Rewrites the header for the generation and returns the
+ * update's size; *fc and *fc2 say whether to push fragment control and
+ * fragment control 2.
+ */
+static inline size_t
+agx_ppp_update_size_gen(struct AGX_PPP_HEADER *present, unsigned gen, bool *fc,
+                        bool *fc2)
+{
+   *fc = present->fragment_control;
+   *fc2 = present->fragment_control_2;
+
+   if (gen < 15)
+      return agx_ppp_update_size(present);
+
+   present->fragment_front_face |= *fc;
+   present->fragment_front_face_2 |= *fc2;
+   *fc = present->fragment_front_face;
+   *fc2 = present->fragment_front_face_2;
+   present->fragment_control = present->fragment_control_2 = false;
+   present->varying_counts_16 = false;
+
+   size_t size = agx_ppp_update_size(present);
+   size += AGX_FRAGMENT_CONTROL_LENGTH * (*fc + *fc2);
+   size += present->varying_counts_32 ? AGX_VARYING_COUNTS_LENGTH : 0;
+   size +=
+      present->fragment_shader ? AGX_FRAGMENT_SHADER_PIPELINE_G15_LENGTH : 0;
+   return size;
+}
+
 static inline bool
 agx_ppp_validate(struct agx_ppp_update *ppp, size_t size)
 {

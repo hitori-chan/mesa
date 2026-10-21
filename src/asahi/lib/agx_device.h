@@ -48,6 +48,7 @@ enum agx_dbg {
    AGX_DBG_FEEDBACK = BITFIELD_BIT(20),
    AGX_DBG_1QUEUE = BITFIELD_BIT(21),
    AGX_DBG_NOMERGE = BITFIELD_BIT(22),
+   AGX_DBG_LINEAR = BITFIELD_BIT(23),
 };
 
 /* How many power-of-two levels in the BO cache do we want? 2^14 minimum chosen
@@ -76,7 +77,8 @@ typedef struct {
                               enum agx_bo_flags flags);
    int (*bo_bind)(struct agx_device *dev, struct drm_asahi_gem_bind_op *ops,
                   uint32_t count);
-   void (*bo_mmap)(struct agx_device *dev, struct agx_bo *bo, void *fixed_addr);
+   void (*bo_mmap)(struct agx_device *dev, struct agx_bo *bo, void *fixed_addr,
+                   size_t size);
    ssize_t (*get_params)(struct agx_device *dev, void *buf, size_t size);
    int (*submit)(struct agx_device *dev, struct drm_asahi_submit *submit,
                  struct agx_submit_virt *virt);
@@ -120,6 +122,7 @@ struct agx_device {
    uint64_t shader_base;
    struct util_vma_heap main_heap;
    struct util_vma_heap usc_heap;
+
    uint64_t guard_size;
 
    /* To emulate sparse-resident buffers, we map buffers in both the bottom half
@@ -206,7 +209,7 @@ static inline void *
 agx_bo_map_placed(struct agx_bo *bo, void *fixed_addr)
 {
    if (!bo->_map)
-      bo->dev->ops.bo_mmap(bo->dev, bo, fixed_addr);
+      bo->dev->ops.bo_mmap(bo->dev, bo, fixed_addr, bo->size);
 
    return bo->_map;
 }
@@ -222,6 +225,26 @@ agx_has_soft_fault(struct agx_device *dev)
 {
    return (dev->params.features & DRM_ASAHI_FEATURE_SOFT_FAULTS) &&
           !(dev->debug & AGX_DBG_NOSOFT);
+}
+
+/* G15: the 40-bit form the VDM reads its stream's pointers in (PPP updates,
+ * stream links): VA - 64 GiB
+ */
+static inline uint64_t
+agx_vdm_va(const struct agx_device *dev, uint64_t addr)
+{
+   if (dev->params.gpu_generation < 15)
+      return addr;
+
+   assert(addr >= (64ull << 30) && addr < (576ull << 30));
+   return addr - (64ull << 30);
+}
+
+static inline struct agx_ptr
+agx_vdm_ptr(const struct agx_device *dev, struct agx_ptr ptr)
+{
+   ptr.gpu = agx_vdm_va(dev, ptr.gpu);
+   return ptr;
 }
 
 static uint32_t

@@ -15,6 +15,7 @@
 #include "hk_descriptor_set_layout.h"
 #include "hk_device.h"
 #include "hk_entrypoints.h"
+#include "hk_image.h"
 #include "hk_image_view.h"
 #include "hk_physical_device.h"
 #include "hk_sampler.h"
@@ -52,12 +53,141 @@ write_desc(struct hk_descriptor_set *set, uint32_t binding, uint32_t elem,
    memcpy(dst, desc_data, desc_size);
 }
 
+/* The format a G15 custom border is packed for: the view's (a combined
+ * descriptor), else the sampler's. A stencil view reads its S8 plane, also the
+ * stencil of a combined format. A sampler made without one, written alone,
+ * gets the border's 32-bit words as they are (not verified).
+ */
+static enum pipe_format
+g15_border_format(const struct hk_sampler *sampler, struct hk_image_view *view,
+                  unsigned plane)
+{
+   if (view && view->vk.aspects == VK_IMAGE_ASPECT_STENCIL_BIT)
+      return PIPE_FORMAT_S8_UINT;
+
+   if (view)
+      return hk_image_view_plane_format(view, plane);
+
+   if (sampler->vk.format != VK_FORMAT_UNDEFINED)
+      return hk_format_to_pipe_format(sampler->vk.format);
+
+   return vk_border_color_is_int(sampler->vk.border_color)
+             ? PIPE_FORMAT_R32G32B32A32_UINT
+             : PIPE_FORMAT_R32G32B32A32_FLOAT;
+}
+
+/* G15's opaque black puts its 1 in the format's last channel, the red of an
+ * RGBA4 view (A4B4G4R4 in memory) and the blue of a BGRA4 one (dEQP-VK
+ * sampler clamp_to_border_opaque_black). With the view known, a format whose
+ * alpha is an earlier channel takes it as a custom border, packed for it.
+ */
+static void
+g15_opaque_black_as_custom(struct hk_sampled_image_descriptor_g15 *desc,
+                           struct hk_image_view *view, unsigned plane)
+{
+   enum pipe_format format = hk_image_view_plane_format(view, plane);
+   if (util_format_description(format)->swizzle[3] >= PIPE_SWIZZLE_W)
+      return;
+
+   agx_unpack(NULL, &desc->sampler, SAMPLER, state);
+   if (state.border_colour != AGX_BORDER_COLOUR_OPAQUE_BLACK)
+      return;
+
+   agx_pack(&desc->sampler, SAMPLER, cfg) {
+      cfg = state;
+      cfg.border_colour = AGX_BORDER_COLOUR_CUSTOM;
+   }
+
+   bool integer = util_format_is_pure_integer(format);
+   const uint32_t black[4] = {0, 0, 0, integer ? 1 : fui(1.0)};
+   agx_pack_border(&desc->border, black, format);
+}
+
+/* G15's layout of a sampled image descriptor (hk_descriptor_set.h) */
+static void
+write_sampled_image_view_desc_g15(struct hk_descriptor_set *set,
+                                  const VkDescriptorImageInfo *const info,
+                                  uint32_t binding, uint32_t elem,
+                                  VkDescriptorType descriptor_type)
+{
+   struct hk_sampled_image_descriptor_g15 desc[3] = {};
+
+   for (unsigned i = 0; i < 3; ++i) {
+      agx_set_null_texture_g15(&desc[i].tex);
+      desc[i].clamp_0_sampler_index_or_negative = -1;
+   }
+
+   uint8_t plane_count = 1;
+   bool ia = (descriptor_type == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT);
+   struct hk_image_view *view = NULL;
+
+   /* An image without a sampler fetches (txf) with the txf sampler */
+   if (descriptor_type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE || ia) {
+      for (unsigned i = 0; i < 3; ++i)
+         agx_pack_txf_sampler(&desc[i].sampler);
+   }
+
+   if (descriptor_type != VK_DESCRIPTOR_TYPE_SAMPLER && info &&
+       info->imageView != VK_NULL_HANDLE) {
+      view = hk_image_view_from_handle(info->imageView);
+
+      plane_count = view->plane_count;
+      for (uint8_t plane = 0; plane < plane_count; plane++) {
+         desc[plane].tex =
+            ia ? view->planes[plane].ia : view->planes[plane].sampled;
+
+         float min_lod = MAX2(view->vk.min_lod - view->vk.base_mip_level, 0.0);
+
+         desc[plane].min_lod_fp16 = _mesa_float_to_half(min_lod);
+         desc[plane].min_lod_uint16 = min_lod;
+      }
+   }
+
+   if (descriptor_type == VK_DESCRIPTOR_TYPE_SAMPLER ||
+       descriptor_type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
+      const struct hk_descriptor_set_binding_layout *binding_layout =
+         &set->layout->binding[binding];
+
+      struct hk_sampler *sampler;
+      if (binding_layout->immutable_samplers) {
+         sampler = binding_layout->immutable_samplers[elem];
+      } else {
+         sampler = hk_sampler_from_handle(info->sampler);
+      }
+
+      plane_count = MAX2(plane_count, sampler->plane_count);
+
+      for (uint8_t plane = 0; plane < plane_count; plane++) {
+         uint8_t sampler_plane = MIN2(plane, sampler->plane_count - 1);
+         desc[plane].sampler = sampler->planes[sampler_plane].hw->key;
+         desc[plane].lod_bias_fp16 = sampler->lod_bias_fp16;
+
+         /* The custom border, read by the hardware after the state */
+         if (sampler->has_border) {
+            agx_pack_border(&desc[plane].border, sampler->custom_border.uint32,
+                            g15_border_format(sampler, view, plane));
+         } else if (view) {
+            g15_opaque_black_as_custom(&desc[plane], view, plane);
+         }
+      }
+   }
+   write_desc(set, binding, elem, desc, sizeof(desc[0]) * plane_count);
+}
+
 static void
 write_sampled_image_view_desc(struct hk_descriptor_set *set,
                               const VkDescriptorImageInfo *const info,
                               uint32_t binding, uint32_t elem,
                               VkDescriptorType descriptor_type)
 {
+   /* The layout's device: a push descriptor set has no object of its own */
+   struct hk_device *dev = (struct hk_device *)set->layout->vk.base.device;
+   if (dev->dev.params.gpu_generation >= 15) {
+      write_sampled_image_view_desc_g15(set, info, binding, elem,
+                                        descriptor_type);
+      return;
+   }
+
    struct hk_sampled_image_descriptor desc[3] = {};
 
    /* "Zero" initialize */
@@ -137,12 +267,57 @@ write_sampled_image_view_desc(struct hk_descriptor_set *set,
    write_desc(set, binding, elem, desc, sizeof(desc[0]) * plane_count);
 }
 
+static bool
+set_is_g15(struct hk_descriptor_set *set)
+{
+   /* The layout's device: a push descriptor set has no object of its own */
+   struct hk_device *dev = (struct hk_device *)set->layout->vk.base.device;
+   return dev->dev.params.gpu_generation >= 15;
+}
+
+/* G15's storage image and texel buffer layout (hk_descriptor_set.h) */
+static void
+write_storage_desc_g15(struct hk_descriptor_set *set, uint32_t binding,
+                       uint32_t elem, const struct agx_texture_packed *tex,
+                       const struct agx_pbe_packed *pbe,
+                       const struct agx_pbe_g15_software_packed *sw)
+{
+   struct hk_storage_image_descriptor_g15 desc = {};
+
+   if (tex) {
+      desc.tex = *tex;
+      desc.pbe = *pbe;
+
+      if (sw)
+         memcpy(desc.pbe_pad, sw, sizeof(desc.pbe_pad));
+   } else {
+      agx_set_null_texture_g15(&desc.tex);
+      agx_set_null_pbe_g15(&desc.pbe);
+   }
+
+   agx_pack_txf_sampler(&desc.txf_sampler);
+   write_desc(set, binding, elem, &desc, sizeof(desc));
+}
+
 static void
 write_storage_image_view_desc(struct hk_descriptor_set *set,
                               const VkDescriptorImageInfo *const info,
                               uint32_t binding, uint32_t elem)
 {
    struct hk_storage_image_descriptor desc = {};
+
+   if (set_is_g15(set)) {
+      if (info && info->imageView != VK_NULL_HANDLE) {
+         VK_FROM_HANDLE(hk_image_view, view, info->imageView);
+         assert(view->plane_count == 1);
+         write_storage_desc_g15(set, binding, elem, &view->planes[0].ro_storage,
+                                &view->planes[0].storage,
+                                &view->planes[0].storage_g15_sw);
+      } else {
+         write_storage_desc_g15(set, binding, elem, NULL, NULL, NULL);
+      }
+      return;
+   }
 
    if (info && info->imageView != VK_NULL_HANDLE) {
       VK_FROM_HANDLE(hk_image_view, view, info->imageView);
@@ -205,6 +380,18 @@ write_buffer_view_desc(struct hk_descriptor_set *set,
                        uint32_t elem)
 {
    struct hk_storage_image_descriptor desc = {};
+
+   if (set_is_g15(set)) {
+      if (bufferView != VK_NULL_HANDLE) {
+         VK_FROM_HANDLE(hk_buffer_view, view, bufferView);
+         write_storage_desc_g15(set, binding, elem, &view->tex, &view->pbe,
+                                NULL);
+      } else {
+         write_storage_desc_g15(set, binding, elem, NULL, NULL, NULL);
+      }
+      return;
+   }
+
    if (bufferView != VK_NULL_HANDLE) {
       VK_FROM_HANDLE(hk_buffer_view, view, bufferView);
 

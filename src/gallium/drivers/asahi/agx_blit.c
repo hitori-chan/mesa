@@ -534,7 +534,10 @@ agx_blit(struct pipe_context *pipe, const struct pipe_blit_info *info)
    agx_legalize_compression(ctx, agx_resource(info->src.resource),
                             info->src.format);
 
-   if (asahi_compute_blit_supported(info)) {
+   /* G15 draws its blits: the compute blit's tile stores and block image
+    * writes are not verified on its hardware */
+   if (agx_device(pipe->screen)->params.gpu_generation < 15 &&
+       asahi_compute_blit_supported(info)) {
       asahi_compute_blit(pipe, info, &ctx->compute_blitter);
       return;
    }
@@ -554,6 +557,32 @@ agx_blit(struct pipe_context *pipe, const struct pipe_blit_info *info)
       ASAHI_BLIT |
          (info->render_condition_enable ? 0 : ASAHI_DISABLE_RENDER_COND));
    util_blitter_blit(ctx->blitter, info, NULL);
+}
+
+/* The format a copy blits in. snorm formats don't round trip. Neither do the
+ * NaNs of float formats on G15, whose blits are draws: a half NaN 0xffff came
+ * back as 0x7e00 (the OpenCL CTS's clCopyImage), so their bits are copied as
+ * unsigned integers of the same layout.
+ */
+static enum pipe_format
+agx_copy_format(enum pipe_format format)
+{
+   if (util_format_is_snorm(format))
+      return util_format_snorm_to_sint(format);
+
+   const struct util_format_description *desc = util_format_description(format);
+
+   if (util_format_is_float(format) && desc->is_array &&
+       desc->colorspace == UTIL_FORMAT_COLORSPACE_RGB) {
+      enum pipe_format u =
+         util_format_get_array(UTIL_FORMAT_TYPE_UNSIGNED, desc->channel[0].size,
+                               desc->nr_channels, false, true);
+
+      if (u != PIPE_FORMAT_NONE)
+         return u;
+   }
+
+   return format;
 }
 
 static bool
@@ -597,12 +626,8 @@ try_copy_via_blit(struct pipe_context *pctx, struct pipe_resource *dst,
       .swizzle_enable = 0,
    };
 
-   /* snorm formats don't round trip, so don't use them for copies */
-   if (util_format_is_snorm(info.dst.format))
-      info.dst.format = util_format_snorm_to_sint(info.dst.format);
-
-   if (util_format_is_snorm(info.src.format))
-      info.src.format = util_format_snorm_to_sint(info.src.format);
+   info.dst.format = agx_copy_format(info.dst.format);
+   info.src.format = agx_copy_format(info.src.format);
 
    if (util_blitter_is_blit_supported(ctx->blitter, &info) &&
        info.dst.format == info.src.format) {

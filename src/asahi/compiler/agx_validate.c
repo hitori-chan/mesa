@@ -96,6 +96,16 @@ agx_validate_sources(agx_instr *I)
          agx_validate_assert(!src.cache);
          agx_validate_assert(!src.discard);
 
+         /* G15's constant texel offset: F42's 12-bit immediate standing for
+          * the packed 32-bit word (agx_optimizer) */
+         if ((I->op == AGX_OPCODE_TEXTURE_SAMPLE ||
+              I->op == AGX_OPCODE_TEXTURE_LOAD) &&
+             s == 5) {
+            agx_validate_assert(src.size == AGX_SIZE_32);
+            agx_validate_assert(src.value < (1 << 12));
+            continue;
+         }
+
          bool ldst = agx_allows_16bit_immediate(I);
 
          /* Immediates are encoded as 8-bit (16-bit for memory load/store). For
@@ -285,7 +295,8 @@ agx_read_registers(const agx_instr *I, unsigned s)
 
          return (z && s) ? 4 : z ? 2 : 1;
       } else {
-         return 1;
+         /* G13's 16-bit sample mask, G15's 32-bit coverage word */
+         return size;
       }
 
    case AGX_OPCODE_IMAGE_WRITE:
@@ -340,10 +351,18 @@ agx_read_registers(const agx_instr *I, unsigned s)
       }
 
    case AGX_OPCODE_BLOCK_IMAGE_STORE:
-      if (s == 3 && I->explicit_coords)
+      /* G15's block write of a multisampled tile takes x and y only: it
+       * writes every sample */
+      if (s == 3 && I->explicit_coords && I->dim == AGX_DIM_2D_MS)
+         return 2 * agx_size_align_16(I->src[3].size);
+      else if (s == 3 && I->explicit_coords)
          return agx_coordinate_registers(I, I->src[3].size);
       else
          return size;
+
+   case AGX_OPCODE_ITRCOORDS:
+      /* One 32-bit register, built as two 16-bit halves or one 32-bit value */
+      return agx_index_size_16(I->src[0]);
 
    case AGX_OPCODE_ATOMIC:
    case AGX_OPCODE_LOCAL_ATOMIC:

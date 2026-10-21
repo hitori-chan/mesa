@@ -70,8 +70,9 @@ has_nonzero_lod(nir_tex_instr *tex)
 }
 
 static bool
-lower_tex_crawl(nir_builder *b, nir_instr *instr, UNUSED void *data)
+lower_tex_crawl(nir_builder *b, nir_instr *instr, void *data)
 {
+   bool g15 = *(bool *)data;
    if (instr->type != nir_instr_type_tex)
       return false;
 
@@ -92,17 +93,24 @@ lower_tex_crawl(nir_builder *b, nir_instr *instr, UNUSED void *data)
 
    nir_def *res;
    if (tex->op == nir_texop_txs) {
-      res =
-         libagx_txs(b, ptr, lod, nir_imm_int(b, nr_comps),
-                    nir_imm_bool(b, tex->sampler_dim == GLSL_SAMPLER_DIM_BUF),
-                    nir_imm_bool(b, tex->sampler_dim == GLSL_SAMPLER_DIM_1D),
-                    nir_imm_bool(b, tex->sampler_dim == GLSL_SAMPLER_DIM_2D),
-                    nir_imm_bool(b, tex->sampler_dim == GLSL_SAMPLER_DIM_CUBE),
-                    nir_imm_bool(b, tex->is_array));
+      nir_def *args[] = {
+         nir_imm_int(b, nr_comps),
+         nir_imm_bool(b, tex->sampler_dim == GLSL_SAMPLER_DIM_BUF),
+         nir_imm_bool(b, tex->sampler_dim == GLSL_SAMPLER_DIM_1D),
+         nir_imm_bool(b, tex->sampler_dim == GLSL_SAMPLER_DIM_2D),
+         nir_imm_bool(b, tex->sampler_dim == GLSL_SAMPLER_DIM_CUBE),
+         nir_imm_bool(b, tex->is_array),
+      };
+      res = g15 ? libagx_txs_g15(b, ptr, lod, args[0], args[1], args[2],
+                                 args[3], args[4], args[5])
+                : libagx_txs(b, ptr, lod, args[0], args[1], args[2], args[3],
+                             args[4], args[5]);
    } else if (tex->op == nir_texop_query_levels) {
-      res = libagx_texture_levels(b, ptr);
+      res = g15 ? libagx_texture_levels_g15(b, ptr)
+                : libagx_texture_levels(b, ptr);
    } else {
-      res = libagx_texture_samples(b, ptr);
+      res = g15 ? libagx_texture_samples_g15(b, ptr)
+                : libagx_texture_samples(b, ptr);
    }
 
    nir_def_rewrite_uses(&tex->def, nir_trim_vector(b, res, nr_comps));
@@ -419,7 +427,7 @@ txs_for_image(nir_builder *b, nir_intrinsic_instr *intr,
 
 static nir_def *
 image_texel_address(nir_builder *b, nir_intrinsic_instr *intr,
-                    bool return_index)
+                    bool return_index, bool g15)
 {
    /* First, calculate the address of the PBE descriptor */
    nir_def *desc_address =
@@ -428,13 +436,16 @@ image_texel_address(nir_builder *b, nir_intrinsic_instr *intr,
    nir_def *coord = intr->src[1].ssa;
 
    /* For atomics, we always infer the format. We only go down this path with
-    * formatless intrinsics when lowering multisampled image stores, but that
-    * uses the return_index path that ignores the block size.
+    * formatless intrinsics when lowering multisampled image stores, whose
+    * return_index path needs the block size only to step a layer: G15 takes
+    * a formatless one's from its PBE (block size 0 here).
     */
    enum pipe_format format = nir_intrinsic_format(intr);
    assert(return_index || format != PIPE_FORMAT_NONE);
 
-   nir_def *blocksize_B = nir_imm_int(b, util_format_get_blocksize(format));
+   nir_def *blocksize_B = nir_imm_int(
+      b, g15 && format == PIPE_FORMAT_NONE ? 0
+                                           : util_format_get_blocksize(format));
 
    enum glsl_sampler_dim dim = nir_intrinsic_image_dim(intr);
    bool layered = nir_intrinsic_image_array(intr) ||
@@ -443,8 +454,17 @@ image_texel_address(nir_builder *b, nir_intrinsic_instr *intr,
 
    if (dim == GLSL_SAMPLER_DIM_BUF && return_index) {
       return nir_channel(b, coord, 0);
+   } else if (dim == GLSL_SAMPLER_DIM_BUF && g15) {
+      return libagx_buffer_texel_address_g15(b, desc_address, coord,
+                                             blocksize_B);
    } else if (dim == GLSL_SAMPLER_DIM_BUF) {
       return libagx_buffer_texel_address(b, desc_address, coord, blocksize_B);
+   } else if (g15) {
+      return libagx_image_texel_address_g15(
+         b, desc_address, coord, nir_u2u32(b, intr->src[2].ssa), blocksize_B,
+         nir_imm_bool(b, dim == GLSL_SAMPLER_DIM_1D),
+         nir_imm_bool(b, dim == GLSL_SAMPLER_DIM_MS), nir_imm_bool(b, layered),
+         nir_imm_bool(b, return_index));
    } else {
       return libagx_image_texel_address(
          b, desc_address, coord, nir_u2u32(b, intr->src[2].ssa), blocksize_B,
@@ -539,8 +559,10 @@ lower_image_load_robustness(nir_builder *b, nir_intrinsic_instr *intr)
 }
 
 static bool
-lower_images(nir_builder *b, nir_intrinsic_instr *intr, UNUSED void *data)
+lower_images(nir_builder *b, nir_intrinsic_instr *intr, void *data)
 {
+   const bool *g15 = data;
+
    b->cursor = nir_before_instr(&intr->instr);
 
    switch (intr->intrinsic) {
@@ -582,7 +604,8 @@ lower_images(nir_builder *b, nir_intrinsic_instr *intr, UNUSED void *data)
       return true;
 
    case nir_intrinsic_bindless_image_texel_address:
-      nir_def_rewrite_uses(&intr->def, image_texel_address(b, intr, false));
+      nir_def_rewrite_uses(&intr->def,
+                           image_texel_address(b, intr, false, *g15));
       return true;
 
    case nir_intrinsic_is_sparse_texels_resident:
@@ -706,8 +729,144 @@ agx_nir_lower_texture_early(nir_shader *s, bool support_lod_bias)
    return progress;
 }
 
+/*
+ * Select the face of a cube direction and project the direction onto it, per
+ * the GL rules (GL 4.6 table 8.19): returns the face-local (s, t) in [0, 1] and
+ * the face index in *face. On a tie the major axis is z, then y, then x.
+ */
+static nir_def *
+cube_face_coord(nir_builder *b, nir_def *dir, nir_def **face)
+{
+   nir_def *x = nir_channel(b, dir, 0);
+   nir_def *y = nir_channel(b, dir, 1);
+   nir_def *z = nir_channel(b, dir, 2);
+   nir_def *ax = nir_fabs(b, x), *ay = nir_fabs(b, y), *az = nir_fabs(b, z);
+
+   nir_def *is_z = nir_fge(b, az, nir_fmax(b, ax, ay));
+   nir_def *is_y = nir_iand(b, nir_inot(b, is_z), nir_fge(b, ay, ax));
+
+   nir_def *ma = nir_bcsel(b, is_z, z, nir_bcsel(b, is_y, y, x));
+   nir_def *neg = nir_flt(b, ma, nir_imm_float(b, 0.0));
+
+   /* +x (-z, -y), -x (z, -y), +y (x, z), -y (x, -z), +z (x, -y), -z (-x, -y) */
+   nir_def *sc = nir_bcsel(b, nir_ior(b, is_z, is_y), x, nir_fneg(b, z));
+   sc = nir_bcsel(b, nir_iand(b, neg, nir_inot(b, is_y)), nir_fneg(b, sc), sc);
+
+   nir_def *tc_y = nir_bcsel(b, neg, nir_fneg(b, z), z);
+   nir_def *tc = nir_bcsel(b, is_y, tc_y, nir_fneg(b, y));
+
+   nir_def *half_rcp = nir_fmul_imm(b, nir_frcp(b, nir_fabs(b, ma)), 0.5);
+   nir_def *s = nir_ffma(b, sc, half_rcp, nir_imm_float(b, 0.5));
+   nir_def *t = nir_ffma(b, tc, half_rcp, nir_imm_float(b, 0.5));
+
+   nir_def *axis =
+      nir_bcsel(b, is_z, nir_imm_int(b, 4),
+                nir_bcsel(b, is_y, nir_imm_int(b, 2), nir_imm_int(b, 0)));
+   *face = nir_iadd(b, axis, nir_b2i32(b, neg));
+   return nir_vec2(b, s, t);
+}
+
+static bool
+lower_cube_g15(nir_builder *b, nir_tex_instr *tex, UNUSED void *data)
+{
+   if (tex->sampler_dim != GLSL_SAMPLER_DIM_CUBE)
+      return false;
+
+   /* txd is a txl here (lower_txd_cube_map); LOD and size queries keep the
+    * cube */
+   if (tex->op != nir_texop_tex && tex->op != nir_texop_txb &&
+       tex->op != nir_texop_txl && tex->op != nir_texop_tg4)
+      return false;
+
+   b->cursor = nir_before_instr(&tex->instr);
+   nir_def *coord = nir_f2fN(b, nir_steal_tex_src(tex, nir_tex_src_coord), 32);
+   nir_def *face;
+   nir_def *st = cube_face_coord(b, coord, &face);
+
+   nir_def *cube = nir_imm_int(b, 0);
+   if (tex->is_array) {
+      cube = nir_fround_even(b, nir_channel(b, coord, 3));
+      cube = nir_f2u32(b, nir_fmax_imm(b, cube, 0.0));
+   }
+
+   /* The LOD word: the cube at bits 0:10, the face at 12 */
+   nir_def *word =
+      nir_ior(b, nir_umin_imm(b, cube, 0x7ff), nir_ishl_imm(b, face, 12));
+
+   tex->is_array = true;
+   tex->coord_components = 4;
+   tex->backend_flags |= AGX_TEXTURE_FLAG_NO_CLAMP;
+   nir_tex_instr_add_src(
+      tex, nir_tex_src_coord,
+      nir_vec4(b, nir_channel(b, st, 0), nir_channel(b, st, 1),
+               nir_imm_float(b, 0), nir_u2f32(b, word)));
+   return true;
+}
+
+/*
+ * G15 samples every cube in the hardware's cube array mode, whose descriptor
+ * agx_pack_texture_g15 packs (the depth counts cubes): the face-local (s, t)
+ * in cr0 and cr1 and the LOD word in cr3 with the cube at bits 0:10 and the
+ * face at 12, as libLLVM 32023's cube array read sequence packs them
+ * (sub_25092FC54: code 4 at 0, code 10 at 12); a cube is cube 0. The
+ * direction is projected onto its face here, as Apple's compiler does for
+ * cubedir. The hardware filters across the faces (seamless).
+ */
+/*
+ * G15 has no known minimum-LOD form for a cube read: a fragment shader's
+ * implicit-LOD cube sample with a minimum LOD becomes a sample with its
+ * direction's derivatives, scaled by 2^bias, which lower_txd_cube_map turns
+ * into an explicit LOD clamped to the minimum (dEQP-VK textureclamp cubes).
+ */
+static bool
+cube_min_lod_to_txd(nir_builder *b, nir_tex_instr *tex, UNUSED void *data)
+{
+   if (tex->sampler_dim != GLSL_SAMPLER_DIM_CUBE ||
+       (tex->op != nir_texop_tex && tex->op != nir_texop_txb) ||
+       nir_tex_instr_src_index(tex, nir_tex_src_min_lod) < 0 ||
+       !nir_shader_supports_implicit_lod(b->shader))
+      return false;
+
+   b->cursor = nir_before_instr(&tex->instr);
+   nir_def *dir =
+      nir_trim_vector(b, nir_get_tex_src(tex, nir_tex_src_coord), 3);
+   nir_def *dx = nir_ddx(b, dir), *dy = nir_ddy(b, dir);
+
+   nir_def *bias = nir_steal_tex_src(tex, nir_tex_src_bias);
+   if (bias) {
+      nir_def *scale = nir_fexp2(b, nir_f2fN(b, bias, dir->bit_size));
+      dx = nir_fmul(b, dx, scale);
+      dy = nir_fmul(b, dy, scale);
+   }
+
+   nir_tex_instr_add_src(tex, nir_tex_src_ddx, dx);
+   nir_tex_instr_add_src(tex, nir_tex_src_ddy, dy);
+   tex->op = nir_texop_txd;
+   return true;
+}
+
 bool
-agx_nir_lower_texture(nir_shader *s)
+agx_nir_lower_cube_g15(nir_shader *s)
+{
+   bool progress = false;
+
+   if (nir_shader_tex_pass(s, cube_min_lod_to_txd, nir_metadata_control_flow,
+                           NULL)) {
+      nir_lower_tex_options options = {.lower_txd_cube_map = true};
+      NIR_PASS(_, s, nir_lower_tex, &options);
+      progress = true;
+   }
+
+   progress |=
+      nir_shader_tex_pass(s, lower_cube_g15, nir_metadata_control_flow, NULL);
+   return progress;
+}
+
+/* g15: image atomics crawl G15's PBE (libagx_image_texel_address_g15);
+ * g15_queries: size, level and sample queries read G15's texture descriptor
+ */
+static bool
+lower_texture(nir_shader *s, bool g15, bool g15_queries)
 {
    bool progress = false;
 
@@ -731,7 +890,7 @@ agx_nir_lower_texture(nir_shader *s)
    NIR_PASS(progress, s, nir_shader_intrinsics_pass, legalize_image_lod,
             nir_metadata_control_flow, NULL);
    NIR_PASS(progress, s, nir_shader_intrinsics_pass, lower_images,
-            nir_metadata_control_flow, NULL);
+            nir_metadata_control_flow, &g15);
    NIR_PASS(progress, s, nir_legalize_16bit_sampler_srcs, tex_constraints);
 
    /* Fold constants after nir_legalize_16bit_sampler_srcs so we can detect 0 in
@@ -746,15 +905,27 @@ agx_nir_lower_texture(nir_shader *s)
    NIR_PASS(progress, s, nir_shader_instructions_pass, lower_regular_texture,
             nir_metadata_none, NULL);
    NIR_PASS(progress, s, nir_shader_instructions_pass, lower_tex_crawl,
-            nir_metadata_control_flow, NULL);
+            nir_metadata_control_flow, &g15_queries);
 
    return progress;
 }
 
-static bool
-lower_multisampled_store(nir_builder *b, nir_intrinsic_instr *intr,
-                         UNUSED void *data)
+bool
+agx_nir_lower_texture_gen(nir_shader *s, bool g15)
 {
+   return lower_texture(s, g15, g15);
+}
+
+bool
+agx_nir_lower_texture(nir_shader *s)
+{
+   return lower_texture(s, false, false);
+}
+
+static bool
+lower_multisampled_store(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   const bool *g15 = data;
    b->cursor = nir_before_instr(&intr->instr);
 
    if (intr->intrinsic != nir_intrinsic_bindless_image_store)
@@ -763,7 +934,7 @@ lower_multisampled_store(nir_builder *b, nir_intrinsic_instr *intr,
    if (nir_intrinsic_image_dim(intr) != GLSL_SAMPLER_DIM_MS)
       return false;
 
-   nir_def *index_px = nir_u2u32(b, image_texel_address(b, intr, true));
+   nir_def *index_px = nir_u2u32(b, image_texel_address(b, intr, true, *g15));
    nir_def *coord2d = coords_for_buffer_texture(b, index_px);
 
    nir_src_rewrite(&intr->src[1], nir_pad_vector(b, coord2d, 4));
@@ -774,10 +945,10 @@ lower_multisampled_store(nir_builder *b, nir_intrinsic_instr *intr,
 }
 
 bool
-agx_nir_lower_multisampled_image_store(nir_shader *s)
+agx_nir_lower_multisampled_image_store(nir_shader *s, bool g15)
 {
    return nir_shader_intrinsics_pass(s, lower_multisampled_store,
-                                     nir_metadata_control_flow, NULL);
+                                     nir_metadata_control_flow, &g15);
 }
 
 /*

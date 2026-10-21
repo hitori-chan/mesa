@@ -6,7 +6,9 @@
 #include "agx_linker.h"
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include "util/ralloc.h"
+#include "util/u_dynarray.h"
 #include "agx_abi.h"
 #include "agx_compile.h"
 #include "agx_device.h"
@@ -89,8 +91,17 @@ agx_fast_link(struct agx_linked_shader *linked, struct agx_device *dev,
    unsigned nr_gprs = 0, scratch_size = 0;
    bool reads_tib = false, writes_sample_mask = false,
         disable_tri_merging = false, tag_write_disable = true;
+   bool g15 = dev->params.gpu_generation >= 15;
 
-   if (nr_samples_shaded) {
+   /* G15: the loop header and footer in G15 instructions (agx_pack3.c) */
+   struct util_dynarray loop_header;
+   util_dynarray_init(&loop_header, NULL);
+   if (g15 && nr_samples_shaded)
+      agx3_emit_sample_loop_header(&loop_header);
+
+   if (g15 && nr_samples_shaded) {
+      size += loop_header.size;
+   } else if (nr_samples_shaded) {
       size += sizeof(sample_loop_header);
 
       if (nr_samples_shaded > 1)
@@ -107,6 +118,10 @@ agx_fast_link(struct agx_linked_shader *linked, struct agx_device *dev,
          continue;
 
       size += part->info.main_size;
+      linked->pix_wait_mask |= part->info.pix_wait_mask;
+      linked->pix_signal_mask |= part->info.pix_signal_mask;
+      linked->writes_zs |= part->info.writes_zs;
+      linked->cr_count = MAX2(linked->cr_count, part->info.cr_count);
 
       nr_gprs = MAX2(nr_gprs, part->info.nr_gprs);
       scratch_size = MAX2(scratch_size, part->info.scratch_size);
@@ -119,6 +134,31 @@ agx_fast_link(struct agx_linked_shader *linked, struct agx_device *dev,
    }
 
    assert(size > 0 && "must stop");
+
+   /* G15: the program releases the fences it waited on at its end, before
+    * the last part's stop (agx3_emit_stop's 4 bytes), but those a part
+    * released itself. In a sample loop the parts have no stop: the loop's
+    * footer and the trailer end the program.
+    */
+   uint16_t pix_late = linked->pix_wait_mask & ~linked->pix_signal_mask;
+   struct util_dynarray trailer;
+   util_dynarray_init(&trailer, NULL);
+   if (g15 && (pix_late || nr_samples_shaded)) {
+      if (pix_late)
+         agx3_emit_signal_pix(&trailer, pix_late);
+      agx3_emit_stop(&trailer);
+      size += trailer.size;
+      if (!nr_samples_shaded)
+         size -= 4;
+   }
+
+   /* The footer's size does not depend on its branch's target */
+   struct util_dynarray loop_footer;
+   util_dynarray_init(&loop_footer, NULL);
+   if (g15 && nr_samples_shaded > 1) {
+      agx3_emit_sample_loop_footer(&loop_footer, nr_samples_shaded, 0, 0);
+      size += loop_footer.size;
+   }
 
    linked->bo = agx_bo_create(dev, size, 0, AGX_BO_EXEC | AGX_BO_LOW_VA,
                               "Linked executable");
@@ -133,7 +173,10 @@ agx_fast_link(struct agx_linked_shader *linked, struct agx_device *dev,
       offset += sz;
    }
 
-   if (nr_samples_shaded) {
+   if (g15 && nr_samples_shaded) {
+      memcpy(linked_map + offset, loop_header.data, loop_header.size);
+      offset += loop_header.size;
+   } else if (nr_samples_shaded) {
       memcpy(linked_map + offset, sample_loop_header,
              sizeof(sample_loop_header));
       offset += sizeof(sample_loop_header);
@@ -150,9 +193,31 @@ agx_fast_link(struct agx_linked_shader *linked, struct agx_device *dev,
       size_t sz = part->info.main_size;
       memcpy(linked_map + offset, part->binary + part->info.main_offset, sz);
       offset += sz;
+
+      /* The last part ends the program: replace its stop (G15's, 4 bytes) */
+      if (trailer.size && !nr_samples_shaded &&
+          (i == ARRAY_SIZE(parts) - 1 || !parts[i + 1])) {
+         assert(!memcmp(linked_map + offset - 4, "\x0e\0\0\0", 4));
+         offset -= 4;
+         memcpy(linked_map + offset, trailer.data, trailer.size);
+         offset += trailer.size;
+      }
    }
 
-   if (nr_samples_shaded > 1) {
+   if (g15 && nr_samples_shaded) {
+      if (nr_samples_shaded > 1) {
+         unsigned footer_size = loop_footer.size;
+         util_dynarray_clear(&loop_footer);
+         agx3_emit_sample_loop_footer(&loop_footer, nr_samples_shaded, offset,
+                                      sample_loop_begin);
+         assert(loop_footer.size == footer_size);
+         memcpy(linked_map + offset, loop_footer.data, loop_footer.size);
+         offset += loop_footer.size;
+      }
+
+      memcpy(linked_map + offset, trailer.data, trailer.size);
+      offset += trailer.size;
+   } else if (nr_samples_shaded > 1) {
       assert(sample_loop_footer[SAMPLE_LOOP_FOOTER_COUNT_PATCH_OFFS] == 0);
 
       /* Make a stack copy of the footer so we can efficiently patch it */
@@ -180,6 +245,10 @@ agx_fast_link(struct agx_linked_shader *linked, struct agx_device *dev,
    }
 
    assert(offset == size);
+   util_dynarray_fini(&trailer);
+   util_dynarray_fini(&loop_header);
+   util_dynarray_fini(&loop_footer);
+   linked->main_size = size;
 
    agx_pack(&linked->shader, USC_SHADER, cfg) {
       cfg.code = agx_usc_addr(dev, linked->bo->va->addr);
@@ -211,6 +280,12 @@ agx_fast_link(struct agx_linked_shader *linked, struct agx_device *dev,
          writes_sample_mask = false;
          linked->no_op = true;
       }
+
+      /* G15: Apple's discard and depth output disable triangle merging (their
+       * fragment control 2, 0x44000200: draws.md)
+       */
+      if (g15 && writes_sample_mask)
+         disable_tri_merging = true;
 
       agx_pack(&linked->fragment_control, FRAGMENT_CONTROL, cfg) {
          cfg.tag_write_disable = tag_write_disable;

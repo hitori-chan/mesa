@@ -45,12 +45,63 @@ struct hk_sampled_image_descriptor {
 static_assert(sizeof(struct hk_sampled_image_descriptor) == 64,
               "hk_sampled_image_descriptor has no holes");
 
+/*
+ * G15's: its texture instructions index tables of 32 B entries at a uniform
+ * pair, the texture (its last 8 bytes, compression, zero) and the sampler (its
+ * 8 B state at +0) alike. With the set as both tables, a combined descriptor
+ * at offset o is texture o / 32 and sampler o / 32 + 1, immediates for a
+ * fixed binding. A custom border colour is the hardware's: border class 3 in
+ * the state and the border packed for the view's format right after it, at
+ * +8 in the sampler's entry, as Gallium places it (dEQP-GLES31's border_clamp
+ * and dEQP-VK's custom border cases pass). The shader's words follow;
+ * clamp_0_sampler_index_or_negative stays -1 (G13's emulation is not used).
+ */
+struct hk_sampled_image_descriptor_g15 {
+   struct agx_texture_packed tex;
+   uint32_t tex_pad[2];
+   struct agx_sampler_packed sampler;
+   struct agx_border_packed border;
+   uint16_t lod_bias_fp16;
+   uint16_t min_lod_fp16;
+   uint16_t min_lod_uint16;
+   int16_t clamp_0_sampler_index_or_negative;
+};
+static_assert(sizeof(struct hk_sampled_image_descriptor_g15) == 64,
+              "the G15 layout takes the same space");
+static_assert(offsetof(struct hk_sampled_image_descriptor_g15, sampler) == 32,
+              "the sampler is the next 32 B entry");
+static_assert(offsetof(struct hk_sampled_image_descriptor_g15, border) == 40,
+              "the custom border follows the sampler state");
+
 struct hk_storage_image_descriptor {
    struct agx_texture_packed tex;
    struct agx_pbe_packed pbe;
 };
 static_assert(sizeof(struct hk_storage_image_descriptor) == 48,
               "hk_storage_image_descriptor has no holes");
+
+/*
+ * G15's storage image and texel buffer descriptor, three 32 B entries: the
+ * texture (reads and queries), the txf sampler (G15 has no image load: a read
+ * is a fetch, which names a sampler), and the PBE (writes and atomics). The
+ * texture and sampler sit where hk_sampled_image_descriptor_g15 has them, so
+ * a texel buffer's fetch finds its sampler as a sampled image's does.
+ */
+struct hk_storage_image_descriptor_g15 {
+   struct agx_texture_packed tex;
+   uint32_t tex_pad[2];
+   struct agx_sampler_packed txf_sampler;
+   uint32_t sampler_pad[6];
+   struct agx_pbe_packed pbe;
+   uint32_t pbe_pad[2];
+};
+static_assert(sizeof(struct hk_storage_image_descriptor_g15) == 96,
+              "three 32 B entries");
+static_assert(offsetof(struct hk_storage_image_descriptor_g15, txf_sampler) ==
+                 offsetof(struct hk_sampled_image_descriptor_g15, sampler),
+              "the sampler is the entry after the texture");
+static_assert(offsetof(struct hk_storage_image_descriptor_g15, pbe) == 64,
+              "the PBE is the third entry");
 
 /* This has to match nir_address_format_64bit_bounded_global */
 struct hk_buffer_address {

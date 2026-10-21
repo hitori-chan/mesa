@@ -253,7 +253,7 @@ aspect_format(VkFormat fmt, VkImageAspectFlags aspect)
  * the unfortunate exception).
  */
 static enum pipe_format
-canonical_format_pipe(enum pipe_format fmt)
+canonical_format_pipe(enum pipe_format fmt, bool g15)
 {
    assert(ail_is_valid_pixel_format(fmt));
 
@@ -288,6 +288,27 @@ canonical_format_pipe(enum pipe_format fmt)
    /* clang-format on */
 #undef CASE
 
+   /* G15 compresses no image (hk_image.c), so a copy moves bits, through a
+    * format of each size whose roundtrip is exact: through their own formats
+    * the minifloats rounded (dEQP-VK copy_and_blit E5B9G9R9 and B10G11R11
+    * copies)
+    */
+   if (g15) {
+      switch (util_format_get_blocksize(fmt)) {
+      case 1:
+         return PIPE_FORMAT_R8_UINT;
+      case 2:
+         return PIPE_FORMAT_R16_UNORM;
+      case 4:
+         return PIPE_FORMAT_R32_UINT;
+      case 8:
+         return PIPE_FORMAT_R32G32_UINT;
+      default:
+         assert(util_format_get_blocksize(fmt) == 16);
+         return PIPE_FORMAT_R32G32B32A32_UINT;
+      }
+   }
+
    enum agx_channels channels = ail_pixel_format[fmt].channels;
    assert(channels < ARRAY_SIZE(map) && "all valid channels handled");
    assert(map[channels] != PIPE_FORMAT_NONE && "all valid channels handled");
@@ -295,10 +316,10 @@ canonical_format_pipe(enum pipe_format fmt)
 }
 
 static VkFormat
-canonical_format(VkFormat fmt)
+canonical_format(VkFormat fmt, bool g15)
 {
    return vk_format_from_pipe_format(
-      canonical_format_pipe(hk_format_to_pipe_format(fmt)));
+      canonical_format_pipe(hk_format_to_pipe_format(fmt), g15));
 }
 
 enum copy_type {
@@ -330,7 +351,16 @@ struct vk_meta_image_copy_key {
    unsigned block_size;
    unsigned nr_samples;
    bool block_based;
+
+   /* G15's device_load and device_store have no format conversion */
+   bool g15;
 };
+
+static bool
+hk_meta_g15(struct vk_device *device)
+{
+   return ((struct hk_device *)device)->dev.params.gpu_generation >= 15;
+}
 
 static nir_def *
 linearize_coords(nir_builder *b, nir_def *coord,
@@ -383,12 +413,12 @@ is_format_native(enum pipe_format format)
 
 static nir_def *
 load_store_formatted(nir_builder *b, nir_def *base, nir_def *index,
-                     nir_def *value, enum pipe_format format)
+                     nir_def *value, enum pipe_format format, bool g15)
 {
    if (util_format_is_depth_or_stencil(format))
-      format = canonical_format_pipe(format);
+      format = canonical_format_pipe(format, g15);
 
-   if (is_format_native(format)) {
+   if (!g15 && is_format_native(format)) {
       enum pipe_format isa = ail_pixel_format[format].renderable;
       unsigned isa_size = util_format_get_blocksize(isa);
       unsigned isa_components = util_format_get_blocksize(format) / isa_size;
@@ -484,7 +514,7 @@ build_image_copy_shader(const struct vk_meta_image_copy_key *key)
    /* The destination format is already canonical, convert to an ISA format */
    enum pipe_format isa_format = PIPE_FORMAT_NONE;
    if (key->block_based) {
-      enum pipe_format pipe = canonical_format_pipe(key->dst_format);
+      enum pipe_format pipe = canonical_format_pipe(key->dst_format, key->g15);
       isa_format = ail_pixel_format[pipe].renderable;
       assert(isa_format != PIPE_FORMAT_NONE);
    }
@@ -539,7 +569,7 @@ build_image_copy_shader(const struct vk_meta_image_copy_key *key)
 
          if (src_is_buf) {
             value1 = load_store_formatted(b, get_push(b, buffer), src_coord,
-                                          NULL, key->dst_format);
+                                          NULL, key->dst_format, key->g15);
          } else {
             value1 = nir_txf(b, src_coord, .texture_deref = deref,
                              .ms_index = msaa ? ms_index : NULL);
@@ -556,7 +586,7 @@ build_image_copy_shader(const struct vk_meta_image_copy_key *key)
 
          if (dst_is_buf) {
             load_store_formatted(b, get_push(b, buffer), dst_coord, value1,
-                                 key->dst_format);
+                                 key->dst_format, key->g15);
          } else if (!key->block_based) {
             nir_image_deref_store(b, image_deref, nir_pad_vec4(b, dst_coord),
                                   ms_index, value1, nir_imm_int(b, 0),
@@ -602,6 +632,18 @@ build_image_copy_shader(const struct vk_meta_image_copy_key *key)
    }
 
    return b->shader;
+}
+
+/*
+ * G15 copies into an image with image writes (imgwci, layered on the
+ * hardware): its block write's layer operand is not known (imgwblk,
+ * agx_pack3.c), and its images are never compressed, which the block write
+ * serves.
+ */
+static bool
+hk_meta_block_copies(struct vk_device *device)
+{
+   return !hk_meta_g15(device);
 }
 
 static VkResult
@@ -760,7 +802,7 @@ hk_meta_copy_image_to_buffer2(struct vk_command_buffer *cmd,
 
          VkImageAspectFlags aspect = region->imageSubresource.aspectMask;
          VkFormat aspect_fmt = aspect_format(image->format, aspect);
-         VkFormat canonical = canonical_format(aspect_fmt);
+         VkFormat canonical = canonical_format(aspect_fmt, hk_meta_g15(device));
 
          uint32_t blocksize_B =
             util_format_get_blocksize(hk_format_to_pipe_format(canonical));
@@ -784,6 +826,7 @@ hk_meta_copy_image_to_buffer2(struct vk_command_buffer *cmd,
 
          struct vk_meta_image_copy_key key = {
             .key_type = VK_META_OBJECT_KEY_COPY_IMAGE_TO_BUFFER,
+            .g15 = hk_meta_g15(device),
             .type = IMG2BUF,
             .block_size = blocksize_B,
             .nr_samples = image->samples,
@@ -962,23 +1005,25 @@ hk_meta_copy_buffer_to_image2(struct vk_command_buffer *cmd,
       for (unsigned layer_offs = 0; layer_offs < layer_iters; ++layer_offs) {
          VkImageAspectFlags aspect = region->imageSubresource.aspectMask;
          VkFormat aspect_fmt = aspect_format(image->format, aspect);
-         VkFormat canonical = canonical_format(aspect_fmt);
+         VkFormat canonical = canonical_format(aspect_fmt, hk_meta_g15(device));
          enum pipe_format p_format = hk_format_to_pipe_format(aspect_fmt);
          uint32_t blocksize_B = util_format_get_blocksize(p_format);
          bool is_3d = region->imageExtent.depth > 1;
 
          struct vk_meta_image_copy_key key = {
             .key_type = VK_META_OBJECT_KEY_COPY_IMAGE_TO_BUFFER,
+            .g15 = hk_meta_g15(device),
             .type = BUF2IMG,
             .block_size = blocksize_B,
             .nr_samples = image->samples,
             .src_format = hk_format_to_pipe_format(canonical),
             .dst_format = canonical_format_pipe(
-               hk_format_to_pipe_format(aspect_format(image->format, aspect))),
+               hk_format_to_pipe_format(aspect_format(image->format, aspect)),
+               hk_meta_g15(device)),
 
             /* TODO: MSAA path */
-            .block_based =
-               (image->image_type != VK_IMAGE_TYPE_1D) && image->samples == 1,
+            .block_based = (image->image_type != VK_IMAGE_TYPE_1D) &&
+                           image->samples == 1 && hk_meta_block_copies(device),
          };
 
          VkPipelineLayout pipeline_layout;
@@ -1115,7 +1160,8 @@ hk_meta_copy_image2(struct vk_command_buffer *cmd, struct vk_meta_device *meta,
              * to follow the source.
              */
             VkFormat aspect_fmt = aspect_format(src_image->format, 1 << aspect);
-            VkFormat canonical = canonical_format(aspect_fmt);
+            VkFormat canonical =
+               canonical_format(aspect_fmt, hk_meta_g15(device));
             uint32_t blocksize_B =
                util_format_get_blocksize(hk_format_to_pipe_format(canonical));
 
@@ -1131,16 +1177,20 @@ hk_meta_copy_image2(struct vk_command_buffer *cmd, struct vk_meta_device *meta,
 
             struct vk_meta_image_copy_key key = {
                .key_type = VK_META_OBJECT_KEY_COPY_IMAGE_TO_BUFFER,
+               .g15 = hk_meta_g15(device),
                .type = IMG2IMG,
                .block_size = blocksize_B,
                .nr_samples = dst_image->samples,
                .src_format = hk_format_to_pipe_format(canonical),
-               .dst_format = canonical_format_pipe(hk_format_to_pipe_format(
-                  aspect_format(dst_image->format, dst_aspect_mask))),
+               .dst_format =
+                  canonical_format_pipe(hk_format_to_pipe_format(aspect_format(
+                                           dst_image->format, dst_aspect_mask)),
+                                        hk_meta_g15(device)),
 
                /* TODO: MSAA path */
                .block_based = (dst_image->image_type != VK_IMAGE_TYPE_1D) &&
-                              dst_image->samples == 1,
+                              dst_image->samples == 1 &&
+                              hk_meta_block_copies(device),
             };
 
             assert(key.nr_samples == src_image->samples);

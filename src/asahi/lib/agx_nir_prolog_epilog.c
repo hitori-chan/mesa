@@ -120,9 +120,14 @@ lower_non_monolithic_uniforms(nir_builder *b, nir_intrinsic_instr *intr,
       nir_def_rewrite_uses(&intr->def, load);
       return true;
    } else if (intr->intrinsic == nir_intrinsic_load_texture_handle_agx) {
+      /* G15 counts 32 B entries, not bytes */
+      bool g15 =
+         b->shader->info.stage == MESA_SHADER_FRAGMENT && data && *(bool *)data;
+
       b->cursor = nir_instr_remove(&intr->instr);
-      nir_def *offs =
-         nir_imul_imm(b, nir_u2u32(b, intr->src[0].ssa), AGX_TEXTURE_LENGTH);
+      nir_def *offs = nir_u2u32(b, intr->src[0].ssa);
+      if (!g15)
+         offs = nir_imul_imm(b, offs, AGX_TEXTURE_LENGTH);
       nir_def_rewrite_uses(&intr->def,
                            nir_bindless_image_agx(b, offs, .desc_set = 0));
       return true;
@@ -420,8 +425,9 @@ agx_nir_fs_epilog(nir_builder *b, const void *key_)
    }
 
    /* Now lower the resulting program using the key */
-   struct agx_tilebuffer_layout tib = agx_build_tilebuffer_layout(
-      key->rt_formats, ARRAY_SIZE(key->rt_formats), key->nr_samples, true);
+   struct agx_tilebuffer_layout tib =
+      agx_build_tilebuffer_layout(key->rt_formats, ARRAY_SIZE(key->rt_formats),
+                                  key->nr_samples, true, key->g15);
 
    if (key->force_small_tile)
       tib.tile_size = 16 * 16;
@@ -528,8 +534,8 @@ agx_nir_fs_epilog(nir_builder *b, const void *key_)
    unsigned rt_spill = key->link.rt_spill_base;
    NIR_PASS(_, b->shader, agx_nir_lower_tilebuffer, &tib, colormasks, &rt_spill,
             write_samples, &force_translucent);
-   NIR_PASS(_, b->shader, agx_nir_lower_texture);
-   NIR_PASS(_, b->shader, agx_nir_lower_multisampled_image_store);
+   NIR_PASS(_, b->shader, agx_nir_lower_texture_gen, key->g15);
+   NIR_PASS(_, b->shader, agx_nir_lower_multisampled_image_store, key->g15);
 
    /* If the API shader runs once per sample, then the epilog runs once per
     * sample as well, so we need to lower our code to run for a single sample.
@@ -562,8 +568,9 @@ agx_nir_fs_epilog(nir_builder *b, const void *key_)
    }
 
    /* Finally, lower uniforms according to our ABI */
+   bool g15 = key->g15;
    nir_shader_intrinsics_pass(b->shader, lower_non_monolithic_uniforms,
-                              nir_metadata_control_flow, NULL);
+                              nir_metadata_control_flow, &g15);
 
    /* There is no shader part after the epilog, so we're always responsible for
     * running our own tests, unless the fragment shader forced early tests.

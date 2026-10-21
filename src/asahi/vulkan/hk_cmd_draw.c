@@ -11,6 +11,7 @@
 #include "agx_compile.h"
 #include "agx_compiler.h"
 #include "agx_device.h"
+#include "agx_esl.h"
 #include "agx_helpers.h"
 #include "agx_linker.h"
 #include "agx_nir_lower_vbo.h"
@@ -265,6 +266,39 @@ is_attachment_stored(const VkRenderingAttachmentInfo *att)
           att->resolveMode != VK_RESOLVE_MODE_NONE;
 }
 
+/* G15: the background or end-of-tile program's entry program (agx_esl.h)
+ * for its USC words; 0 when G15 cannot build it yet */
+static uint64_t
+hk_bg_eot_esl(struct hk_cmd_buffer *cmd, const uint8_t *usc,
+              struct agx_bg_eot_shader *shader, enum agx_esl_stage stage)
+{
+   struct hk_device *dev = hk_cmd_buffer_device(cmd);
+   uint8_t *map = agx_bo_map(shader->bo);
+   struct agx_esl_code code = {
+      .va = shader->ptr,
+      .cpu = map + (shader->ptr - shader->bo->va->addr),
+      .size = shader->info.binary_size,
+      .main_size = shader->info.main_size,
+      .stack_size = shader->info.stack_size,
+      .cr_count = shader->info.cr_count,
+   };
+
+   struct util_dynarray esl;
+   util_dynarray_init(&esl, NULL);
+
+   uint64_t va = 0;
+   if (agx_esl_from_usc(&esl, usc, dev->dev.shader_base, &code, stage)) {
+      struct agx_ptr t = hk_pool_usc_alloc(cmd, esl.size, 64);
+      if (t.cpu) {
+         memcpy(t.cpu, esl.data, esl.size);
+         va = t.gpu;
+      }
+   }
+
+   util_dynarray_fini(&esl);
+   return va;
+}
+
 static struct hk_bg_eot
 hk_build_bg_eot(struct hk_cmd_buffer *cmd, const VkRenderingInfo *info,
                 bool store, bool partial_render, bool incomplete_render_area)
@@ -356,6 +390,16 @@ hk_build_bg_eot(struct hk_cmd_buffer *cmd, const VkRenderingInfo *info,
       }
    }
 
+   /* G15 has no texture or sampler state registers (agx_bg_eot.h): a
+    * loading program reads its render targets' descriptors through a table
+    * at u0 (the texture of render target rt at entry 2 * rt) and its sampler
+    * through a second pair, past the clear colours, as Gallium's */
+   bool g15 = dev->dev.params.gpu_generation >= 15;
+   struct agx_ptr g15_tex = {0};
+
+   if (g15)
+      agx_bg_eot_key_set_g15_sampler(&key);
+
    /* Begin building the pipeline */
    size_t usc_size = agx_usc_size(3 + HK_MAX_RTS);
    struct agx_ptr t = hk_pool_usc_alloc(cmd, usc_size, 64);
@@ -363,6 +407,17 @@ hk_build_bg_eot(struct hk_cmd_buffer *cmd, const VkRenderingInfo *info,
       return (struct hk_bg_eot){.usc = t.gpu};
 
    struct agx_usc_builder b = agx_usc_builder(t.cpu, usc_size);
+
+   /* On G15 the spilled render targets' descriptors and the loaded ones share
+    * the table at u0: a spilled target is never loaded, so entry 2 * rt is
+    * either its spilled texture or its background texture */
+   if (g15 && needs_textures_for_spilled_rts) {
+      g15_tex = hk_pool_alloc(cmd, HK_SPILL_TABLE_G15_B, 64);
+      if (!g15_tex.cpu)
+         return (struct hk_bg_eot){.usc = 0};
+
+      hk_spilled_rt_descs_g15(cmd, g15_tex.cpu);
+   }
 
    bool uses_txf = false;
    unsigned uniforms = 0;
@@ -378,6 +433,20 @@ hk_build_bg_eot(struct hk_cmd_buffer *cmd, const VkRenderingInfo *info,
          const struct agx_texture_packed *desc =
             key.tib.layered ? &iview->planes[0].layered_background
                             : &iview->planes[0].background;
+
+         if (g15) {
+            const unsigned size_B = 2 * 32 * HK_MAX_RTS;
+
+            if (!g15_tex.cpu) {
+               g15_tex = hk_pool_alloc(cmd, size_B, 64);
+               if (!g15_tex.cpu)
+                  return (struct hk_bg_eot){.usc = 0};
+               memset(g15_tex.cpu, 0, size_B);
+            }
+
+            memcpy((uint8_t *)g15_tex.cpu + 2 * 32 * rt, desc, sizeof(*desc));
+            continue;
+         }
 
          agx_usc_pack(&b, TEXTURE, cfg) {
             /* Shifted to match eMRT indexing, could be optimized */
@@ -399,22 +468,55 @@ hk_build_bg_eot(struct hk_cmd_buffer *cmd, const VkRenderingInfo *info,
                                                 ? &iview->planes[0].layered_eot
                                                 : &iview->planes[0].eot;
 
-         agx_usc_pack(&b, TEXTURE, cfg) {
-            cfg.start = rt;
-            cfg.count = 1;
-            cfg.buffer = hk_pool_upload(cmd, desc, sizeof(*desc), 8);
-         }
+         if (dev->dev.params.gpu_generation >= 15) {
+            /* G15's block write takes the descriptor's address in a 64-bit
+             * uniform per render target (the entry program loads it from
+             * memory: demo15's end-of-tile data holds a pointer to the
+             * descriptor). There are no texture state registers. */
+            uint64_t words[4] = {0};
+            memcpy(words, desc, sizeof(*desc));
 
-         nr_tex = rt + 1;
+            /* Apple's descriptors are 32 bytes: the hardware may read the
+             * fourth word of one, so the padding is zero. It ignores the low
+             * 5 bits of the descriptor's address. */
+            uint64_t desc_va = hk_pool_upload(cmd, words, sizeof(words), 32);
+            uint64_t ptr = hk_pool_upload(cmd, &desc_va, sizeof(desc_va), 8);
+
+            agx_usc_uniform(&b, 4 * rt, 4, ptr);
+            uniforms = MAX2(uniforms, 4 * rt + 4);
+         } else {
+            agx_usc_pack(&b, TEXTURE, cfg) {
+               cfg.start = rt;
+               cfg.count = 1;
+               cfg.buffer = hk_pool_upload(cmd, desc, sizeof(*desc), 8);
+            }
+
+            nr_tex = rt + 1;
+         }
       }
    }
 
-   if (needs_textures_for_spilled_rts) {
+   if (needs_textures_for_spilled_rts && !g15) {
       hk_usc_upload_spilled_rt_descs(&b, cmd);
       uniforms = MAX2(uniforms, 4);
    }
 
-   if (uses_txf) {
+   if (g15_tex.cpu) {
+      agx_usc_uniform(&b, 0, 4, hk_pool_upload(cmd, &g15_tex.gpu, 8, 8));
+      uniforms = MAX2(uniforms, 4);
+   }
+
+   if (uses_txf && g15) {
+      struct agx_ptr sampler = hk_pool_alloc(cmd, 32, 64);
+      if (!sampler.cpu)
+         return (struct hk_bg_eot){.usc = 0};
+
+      agx_pack_bg_sampler_g15(sampler.cpu);
+
+      agx_usc_uniform(&b, key.g15_sampler_uniform, 4,
+                      hk_pool_upload(cmd, &sampler.gpu, 8, 8));
+      uniforms = MAX2(uniforms, key.g15_sampler_uniform + 4);
+   } else if (uses_txf) {
       agx_usc_push_packed(&b, SAMPLER, dev->dev.txf_sampler);
    }
 
@@ -454,6 +556,12 @@ hk_build_bg_eot(struct hk_cmd_buffer *cmd, const VkRenderingInfo *info,
    }
 
    struct hk_bg_eot ret = {.usc = t.gpu};
+
+   /* G15 runs an entry program; usc is its VA */
+   if (dev->dev.params.gpu_generation >= 15) {
+      ret.usc = hk_bg_eot_esl(cmd, t.cpu, shader,
+                              store ? AGX_ESL_END_OF_TILE : AGX_ESL_BACKGROUND);
+   }
 
    agx_pack(&ret.counts, COUNTS, cfg) {
       cfg.uniform_register_count = shader->info.push_count;
@@ -593,7 +701,8 @@ hk_CmdBeginRendering(VkCommandBuffer commandBuffer,
     * easier.
     */
    render->tilebuffer = agx_build_tilebuffer_layout(
-      formats, render->color_att_count, render->tilebuffer.nr_samples, true);
+      formats, render->color_att_count, render->tilebuffer.nr_samples, true,
+      hk_cmd_buffer_device(cmd)->dev.params.gpu_generation >= 15);
 
    const VkRenderingAttachmentLocationInfoKHR ral_info = {
       .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_LOCATION_INFO_KHR,
@@ -624,11 +733,11 @@ hk_CmdBeginRendering(VkCommandBuffer commandBuffer,
 
    render->cr.bg.main = hk_build_bg_eot(cmd, pRenderingInfo, false, false,
                                         incomplete_render_area);
-   render->cr.bg.partial =
-      hk_build_bg_eot(cmd, pRenderingInfo, false, true, incomplete_render_area);
-
    render->cr.eot.main =
       hk_build_bg_eot(cmd, pRenderingInfo, true, false, incomplete_render_area);
+
+   render->cr.bg.partial =
+      hk_build_bg_eot(cmd, pRenderingInfo, false, true, incomplete_render_area);
    render->cr.eot.partial =
       hk_build_bg_eot(cmd, pRenderingInfo, true, true, incomplete_render_area);
 
@@ -1759,7 +1868,7 @@ hk_flush_shaders(struct hk_cmd_buffer *cmd)
 static struct agx_shader_part *
 hk_get_prolog_epilog_locked(struct hk_device *dev, struct hk_internal_key *key,
                             hk_internal_builder_t builder, bool preprocess_nir,
-                            bool stop, unsigned cf_base)
+                            bool stop, unsigned cf_base, unsigned nr_samples)
 {
    /* Try to get the cached shader */
    struct hash_entry *ent = _mesa_hash_table_search(dev->prolog_epilog.ht, key);
@@ -1781,6 +1890,7 @@ hk_get_prolog_epilog_locked(struct hk_device *dev, struct hk_internal_key *key,
    /* We always use dynamic sample shading in the GL driver. Indicate that. */
    if (b.shader->info.stage == MESA_SHADER_FRAGMENT) {
       backend_key.fs.cf_base = cf_base;
+      backend_key.fs.nr_samples = nr_samples;
 
       if (b.shader->info.fs.uses_sample_shading)
          backend_key.fs.inside_sample_loop = true;
@@ -1807,7 +1917,7 @@ hk_get_prolog_epilog_locked(struct hk_device *dev, struct hk_internal_key *key,
 static struct agx_shader_part *
 hk_get_prolog_epilog(struct hk_device *dev, void *data, size_t data_size,
                      hk_internal_builder_t builder, bool preprocess_nir,
-                     bool stop, unsigned cf_base)
+                     bool stop, unsigned cf_base, unsigned nr_samples)
 {
    /* Build the meta shader key */
    size_t total_key_size = sizeof(struct hk_internal_key) + data_size;
@@ -1822,7 +1932,7 @@ hk_get_prolog_epilog(struct hk_device *dev, void *data, size_t data_size,
    simple_mtx_lock(&dev->prolog_epilog.lock);
 
    struct agx_shader_part *part = hk_get_prolog_epilog_locked(
-      dev, key, builder, preprocess_nir, stop, cf_base);
+      dev, key, builder, preprocess_nir, stop, cf_base, nr_samples);
 
    simple_mtx_unlock(&dev->prolog_epilog.lock);
    return part;
@@ -1834,7 +1944,7 @@ hk_get_fast_linked_locked_vs(struct hk_device *dev, struct hk_shader *shader,
 {
    struct agx_shader_part *prolog =
       hk_get_prolog_epilog(dev, &key->prolog, sizeof(key->prolog),
-                           agx_nir_vs_prolog, false, false, 0);
+                           agx_nir_vs_prolog, false, false, 0, 0);
 
    struct hk_linked_shader *linked =
       hk_fast_link(dev, false, shader, prolog, NULL, 0);
@@ -1868,7 +1978,7 @@ build_fs_prolog(nir_builder *b, const void *key)
    agx_nir_fs_prolog(b, key);
 
    /* Lower load_stat_query_address_agx, needed for FS statistics */
-   NIR_PASS(_, b->shader, hk_lower_uvs_index, MESA_SHADER_FRAGMENT, 0);
+   NIR_PASS(_, b->shader, hk_lower_uvs_index, MESA_SHADER_FRAGMENT, 0, false);
    NIR_PASS(_, b->shader, nir_shader_intrinsics_pass, lower_fs_root,
             nir_metadata_control_flow, NULL);
 }
@@ -1886,7 +1996,7 @@ hk_get_fast_linked_locked_fs(struct hk_device *dev, struct hk_shader *shader,
    if (needs_prolog) {
       prolog = hk_get_prolog_epilog(dev, &key->prolog, sizeof(key->prolog),
                                     build_fs_prolog, false, false,
-                                    key->prolog.cf_base);
+                                    key->prolog.cf_base, 0);
    }
 
    /* If sample shading is used, don't stop at the epilog, there's a
@@ -1894,9 +2004,9 @@ hk_get_fast_linked_locked_fs(struct hk_device *dev, struct hk_shader *shader,
     */
    bool epilog_stop = (key->nr_samples_shaded == 0);
 
-   struct agx_shader_part *epilog =
-      hk_get_prolog_epilog(dev, &key->epilog, sizeof(key->epilog),
-                           agx_nir_fs_epilog, true, epilog_stop, 0);
+   struct agx_shader_part *epilog = hk_get_prolog_epilog(
+      dev, &key->epilog, sizeof(key->epilog), agx_nir_fs_epilog, true,
+      epilog_stop, 0, key->epilog.nr_samples);
 
    struct hk_linked_shader *linked =
       hk_fast_link(dev, true, shader, prolog, epilog, key->nr_samples_shaded);
@@ -2006,9 +2116,17 @@ translate_stencil_op(VkStencilOp vk_op)
 
 static void
 hk_ppp_push_stencil_face(struct agx_ppp_update *ppp,
-                         struct vk_stencil_test_face_state s, bool enabled)
+                         struct vk_stencil_test_face_state s, bool enabled,
+                         bool g15_always)
 {
-   if (enabled) {
+   if (g15_always) {
+      agx_ppp_push(ppp, FRAGMENT_STENCIL, cfg) {
+         cfg.compare = AGX_ZS_FUNC_ALWAYS;
+         cfg.depth_pass = AGX_STENCIL_OP_KEEP;
+         cfg.depth_fail = AGX_STENCIL_OP_KEEP;
+         cfg.stencil_fail = AGX_STENCIL_OP_KEEP;
+      }
+   } else if (enabled) {
       agx_ppp_push(ppp, FRAGMENT_STENCIL, cfg) {
          cfg.compare = translate_compare_op(s.op.compare);
          cfg.write_mask = s.write_mask;
@@ -2039,6 +2157,23 @@ hk_stencil_test_enabled(struct hk_cmd_buffer *cmd)
 
    return dyn->ds.stencil.test_enable &&
           render->stencil_att.vk_format != VK_FORMAT_UNDEFINED;
+}
+
+/* G15: with neither depth writes nor a stencil test, a stencil test that
+ * always passes and masks nothing, as Apple's Metal driver enables for a pass
+ * without a depth attachment (without it nothing is drawn).
+ */
+static bool
+hk_g15_stencil_always(struct hk_cmd_buffer *cmd)
+{
+   const struct hk_rendering_state *render = &cmd->state.gfx.render;
+   struct vk_dynamic_graphics_state *dyn = &cmd->vk.dynamic_graphics_state;
+   bool has_z = render->depth_att.vk_format != VK_FORMAT_UNDEFINED;
+   bool z_write =
+      has_z && dyn->ds.depth.test_enable && dyn->ds.depth.write_enable;
+
+   return hk_cmd_buffer_device(cmd)->dev.params.gpu_generation >= 15 &&
+          !hk_stencil_test_enabled(cmd) && !z_write;
 }
 
 static void
@@ -2133,7 +2268,8 @@ hk_flush_vp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
    if (!T.cpu)
       return;
 
-   struct agx_ppp_update ppp = agx_new_ppp_update(T, size, &present);
+   struct agx_ppp_update ppp = agx_new_ppp_update(
+      agx_vdm_ptr(&hk_cmd_buffer_device(cmd)->dev, T), size, &present);
 
    agx_ppp_push(&ppp, DEPTH_BIAS_SCISSOR, cfg) {
       cfg.scissor = index;
@@ -2316,6 +2452,8 @@ hk_flush_ppp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
    struct hk_shader *hw_vs = hk_bound_hw_vs(gfx);
    struct hk_shader *fs = hk_only_variant(gfx->shaders[MESA_SHADER_FRAGMENT]);
 
+   bool g15 = hk_cmd_buffer_device(cmd)->dev.params.gpu_generation >= 15;
+
    bool hw_vs_dirty = IS_SHADER_DIRTY(VERTEX) || IS_SHADER_DIRTY(TESS_EVAL) ||
                       IS_SHADER_DIRTY(GEOMETRY);
    bool fs_dirty = IS_SHADER_DIRTY(FRAGMENT);
@@ -2332,7 +2470,8 @@ hk_flush_ppp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
 
    bool stencil_face_dirty =
       IS_DIRTY(DS_STENCIL_OP) || IS_DIRTY(DS_STENCIL_COMPARE_MASK) ||
-      IS_DIRTY(DS_STENCIL_WRITE_MASK) || IS_DIRTY(DS_STENCIL_TEST_ENABLE);
+      IS_DIRTY(DS_STENCIL_WRITE_MASK) || IS_DIRTY(DS_STENCIL_TEST_ENABLE) ||
+      (g15 && face_dirty);
 
    struct AGX_PPP_HEADER dirty = {
       .fragment_control =
@@ -2373,7 +2512,10 @@ hk_flush_ppp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
    /* Calculate the update size. If it equals the header, there is nothing to
     * update so early-exit.
     */
-   size_t size = agx_ppp_update_size(&dirty);
+   struct hk_device *dev = hk_cmd_buffer_device(cmd);
+   bool fc, fc2;
+   size_t size = agx_ppp_update_size_gen(&dirty, dev->dev.params.gpu_generation,
+                                         &fc, &fc2);
    if (size == AGX_PPP_HEADER_LENGTH)
       return;
 
@@ -2384,15 +2526,17 @@ hk_flush_ppp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
    if (!T.cpu)
       return;
 
-   struct agx_ppp_update ppp = agx_new_ppp_update(T, size, &dirty);
+   struct agx_ppp_update ppp =
+      agx_new_ppp_update(agx_vdm_ptr(&dev->dev, T), size, &dirty);
 
-   if (dirty.fragment_control) {
+   if (fc) {
       agx_ppp_push(&ppp, FRAGMENT_CONTROL, cfg) {
          cfg.visibility_mode = gfx->occlusion.mode;
          cfg.stencil_test_enable = hk_stencil_test_enabled(cmd);
 
          /* TODO: Consider optimizing this? */
          cfg.two_sided_stencil = cfg.stencil_test_enable;
+         cfg.stencil_test_enable |= hk_g15_stencil_always(cmd);
 
          cfg.depth_bias_enable = dyn->rs.depth_bias.enable &&
                                  gfx->object_type == AGX_OBJECT_TYPE_TRIANGLE;
@@ -2408,17 +2552,18 @@ hk_flush_ppp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
       }
    }
 
-   if (dirty.fragment_control_2) {
-      /* Annoying, rasterizer_discard seems to be ignored (sometimes?) in the
-       * main fragment control word and has to be combined into the secondary
-       * word for reliable behaviour.
-       */
-      agx_ppp_push_merged(&ppp, FRAGMENT_CONTROL, cfg,
-                          linked_fs->b.fragment_control) {
-
-         cfg.tag_write_disable = hk_rast_discard(cmd);
-      }
+   /* Annoying, rasterizer_discard seems to be ignored (sometimes?) in the
+    * main fragment control word and has to be combined into the secondary
+    * word for reliable behaviour.
+    */
+#define PUSH_FRAGMENT_CONTROL_2()                                              \
+   agx_ppp_push_merged(&ppp, FRAGMENT_CONTROL, cfg,                            \
+                       linked_fs->b.fragment_control) {                        \
+      cfg.tag_write_disable = hk_rast_discard(cmd);                            \
    }
+
+   if (fc2)
+      PUSH_FRAGMENT_CONTROL_2();
 
    struct agx_fragment_face_packed fragment_face = {};
    struct agx_fragment_face_2_packed fragment_face_2 = {};
@@ -2443,6 +2588,8 @@ hk_flush_ppp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
       }
    }
 
+#undef PUSH_FRAGMENT_CONTROL_2
+
    if (dirty.fragment_front_face_2) {
       agx_pack(&fragment_face_2, FRAGMENT_FACE_2, cfg) {
          cfg.object_type = gfx->object_type;
@@ -2454,7 +2601,8 @@ hk_flush_ppp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
 
    if (dirty.fragment_front_stencil) {
       hk_ppp_push_stencil_face(&ppp, dyn->ds.stencil.front,
-                               hk_stencil_test_enabled(cmd));
+                               hk_stencil_test_enabled(cmd),
+                               hk_g15_stencil_always(cmd));
    }
 
    if (dirty.fragment_back_face) {
@@ -2473,7 +2621,8 @@ hk_flush_ppp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
 
    if (dirty.fragment_back_stencil) {
       hk_ppp_push_stencil_face(&ppp, dyn->ds.stencil.back,
-                               hk_stencil_test_enabled(cmd));
+                               hk_stencil_test_enabled(cmd),
+                               hk_g15_stencil_always(cmd));
    }
 
    if (dirty.output_select) {
@@ -2483,8 +2632,9 @@ hk_flush_ppp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
                                 &linked_fs->b.osel);
    }
 
-   assert(dirty.varying_counts_32 == dirty.varying_counts_16);
+   assert(g15 || dirty.varying_counts_32 == dirty.varying_counts_16);
 
+   /* G15: the 16-bit counts are the second word of the counts 32 element */
    if (dirty.varying_counts_32) {
       agx_ppp_push_packed(&ppp, &gfx->linked_varyings.counts_32,
                           VARYING_COUNTS);
@@ -2535,18 +2685,29 @@ hk_flush_ppp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
       /* TODO: Do less often? */
       hk_reserve_scratch(cmd, cs, fs);
 
-      agx_ppp_push_packed(&ppp, &linked_fs->fs_counts, FRAGMENT_SHADER_WORD_0);
+      uint32_t pipeline = hk_upload_usc_words(cmd, fs, linked_fs);
+      bool zs_out = g15 && linked_fs->b.writes_zs;
 
-      agx_ppp_push(&ppp, FRAGMENT_SHADER_WORD_1, cfg) {
-         cfg.pipeline = hk_upload_usc_words(cmd, fs, linked_fs);
+      if (g15) {
+         agx_ppp_fragment_shader_g15(&ppp, dev->dev.shader_base, gfx->varyings,
+                                     linked_fs->b.cf.nr_bindings, pipeline,
+                                     zs_out);
+      } else {
+         agx_ppp_push_packed(&ppp, &linked_fs->fs_counts,
+                             FRAGMENT_SHADER_WORD_0);
+
+         agx_ppp_push(&ppp, FRAGMENT_SHADER_WORD_1, cfg) {
+            cfg.pipeline = pipeline;
+         }
+
+         agx_ppp_push(&ppp, FRAGMENT_SHADER_WORD_2, cfg) {
+            cfg.cf_bindings = gfx->varyings;
+         }
       }
 
-      agx_ppp_push(&ppp, FRAGMENT_SHADER_WORD_2, cfg) {
-         cfg.cf_bindings = gfx->varyings;
+      agx_ppp_push(&ppp, FRAGMENT_SHADER_WORD_3, cfg) {
+         cfg.unknown = zs_out;
       }
-
-      agx_ppp_push(&ppp, FRAGMENT_SHADER_WORD_3, cfg)
-         ;
    }
 
    if (dirty.occlusion_query) {
@@ -2891,6 +3052,7 @@ hk_flush_dynamic_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
       }
 
       key.epilog.link.already_ran_zs |= nontrivial_force_early;
+      key.epilog.g15 = dev->dev.params.gpu_generation >= 15;
 
       struct hk_rendering_state *render = &cmd->state.gfx.render;
       for (uint32_t i = 0; i < render->color_att_count; i++) {
@@ -3135,8 +3297,19 @@ hk_flush_dynamic_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
       struct hk_linked_shader *linked_hw_vs =
          (hw_vs == sw_vs) ? linked_vs : hw_vs->only_linked;
 
-      agx_push(out, VDM_STATE_VERTEX_SHADER_WORD_1, cfg) {
-         cfg.pipeline = hk_upload_usc_words(cmd, hw_vs, linked_hw_vs);
+      uint32_t pipeline = hk_upload_usc_words(cmd, hw_vs, linked_hw_vs);
+
+      if (dev->dev.params.gpu_generation >= 15) {
+         uint64_t va = dev->dev.shader_base + pipeline;
+
+         agx_push(out, VDM_STATE_VERTEX_SHADER_WORD_1_G15, cfg) {
+            cfg.pipeline_hi = agx_g15_pipeline_hi(va);
+            cfg.pipeline_lo = agx_g15_pipeline_lo(va);
+         }
+      } else {
+         agx_push(out, VDM_STATE_VERTEX_SHADER_WORD_1, cfg) {
+            cfg.pipeline = pipeline;
+         }
       }
 
       agx_push_packed(out, hw_vs->info.uvs.vdm, VDM_STATE_VERTEX_OUTPUTS);
@@ -3639,13 +3812,13 @@ hk_draw(struct hk_cmd_buffer *cmd, uint16_t draw_id, struct agx_draw draw_)
 
          draw = hk_draw_as_indexed_indirect(cmd, draw);
 
-         size_t size_B = libagx_draw_robust_index_vdm_size();
+         size_t size_B = libagx_draw_robust_index_vdm_size(dev->dev.chip);
          uint64_t target = hk_cs_alloc_for_indirect(cs, size_B);
 
-         libagx_draw_robust_index(cmd, agx_1d(32), AGX_BARRIER_ALL | AGX_PREGFX,
-                                  target, hk_heap(cmd), draw.b.ptr,
-                                  draw.index_buffer, draw.index_buffer_range_B,
-                                  draw.restart, topology, draw.index_size);
+         libagx_draw_robust_index(
+            cmd, agx_1d(32), AGX_BARRIER_ALL | AGX_PREGFX, target, hk_heap(cmd),
+            draw.b.ptr, draw.index_buffer, draw.index_buffer_range_B,
+            draw.restart, topology, dev->dev.chip, draw.index_size);
       } else {
          cs->current = (void *)agx_vdm_draw((uint32_t *)out, dev->dev.chip,
                                             draw, topology);

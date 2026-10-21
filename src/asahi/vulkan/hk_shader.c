@@ -844,6 +844,10 @@ hk_lower_nir(struct hk_device *dev, nir_shader *nir,
     */
    NIR_PASS(_, nir, agx_nir_lower_texture_early, true /* support_lod_bias */);
 
+   /* G15 samples a cube in cube array mode (pack_texture_g15), seamless */
+   if (dev->dev.params.gpu_generation >= 15)
+      NIR_PASS(_, nir, agx_nir_lower_cube_g15);
+
    struct hk_instance *instance = hk_physical_device_instance(
       (struct hk_physical_device *)dev->vk.physical);
 
@@ -851,12 +855,14 @@ hk_lower_nir(struct hk_device *dev, nir_shader *nir,
       NIR_PASS(_, nir, agx_nir_lower_image_view_min_lod);
    }
 
-   if ((features & HK_FEAT_CUSTOM_BORDER) && !HK_PERF(dev, NOBORDER)) {
+   /* G15 takes custom borders from the descriptor (hk_descriptor_set.h) */
+   if ((features & HK_FEAT_CUSTOM_BORDER) && !HK_PERF(dev, NOBORDER) &&
+       dev->dev.params.gpu_generation < 15) {
       NIR_PASS(_, nir, agx_nir_lower_custom_border);
    }
 
-   NIR_PASS(_, nir, hk_nir_lower_descriptors, rs, set_layout_count,
-            set_layouts);
+   NIR_PASS(_, nir, hk_nir_lower_descriptors, rs, set_layout_count, set_layouts,
+            dev->dev.params.gpu_generation >= 15);
    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_global,
             nir_address_format_64bit_global);
    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_ssbo,
@@ -908,9 +914,13 @@ hk_lower_nir(struct hk_device *dev, nir_shader *nir,
 
    /* TODO: we can do indirect VS output */
    nir_variable_mode lower_indirect_modes = 0;
-   if (nir->info.stage == MESA_SHADER_FRAGMENT)
+   if (nir->info.stage == MESA_SHADER_FRAGMENT) {
       lower_indirect_modes |= nir_var_shader_out;
-   else if (nir->info.stage == MESA_SHADER_VERTEX)
+
+      /* G15's iter takes its coefficient register as an immediate only */
+      if (dev->dev.params.gpu_generation >= 15)
+         lower_indirect_modes |= nir_var_shader_in;
+   } else if (nir->info.stage == MESA_SHADER_VERTEX)
       lower_indirect_modes |= nir_var_shader_in | nir_var_shader_out;
 
    NIR_PASS(_, nir, nir_lower_indirect_derefs_to_if_else_trees,
@@ -926,8 +936,12 @@ hk_lower_nir(struct hk_device *dev, nir_shader *nir,
                nir_metadata_control_flow, NULL);
    }
 
-   NIR_PASS(_, nir, agx_nir_lower_texture);
-   NIR_PASS(_, nir, agx_nir_lower_multisampled_image_store);
+   NIR_PASS(_, nir, agx_nir_lower_texture_gen,
+            dev->dev.params.gpu_generation >= 15);
+   if (dev->dev.params.gpu_generation >= 15)
+      NIR_PASS(_, nir, hk_nir_lower_image_loads_g15);
+   NIR_PASS(_, nir, agx_nir_lower_multisampled_image_store,
+            dev->dev.params.gpu_generation >= 15);
 
    agx_preprocess_nir(nir);
 
@@ -1087,6 +1101,9 @@ hk_compile_nir(struct hk_device *dev, const VkAllocationCallbacks *pAllocator,
       shader->info.fs.interp.flat =
          ~(nir->info.linear_varyings | nir->info.perspective_varyings);
 
+      if (dev->dev.params.gpu_generation >= 15)
+         NIR_PASS(_, nir, agx_nir_lower_stencil_only_g15);
+
       /* Discards must be lowering before lowering MSAA to handle discards */
       NIR_PASS(_, nir, agx_nir_lower_discard_zs_emit);
       NIR_PASS(_, nir, agx_nir_lower_fs_output_to_epilog,
@@ -1159,7 +1176,8 @@ hk_compile_nir(struct hk_device *dev, const VkAllocationCallbacks *pAllocator,
    shader->info.set_count = set_count;
 
    /* XXX: rename */
-   NIR_PASS(_, nir, hk_lower_uvs_index, sw_stage, nr_vbos);
+   NIR_PASS(_, nir, hk_lower_uvs_index, sw_stage, nr_vbos,
+            dev->dev.params.gpu_generation >= 15);
    NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_uniforms,
             nir_metadata_control_flow, &root);
 
@@ -1176,6 +1194,7 @@ hk_compile_nir(struct hk_device *dev, const VkAllocationCallbacks *pAllocator,
       .reserved_preamble = root + (4 * (1 + set_count)),
       .dev = agx_gather_device_key(&dev->dev),
       .no_stop = nir->info.stage == MESA_SHADER_FRAGMENT,
+      .vs_prolog = sw_stage == MESA_SHADER_VERTEX && hw,
       .has_scratch = !nir->info.internal,
       .promote_constants = true,
       .promote_textures = true,
@@ -1283,10 +1302,10 @@ hk_api_shader_destroy(struct vk_device *vk_dev, struct vk_shader *vk_shader,
       hk_shader_destroy(dev, shader);
    }
 
-   vk_shader_free(&dev->vk, pAllocator, &obj->vk);
-
    free(obj->debug_nir_dump);
    free(obj->debug_agx_dump);
+
+   vk_shader_free(&dev->vk, pAllocator, &obj->vk);
 }
 
 static void dump_shader_ir(
@@ -1952,7 +1971,9 @@ hk_fast_link(struct hk_device *dev, bool fragment, struct hk_shader *main,
       agx_usc_immediates(&b, &main->b.info.rodata, main->bo->va->addr);
    }
 
-   if (s->b.uses_txf)
+   /* G15 has no sampler state registers: a fetch's sampler is a descriptor
+    * entry (hk_descriptor_set.h), and an entry program has no sampler word */
+   if (s->b.uses_txf && dev->dev.params.gpu_generation < 15)
       agx_usc_push_packed(&b, SAMPLER, dev->dev.txf_sampler);
 
    agx_usc_shared_non_fragment(&b, &main->b.info, 0);

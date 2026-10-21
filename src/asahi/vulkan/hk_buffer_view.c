@@ -51,6 +51,81 @@ hk_get_buffer_format_features(struct hk_physical_device *pdev,
    return features;
 }
 
+/*
+ * G15: a texel buffer is a linear 2D image AGX_TEXTURE_BUFFER_WIDTH texels
+ * wide, as on G13 and in Gallium's agx_pack_texture_g15 (not verified on
+ * G15). libagx reads G13's software words: the texture's size and offset in
+ * words 4 and 5 and the PBE's offset in word 4, which G15 reads only when a
+ * descriptor is extended, and an emulated RGB32 buffer's address in G13's
+ * address field. The addresses are the raw VAs (texture.md).
+ */
+static void
+pack_buffer_view_g15(struct hk_buffer_view *view, enum pipe_format format,
+                     const uint8_t *format_swizzle, uint64_t ro_base,
+                     uint64_t rw_base, uint32_t tail_offset_el)
+{
+   const struct util_format_description *desc = util_format_description(format);
+   unsigned stride_B =
+      AGX_TEXTURE_BUFFER_WIDTH * util_format_get_blocksize(format);
+   unsigned height =
+      MAX2(DIV_ROUND_UP(view->vk.elements, AGX_TEXTURE_BUFFER_WIDTH), 1);
+
+   agx_pack(&view->tex, TEXTURE_G15, cfg) {
+      cfg.dimension = AGX_TEXTURE_DIMENSION_2D;
+      cfg.layout = AGX_LAYOUT_LINEAR;
+      cfg.channels = ail_pixel_format[format].channels;
+      cfg.type = ail_pixel_format[format].type;
+      cfg.swizzle_r = agx_channel_from_pipe(format_swizzle[0]);
+      cfg.swizzle_g = agx_channel_from_pipe(format_swizzle[1]);
+      cfg.swizzle_b = agx_channel_from_pipe(format_swizzle[2]);
+      cfg.swizzle_a = agx_channel_from_pipe(format_swizzle[3]);
+      cfg.width = AGX_TEXTURE_BUFFER_WIDTH;
+      cfg.height = height;
+      cfg.srgb = (desc->colorspace == UTIL_FORMAT_COLORSPACE_SRGB);
+      cfg.srgb_2_channel = cfg.srgb && util_format_colormask(desc) == 0x3;
+      cfg.address = ro_base;
+      cfg.stride = stride_B - 16;
+   }
+
+   uint32_t *w = (uint32_t *)&view->tex;
+   w[4] = view->vk.elements;
+   w[5] = tail_offset_el;
+
+   if (ail_pixel_format[format].channels == AGX_CHANNELS_R32G32B32_EMULATED) {
+      uint64_t *q = (uint64_t *)&view->tex;
+      q[1] &= ~BITFIELD64_RANGE(2, 36);
+      q[1] |= ((ro_base >> 4) & BITFIELD64_MASK(36)) << 2;
+   }
+
+   agx_pack(&view->pbe, PBE_G15, cfg) {
+      cfg.dimension = AGX_TEXTURE_DIMENSION_2D;
+      cfg.layout = AGX_LAYOUT_LINEAR;
+      cfg.channels = ail_pixel_format[format].channels;
+      cfg.type = ail_pixel_format[format].type;
+      cfg.srgb = util_format_is_srgb(format);
+
+      assert(desc->nr_channels >= 1 && desc->nr_channels <= 4);
+
+      for (unsigned i = 0; i < desc->nr_channels; ++i) {
+         if (desc->swizzle[i] == 0)
+            cfg.swizzle_r = i;
+         else if (desc->swizzle[i] == 1)
+            cfg.swizzle_g = i;
+         else if (desc->swizzle[i] == 2)
+            cfg.swizzle_b = i;
+         else if (desc->swizzle[i] == 3)
+            cfg.swizzle_a = i;
+      }
+
+      cfg.buffer = rw_base;
+      cfg.width = AGX_TEXTURE_BUFFER_WIDTH;
+      cfg.height = height;
+      cfg.stride = (stride_B >> 4) - 1;
+   }
+
+   ((uint32_t *)&view->pbe)[4] = tail_offset_el;
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL
 hk_CreateBufferView(VkDevice _device, const VkBufferViewCreateInfo *pCreateInfo,
                     const VkAllocationCallbacks *pAllocator,
@@ -99,6 +174,13 @@ hk_CreateBufferView(VkDevice _device, const VkBufferViewCreateInfo *pCreateInfo,
    uint32_t tail_offset_el = tail_offset_B / util_format_get_blocksize(format);
    assert(tail_offset_el * util_format_get_blocksize(format) == tail_offset_B &&
           "must be texel aligned");
+
+   if (device->dev.params.gpu_generation >= 15) {
+      pack_buffer_view_g15(view, format, format_swizzle, ro_base, rw_base,
+                           tail_offset_el);
+      *pBufferView = hk_buffer_view_to_handle(view);
+      return VK_SUCCESS;
+   }
 
    agx_pack(&view->tex, TEXTURE, cfg) {
       cfg.dimension = AGX_TEXTURE_DIMENSION_2D;

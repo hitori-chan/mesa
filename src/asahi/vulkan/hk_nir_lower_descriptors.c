@@ -27,7 +27,15 @@ struct lower_descriptors_ctx {
    bool clamp_desc_array_bounds;
    nir_address_format ubo_addr_format;
    nir_address_format ssbo_addr_format;
+
+   /* G15's sampled image descriptors and texture handles */
+   bool g15;
 };
+
+/* A sampled image descriptor field's offset in the generation's layout */
+#define SAMPLED_OFFS(ctx, field)                                               \
+   ((ctx)->g15 ? offsetof(struct hk_sampled_image_descriptor_g15, field)       \
+               : offsetof(struct hk_sampled_image_descriptor, field))
 
 static const struct hk_descriptor_set_binding_layout *
 get_binding_layout(uint32_t set, uint32_t binding,
@@ -329,6 +337,46 @@ load_image_handle(nir_builder *b, const struct lower_descriptors_ctx *ctx,
    return nir_bindless_image_agx(b, desc_offs_B, .desc_set = set);
 }
 
+/* G15: the texture handle is an index into the set seen as a table of 32 B
+ * entries, and the sampler of a combined descriptor the entry after it */
+static nir_def *
+load_texture_index_g15(nir_builder *b, const struct lower_descriptors_ctx *ctx,
+                       nir_src src, unsigned offset_B, bool sampler)
+{
+   uint32_t set, binding;
+   nir_def *index;
+   get_resource_deref_binding(b, nir_src_as_deref(src), &set, &binding, &index);
+
+   const struct hk_descriptor_set_binding_layout *binding_layout =
+      get_binding_layout(set, binding, ctx);
+
+   if (ctx->clamp_desc_array_bounds)
+      index =
+         nir_umin(b, index, nir_imm_int(b, binding_layout->array_size - 1));
+
+   assert(binding_layout->stride > 0 && binding_layout->stride % 32 == 0);
+   assert(binding_layout->offset % 32 == 0 && offset_B % 32 == 0);
+   nir_def *entry =
+      nir_iadd_imm(b, nir_imul_imm(b, index, binding_layout->stride / 32),
+                   (binding_layout->offset + offset_B) / 32);
+
+   /* The texture instructions read 16 bits of the entry: a binding whose
+    * entries all lie below 65536 says so (the backend drops the mask), and the
+    * backend moves the table for the others */
+   uint64_t end_B =
+      binding_layout->offset +
+      (uint64_t)binding_layout->array_size * binding_layout->stride;
+   if (end_B <= 0x10000 * 32)
+      entry = nir_iand_imm(b, entry, 0xffff);
+
+   if (sampler) {
+      nir_def *desc_offs_B = nir_imul_imm(b, entry, 32);
+      return nir_bindless_sampler_agx(b, desc_offs_B, entry, .desc_set = set);
+   }
+
+   return nir_bindless_image_agx(b, entry, .desc_set = set);
+}
+
 static bool
 lower_image_intrin(nir_builder *b, nir_intrinsic_instr *intr,
                    const struct lower_descriptors_ctx *ctx)
@@ -336,16 +384,27 @@ lower_image_intrin(nir_builder *b, nir_intrinsic_instr *intr,
    b->cursor = nir_before_instr(&intr->instr);
 
    /* Reads and queries use the texture descriptor; writes and atomics PBE. */
-   unsigned offs;
-   if (intr->intrinsic != nir_intrinsic_image_deref_load &&
-       intr->intrinsic != nir_intrinsic_image_deref_sparse_load &&
-       intr->intrinsic != nir_intrinsic_image_deref_size &&
-       intr->intrinsic != nir_intrinsic_image_deref_samples) {
+   bool pbe = intr->intrinsic != nir_intrinsic_image_deref_load &&
+              intr->intrinsic != nir_intrinsic_image_deref_sparse_load &&
+              intr->intrinsic != nir_intrinsic_image_deref_size &&
+              intr->intrinsic != nir_intrinsic_image_deref_samples;
 
-      offs = offsetof(struct hk_storage_image_descriptor, pbe);
-   } else {
-      offs = offsetof(struct hk_storage_image_descriptor, tex);
+   /* G15: the entry of the texture or the PBE (hk_descriptor_set.h); a read
+    * becomes a fetch with the sampler in the entry after the texture
+    * (hk_nir_lower_image_loads_g15) */
+   if (ctx->g15) {
+      unsigned offs =
+         pbe ? offsetof(struct hk_storage_image_descriptor_g15, pbe)
+             : offsetof(struct hk_storage_image_descriptor_g15, tex);
+
+      nir_rewrite_image_intrinsic(
+         intr, load_texture_index_g15(b, ctx, intr->src[0], offs, false),
+         nir_image_intrinsic_type_bindless);
+      return true;
    }
+
+   unsigned offs = pbe ? offsetof(struct hk_storage_image_descriptor, pbe)
+                       : offsetof(struct hk_storage_image_descriptor, tex);
 
    nir_rewrite_image_intrinsic(intr,
                                load_image_handle(b, ctx, intr->src[0], offs),
@@ -392,6 +451,7 @@ translate_pipeline_stat_bit(enum pipe_statistics_query_index pipe)
 struct lower_uvs_args {
    mesa_shader_stage sw_stage;
    unsigned nr_vbos;
+   bool g15;
 };
 
 static bool
@@ -418,6 +478,23 @@ lower_uvs_index(nir_builder *b, nir_intrinsic_instr *intrin, void *data)
 
    case nir_intrinsic_load_sample_positions_agx:
       return lower_sysval_to_root_table(b, intrin, draw.ppp_multisamplectl);
+
+   case nir_intrinsic_load_samples_log2_agx: {
+      if (!args->g15)
+         return false;
+
+      /* G15 has no readable sample count (draws.md, Multisampling): as in
+       * Gallium, 1, 2 and 4 samples are told apart by the size of
+       * PPP_MULTISAMPLECTL, one nonzero byte per sample from sample 0 */
+      b->cursor = nir_instr_remove(&intrin->instr);
+      unsigned offset = hk_root_descriptor_offset(draw.ppp_multisamplectl);
+      nir_def *ctl = load_root(b, 1, 32, nir_imm_int(b, offset), 4);
+      nir_def *log2 = nir_iadd(b, nir_b2i32(b, nir_uge_imm(b, ctl, 0x100)),
+                               nir_b2i32(b, nir_uge_imm(b, ctl, 0x10000)));
+      nir_def_rewrite_uses(&intrin->def,
+                           nir_u2uN(b, log2, intrin->def.bit_size));
+      return true;
+   }
 
    case nir_intrinsic_load_depth_never_agx:
       return lower_sysval_to_root_table(b, intrin, draw.force_never_in_shader);
@@ -540,11 +617,13 @@ lower_uvs_index(nir_builder *b, nir_intrinsic_instr *intrin, void *data)
 }
 
 bool
-hk_lower_uvs_index(nir_shader *s, mesa_shader_stage sw_stage, unsigned nr_vbos)
+hk_lower_uvs_index(nir_shader *s, mesa_shader_stage sw_stage, unsigned nr_vbos,
+                   bool g15)
 {
    struct lower_uvs_args args = {
       .sw_stage = sw_stage,
       .nr_vbos = nr_vbos,
+      .g15 = g15,
    };
    return nir_shader_intrinsics_pass(s, lower_uvs_index,
                                      nir_metadata_control_flow, &args);
@@ -617,14 +696,16 @@ lower_tex(nir_builder *b, nir_tex_instr *tex,
       plane_ssa ? nir_src_as_uint(nir_src_for_ssa(plane_ssa)) : 0;
    const uint64_t plane_offset_B =
       plane * sizeof(struct hk_sampled_image_descriptor);
+   static_assert(sizeof(struct hk_sampled_image_descriptor) ==
+                    sizeof(struct hk_sampled_image_descriptor_g15),
+                 "one stride");
 
    /* LOD bias is passed in the descriptor set, rather than embedded into
     * the sampler descriptor. There's no spot in the hardware descriptor,
     * plus this saves on precious sampler heap spots.
     */
    if (tex->op == nir_texop_lod_bias) {
-      unsigned offs =
-         offsetof(struct hk_sampled_image_descriptor, lod_bias_fp16);
+      unsigned offs = SAMPLED_OFFS(ctx, lod_bias_fp16);
 
       nir_def *bias = load_resource_deref_desc(
          b, 1, 16, nir_src_as_deref(nir_src_for_ssa(sampler)),
@@ -638,10 +719,9 @@ lower_tex(nir_builder *b, nir_tex_instr *tex,
       assert(tex->dest_type == nir_type_float16 ||
              tex->dest_type == nir_type_uint16);
 
-      unsigned offs =
-         tex->dest_type == nir_type_float16
-            ? offsetof(struct hk_sampled_image_descriptor, min_lod_fp16)
-            : offsetof(struct hk_sampled_image_descriptor, min_lod_uint16);
+      unsigned offs = tex->dest_type == nir_type_float16
+                         ? SAMPLED_OFFS(ctx, min_lod_fp16)
+                         : SAMPLED_OFFS(ctx, min_lod_uint16);
 
       nir_def *min = load_resource_deref_desc(
          b, 1, 16, nir_src_as_deref(nir_src_for_ssa(texture)),
@@ -652,8 +732,7 @@ lower_tex(nir_builder *b, nir_tex_instr *tex,
    }
 
    if (tex->op == nir_texop_has_custom_border_color_agx) {
-      unsigned offs = offsetof(struct hk_sampled_image_descriptor,
-                               clamp_0_sampler_index_or_negative);
+      unsigned offs = SAMPLED_OFFS(ctx, clamp_0_sampler_index_or_negative);
 
       nir_def *res = load_resource_deref_desc(
          b, 1, 16, nir_src_as_deref(nir_src_for_ssa(sampler)),
@@ -664,7 +743,7 @@ lower_tex(nir_builder *b, nir_tex_instr *tex,
    }
 
    if (tex->op == nir_texop_custom_border_color_agx) {
-      unsigned offs = offsetof(struct hk_sampled_image_descriptor, border);
+      unsigned offs = SAMPLED_OFFS(ctx, border);
 
       nir_def *border = load_resource_deref_desc(
          b, 4, 32, nir_src_as_deref(nir_src_for_ssa(sampler)),
@@ -674,6 +753,25 @@ lower_tex(nir_builder *b, nir_tex_instr *tex,
       border = nir_convert_to_bit_size(b, border, T, tex->def.bit_size);
 
       nir_def_replace(&tex->def, border);
+      return true;
+   }
+
+   if (ctx->g15) {
+      unsigned offset_B = plane_offset_B + SAMPLED_OFFS(ctx, tex);
+      nir_def *handle = load_texture_index_g15(b, ctx, nir_src_for_ssa(texture),
+                                               offset_B, false);
+      nir_tex_instr_add_src(tex, nir_tex_src_texture_handle, handle);
+
+      /* The sampler (a texture without one, for txf: the entry's zero
+       * sampler; the LOD query reads its LOD range and mip filter), a custom
+       * border colour in its entry (hk_descriptor_set.h) */
+      if (!nir_tex_instr_is_query(tex) || tex->op == nir_texop_lod) {
+         offset_B = plane_offset_B + SAMPLED_OFFS(ctx, sampler);
+         nir_def *s = load_texture_index_g15(
+            b, ctx, nir_src_for_ssa(sampler ? sampler : texture), offset_B,
+            true);
+         nir_tex_instr_add_src(tex, nir_tex_src_sampler_handle, s);
+      }
       return true;
    }
 
@@ -907,9 +1005,11 @@ bool
 hk_nir_lower_descriptors(nir_shader *nir,
                          const struct vk_pipeline_robustness_state *rs,
                          uint32_t set_layout_count,
-                         struct vk_descriptor_set_layout *const *set_layouts)
+                         struct vk_descriptor_set_layout *const *set_layouts,
+                         bool g15)
 {
    struct lower_descriptors_ctx ctx = {
+      .g15 = g15,
       .clamp_desc_array_bounds =
          rs->storage_buffers !=
             VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DISABLED_EXT ||
@@ -941,4 +1041,122 @@ hk_nir_lower_descriptors(nir_shader *nir,
       nir, lower_ssbo_descriptor, nir_metadata_control_flow, &ctx);
 
    return pass_lower_descriptors || pass_lower_ssbo;
+}
+
+/* G15: the sampler entry after a texture handle's entry (hk_descriptor_set.h:
+ * a sampled image's sampler, or the txf sampler of a storage image or texel
+ * buffer) */
+static nir_def *
+sampler_after_texture_g15(nir_builder *b, nir_def *handle)
+{
+   if (!nir_def_is_intrinsic(handle))
+      return NULL;
+
+   nir_intrinsic_instr *intr = nir_def_as_intrinsic(handle);
+   if (intr->intrinsic != nir_intrinsic_bindless_image_agx)
+      return NULL;
+
+   nir_def *entry = nir_iadd_imm(b, intr->src[0].ssa, 1);
+
+   /* in the same binding, so below 65536 too when the texture's is
+    * (load_texture_index_g15) */
+   nir_scalar index = nir_get_scalar(intr->src[0].ssa, 0);
+   if (nir_scalar_is_alu(index) && nir_scalar_alu_op(index) == nir_op_iand &&
+       nir_scalar_is_const(nir_scalar_chase_alu_src(index, 1)) &&
+       nir_scalar_as_uint(nir_scalar_chase_alu_src(index, 1)) == 0xffff)
+      entry = nir_iand_imm(b, entry, 0xffff);
+
+   return nir_bindless_sampler_agx(b, nir_imul_imm(b, entry, 32), entry,
+                                   .desc_set = nir_intrinsic_desc_set(intr));
+}
+
+/*
+ * G15 has no image load (libLLVM 32023 knows none): an image is read as its
+ * texture descriptor by a fetch with the txf sampler, the coordinates as
+ * agx_nir_lower_texture leaves them (a 1D or buffer image as 2D, a cube as a
+ * 2D array), as Gallium's lower_image_load_g15: only a load that may be
+ * reordered and is not sparse becomes a txf, another stays an intrinsic, the
+ * txf sampler in the sample index's place, or the LOD's for a multisampled
+ * image. Fetches agx_nir_lower_texture took the sampler from (a buffer
+ * texture's) get the one after the texture again.
+ */
+static bool
+lower_image_load_g15(nir_builder *b, nir_instr *instr, UNUSED void *data)
+{
+   b->cursor = nir_before_instr(instr);
+
+   if (instr->type == nir_instr_type_tex) {
+      nir_tex_instr *tex = nir_instr_as_tex(instr);
+      int h = nir_tex_instr_src_index(tex, nir_tex_src_texture_handle);
+
+      if ((tex->op != nir_texop_txf && tex->op != nir_texop_txf_ms) || h < 0 ||
+          nir_tex_instr_src_index(tex, nir_tex_src_sampler_handle) >= 0)
+         return false;
+
+      nir_def *s = sampler_after_texture_g15(b, tex->src[h].src.ssa);
+      if (!s)
+         return false;
+
+      nir_tex_instr_add_src(tex, nir_tex_src_sampler_handle, s);
+      return true;
+   }
+
+   if (instr->type != nir_instr_type_intrinsic)
+      return false;
+
+   nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+   bool sparse = intr->intrinsic == nir_intrinsic_bindless_image_sparse_load;
+   if (intr->intrinsic != nir_intrinsic_bindless_image_load && !sparse)
+      return false;
+
+   enum glsl_sampler_dim dim = nir_intrinsic_image_dim(intr);
+   bool array = nir_intrinsic_image_array(intr);
+
+   if (dim == GLSL_SAMPLER_DIM_CUBE) {
+      dim = GLSL_SAMPLER_DIM_2D;
+      array = true;
+   }
+
+   nir_def *sampler = sampler_after_texture_g15(b, intr->src[0].ssa);
+   if (!sampler)
+      return false;
+
+   if (dim == GLSL_SAMPLER_DIM_MS) {
+      nir_src_rewrite(&intr->src[3], sampler);
+      return true;
+   }
+
+   if (sparse || !(nir_intrinsic_access(intr) & ACCESS_CAN_REORDER)) {
+      nir_src_rewrite(&intr->src[2], sampler);
+      return true;
+   }
+
+   assert(dim == GLSL_SAMPLER_DIM_2D || dim == GLSL_SAMPLER_DIM_3D);
+   unsigned n = glsl_get_sampler_dim_coordinate_components(dim) + array;
+
+   nir_tex_instr *tex = nir_tex_instr_create(b->shader, 4);
+   tex->op = nir_texop_txf;
+   tex->sampler_dim = dim;
+   tex->is_array = array;
+   tex->coord_components = n;
+   tex->dest_type = nir_intrinsic_dest_type(intr);
+   tex->src[0] = nir_tex_src_for_ssa(nir_tex_src_backend1,
+                                     nir_trim_vector(b, intr->src[1].ssa, n));
+   tex->src[1] = nir_tex_src_for_ssa(nir_tex_src_lod, intr->src[3].ssa);
+   tex->src[2] =
+      nir_tex_src_for_ssa(nir_tex_src_texture_handle, intr->src[0].ssa);
+   tex->src[3] = nir_tex_src_for_ssa(nir_tex_src_sampler_handle, sampler);
+
+   nir_def_init(&tex->instr, &tex->def, 4, intr->def.bit_size);
+   nir_builder_instr_insert(b, &tex->instr);
+   nir_def_replace(&intr->def,
+                   nir_trim_vector(b, &tex->def, intr->def.num_components));
+   return true;
+}
+
+bool
+hk_nir_lower_image_loads_g15(nir_shader *nir)
+{
+   return nir_shader_instructions_pass(nir, lower_image_load_g15,
+                                       nir_metadata_control_flow, NULL);
 }

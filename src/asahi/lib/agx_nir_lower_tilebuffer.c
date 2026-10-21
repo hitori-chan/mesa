@@ -228,7 +228,7 @@ store_memory(nir_builder *b, unsigned bindless_base, unsigned nr_samples,
 static nir_def *
 load_memory(nir_builder *b, unsigned bindless_base, unsigned nr_samples,
             uint8_t comps, uint8_t bit_size, unsigned rt,
-            enum pipe_format format)
+            enum pipe_format format, bool g15)
 {
    nir_def *image = handle_for_rt(b, bindless_base, rt, false);
    nir_def *zero = nir_imm_intN_t(b, 0, 16);
@@ -240,6 +240,43 @@ load_memory(nir_builder *b, unsigned bindless_base, unsigned nr_samples,
 
    /* Ensure pixels below this one have written out their results */
    nir_begin_invocation_interlock(b);
+
+   if (g15) {
+      /* G15 has no image load: a fetch of the texture descriptor with the
+       * txf sampler after the render targets' entries, in the same table */
+      nir_def *sampler = nir_bindless_sampler_agx(
+         b, nir_imm_int(b, 0),
+         nir_imm_intN_t(b, bindless_base + 2 * AGX_MAX_RENDER_TARGETS, 16),
+         .desc_set = 0);
+      bool ms = dim == GLSL_SAMPLER_DIM_MS;
+      nir_alu_type T = util_format_is_pure_sint(format)   ? nir_type_int32
+                       : util_format_is_pure_uint(format) ? nir_type_uint32
+                                                          : nir_type_float32;
+
+      nir_tex_instr *tex = nir_tex_instr_create(b->shader, ms ? 4 : 3);
+      tex->op = ms ? nir_texop_txf_ms : nir_texop_txf;
+      tex->sampler_dim = dim;
+      tex->is_array = true;
+      tex->coord_components = 3;
+      tex->dest_type = T;
+      tex->src[0] =
+         nir_tex_src_for_ssa(nir_tex_src_coord, nir_trim_vector(b, coords, 3));
+      tex->src[1] = nir_tex_src_for_ssa(nir_tex_src_texture_handle, image);
+      tex->src[2] = nir_tex_src_for_ssa(nir_tex_src_sampler_handle, sampler);
+      if (ms) {
+         tex->src[3] =
+            nir_tex_src_for_ssa(nir_tex_src_ms_index, nir_u2u32(b, sample));
+      }
+
+      nir_def_init(&tex->instr, &tex->def, 4, 32);
+      nir_builder_instr_insert(b, &tex->instr);
+
+      nir_def *v = nir_trim_vector(b, &tex->def, comps);
+      if (bit_size == 32)
+         return v;
+      return T == nir_type_float32 ? nir_f2fN(b, v, bit_size)
+                                   : nir_u2uN(b, v, bit_size);
+   }
 
    return nir_bindless_image_load(b, comps, bit_size, image, coords, sample,
                                   lod, .image_dim = dim, .image_array = true,
@@ -314,6 +351,16 @@ pass(nir_builder *b, nir_intrinsic_instr *intr, void *data)
       /* Trim to format as required by hardware */
       value = nir_trim_vector(b, intr->src[0].ssa, comps);
 
+      /* An X channel (B8G8R8X8's) holds 1: G15's PBE fills it from the
+       * alpha, and DCP 14.7 blends a scanout surface by that byte */
+      if (comps == 4 && util_format_description(logical_format)->swizzle[3] ==
+                           PIPE_SWIZZLE_1) {
+         nir_def *one = util_format_is_pure_integer(logical_format)
+                           ? nir_imm_intN_t(b, 1, value->bit_size)
+                           : nir_imm_floatN_t(b, 1.0, value->bit_size);
+         value = nir_vector_insert_imm(b, value, one, 3);
+      }
+
       if (tib->spilled[rt]) {
          store_memory(b, ctx->bindless_base, tib->nr_samples, logical_format,
                       rt, value, ctx->write_samples);
@@ -335,7 +382,8 @@ pass(nir_builder *b, nir_intrinsic_instr *intr, void *data)
          *(ctx->translucent) = true;
 
          def = load_memory(b, ctx->bindless_base, tib->nr_samples,
-                           intr->num_components, bit_size, rt, logical_format);
+                           intr->num_components, bit_size, rt, logical_format,
+                           tib->g15);
       } else {
          def = load_tilebuffer(b, tib, intr->num_components, bit_size, rt,
                                format, logical_format);
@@ -365,7 +413,7 @@ agx_nir_lower_tilebuffer(nir_shader *shader, struct agx_tilebuffer_layout *tib,
    if (agx_tilebuffer_spills(tib)) {
       assert(bindless_base != NULL && "must be specified if spilling");
       ctx.bindless_base = *bindless_base;
-      *bindless_base += (AGX_MAX_RENDER_TARGETS * 2);
+      *bindless_base += (AGX_MAX_RENDER_TARGETS * 2) + (tib->g15 ? 1 : 0);
    }
 
    bool progress =

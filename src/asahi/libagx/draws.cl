@@ -126,7 +126,7 @@ libagx_draw_robust_index(global uint32_t *vdm, global struct poly_heap *heap,
                          constant VkDrawIndexedIndirectCommand *cmd,
                          uint64_t in_buf_ptr, uint32_t in_buf_range_B,
                          ushort restart, enum agx_primitive topology,
-                         enum agx_index_size index_size__3)
+                         enum agx_chip chip, enum agx_index_size index_size__3)
 {
    uint tid = get_sub_group_local_id();
    bool first = tid == 0;
@@ -181,6 +181,6 @@ libagx_draw_robust_index(global uint32_t *vdm, global struct poly_heap *heap,
    }
 
    if (first) {
-      agx_vdm_draw(vdm, 0, draw, topology);
+      agx_vdm_draw(vdm, chip, draw, topology);
    }
 }

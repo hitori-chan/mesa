@@ -9,6 +9,7 @@
 #include "agx_abi.h"
 #include "agx_bo.h"
 #include "agx_device.h"
+#include "agx_esl.h"
 #include "agx_linker.h"
 #include "agx_tilebuffer.h"
 #include "agx_usc.h"
@@ -193,7 +194,7 @@ hk_pool_alloc_internal(struct hk_cmd_buffer *cmd, uint32_t size,
    if (size > HK_CMD_BO_SIZE) {
       uint32_t flags = usc ? AGX_BO_LOW_VA : 0;
       struct agx_bo *bo =
-         agx_bo_create(&dev->dev, size, flags, 0, "Large pool allocation");
+         agx_bo_create(&dev->dev, size, 0, flags, "Large pool allocation");
 
       util_dynarray_append(&cmd->large_bos, bo);
       return (struct agx_ptr){
@@ -592,11 +593,50 @@ hk_cmd_buffer_upload_root(struct hk_cmd_buffer *cmd,
    return root_ptr.gpu;
 }
 
+/* G15's texture and image instructions index tables of 32 B entries (the
+ * 24 B descriptors zero-padded): render target i's texture at entry 2 * i,
+ * its PBE at 2 * i + 1, and the txf sampler its reads fetch with after them,
+ * as agx_nir_lower_tilebuffer indexes them. dst holds HK_SPILL_TABLE_G15_B
+ * bytes. */
+void
+hk_spilled_rt_descs_g15(struct hk_cmd_buffer *cmd, uint8_t *dst)
+{
+   struct hk_rendering_state *render = &cmd->state.gfx.render;
+
+   static_assert(HK_MAX_RTS == AGX_MAX_RENDER_TARGETS, "spill table layout");
+   memset(dst, 0, HK_SPILL_TABLE_G15_B);
+   agx_pack_txf_sampler((struct agx_sampler_packed *)(dst + 64 * HK_MAX_RTS));
+
+   for (unsigned i = 0; i < render->color_att_count; ++i) {
+      struct hk_image_view *iview = render->color_att[i].iview;
+      if (!iview)
+         continue;
+
+      memcpy(dst + 64 * i, &iview->planes[0].emrt_texture,
+             sizeof(struct agx_texture_packed));
+      memcpy(dst + 64 * i + 32, &iview->planes[0].emrt_pbe,
+             sizeof(struct agx_pbe_packed));
+      memcpy(dst + 64 * i + 32 + sizeof(struct agx_pbe_packed),
+             &iview->planes[0].emrt_g15_sw,
+             sizeof(struct agx_pbe_g15_software_packed));
+   }
+}
+
 void
 hk_usc_upload_spilled_rt_descs(struct agx_usc_builder *b,
                                struct hk_cmd_buffer *cmd)
 {
    struct hk_rendering_state *render = &cmd->state.gfx.render;
+
+   if (hk_cmd_buffer_device(cmd)->dev.params.gpu_generation >= 15) {
+      struct agx_ptr t = hk_pool_alloc(cmd, HK_SPILL_TABLE_G15_B, 64);
+      if (!t.cpu)
+         return;
+
+      hk_spilled_rt_descs_g15(cmd, t.cpu);
+      agx_usc_uniform(b, 0, 4, hk_pool_upload(cmd, &t.gpu, 8, 8));
+      return;
+   }
 
    /* Upload texture/PBE descriptors for each render target so we can clear
     * spilled render targets.
@@ -660,6 +700,54 @@ hk_reserve_scratch(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
       cs->scratch.cs.preamble = MAX2(cs->scratch.cs.preamble, preamble_size);
       break;
    }
+}
+
+/* G15: the entry program for a USC word list (agx_esl.h) */
+static uint32_t
+hk_upload_esl_code(struct hk_cmd_buffer *cmd, const struct agx_esl_code *code,
+                   enum agx_esl_stage stage, const uint8_t *usc)
+{
+   struct hk_device *dev = hk_cmd_buffer_device(cmd);
+   struct util_dynarray esl;
+   util_dynarray_init(&esl, NULL);
+
+   uint32_t addr = 0;
+   if (agx_esl_from_usc(&esl, usc, dev->dev.shader_base, code, stage)) {
+      struct agx_ptr t = hk_pool_usc_alloc(cmd, esl.size, 64);
+      if (t.cpu) {
+         memcpy(t.cpu, esl.data, esl.size);
+         addr = agx_usc_addr(&dev->dev, t.gpu);
+      }
+   }
+
+   util_dynarray_fini(&esl);
+   return addr;
+}
+
+static uint32_t
+hk_upload_esl(struct hk_cmd_buffer *cmd, struct hk_shader *s,
+              struct hk_linked_shader *linked, const uint8_t *usc)
+{
+   struct agx_esl_code code = {
+      .va = s->bo ? s->bo->va->addr : 0,
+      .cpu = s->b.binary,
+      .size = s->b.info.binary_size,
+      .main_size = linked->b.bo ? linked->b.bo->size : s->b.info.main_size,
+      .stack_size = s->b.info.stack_size,
+      .cr_count = linked->b.bo ? MAX2(linked->b.cr_count, s->b.info.cr_count)
+                               : s->b.info.cr_count,
+      .pix_wait_mask = linked->b.pix_wait_mask,
+   };
+
+   /* The hardware stage, as Gallium's: geometry and tessellation run as
+    * compute kernels (the software vertex and evaluation shaders, the
+    * control shader, the geometry kernels) and a hardware vertex shader */
+   enum agx_esl_stage stage =
+      s->b.info.stage == MESA_SHADER_FRAGMENT ? AGX_ESL_FRAGMENT
+      : s->b.info.stage == MESA_SHADER_VERTEX ? AGX_ESL_VERTEX
+                                              : AGX_ESL_COMPUTE;
+
+   return hk_upload_esl_code(cmd, &code, stage, usc);
 }
 
 uint32_t
@@ -749,6 +837,10 @@ hk_upload_usc_words(struct hk_cmd_buffer *cmd, struct hk_shader *s,
    agx_usc_uniform(&b, root_unif, 4 * (1 + s->info.set_count), root_ptr);
 
    agx_usc_push_blob(&b, linked->usc.data, linked->usc.size);
+
+   if (dev->dev.params.gpu_generation >= 15)
+      return hk_upload_esl(cmd, s, linked, t.cpu);
+
    return agx_usc_addr(&dev->dev, t.gpu);
 }
 
@@ -758,7 +850,13 @@ hk_dispatch_precomp(struct hk_cmd_buffer *cmd, struct agx_grid grid,
                     void *data, size_t data_size)
 {
    struct hk_device *dev = hk_cmd_buffer_device(cmd);
+
    struct agx_precompiled_shader *prog = agx_get_precompiled(&dev->bg_eot, idx);
+
+   if (!prog) {
+      fprintf(stderr, "G15: libagx kernel %u has no G15 build, skipped\n", idx);
+      return;
+   }
 
    struct hk_cs **target = (barrier & AGX_POSTGFX)  ? &cmd->current_cs.post_gfx
                            : (barrier & AGX_PREGFX) ? &cmd->current_cs.pre_gfx
@@ -772,9 +870,25 @@ hk_dispatch_precomp(struct hk_cmd_buffer *cmd, struct agx_grid grid,
    uint64_t uploaded_data = hk_pool_upload(cmd, data, data_size, 4);
 
    agx_usc_words_precomp(t.cpu, &prog->b, uploaded_data, data_size);
+   uint32_t usc = agx_usc_addr(&dev->dev, t.gpu);
 
-   hk_dispatch_with_usc_launch(dev, cs, prog->b.launch,
-                               agx_usc_addr(&dev->dev, t.gpu), grid,
+   /* G15 launches the kernel's entry program, built from the words */
+   if (dev->dev.params.gpu_generation >= 15) {
+      const uint32_t *bin = dev->dev.libagx_programs[idx];
+      const struct agx_precompiled_kernel_info *info = (const void *)bin;
+      struct agx_esl_code code = {
+         .va = prog->ptr,
+         .cpu = (const uint8_t *)bin + sizeof(*info),
+         .size = info->binary_size,
+         .main_size = info->main_size,
+         .stack_size = info->stack_size,
+         .cr_count = info->cr_count,
+      };
+
+      usc = hk_upload_esl_code(cmd, &code, AGX_ESL_COMPUTE, t.cpu);
+   }
+
+   hk_dispatch_with_usc_launch(dev, cs, prog->b.launch, usc, grid,
                                prog->b.workgroup);
 }
 
@@ -816,7 +930,8 @@ hk_cs_init_graphics(struct hk_cmd_buffer *cmd, struct hk_cs *cs)
    if (!T.cpu)
       return;
 
-   struct agx_ppp_update ppp = agx_new_ppp_update(T, size, &present);
+   struct agx_ppp_update ppp = agx_new_ppp_update(
+      agx_vdm_ptr(&hk_cmd_buffer_device(cmd)->dev, T), size, &present);
 
    /* clang-format off */
    agx_ppp_push(&ppp, W_CLAMP, cfg) cfg.w_clamp = 1e-10;
@@ -865,7 +980,9 @@ hk_ensure_cs_has_space(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
    struct agx_ptr T = hk_pool_alloc(cmd, size, 256);
 
    /* Jump from the old control stream to the new control stream */
-   agx_cs_jump(cs->current, T.gpu, vdm);
+   agx_cs_jump(cs->current,
+               vdm ? agx_vdm_va(&hk_cmd_buffer_device(cmd)->dev, T.gpu) : T.gpu,
+               vdm);
 
    /* Swap out the control stream */
    cs->current = T.cpu;

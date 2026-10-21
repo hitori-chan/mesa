@@ -8,6 +8,7 @@ libasahi_lib_files = files(
   'agx_border.c',
   'agx_device.c',
   'agx_device_virtio.c',
+  'agx_esl.c',
   'agx_linker.c',
   'agx_bg_eot.c',
   'agx_tilebuffer.c',
@@ -33,7 +34,7 @@ libasahi_decode = static_library(
   dependencies : [dep_valgrind, idep_mesautil],
   c_args : [no_override_init_args, '-Wno-c2x-extensions'],
   gnu_symbol_visibility : 'hidden',
-  link_with : [libagx2_disasm],
+  link_with : [libagx2_disasm, libagx3_disasm],
   build_by_default : false,
 )
 
@@ -43,7 +44,7 @@ libasahi_decode_shared = shared_library(
   dependencies : [dep_valgrind, idep_mesautil],
   c_args : [no_override_init_args, '-Wno-c2x-extensions'],
   build_by_default : with_tools.contains('asahi'),
-  link_with : [libagx2_disasm],
+  link_with : [libagx2_disasm, libagx3_disasm],
 )
 
 libagx_shaders = custom_target(

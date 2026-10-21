@@ -36,12 +36,47 @@ lower_sampler(nir_builder *b, nir_tex_instr *tex)
    return true;
 }
 
+/*
+ * G15 has no sampler state registers: a texture instruction names its sampler
+ * by index into the stage's sampler table (entry 0 the txf sampler, API
+ * sampler i at i + 1), whose base the instruction takes from a uniform pair.
+ */
+static bool
+lower_sampler_g15(nir_builder *b, nir_tex_instr *tex)
+{
+   bool txf = tex->op == nir_texop_txf || tex->op == nir_texop_txf_ms;
+
+   if (nir_tex_instr_src_index(tex, nir_tex_src_sampler_handle) >= 0 ||
+       !(nir_tex_instr_need_sampler(tex) || txf))
+      return false;
+
+   nir_def *index = nir_steal_tex_src(tex, nir_tex_src_sampler_offset);
+   if (!nir_tex_instr_need_sampler(tex))
+      index = nir_imm_int(b, 0);
+   else if (!index)
+      index = nir_imm_int(b, tex->sampler_index + 1);
+   else
+      index = nir_iadd_imm(b, index, 1);
+
+   nir_tex_instr_add_src(tex, nir_tex_src_sampler_handle,
+                         nir_load_sampler_handle_agx(b, index));
+   return true;
+}
+
+struct lower_bindings_state {
+   bool *uses_bindless_samplers;
+   bool g15;
+};
+
 static bool
 lower(nir_builder *b, nir_instr *instr, void *data)
 {
-   bool *uses_bindless_samplers = data;
+   const struct lower_bindings_state *state = data;
+   bool *uses_bindless_samplers = state->uses_bindless_samplers;
    bool progress = false;
-   bool force_bindless = agx_nir_needs_texture_crawl(instr);
+
+   /* G15 has no texture state registers: everything is bindless */
+   bool force_bindless = state->g15 || agx_nir_needs_texture_crawl(instr);
    b->cursor = nir_before_instr(instr);
 
    if (instr->type == nir_instr_type_intrinsic) {
@@ -105,10 +140,13 @@ lower(nir_builder *b, nir_instr *instr, void *data)
    } else if (instr->type == nir_instr_type_tex) {
       nir_tex_instr *tex = nir_instr_as_tex(instr);
 
-      if (((BITSET_COUNT(b->shader->info.samplers_used) > 16) &&
-           (nir_tex_instr_src_index(tex, nir_tex_src_sampler_offset) >= 0 ||
-            tex->sampler_index >= 16)) &&
-          lower_sampler(b, tex)) {
+      if (state->g15) {
+         progress |= lower_sampler_g15(b, tex);
+      } else if (((BITSET_COUNT(b->shader->info.samplers_used) > 16) &&
+                  (nir_tex_instr_src_index(tex, nir_tex_src_sampler_offset) >=
+                      0 ||
+                   tex->sampler_index >= 16)) &&
+                 lower_sampler(b, tex)) {
          progress = true;
          *uses_bindless_samplers = true;
       }
@@ -142,9 +180,100 @@ lower(nir_builder *b, nir_instr *instr, void *data)
    return true;
 }
 
-bool
-agx_nir_lower_bindings(nir_shader *shader, bool *uses_bindless_samplers)
+/*
+ * G15 has no image load (libLLVM 32023 knows none): an image is read as its
+ * texture descriptor by a fetch with the txf sampler, the coordinates as
+ * agx_nir_lower_texture leaves them (a 1D or buffer image as 2D, a cube as a
+ * 2D array, the layer robust). A txf may be combined with another or moved
+ * past an image write, so only a load that may be reordered becomes one;
+ * another keeps its order as an intrinsic, the txf sampler in the sample
+ * index's place, or the LOD's for a multisampled image (agx_emit_image_load).
+ */
+static bool
+lower_image_load_g15(nir_builder *b, nir_intrinsic_instr *intr)
 {
+   if (intr->intrinsic != nir_intrinsic_bindless_image_load)
+      return false;
+
+   enum glsl_sampler_dim dim = nir_intrinsic_image_dim(intr);
+   bool array = nir_intrinsic_image_array(intr);
+
+   if (dim == GLSL_SAMPLER_DIM_MS) {
+      nir_src_rewrite(&intr->src[3],
+                      nir_load_sampler_handle_agx(b, nir_imm_int(b, 0)));
+      return true;
+   }
+
+   if (!(nir_intrinsic_access(intr) & ACCESS_CAN_REORDER)) {
+      nir_src_rewrite(&intr->src[2],
+                      nir_load_sampler_handle_agx(b, nir_imm_int(b, 0)));
+      return true;
+   }
+
+   if (dim == GLSL_SAMPLER_DIM_CUBE) {
+      dim = GLSL_SAMPLER_DIM_2D;
+      array = true;
+   } else if (dim == GLSL_SAMPLER_DIM_RECT) {
+      dim = GLSL_SAMPLER_DIM_2D;
+   }
+
+   assert(dim == GLSL_SAMPLER_DIM_2D || dim == GLSL_SAMPLER_DIM_3D);
+   unsigned n = glsl_get_sampler_dim_coordinate_components(dim) + array;
+
+   nir_tex_instr *tex = nir_tex_instr_create(b->shader, 3);
+   tex->op = nir_texop_txf;
+   tex->sampler_dim = dim;
+   tex->is_array = array;
+   tex->coord_components = n;
+   tex->dest_type = nir_intrinsic_dest_type(intr);
+   tex->src[0] = nir_tex_src_for_ssa(nir_tex_src_backend1,
+                                     nir_trim_vector(b, intr->src[1].ssa, n));
+   tex->src[1] = nir_tex_src_for_ssa(nir_tex_src_lod, intr->src[3].ssa);
+   tex->src[2] =
+      nir_tex_src_for_ssa(nir_tex_src_texture_handle, intr->src[0].ssa);
+
+   nir_def_init(&tex->instr, &tex->def, 4, intr->def.bit_size);
+   nir_builder_instr_insert(b, &tex->instr);
+   nir_def_replace(&intr->def,
+                   nir_trim_vector(b, &tex->def, intr->def.num_components));
+
+   b->cursor = nir_before_instr(&tex->instr);
+   lower_sampler_g15(b, tex);
+   return true;
+}
+
+static bool
+lower_txf_sampler_g15(nir_builder *b, nir_instr *instr, UNUSED void *data)
+{
+   b->cursor = nir_before_instr(instr);
+
+   if (instr->type == nir_instr_type_intrinsic)
+      return lower_image_load_g15(b, nir_instr_as_intrinsic(instr));
+
+   if (instr->type != nir_instr_type_tex)
+      return false;
+
+   return lower_sampler_g15(b, nir_instr_as_tex(instr));
+}
+
+/*
+ * G15: agx_nir_lower_texture rewrites a buffer texture's fetch as a 2D fetch
+ * without its sampler (G13 has a txf sampler state register); give it the
+ * table's txf sampler again. Image loads become such fetches.
+ */
+bool
+agx_nir_lower_txf_samplers_g15(nir_shader *shader)
+{
+   return nir_shader_instructions_pass(shader, lower_txf_sampler_g15,
+                                       nir_metadata_control_flow, NULL);
+}
+
+bool
+agx_nir_lower_bindings(nir_shader *shader, bool *uses_bindless_samplers,
+                       bool g15)
+{
+   struct lower_bindings_state state = {uses_bindless_samplers, g15};
+
    /* First lower index to offset so we can lower more naturally */
    bool progress = nir_lower_tex(
       shader, &(nir_lower_tex_options){.lower_index_to_offset = true});
@@ -154,7 +283,7 @@ agx_nir_lower_bindings(nir_shader *shader, bool *uses_bindless_samplers)
     */
    progress |= nir_opt_constant_folding(shader);
 
-   progress |= nir_shader_instructions_pass(
-      shader, lower, nir_metadata_control_flow, uses_bindless_samplers);
+   progress |= nir_shader_instructions_pass(shader, lower,
+                                            nir_metadata_control_flow, &state);
    return progress;
 }

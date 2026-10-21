@@ -179,8 +179,8 @@ view_denominator(struct hk_image_view *view)
    };
 }
 
-static enum pipe_format
-format_for_plane(struct hk_image_view *view, unsigned view_plane)
+enum pipe_format
+hk_image_view_plane_format(struct hk_image_view *view, unsigned view_plane)
 {
    const struct vk_format_ycbcr_info *ycbcr_info =
       vk_format_get_ycbcr_info(view->vk.format);
@@ -196,6 +196,105 @@ format_for_plane(struct hk_image_view *view, unsigned view_plane)
    return p_format;
 }
 
+/*
+ * G15's texture descriptor (cmdbuf.xml's "Texture G15"), as Gallium packs it:
+ * uncompressed, linear with one layer or twiddled, a multisampled one
+ * twiddled with (samples >> 2) & 3, the raw VA (texture.md). The rest fails
+ * here rather than reaching the hardware misread.
+ */
+static void
+pack_texture_g15(struct hk_image_view *view, unsigned view_plane,
+                 enum hk_desc_usage usage, const uint8_t *swizzle,
+                 enum pipe_format p_format, unsigned layers,
+                 struct agx_texture_packed *out)
+{
+   struct hk_image *image = container_of(view->vk.image, struct hk_image, vk);
+   const uint8_t image_plane = view->planes[view_plane].image_plane;
+   struct hk_image_plane *plane = &image->planes[image_plane];
+   struct ail_layout *layout = &plane->layout;
+   const struct util_format_description *desc =
+      util_format_description(p_format);
+   unsigned level = view->vk.base_mip_level;
+   unsigned layer = view->vk.base_array_layer;
+   struct hk_3d denom = view_denominator(view);
+
+   bool ms = view->vk.image->samples > 1;
+
+   if (layout->compressed ||
+       (layout->tiling == AIL_TILING_LINEAR && (layers > 1 || ms))) {
+      mesa_loge("G15: a compressed, linear multisampled or linear layered "
+                "texture is not supported yet");
+      assert(0);
+   }
+
+   agx_pack(out, TEXTURE_G15, cfg) {
+      cfg.dimension = translate_image_view_type(
+         view->vk.view_type, view->vk.image->samples > 1, layers > 1, usage);
+
+      /* A sampled cube is a cube array of one (agx_nir_lower_cube_g15); the
+       * depth counts cubes */
+      if (cfg.dimension == AGX_TEXTURE_DIMENSION_CUBE)
+         cfg.dimension = AGX_TEXTURE_DIMENSION_CUBE_ARRAY;
+      cfg.layout = agx_translate_layout(layout->tiling);
+      cfg.channels = ail_pixel_format[p_format].channels;
+      cfg.type = ail_pixel_format[p_format].type;
+      cfg.swizzle_r = agx_channel_from_pipe(swizzle[0]);
+      cfg.swizzle_g = agx_channel_from_pipe(swizzle[1]);
+      cfg.swizzle_b = agx_channel_from_pipe(swizzle[2]);
+      cfg.swizzle_a = agx_channel_from_pipe(swizzle[3]);
+
+      /* The raw VA: G15 subtracts nothing */
+      uint64_t base_addr = hk_image_base_address(image, image_plane);
+
+      if (denom.x > 1) {
+         assert(view->vk.level_count == 1);
+         assert(view->vk.layer_count == 1);
+
+         cfg.address = base_addr + ail_get_layer_level_B(layout, layer, level);
+         cfg.width = DIV_ROUND_UP(u_minify(layout->width_px, level), denom.x);
+         cfg.height = DIV_ROUND_UP(u_minify(layout->height_px, level), denom.y);
+         cfg.first_level = 0;
+         cfg.last_level = 0;
+      } else {
+         cfg.address = base_addr + ail_get_layer_offset_B(layout, layer);
+         cfg.width = layout->width_px;
+         cfg.height = layout->height_px;
+         cfg.first_level = level;
+         cfg.last_level = level + view->vk.level_count - 1;
+      }
+
+      /* A sparse resident image reads through its sparse page table, which
+       * is G13's (pack_texture explains the mip tail and the level offset)
+       */
+      if (plane->sparse_map && level < layout->mip_tail_first_lod) {
+         unsigned page = 0;
+         if (denom.x > 1)
+            page = ail_bytes_to_pages(layout->level_offsets_B[level]);
+
+         cfg.mode = AGX_IMAGE_MODE_SPARSE;
+         cfg.address = plane->sparse_map->va->addr +
+                       ail_page_to_sparse_index_el(layout, layer, page) *
+                          AIL_SPARSE_ELSIZE_B;
+      }
+
+      /* The level word comes with the mipmapped bit, as Apple's (texture.md) */
+      cfg.mipmapped = layout->levels > 1;
+      cfg.extended = cfg.mipmapped || cfg.first_level || cfg.last_level;
+      cfg.srgb = (desc->colorspace == UTIL_FORMAT_COLORSPACE_SRGB);
+      cfg.srgb_2_channel = cfg.srgb && util_format_colormask(desc) == 0x3;
+      cfg.depth = layers;
+
+      if (layout->tiling == AIL_TILING_LINEAR)
+         cfg.stride = ail_get_linear_stride_B(layout, 0) - 16;
+      else
+         cfg.page_aligned_layers = layout->page_aligned_layers;
+
+      /* (samples >> 2) & 3, the dimension says multisampled (texture.md) */
+      if (ms)
+         cfg.samples = agx_translate_sample_count(view->vk.image->samples);
+   }
+}
+
 static void
 pack_texture(struct hk_image_view *view, unsigned view_plane,
              enum hk_desc_usage usage, struct agx_texture_packed *out)
@@ -204,14 +303,14 @@ pack_texture(struct hk_image_view *view, unsigned view_plane,
    const uint8_t image_plane = view->planes[view_plane].image_plane;
    struct hk_image_plane *plane = &image->planes[image_plane];
    struct ail_layout *layout = &plane->layout;
-   uint64_t base_addr = hk_image_base_address(image, image_plane);
+   struct hk_device *dev = (struct hk_device *)view->vk.base.device;
 
    bool cubes_to_2d = usage != HK_DESC_USAGE_SAMPLED;
 
    unsigned level = view->vk.base_mip_level;
    unsigned layer = view->vk.base_array_layer;
 
-   enum pipe_format p_format = format_for_plane(view, view_plane);
+   enum pipe_format p_format = hk_image_view_plane_format(view, view_plane);
    const struct util_format_description *desc =
       util_format_description(p_format);
 
@@ -256,6 +355,14 @@ pack_texture(struct hk_image_view *view, unsigned view_plane,
    }
 
    util_format_compose_swizzles(format_swizzle, view_swizzle, out_swizzle);
+
+   if (dev->dev.params.gpu_generation >= 15) {
+      pack_texture_g15(view, view_plane, usage, out_swizzle, p_format, layers,
+                       out);
+      return;
+   }
+
+   uint64_t base_addr = hk_image_base_address(image, image_plane);
 
    agx_pack(out, TEXTURE, cfg) {
       cfg.dimension = translate_image_view_type(
@@ -360,9 +467,29 @@ pack_texture(struct hk_image_view *view, unsigned view_plane,
    }
 }
 
+/*
+ * G15's PBE descriptor (cmdbuf.xml's "PBE G15"). What Apple's encoder and
+ * noopwafel's demo15 settle is packed: uncompressed images, linear (the one
+ * the hardware ran: a 2D RGBA8 target) or twiddled, one layer for linear,
+ * multisampled (the sample count and the multisampled dimensions) and 3D (the
+ * depth in the layer count). Compressed images and linear arrays are not
+ * decoded (a warning says so).
+ *
+ * The address is the plane's VA as it is, 44 bits of it (G13's descriptor
+ * has 36 and a level; demo15 sets "level 1" for the 1 TiB bit of its
+ * target's address), the VA the texture descriptor holds: through another VA
+ * of the same memory a fetch does not see an image write in the same launch.
+ *
+ * A multisampled image is stored to (an image store, an atomic or a spilled
+ * render target) through a linear 2D view of its samples, as on G13: G15 has
+ * no multisampled image write. sw gets the software words libagx's texel
+ * addressing reads (PBE G15 software); the hardware reads that word of a
+ * multisampled or compressed PBE, so the end-of-tile PBEs keep it zero.
+ */
 static void
-pack_pbe(struct hk_device *dev, struct hk_image_view *view, unsigned view_plane,
-         enum hk_desc_usage usage, struct agx_pbe_packed *out)
+pack_pbe_g15(struct hk_device *dev, struct hk_image_view *view,
+             unsigned view_plane, enum hk_desc_usage usage,
+             struct agx_pbe_packed *out, struct agx_pbe_g15_software_packed *sw)
 {
    struct hk_image *image = container_of(view->vk.image, struct hk_image, vk);
    const uint8_t image_plane = view->planes[view_plane].image_plane;
@@ -372,7 +499,165 @@ pack_pbe(struct hk_device *dev, struct hk_image_view *view, unsigned view_plane,
    unsigned level = view->vk.base_mip_level;
    unsigned layer = view->vk.base_array_layer;
 
-   enum pipe_format p_format = format_for_plane(view, view_plane);
+   enum pipe_format p_format = hk_image_view_plane_format(view, view_plane);
+   const struct util_format_description *desc =
+      util_format_description(p_format);
+
+   bool eot =
+      usage == HK_DESC_USAGE_BG_EOT || usage == HK_DESC_USAGE_LAYERED_BG_EOT;
+
+   /* The tilebuffer is already in sRGB space if needed. Do not convert for
+    * end-of-tile descriptors.
+    */
+   if (eot)
+      p_format = util_format_linear(p_format);
+
+   unsigned layers = view->vk.view_type == VK_IMAGE_VIEW_TYPE_3D
+                        ? image->vk.extent.depth
+                        : view->vk.layer_count;
+
+   bool msaa = view->vk.image->samples > 1;
+   bool msaa_view = msaa && !eot;
+   struct hk_3d denom = view_denominator(view);
+
+   /* What Apple's encoder does for these is not decoded: the descriptor is
+    * packed as for a plain image */
+   static bool warned;
+   if (!warned && (layout->compressed ||
+                   (layout->tiling == AIL_TILING_LINEAR && layers > 1))) {
+      warned = true;
+      fprintf(stderr, "G15: the PBE of a compressed or linear layered image is "
+                      "a guess\n");
+   }
+
+   agx_pack(out, PBE_G15, cfg) {
+      cfg.dimension =
+         translate_image_view_type(view->vk.view_type, msaa, layers > 1, usage);
+      cfg.layout = agx_translate_layout(layout->tiling);
+      cfg.channels = ail_pixel_format[p_format].channels;
+      cfg.type = ail_pixel_format[p_format].type;
+      cfg.srgb = util_format_is_srgb(p_format);
+
+      assert(desc->nr_channels >= 1 && desc->nr_channels <= 4);
+
+      for (unsigned i = 0; i < desc->nr_channels; ++i) {
+         if (desc->swizzle[i] == 0)
+            cfg.swizzle_r = i;
+         else if (desc->swizzle[i] == 1)
+            cfg.swizzle_g = i;
+         else if (desc->swizzle[i] == 2)
+            cfg.swizzle_b = i;
+         else if (desc->swizzle[i] == 3)
+            cfg.swizzle_a = i;
+      }
+
+      /* An X channel takes the alpha, which the tilebuffer store sets to 1 */
+      if (desc->nr_channels == 4 &&
+          desc->channel[3].type == UTIL_FORMAT_TYPE_VOID)
+         cfg.swizzle_a = AGX_CHANNEL_A;
+
+      /* An uncompressed view of a block-compressed image, as G13 packs it:
+       * the level's own address and size in blocks, at level 0 */
+      if (denom.x > 1) {
+         assert(denom.z == 1 && "todo how to handle?");
+         assert(view->vk.level_count == 1);
+         assert(view->vk.layer_count == 1);
+
+         cfg.buffer = base_addr + ail_get_layer_level_B(layout, layer, level);
+         cfg.width = DIV_ROUND_UP(u_minify(layout->width_px, level), denom.x);
+         cfg.height = DIV_ROUND_UP(u_minify(layout->height_px, level), denom.y);
+         level = 0;
+      } else {
+         cfg.buffer = base_addr + ail_get_layer_offset_B(layout, layer);
+         cfg.width = layout->width_px;
+         cfg.height = layout->height_px;
+      }
+
+      cfg.mipmapped = image->vk.mip_levels > 1;
+
+      if (msaa && !msaa_view)
+         cfg.samples = agx_translate_sample_count(view->vk.image->samples);
+
+      if (msaa_view) {
+         unsigned blocksize_B = util_format_get_blocksize(p_format);
+         unsigned size_px =
+            (layout->size_B - layout->layer_stride_B * layer) / blocksize_B;
+
+         cfg.dimension = AGX_TEXTURE_DIMENSION_2D;
+         cfg.layout = AGX_LAYOUT_LINEAR;
+         cfg.width = AGX_TEXTURE_BUFFER_WIDTH;
+         cfg.height = DIV_ROUND_UP(size_px, cfg.width);
+         cfg.stride = ((cfg.width * blocksize_B) >> 4) - 1;
+         cfg.buffer += layout->level_offsets_B[level];
+         cfg.mipmapped = false;
+      } else if (layout->tiling == AIL_TILING_LINEAR) {
+         /* In 16-byte units, minus 1 (demo15's 0xF for a 256 B stride; the
+          * rows' pitch is a multiple of 16 B) */
+         assert((ail_get_linear_stride_B(layout, level) & 15) == 0);
+         cfg.stride = (ail_get_linear_stride_B(layout, level) >> 4) - 1;
+         assert(image->vk.mip_levels == 1);
+      } else {
+         cfg.layers = layers;
+         cfg.page_aligned_layers = layout->page_aligned_layers;
+
+         /* The level and the count of levels go in the extended word; Apple
+          * sets it when either is not the default (not verified) */
+         if (level != 0 || image->vk.mip_levels > 1) {
+            cfg.extended = true;
+            cfg.level = level;
+            cfg.levels = image->vk.mip_levels;
+         }
+      }
+   }
+
+   memset(sw, 0, sizeof(*sw));
+   if (eot)
+      return;
+
+   struct ail_tile tile = {1, 1};
+   if (layout->tiling != AIL_TILING_LINEAR)
+      tile = layout->tilesize_el[view->vk.base_mip_level];
+
+   if (msaa_view) {
+      agx_pack(sw, PBE_G15_SOFTWARE_MSAA, cfg) {
+         cfg.aligned_width = align(
+            u_minify(layout->width_px, view->vk.base_mip_level), tile.width_el);
+         cfg.tile_width = tile.width_el;
+         cfg.tile_height = tile.height_el;
+         cfg.layer_stride = layout->layer_stride_B;
+         cfg.sample_count_log2 = util_logbase2(view->vk.image->samples);
+         cfg.sample_size_log2 =
+            util_logbase2(util_format_get_blocksize(p_format));
+      }
+   } else {
+      agx_pack(sw, PBE_G15_SOFTWARE, cfg) {
+         cfg.level_offset = ail_get_level_offset_B(layout, level);
+         cfg.tile_width = tile.width_el;
+         cfg.tile_height = tile.height_el;
+         cfg.layer_stride = layout->layer_stride_B;
+      }
+   }
+}
+
+static void
+pack_pbe(struct hk_device *dev, struct hk_image_view *view, unsigned view_plane,
+         enum hk_desc_usage usage, struct agx_pbe_packed *out,
+         struct agx_pbe_g15_software_packed *g15_sw)
+{
+   if (dev->dev.params.gpu_generation >= 15) {
+      pack_pbe_g15(dev, view, view_plane, usage, out, g15_sw);
+      return;
+   }
+
+   struct hk_image *image = container_of(view->vk.image, struct hk_image, vk);
+   const uint8_t image_plane = view->planes[view_plane].image_plane;
+   struct ail_layout *layout = &image->planes[image_plane].layout;
+   uint64_t base_addr = hk_image_base_address(image, image_plane);
+
+   unsigned level = view->vk.base_mip_level;
+   unsigned layer = view->vk.base_array_layer;
+
+   enum pipe_format p_format = hk_image_view_plane_format(view, view_plane);
    const struct util_format_description *desc =
       util_format_description(p_format);
 
@@ -560,11 +845,16 @@ hk_image_view_init(struct hk_device *dev, struct hk_image_view *view,
       pack_texture(view, p, HK_DESC_USAGE_LAYERED_BG_EOT,
                    &view->planes[p].layered_background);
 
-      pack_pbe(dev, view, p, HK_DESC_USAGE_STORAGE, &view->planes[p].storage);
-      pack_pbe(dev, view, p, HK_DESC_USAGE_BG_EOT, &view->planes[p].eot);
-      pack_pbe(dev, view, p, HK_DESC_USAGE_EMRT, &view->planes[p].emrt_pbe);
+      struct agx_pbe_g15_software_packed eot_sw;
+
+      pack_pbe(dev, view, p, HK_DESC_USAGE_STORAGE, &view->planes[p].storage,
+               &view->planes[p].storage_g15_sw);
+      pack_pbe(dev, view, p, HK_DESC_USAGE_BG_EOT, &view->planes[p].eot,
+               &eot_sw);
+      pack_pbe(dev, view, p, HK_DESC_USAGE_EMRT, &view->planes[p].emrt_pbe,
+               &view->planes[p].emrt_g15_sw);
       pack_pbe(dev, view, p, HK_DESC_USAGE_LAYERED_BG_EOT,
-               &view->planes[p].layered_eot);
+               &view->planes[p].layered_eot, &eot_sw);
    }
 
    return VK_SUCCESS;

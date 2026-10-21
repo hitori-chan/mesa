@@ -86,6 +86,69 @@ libagx_texture_levels(constant struct agx_texture_packed *ptr)
       return (d.last_level - d.first_level) + 1;
 }
 
+/* The queries on G15's descriptor: the size fields sit where G13's do, the
+ * levels in the extended word (set with several levels or a first level) and
+ * the sample count at bits 56:57, where G13 keeps its levels. A buffer
+ * texture keeps G13's software size at bytes 16-23.
+ */
+uint3
+libagx_txs_g15(constant struct agx_texture_packed *ptr, uint16_t lod,
+               unsigned nr_comps, bool is_buffer, bool is_1d, bool is_2d,
+               bool is_cube, bool is_array)
+{
+   agx_unpack(NULL, ptr, TEXTURE_G15, d);
+
+   if (d.address == AGX_ZERO_PAGE_ADDRESS)
+      return 0;
+
+   if (is_buffer) {
+      agx_unpack(NULL, ptr, TEXTURE, sw);
+      return sw.buffer_size_sw;
+   }
+
+   uint3 size = (uint3)(d.width, d.height, d.depth);
+   if (d.extended)
+      lod += d.first_level;
+
+   if (is_1d && is_array)
+      size.y = size.z;
+
+   size.x = max(size.x >> lod, 1u);
+
+   if (nr_comps - (uint)is_array >= 2)
+      size.y = max(size.y >> lod, 1u);
+
+   if (nr_comps - (uint)is_array >= 3)
+      size.z = max(size.z >> lod, 1u);
+
+   if (is_cube)
+      size.y = size.x;
+
+   return size;
+}
+
+uint
+libagx_texture_samples_g15(constant struct agx_texture_packed *ptr)
+{
+   agx_unpack(NULL, ptr, TEXTURE_G15, d);
+
+   if (d.address == AGX_ZERO_PAGE_ADDRESS)
+      return 0;
+
+   return (d.samples == AGX_SAMPLE_COUNT_2) ? 2 : 4;
+}
+
+uint
+libagx_texture_levels_g15(constant struct agx_texture_packed *ptr)
+{
+   agx_unpack(NULL, ptr, TEXTURE_G15, d);
+
+   if (d.address == AGX_ZERO_PAGE_ADDRESS)
+      return 0;
+
+   return d.extended ? (d.last_level - d.first_level) + 1 : 1;
+}
+
 /*
  * Fix robustness behaviour of txf with out-of-bounds LOD. The hardware
  * returns the correct out-of-bounds colour for out-of-bounds coordinates,
@@ -211,6 +274,74 @@ libagx_buffer_texel_address(constant const struct agx_pbe_packed *ptr,
    agx_unpack(NULL, ptr, PBE, d);
 
    uint32_t x_el = d.buffer_offset_sw + coord.x;
+   return d.buffer + (uint64_t)(x_el * bytes_per_pixel_B);
+}
+
+/*
+ * G15: the PBE is G15's (the address is the image's VA, the one its texture
+ * descriptor holds; a buffer's offset is in it; the level in the extended
+ * word) and the software words sit in the slot's fourth word (PBE G15
+ * software). A multisampled image is bound as a linear 2D view of its samples,
+ * as on G13, with its own software words (PBE G15 software MSAA); only its
+ * sample index is wanted. A formatless store passes a block size of 0 and
+ * steps a layer by the view's texel size from those words.
+ */
+uint64_t
+libagx_image_texel_address_g15(constant const struct agx_pbe_packed *ptr,
+                               uint4 coord, uint sample_idx,
+                               uint bytes_per_sample_B, bool is_1d,
+                               bool is_msaa, bool is_layered, bool return_index)
+{
+   constant uint8_t *sw_ptr = (constant uint8_t *)ptr + 24;
+   agx_unpack(NULL, ptr, PBE_G15, d);
+   agx_unpack(NULL, sw_ptr, PBE_G15_SOFTWARE, sw);
+   agx_unpack(NULL, sw_ptr, PBE_G15_SOFTWARE_MSAA, ms);
+
+   uint samples_log2 = is_msaa ? ms.sample_count_log2 : 0;
+
+   uint total_px;
+   if (is_1d) {
+      total_px = coord.x;
+   } else {
+      uint aligned_width_px;
+      if (is_msaa) {
+         aligned_width_px = ms.aligned_width;
+      } else {
+         uint level = d.extended ? d.level : 0;
+         uint width_px = max(d.width >> level, 1u);
+         aligned_width_px = align(width_px, sw.tile_width);
+      }
+
+      total_px =
+         libagx_twiddle_coordinates(convert_ushort2(coord.xy), sw.tile_width,
+                                    sw.tile_height, aligned_width_px);
+   }
+
+   if (is_layered) {
+      uint layer_sa = bytes_per_sample_B
+                         ? sw.layer_stride / bytes_per_sample_B
+                         : sw.layer_stride >> ms.sample_size_log2;
+      total_px += coord[is_1d ? 1 : 2] * (layer_sa >> samples_log2);
+   }
+
+   uint total_sa = (total_px << samples_log2) + sample_idx;
+
+   if (return_index)
+      return total_sa;
+   else
+      return d.buffer + (is_msaa ? 0 : sw.level_offset) +
+             (uint64_t)total_sa * bytes_per_sample_B;
+}
+
+/* Word 4, which the hardware ignores in a buffer's PBE, holds the elements
+ * Honeykrisp's view starts after its 16 B aligned address (Gallium's is 0) */
+uint64_t
+libagx_buffer_texel_address_g15(constant const struct agx_pbe_packed *ptr,
+                                uint4 coord, uint bytes_per_pixel_B)
+{
+   agx_unpack(NULL, ptr, PBE_G15, d);
+
+   uint32_t x_el = ((constant uint32_t *)ptr)[4] + coord.x;
    return d.buffer + (uint64_t)(x_el * bytes_per_pixel_B);
 }
 
