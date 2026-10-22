@@ -91,7 +91,6 @@ radv_cmd_set_line_width(struct radv_cmd_buffer *cmd_buffer, float line_width)
    state->dynamic.vk.rs.line.width = line_width;
 
    state->dirty_dynamic |= RADV_DYNAMIC_LINE_WIDTH;
-   state->dirty |= RADV_CMD_DIRTY_GUARDBAND;
 }
 
 ALWAYS_INLINE static void
@@ -1317,31 +1316,24 @@ radv_destroy_cmd_buffer(struct vk_command_buffer *vk_cmd_buffer)
       radv_rra_accel_struct_buffers_unref(device, cmd_buffer->accel_struct_buffers);
       _mesa_set_destroy(cmd_buffer->accel_struct_buffers, NULL);
 
-      list_for_each_entry_safe (struct radv_cmd_buffer_upload, up, &cmd_buffer->upload.list, list) {
-         radv_rmv_log_command_buffer_bo_destroy(device, up->upload_bo);
-         radv_bo_destroy(device, &cmd_buffer->vk.base, up->upload_bo);
-         list_del(&up->list);
-         free(up);
-      }
+      for (unsigned i = 0; i < ARRAY_SIZE(cmd_buffer->linear_suballocators); i++) {
+         list_for_each_entry_safe (struct radv_linear_suballoc_buffer, up, &cmd_buffer->linear_suballocators[i].list,
+                                   list) {
+            radv_rmv_log_command_buffer_bo_destroy(device, up->bo);
+            radv_bo_destroy(device, &cmd_buffer->vk.base, up->bo);
+            list_del(&up->list);
+            free(up);
+         }
 
-      if (cmd_buffer->upload.upload_bo) {
-         radv_rmv_log_command_buffer_bo_destroy(device, cmd_buffer->upload.upload_bo);
-         radv_bo_destroy(device, &cmd_buffer->vk.base, cmd_buffer->upload.upload_bo);
-      }
-
-      if (cmd_buffer->eop_fence_bo_tmz) {
-         radv_rmv_log_command_buffer_bo_destroy(device, cmd_buffer->eop_fence_bo_tmz);
-         radv_bo_destroy(device, &cmd_buffer->vk.base, cmd_buffer->eop_fence_bo_tmz);
+         if (cmd_buffer->linear_suballocators[i].bo) {
+            radv_rmv_log_command_buffer_bo_destroy(device, cmd_buffer->linear_suballocators[i].bo);
+            radv_bo_destroy(device, &cmd_buffer->vk.base, cmd_buffer->linear_suballocators[i].bo);
+         }
       }
 
       if (cmd_buffer->gang.sem.bo) {
          radv_rmv_log_command_buffer_bo_destroy(device, cmd_buffer->gang.sem.bo);
          radv_bo_destroy(device, &cmd_buffer->vk.base, cmd_buffer->gang.sem.bo);
-      }
-
-      if (cmd_buffer->eop_bug_bo_tmz) {
-         radv_rmv_log_command_buffer_bo_destroy(device, cmd_buffer->eop_bug_bo_tmz);
-         radv_bo_destroy(device, &cmd_buffer->vk.base, cmd_buffer->eop_bug_bo_tmz);
       }
 
       if (cmd_buffer->cs)
@@ -1390,7 +1382,9 @@ radv_create_cmd_buffer(struct vk_command_pool *pool, VkCommandBufferLevel level,
 
    if (cmd_buffer->qf != RADV_QUEUE_SPARSE) {
       const enum amd_ip_type ip = radv_queue_family_to_ring(pdev, cmd_buffer->qf);
-      list_inithead(&cmd_buffer->upload.list);
+
+      for (unsigned i = 0; i < ARRAY_SIZE(cmd_buffer->linear_suballocators); i++)
+         list_inithead(&cmd_buffer->linear_suballocators[i].list);
 
       radv_cmd_buffer_init_shader_part_cache(device, cmd_buffer);
       result =
@@ -1450,11 +1444,14 @@ radv_reset_cmd_buffer(struct vk_command_buffer *vk_cmd_buffer, UNUSED VkCommandB
       cmd_buffer->gang.cs = NULL;
    }
 
-   list_for_each_entry_safe (struct radv_cmd_buffer_upload, up, &cmd_buffer->upload.list, list) {
-      radv_rmv_log_command_buffer_bo_destroy(device, up->upload_bo);
-      radv_bo_destroy(device, &cmd_buffer->vk.base, up->upload_bo);
-      list_del(&up->list);
-      free(up);
+   for (unsigned i = 0; i < ARRAY_SIZE(cmd_buffer->linear_suballocators); i++) {
+      list_for_each_entry_safe (struct radv_linear_suballoc_buffer, up, &cmd_buffer->linear_suballocators[i].list,
+                                list) {
+         radv_rmv_log_command_buffer_bo_destroy(device, up->bo);
+         radv_bo_destroy(device, &cmd_buffer->vk.base, up->bo);
+         list_del(&up->list);
+         free(up);
+      }
    }
 
    util_dynarray_clear(&cmd_buffer->ray_history);
@@ -1473,16 +1470,10 @@ radv_reset_cmd_buffer(struct vk_command_buffer *vk_cmd_buffer, UNUSED VkCommandB
    memset(&cmd_buffer->queue_state, 0, sizeof(cmd_buffer->queue_state));
    memset(&cmd_buffer->state, 0, sizeof(cmd_buffer->state));
 
-   if (cmd_buffer->upload.upload_bo)
-      radv_cs_add_buffer(device->ws, cs->b, cmd_buffer->upload.upload_bo);
-   cmd_buffer->upload.offset = 0;
-
-   if (cmd_buffer->eop_fence_bo_tmz) {
-      radv_cs_add_buffer(device->ws, cs->b, cmd_buffer->eop_fence_bo_tmz);
-   }
-
-   if (cmd_buffer->eop_bug_bo_tmz) {
-      radv_cs_add_buffer(device->ws, cs->b, cmd_buffer->eop_bug_bo_tmz);
+   for (unsigned i = 0; i < ARRAY_SIZE(cmd_buffer->linear_suballocators); i++) {
+      if (cmd_buffer->linear_suballocators[i].bo)
+         radv_cs_add_buffer(device->ws, cs->b, cmd_buffer->linear_suballocators[i].bo);
+      cmd_buffer->linear_suballocators[i].offset = 0;
    }
 
    for (unsigned i = 0; i < MAX_BIND_POINTS; i++) {
@@ -1502,21 +1493,45 @@ const struct vk_command_buffer_ops radv_cmd_buffer_ops = {
 };
 
 static bool
-radv_cmd_buffer_resize_upload_buf(struct radv_cmd_buffer *cmd_buffer, uint64_t min_needed)
+radv_cmd_buffer_resize_linear_suballoc_buf(struct radv_cmd_buffer *cmd_buffer,
+                                           enum radv_linear_suballocator suballocator, uint64_t min_needed,
+                                           bool must_use_vram)
 {
    struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
    struct radv_cmd_stream *cs = cmd_buffer->cs;
-   uint64_t new_size;
+   struct radv_linear_suballoc_buffer *suballoc = &cmd_buffer->linear_suballocators[suballocator];
    struct radeon_winsys_bo *bo = NULL;
-   struct radv_cmd_buffer_upload *upload;
+   struct radv_linear_suballoc_buffer *saved_suballoc;
 
-   new_size = MAX2(min_needed, 16 * 1024);
-   new_size = MAX2(new_size, 2 * cmd_buffer->upload.size);
+   enum radeon_bo_flag bo_flags = RADEON_FLAG_NO_INTERPROCESS_SHARING | RADEON_FLAG_32BIT | RADEON_FLAG_GTT_WC;
+   enum radeon_bo_domain bo_domain;
+   unsigned bo_priority;
+   uint64_t new_size = min_needed;
 
-   VkResult result = radv_bo_create(
-      device, &cmd_buffer->vk.base, new_size, 4096, device->ws->cs_domain(device->ws),
-      RADEON_FLAG_CPU_ACCESS | RADEON_FLAG_NO_INTERPROCESS_SHARING | RADEON_FLAG_32BIT | RADEON_FLAG_GTT_WC,
-      RADV_BO_PRIORITY_UPLOAD_BUFFER, 0, true, &bo);
+   switch (suballocator) {
+   case RADV_SUBALLOCATOR_VRAM:
+      bo_flags |= RADEON_FLAG_NO_CPU_ACCESS |
+                  (cmd_buffer->vk.pool->flags & VK_COMMAND_POOL_CREATE_PROTECTED_BIT ? RADEON_FLAG_ENCRYPTED : 0);
+      bo_domain = RADEON_DOMAIN_VRAM;
+      bo_priority = RADV_BO_PRIORITY_SCRATCH;
+      new_size = MAX2(new_size, 4 * 1024);
+      break;
+
+   case RADV_SUBALLOCATOR_CPU_UPLOAD:
+      bo_flags |= RADEON_FLAG_CPU_ACCESS;
+      bo_domain = must_use_vram ? RADEON_DOMAIN_VRAM : device->ws->cs_domain(device->ws);
+      bo_priority = RADV_BO_PRIORITY_UPLOAD_BUFFER;
+      new_size = MAX2(new_size, 16 * 1024);
+      break;
+
+   default:
+      UNREACHABLE("invalid enum");
+   }
+
+   new_size = MAX2(new_size, 2 * suballoc->size);
+
+   VkResult result =
+      radv_bo_create(device, &cmd_buffer->vk.base, new_size, 4096, bo_domain, bo_flags, bo_priority, 0, true, &bo);
 
    if (result != VK_SUCCESS) {
       vk_command_buffer_set_error(&cmd_buffer->vk, result);
@@ -1524,81 +1539,115 @@ radv_cmd_buffer_resize_upload_buf(struct radv_cmd_buffer *cmd_buffer, uint64_t m
    }
 
    radv_cs_add_buffer(device->ws, cs->b, bo);
-   if (cmd_buffer->upload.upload_bo) {
-      upload = malloc(sizeof(*upload));
+   if (suballoc->bo) {
+      saved_suballoc = malloc(sizeof(*saved_suballoc));
 
-      if (!upload) {
+      if (!saved_suballoc) {
          vk_command_buffer_set_error(&cmd_buffer->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
          radv_bo_destroy(device, &cmd_buffer->vk.base, bo);
          return false;
       }
 
-      memcpy(upload, &cmd_buffer->upload, sizeof(*upload));
-      list_add(&upload->list, &cmd_buffer->upload.list);
+      memcpy(saved_suballoc, suballoc, sizeof(*saved_suballoc));
+      list_add(&saved_suballoc->list, &suballoc->list);
    }
 
-   cmd_buffer->upload.upload_bo = bo;
-   cmd_buffer->upload.size = new_size;
-   cmd_buffer->upload.offset = 0;
-   cmd_buffer->upload.map = radv_buffer_map(device->ws, cmd_buffer->upload.upload_bo);
+   suballoc->bo = bo;
+   suballoc->size = new_size;
+   suballoc->offset = 0;
 
-   if (!cmd_buffer->upload.map) {
-      vk_command_buffer_set_error(&cmd_buffer->vk, VK_ERROR_OUT_OF_DEVICE_MEMORY);
-      return false;
+   if (bo_flags & RADEON_FLAG_CPU_ACCESS) {
+      suballoc->cpu_map = radv_buffer_map(device->ws, bo);
+
+      if (!suballoc->cpu_map) {
+         vk_command_buffer_set_error(&cmd_buffer->vk, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+         return false;
+      }
    }
 
-   radv_rmv_log_command_buffer_bo_create(device, cmd_buffer->upload.upload_bo, 0, cmd_buffer->upload.size, 0);
+   radv_rmv_log_command_buffer_bo_create(device, suballoc->bo, 0, suballoc->size, 0);
 
    return true;
 }
 
-bool
-radv_cmd_buffer_upload_alloc_aligned(struct radv_cmd_buffer *cmd_buffer, unsigned size, unsigned alignment,
-                                     unsigned *out_offset, void **ptr)
+static bool
+radv_cmd_buffer_linear_suballoc(struct radv_cmd_buffer *cmd_buffer, enum radv_linear_suballocator suballocator,
+                                unsigned size, unsigned alignment, uint64_t *out_va, void **ptr)
 {
    assert(size % 4 == 0);
+   assert(suballocator == RADV_SUBALLOCATOR_CPU_UPLOAD || !ptr);
 
    struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
    const struct radv_physical_device *pdev = radv_device_physical(device);
-   const struct radeon_info *gpu_info = &pdev->info;
+   const struct radv_linear_suballoc_buffer *upload = &cmd_buffer->linear_suballocators[RADV_SUBALLOCATOR_CPU_UPLOAD];
+   bool next_cpu_upload_domain_is_vram = device->ws->cs_domain(device->ws) == RADEON_DOMAIN_VRAM;
+   bool must_use_vram = false;
+
+   /* If CPU_UPLOAD is in VRAM or is going to be in VRAM or it's an APU, use CPU_UPLOAD for
+    * SUBALLOCATOR_VRAM. (also encrypted VRAM allocations must use SUBALLOCATOR_VRAM because
+    * CPU access is forbidden for them)
+    *
+    * Checking whether the next upload buffer will be in VRAM prevents getting GTT due to cs_domain()
+    * being non-deterministic if the current upload buffer is full or missing.
+    */
+   if (suballocator == RADV_SUBALLOCATOR_VRAM && !(cmd_buffer->vk.pool->flags & VK_COMMAND_POOL_CREATE_PROTECTED_BIT) &&
+       (!pdev->info.has_dedicated_vram ||
+        (next_cpu_upload_domain_is_vram && (!upload->bo || upload->bo->initial_domain == RADEON_DOMAIN_VRAM)))) {
+      suballocator = RADV_SUBALLOCATOR_CPU_UPLOAD;
+
+      /* This prevents calling cs_domain() during allocation again and unexpectedly getting GTT when we want VRAM. */
+      if (pdev->info.has_dedicated_vram)
+         must_use_vram = true;
+   }
+
+   struct radv_linear_suballoc_buffer *suballoc = &cmd_buffer->linear_suballocators[suballocator];
+   unsigned offset = suballoc->offset;
+   unsigned line_size = pdev->info.smem_cache_line_size;
 
    /* Align to the scalar cache line size if it results in this allocation
     * being placed in less of them.
     */
-   unsigned offset = cmd_buffer->upload.offset;
-   unsigned line_size = gpu_info->gfx_level >= GFX10 ? 64 : 32;
    unsigned gap = align(offset, line_size) - offset;
    if ((size & (line_size - 1)) > gap)
       offset = align(offset, line_size);
 
-   if (alignment)
-      offset = align(offset, alignment);
-   if (offset + size > cmd_buffer->upload.size) {
-      if (!radv_cmd_buffer_resize_upload_buf(cmd_buffer, size))
+   assert(alignment);
+   offset = align(offset, alignment);
+
+   if (offset + size > suballoc->size) {
+      if (!radv_cmd_buffer_resize_linear_suballoc_buf(cmd_buffer, suballocator, size, must_use_vram))
          return false;
       offset = 0;
    }
 
-   *out_offset = offset;
+   *out_va = suballoc->bo->va + offset;
    if (ptr)
-      *ptr = cmd_buffer->upload.map + offset;
+      *ptr = suballoc->cpu_map + offset;
 
-   cmd_buffer->upload.offset = offset + size;
+   suballoc->offset = offset + size;
    return true;
 }
 
 bool
-radv_cmd_buffer_upload_alloc(struct radv_cmd_buffer *cmd_buffer, unsigned size, unsigned *out_offset, void **ptr)
+radv_cmd_buffer_vram_suballoc(struct radv_cmd_buffer *cmd_buffer, unsigned size, unsigned alignment, uint64_t *out_va)
 {
-   return radv_cmd_buffer_upload_alloc_aligned(cmd_buffer, size, 0, out_offset, ptr);
+   return radv_cmd_buffer_linear_suballoc(cmd_buffer, RADV_SUBALLOCATOR_VRAM, size, alignment, out_va, NULL);
 }
 
 bool
-radv_cmd_buffer_upload_data(struct radv_cmd_buffer *cmd_buffer, unsigned size, const void *data, unsigned *out_offset)
+radv_cmd_buffer_upload_alloc(struct radv_cmd_buffer *cmd_buffer, unsigned size, unsigned alignment, uint64_t *out_va,
+                             void **ptr)
+{
+   return radv_cmd_buffer_linear_suballoc(cmd_buffer, RADV_SUBALLOCATOR_CPU_UPLOAD, size, alignment, out_va, ptr);
+}
+
+bool
+radv_cmd_buffer_upload_data(struct radv_cmd_buffer *cmd_buffer, unsigned size, unsigned alignment, const void *data,
+                            uint64_t *out_va)
 {
    uint8_t *ptr;
 
-   if (!radv_cmd_buffer_upload_alloc(cmd_buffer, size, out_offset, (void **)&ptr))
+   if (!radv_cmd_buffer_upload_alloc(cmd_buffer, size, alignment, out_va, (void **)&ptr))
       return false;
    assert(ptr);
 
@@ -1850,15 +1899,20 @@ radv_gang_sem_should_use_separate_bo(struct radv_cmd_buffer *cmd_buffer)
 
    const struct radv_device *const device = radv_cmd_buffer_device(cmd_buffer);
    const struct radv_physical_device *const pdev = radv_device_physical(device);
+   const struct radeon_winsys_bo *upload_bo = cmd_buffer->linear_suballocators[RADV_SUBALLOCATOR_CPU_UPLOAD].bo;
    const enum radeon_bo_domain upload_bo_dom =
       /* Upload BO exists: its memory domain is known */
-      cmd_buffer->upload.upload_bo ? cmd_buffer->upload.upload_bo->initial_domain :
-                                   /* Upload BO doesn't exist: judge by all_vram_visible to make this deterministic */
+      upload_bo ? upload_bo->initial_domain :
+                /* Upload BO doesn't exist: judge by all_vram_visible to make this deterministic */
          pdev->info.all_vram_visible ? RADEON_DOMAIN_VRAM
                                      : RADEON_DOMAIN_GTT;
 
    /* Make sure the gang semaphore is always in VRAM */
    if (pdev->info.has_dedicated_vram && !(upload_bo_dom & RADEON_DOMAIN_VRAM))
+      return true;
+
+   /* Writes to unprotected BOs from protected command buffers write garbage. */
+   if (cmd_buffer->vk.pool->flags & VK_COMMAND_POOL_CREATE_PROTECTED_BIT)
       return true;
 
    /* Use separate BO when gang members aren't coherent */
@@ -1877,6 +1931,9 @@ radv_gang_sem_init_with_separate_bo(struct radv_cmd_buffer *cmd_buffer)
       /* BYPASS L2 cache when gang members are non-coherent. */
       if (!radv_gang_is_coherent(&pdev->info, cmd_buffer->cs->hw_ip, cmd_buffer->gang.cs->hw_ip))
          flags |= RADEON_FLAG_GL2_BYPASS;
+
+      if (cmd_buffer->vk.pool->flags & VK_COMMAND_POOL_CREATE_PROTECTED_BIT)
+         flags |= RADEON_FLAG_ENCRYPTED;
 
       VkResult r = radv_bo_create(device, &cmd_buffer->vk.base, 8, 4, RADEON_DOMAIN_VRAM, flags, RADV_BO_PRIORITY_FENCE,
                                   0, true, &cmd_buffer->gang.sem.bo);
@@ -1897,13 +1954,12 @@ static bool
 radv_gang_sem_init_with_upload_bo(struct radv_cmd_buffer *cmd_buffer)
 {
    uint64_t sem_init = 0;
-   uint32_t va_off = 0;
-   if (!radv_cmd_buffer_upload_data(cmd_buffer, sizeof(uint64_t), &sem_init, &va_off)) {
+
+   if (!radv_cmd_buffer_upload_data(cmd_buffer, sizeof(uint64_t), 8, &sem_init, &cmd_buffer->gang.sem.va)) {
       vk_command_buffer_set_error(&cmd_buffer->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
       return false;
    }
 
-   cmd_buffer->gang.sem.va = radv_buffer_get_va(cmd_buffer->upload.upload_bo) + va_off;
    return true;
 }
 
@@ -6141,6 +6197,35 @@ radv_gfx12_emit_hiz_wa_full(struct radv_cmd_buffer *cmd_buffer)
    }
 }
 
+static float
+radv_get_guardband_clip_discard_distance(struct radv_cmd_buffer *cmd_buffer)
+{
+   const struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
+   const struct radv_physical_device *pdev = radv_device_physical(device);
+   const struct radv_dynamic_state *d = &cmd_buffer->state.dynamic;
+   const uint32_t raster_prim = radv_get_raster_prim(cmd_buffer);
+   float distance = 0.0f;
+
+   /* When rendering wide points or lines, we need to be more conservative about when to discard
+    * them entirely.
+    */
+   if (raster_prim == V_030998_POINTLIST) {
+      distance = 8191.875f;
+   } else if (raster_prim == V_030998_LINESTRIP) {
+      distance = d->vk.rs.line.width;
+   }
+
+   /* Keep the discard distance at the largest point/line distance seen for all primitive types, so
+    * that switching between lines and triangles doesn't change the guardband registers and doesn't
+    * cause any context rolls.
+    */
+   if (distance > cmd_buffer->state.guardband_clip_discard_distance_watermark)
+      cmd_buffer->state.guardband_clip_discard_distance_watermark =
+         MIN2(distance, pdev->drirc.performance.max_clip_discard_watermark);
+
+   return MAX2(distance, cmd_buffer->state.guardband_clip_discard_distance_watermark);
+}
+
 static void
 radv_emit_guardband_state(struct radv_cmd_buffer *cmd_buffer)
 {
@@ -6148,10 +6233,7 @@ radv_emit_guardband_state(struct radv_cmd_buffer *cmd_buffer)
    const struct radv_physical_device *pdev = radv_device_physical(device);
    const struct radv_dynamic_state *d = &cmd_buffer->state.dynamic;
    struct radv_cmd_stream *cs = cmd_buffer->cs;
-   float clip_discard_distance = 0.0f;
    struct ac_guardband guardband;
-
-   assert(cmd_buffer->state.guardband_raster_prim == radv_get_raster_prim(cmd_buffer));
 
    if (!d->vk.vp.viewport_count)
       return;
@@ -6171,17 +6253,8 @@ radv_emit_guardband_state(struct radv_cmd_buffer *cmd_buffer)
       maxy = MAX2(maxy, viewport_scissor.offset.y + viewport_scissor.extent.height);
    }
 
-   /* When rendering wide points or lines, we need to be more conservative about when to discard
-    * them entirely.
-    */
-   if (cmd_buffer->state.guardband_raster_prim == V_030998_POINTLIST) {
-      clip_discard_distance = 8191.875f;
-   } else if (cmd_buffer->state.guardband_raster_prim == V_030998_LINESTRIP) {
-      clip_discard_distance = d->vk.rs.line.width;
-   }
-
    ac_compute_guardband(&pdev->info, minx, miny, maxx, maxy, AC_QUANT_MODE_16_8_FIXED_POINT_1_256TH,
-                        clip_discard_distance, &guardband);
+                        cmd_buffer->state.guardband_clip_discard_distance, &guardband);
 
    int hw_screen_offset_x = guardband.hw_screen_offset_x >> 4;
    int hw_screen_offset_y = guardband.hw_screen_offset_y >> 4;
@@ -6496,10 +6569,11 @@ emit_prolog_inputs(struct radv_cmd_buffer *cmd_buffer, const struct radv_shader 
    uint64_t input_va = radv_shader_get_va(vs_shader);
 
    if (nontrivial_divisors) {
-      unsigned inputs_offset;
       uint32_t *inputs;
       unsigned size = 8 + util_bitcount(nontrivial_divisors) * 8;
-      if (!radv_cmd_buffer_upload_alloc(cmd_buffer, size, &inputs_offset, (void **)&inputs))
+      uint64_t new_input_va;
+
+      if (!radv_cmd_buffer_upload_alloc(cmd_buffer, size, 4, &new_input_va, (void **)&inputs))
          return;
 
       *(inputs++) = input_va;
@@ -6520,7 +6594,7 @@ emit_prolog_inputs(struct radv_cmd_buffer *cmd_buffer, const struct radv_shader 
          }
       }
 
-      input_va = radv_buffer_get_va(cmd_buffer->upload.upload_bo) + inputs_offset;
+      input_va = new_input_va;
    }
 
    const uint32_t vs_prolog_inputs_offset = radv_get_user_sgpr_loc(vs_shader, AC_UD_VS_PROLOG_INPUTS);
@@ -6754,13 +6828,8 @@ static void
 radv_flush_push_descriptors(struct radv_cmd_buffer *cmd_buffer, struct radv_descriptor_state *descriptors_state)
 {
    struct radv_descriptor_set *set = (struct radv_descriptor_set *)&descriptors_state->push_set.set;
-   unsigned bo_offset;
 
-   if (!radv_cmd_buffer_upload_data(cmd_buffer, set->header.size, set->header.mapped_ptr, &bo_offset))
-      return;
-
-   set->header.va = radv_buffer_get_va(cmd_buffer->upload.upload_bo);
-   set->header.va += bo_offset;
+   radv_cmd_buffer_upload_data(cmd_buffer, set->header.size, 4, set->header.mapped_ptr, &set->header.va);
 }
 
 void
@@ -6769,13 +6838,10 @@ radv_upload_indirect_descriptor_sets(struct radv_cmd_buffer *cmd_buffer,
 {
    const uint32_t last_valid_desc = util_last_bit(descriptors_state->valid);
    const uint32_t size = last_valid_desc * 4;
-   uint32_t offset;
    void *ptr;
 
-   if (!radv_cmd_buffer_upload_alloc(cmd_buffer, size, &offset, &ptr))
+   if (!radv_cmd_buffer_upload_alloc(cmd_buffer, size, 4, &descriptors_state->indirect_descriptor_sets_va, &ptr))
       return;
-
-   descriptors_state->indirect_descriptor_sets_va = radv_buffer_get_va(cmd_buffer->upload.upload_bo) + offset;
 
    for (unsigned i = 0; i < last_valid_desc; i++) {
       uint32_t *uptr = ((uint32_t *)ptr) + i;
@@ -6949,15 +7015,12 @@ static void
 radv_upload_push_constants(struct radv_cmd_buffer *cmd_buffer, const struct radv_push_constant_state *pc_state,
                            uint64_t *va)
 {
-   unsigned offset;
    void *ptr;
 
-   if (!radv_cmd_buffer_upload_alloc(cmd_buffer, pc_state->size, &offset, &ptr))
+   if (!radv_cmd_buffer_upload_alloc(cmd_buffer, pc_state->size, 4, va, &ptr))
       return;
 
    memcpy(ptr, cmd_buffer->push_constants, pc_state->size);
-
-   *va = radv_buffer_get_va(cmd_buffer->upload.upload_bo) + offset;
 }
 
 static void
@@ -7020,15 +7083,12 @@ radv_upload_dynamic_descriptors_offsets(struct radv_cmd_buffer *cmd_buffer,
 {
    const uint32_t last_valid_desc = util_last_bit(descriptors_state->valid);
    const uint32_t size = last_valid_desc * 4;
-   unsigned offset;
    void *ptr;
 
-   if (!radv_cmd_buffer_upload_alloc(cmd_buffer, size, &offset, &ptr))
+   if (!radv_cmd_buffer_upload_alloc(cmd_buffer, size, 4, va, &ptr))
       return;
 
    memcpy(ptr, descriptors_state->dynamic_descriptors_offsets, size);
-
-   *va = radv_buffer_get_va(cmd_buffer->upload.upload_bo) + offset;
 }
 
 static void
@@ -7064,15 +7124,12 @@ radv_upload_dynamic_descriptors(struct radv_cmd_buffer *cmd_buffer,
                                 const struct radv_descriptor_state *descriptors_state, uint64_t *va)
 {
    const uint32_t size = descriptors_state->dynamic_offset_count * 16;
-   unsigned offset;
    void *ptr;
 
-   if (!radv_cmd_buffer_upload_alloc(cmd_buffer, size, &offset, &ptr))
+   if (!radv_cmd_buffer_upload_alloc(cmd_buffer, size, 4, va, &ptr))
       return;
 
    memcpy(ptr, descriptors_state->dynamic_buffers, size);
-
-   *va = radv_buffer_get_va(cmd_buffer->upload.upload_bo) + offset;
 }
 
 static void
@@ -7280,21 +7337,17 @@ radv_flush_vertex_descriptors(struct radv_cmd_buffer *cmd_buffer)
    bool uses_dynamic_inputs = vs->info.vs.dynamic_inputs;
    unsigned vb_desc_alloc_size =
       (uses_dynamic_inputs ? vs->info.vs.num_attributes : util_bitcount(vs->info.vs.vb_desc_usage_mask)) * 16;
-   unsigned vb_offset;
    void *vb_ptr;
    uint64_t va;
 
    /* allocate some descriptor state for vertex buffers */
-   if (!radv_cmd_buffer_upload_alloc(cmd_buffer, vb_desc_alloc_size, &vb_offset, &vb_ptr))
+   if (!radv_cmd_buffer_upload_alloc(cmd_buffer, vb_desc_alloc_size, 4, &va, &vb_ptr))
       return;
 
    if (uses_dynamic_inputs)
       radv_write_vertex_descriptors_dynamic(cmd_buffer, vs, vb_ptr);
    else
       radv_write_vertex_descriptors(cmd_buffer, vs, vb_ptr);
-
-   va = radv_buffer_get_va(cmd_buffer->upload.upload_bo);
-   va += vb_offset;
 
    radv_emit_userdata_address(device, cs, vs, AC_UD_VS_VERTEX_BUFFERS, va);
 
@@ -7353,12 +7406,11 @@ radv_flush_streamout_descriptors(struct radv_cmd_buffer *cmd_buffer)
    struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
    const struct radv_physical_device *pdev = radv_device_physical(device);
    struct radv_streamout_state *so = &cmd_buffer->state.streamout;
-   unsigned so_offset;
    uint64_t desc_va;
    void *so_ptr;
 
    /* Allocate some descriptor state for streamout buffers. */
-   if (!radv_cmd_buffer_upload_alloc(cmd_buffer, MAX_SO_BUFFERS * 16, &so_offset, &so_ptr))
+   if (!radv_cmd_buffer_upload_alloc(cmd_buffer, MAX_SO_BUFFERS * 16, 4, &desc_va, &so_ptr))
       return;
 
    for (uint32_t i = 0; i < MAX_SO_BUFFERS; i++) {
@@ -7388,9 +7440,6 @@ radv_flush_streamout_descriptors(struct radv_cmd_buffer *cmd_buffer)
       ac_build_raw_buffer_descriptor(pdev->info.gfx_level, pdev->info.compiler_info.has_desc_resource_level, va, size,
                                      desc);
    }
-
-   desc_va = radv_buffer_get_va(cmd_buffer->upload.upload_bo);
-   desc_va += so_offset;
 
    radv_emit_streamout_buffers(cmd_buffer, desc_va);
 
@@ -8268,50 +8317,19 @@ radv_BeginCommandBuffer(VkCommandBuffer commandBuffer, const VkCommandBufferBegi
 
    if (cmd_buffer->qf == RADV_QUEUE_COMPUTE || device->vk.enabled_features.taskShader) {
       uint32_t pred_value = 0;
-      uint32_t pred_offset;
-      if (!radv_cmd_buffer_upload_data(cmd_buffer, 4, &pred_value, &pred_offset)) {
+      if (!radv_cmd_buffer_upload_data(cmd_buffer, 4, 4, &pred_value, &cmd_buffer->state.cond_render.mec_inv_pred_va)) {
          vk_command_buffer_set_error(&cmd_buffer->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
          return VK_ERROR_OUT_OF_HOST_MEMORY;
       }
-
-      cmd_buffer->state.cond_render.mec_inv_pred_va = radv_buffer_get_va(cmd_buffer->upload.upload_bo) + pred_offset;
    }
-
-   const bool is_secure = cmd_buffer->vk.pool->flags & VK_COMMAND_POOL_CREATE_PROTECTED_BIT;
 
    /* Allocate the EOP fence buffer for barriers. GFX11 gfx queues don't need it because they use
     * PWS instead (which uses on-chip counters instead of memory).
-    *
-    * TODO: This is sometimes allocated in GTT, which makes barriers using it significantly slower.
     */
    if ((pdev->info.gfx_level < GFX11 && cmd_buffer->qf == RADV_QUEUE_GENERAL) || cmd_buffer->qf == RADV_QUEUE_COMPUTE) {
-      if (!is_secure) {
-         unsigned fence_offset;
-
-         if (!radv_cmd_buffer_upload_alloc(cmd_buffer, 8, &fence_offset, NULL)) {
-            vk_command_buffer_set_error(&cmd_buffer->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
-            return VK_ERROR_OUT_OF_HOST_MEMORY;
-         }
-         cmd_buffer->eop_fence_va = radv_buffer_get_va(cmd_buffer->upload.upload_bo);
-         cmd_buffer->eop_fence_va += fence_offset;
-      } else if (!cmd_buffer->eop_fence_bo_tmz) {
-         struct radeon_winsys_bo *fence_bo = NULL;
-
-         result = radv_bo_create(device, &cmd_buffer->vk.base, 8, 4096, device->ws->cs_domain(device->ws),
-                                 RADEON_FLAG_CPU_ACCESS | RADEON_FLAG_NO_INTERPROCESS_SHARING | RADEON_FLAG_32BIT |
-                                    RADEON_FLAG_GTT_WC | RADEON_FLAG_ENCRYPTED,
-                                 RADV_BO_PRIORITY_UPLOAD_BUFFER, 0, true, &fence_bo);
-
-         if (result != VK_SUCCESS) {
-            vk_command_buffer_set_error(&cmd_buffer->vk, result);
-            return result;
-         }
-
-         cmd_buffer->eop_fence_bo_tmz = fence_bo;
-         cmd_buffer->eop_fence_va = radv_buffer_get_va(cmd_buffer->eop_fence_bo_tmz);
-
-         radv_cs_add_buffer(device->ws, cmd_buffer->cs->b, fence_bo);
-         radv_rmv_log_command_buffer_bo_create(device, cmd_buffer->eop_fence_bo_tmz, 0, 8, 0);
+      if (!radv_cmd_buffer_vram_suballoc(cmd_buffer, 8, 8, &cmd_buffer->eop_fence_va)) {
+         vk_command_buffer_set_error(&cmd_buffer->vk, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+         return VK_ERROR_OUT_OF_DEVICE_MEMORY;
       }
 
       radv_emit_clear_data(cmd_buffer,
@@ -8323,34 +8341,10 @@ radv_BeginCommandBuffer(VkCommandBuffer commandBuffer, const VkCommandBufferBegi
          /* On GFX9, eop_bug_va is used with ZPASS_DONE. On GFX7-8, it's only used to write a dummy 32-bit fence. */
          const uint32_t eop_bug_bo_size = pdev->info.gfx_level == GFX9 ? 16 * pdev->info.max_render_backends : 4;
 
-         if (!is_secure) {
-            /* Allocate a buffer for the EOP bug on GFX9 and a different EOP bug on GFX7-8. */
-            unsigned eop_bug_offset;
-            if (!radv_cmd_buffer_upload_alloc(cmd_buffer, eop_bug_bo_size, &eop_bug_offset, NULL)) {
-               vk_command_buffer_set_error(&cmd_buffer->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
-               return VK_ERROR_OUT_OF_HOST_MEMORY;
-            }
-
-            cmd_buffer->eop_bug_va = radv_buffer_get_va(cmd_buffer->upload.upload_bo);
-            cmd_buffer->eop_bug_va += eop_bug_offset;
-         } else if (!cmd_buffer->eop_bug_bo_tmz) {
-            struct radeon_winsys_bo *eop_bug_bo = NULL;
-            result =
-               radv_bo_create(device, &cmd_buffer->vk.base, eop_bug_bo_size, 4096, device->ws->cs_domain(device->ws),
-                              RADEON_FLAG_CPU_ACCESS | RADEON_FLAG_NO_INTERPROCESS_SHARING | RADEON_FLAG_32BIT |
-                                 RADEON_FLAG_GTT_WC | RADEON_FLAG_ENCRYPTED,
-                              RADV_BO_PRIORITY_UPLOAD_BUFFER, 0, true, &eop_bug_bo);
-
-            if (result != VK_SUCCESS) {
-               vk_command_buffer_set_error(&cmd_buffer->vk, result);
-               return result;
-            }
-
-            cmd_buffer->eop_bug_bo_tmz = eop_bug_bo;
-            cmd_buffer->eop_bug_va = radv_buffer_get_va(cmd_buffer->eop_bug_bo_tmz);
-
-            radv_cs_add_buffer(device->ws, cmd_buffer->cs->b, eop_bug_bo);
-            radv_rmv_log_command_buffer_bo_create(device, cmd_buffer->eop_bug_bo_tmz, 0, eop_bug_bo_size, 0);
+         /* Allocate a buffer for the EOP bug on GFX9 and a different EOP bug on GFX7-8. */
+         if (!radv_cmd_buffer_vram_suballoc(cmd_buffer, eop_bug_bo_size, 4, &cmd_buffer->eop_bug_va)) {
+            vk_command_buffer_set_error(&cmd_buffer->vk, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+            return VK_ERROR_OUT_OF_DEVICE_MEMORY;
          }
 
          radv_emit_clear_data(cmd_buffer, V_371_PREFETCH_PARSER, cmd_buffer->eop_bug_va, eop_bug_bo_size);
@@ -14033,22 +14027,23 @@ radv_emit_all_graphics_states(struct radv_cmd_buffer *cmd_buffer, bool indexed_d
    }
 
    if ((cmd_buffer->state.dirty & (RADV_CMD_DIRTY_GRAPHICS_PIPELINE | RADV_CMD_DIRTY_GRAPHICS_SHADERS)) ||
-       (dynamic_states & (RADV_DYNAMIC_PRIMITIVE_TOPOLOGY | RADV_DYNAMIC_POLYGON_MODE |
-                          RADV_DYNAMIC_LINE_RASTERIZATION_MODE | RADV_DYNAMIC_RASTERIZATION_SAMPLES))) {
+       (dynamic_states &
+        (RADV_DYNAMIC_PRIMITIVE_TOPOLOGY | RADV_DYNAMIC_POLYGON_MODE | RADV_DYNAMIC_LINE_RASTERIZATION_MODE |
+         RADV_DYNAMIC_RASTERIZATION_SAMPLES | RADV_DYNAMIC_LINE_WIDTH))) {
       const uint32_t vgt_outprim_type = radv_get_vgt_outprim_type(cmd_buffer);
 
       if (cmd_buffer->state.vgt_outprim_type != vgt_outprim_type) {
-         /* This must be set before computing the guardband raster prim. */
+         /* This must be set before computing the guardband clip discard distance. */
          cmd_buffer->state.vgt_outprim_type = vgt_outprim_type;
 
          cmd_buffer->state.dirty |= RADV_CMD_DIRTY_PS_STATE | RADV_CMD_DIRTY_NGG_STATE | RADV_CMD_DIRTY_NGGC_SETTINGS |
                                     RADV_CMD_DIRTY_VGT_PRIM_STATE;
       }
 
-      const uint32_t raster_prim = radv_get_raster_prim(cmd_buffer);
+      const float clip_discard_distance = radv_get_guardband_clip_discard_distance(cmd_buffer);
 
-      if (cmd_buffer->state.guardband_raster_prim != raster_prim) {
-         cmd_buffer->state.guardband_raster_prim = raster_prim;
+      if (cmd_buffer->state.guardband_clip_discard_distance != clip_discard_distance) {
+         cmd_buffer->state.guardband_clip_discard_distance = clip_discard_distance;
          cmd_buffer->state.dirty |= RADV_CMD_DIRTY_GUARDBAND;
       }
 
@@ -15343,11 +15338,9 @@ radv_emit_userdata_compute(struct radv_cmd_buffer *cmd_buffer, const struct radv
             }
             radeon_end();
          } else {
-            uint32_t offset;
-            if (!radv_cmd_buffer_upload_data(cmd_buffer, 12, params->grid_size, &offset))
+            uint64_t va;
+            if (!radv_cmd_buffer_upload_data(cmd_buffer, 12, 4, params->grid_size, &va))
                return;
-
-            uint64_t va = radv_buffer_get_va(cmd_buffer->upload.upload_bo) + offset;
 
             radeon_begin(cs);
             radeon_emit_64bit_pointer(grid_size_offset, va);
@@ -15416,12 +15409,9 @@ radv_emit_dispatch_packets(struct radv_cmd_buffer *cmd_buffer, const struct radv
 
          if (needs_align32_workaround) {
             const uint64_t unaligned_va = indirect_va;
-            uint32_t offset;
 
-            if (!radv_cmd_buffer_upload_alloc_aligned(cmd_buffer, sizeof(VkDispatchIndirectCommand), 32, &offset, NULL))
+            if (!radv_cmd_buffer_vram_suballoc(cmd_buffer, sizeof(VkDispatchIndirectCommand), 32, &indirect_va))
                return;
-
-            indirect_va = radv_buffer_get_va(cmd_buffer->upload.upload_bo) + offset;
 
             for (uint32_t i = 0; i < 3; i++) {
                const uint64_t src_va = unaligned_va + i * 4;
@@ -15802,12 +15792,10 @@ radv_upload_trace_rays_params(struct radv_cmd_buffer *cmd_buffer, VkTraceRaysInd
 {
    uint32_t upload_size = mode == radv_rt_mode_direct ? sizeof(VkTraceRaysIndirectCommand2KHR)
                                                       : offsetof(VkTraceRaysIndirectCommand2KHR, width);
+   uint64_t upload_va;
 
-   uint32_t offset;
-   if (!radv_cmd_buffer_upload_data(cmd_buffer, upload_size, tables, &offset))
+   if (!radv_cmd_buffer_upload_data(cmd_buffer, upload_size, 4, tables, &upload_va))
       return;
-
-   uint64_t upload_va = radv_buffer_get_va(cmd_buffer->upload.upload_bo) + offset;
 
    if (mode == radv_rt_mode_direct)
       *launch_size_va = upload_va + offsetof(VkTraceRaysIndirectCommand2KHR, width);
@@ -16837,7 +16825,6 @@ radv_begin_conditional_rendering(struct radv_cmd_buffer *cmd_buffer, uint64_t va
          radv_emit_set_predication_state(cmd_buffer, draw_visible, pred_op, va);
       } else {
          uint64_t pred_value = 0;
-         unsigned pred_offset;
 
          /* From the Vulkan spec 1.1.107:
           *
@@ -16865,12 +16852,10 @@ radv_begin_conditional_rendering(struct radv_cmd_buffer *cmd_buffer, uint64_t va
           * Based on the conditionalrender demo, it's faster to do the
           * COPY_DATA in ME  (+ sync PFP) instead of PFP.
           */
-         if (!radv_cmd_buffer_upload_data(cmd_buffer, 8, &pred_value, &pred_offset)) {
+         if (!radv_cmd_buffer_upload_data(cmd_buffer, 8, 8, &pred_value, &emulated_va)) {
             vk_command_buffer_set_error(&cmd_buffer->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
             return;
          }
-
-         emulated_va = radv_buffer_get_va(cmd_buffer->upload.upload_bo) + pred_offset;
 
          radeon_check_space(device->ws, cs->b, 8);
 
@@ -17065,7 +17050,6 @@ radv_init_streamout_state(struct radv_cmd_buffer *cmd_buffer)
    const struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
    const struct radv_physical_device *pdev = radv_device_physical(device);
    struct radv_streamout_state *so = &cmd_buffer->state.streamout;
-   unsigned offset;
 
    assert(pdev->info.gfx_level >= GFX12);
 
@@ -17080,11 +17064,8 @@ radv_init_streamout_state(struct radv_cmd_buffer *cmd_buffer)
     * The buffer must be initialized to 0 and the address must be aligned to 64
     * because it's faster when the atomic doesn't straddle a 64B block boundary.
     */
-   if (!radv_cmd_buffer_upload_alloc_aligned(cmd_buffer, MAX_SO_BUFFERS * 8, 64, &offset, NULL))
+   if (!radv_cmd_buffer_vram_suballoc(cmd_buffer, MAX_SO_BUFFERS * 8, 64, &so->state_va))
       return;
-
-   so->state_va = radv_buffer_get_va(cmd_buffer->upload.upload_bo);
-   so->state_va += offset;
 
    /* GE must be idle when GE_GS_ORDERED_ID is written. */
    cmd_buffer->state.flush_bits |= AC_BARRIER_SYNC_VS;

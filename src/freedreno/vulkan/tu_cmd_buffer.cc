@@ -8986,6 +8986,7 @@ vs_params_offset(struct tu_cmd_buffer *cmd)
     * CP_DRAW_INDIRECT_MULTI does at DST_OFF for indirect draws.
     */
    STATIC_ASSERT(IR3_DP_VS(view_index) == 5);
+   STATIC_ASSERT(IR3_DP_VS(draw_id_offset) == 6);
 
    /* 0 means disabled for CP_DRAW_INDIRECT_MULTI */
    assert(param_offset != 0);
@@ -8993,14 +8994,102 @@ vs_params_offset(struct tu_cmd_buffer *cmd)
    return param_offset;
 }
 
+static struct ir3_driver_params_vs
+tu6_build_driver_params_vs(uint32_t draw_id,
+                           uint32_t vertex_offset,
+                           uint32_t first_instance,
+                           uint32_t view_index,
+                           uint32_t draw_id_offset)
+{
+   return (struct ir3_driver_params_vs) {
+      .draw_id = draw_id,
+      .vtxid_base = vertex_offset,
+      .instid_base = first_instance,
+      .view_index = view_index,
+      .draw_id_offset = draw_id_offset,
+   };
+}
+
+static void
+tu6_get_driver_params_ubo_info(struct tu_cmd_buffer *cmd,
+                               int32_t *driver_params_ubo_idx,
+                               uint32_t *driver_params_size_vec4)
+{
+   const struct tu_shader *vs = cmd->state.shaders[MESA_SHADER_VERTEX];
+   const struct ir3_shader_variant *variant = vs->variant;
+   const struct ir3_const_state *const_state = variant->const_state;
+
+   *driver_params_ubo_idx = const_state->driver_params_ubo.idx;
+   *driver_params_size_vec4 = DIV_ROUND_UP(const_state->driver_params_ubo.size, 4);
+}
+
+static void
+tu6_emit_driver_params_ubo(struct tu_cs *cs,
+                           uint64_t driver_params_iova,
+                           int32_t driver_params_ubo_idx,
+                           uint32_t driver_params_size_vec4)
+{
+   tu_cs_emit_pkt7(cs, CP_LOAD_STATE6_GEOM, 5);
+   tu_cs_emit(cs,
+              CP_LOAD_STATE6_0_DST_OFF(driver_params_ubo_idx) |
+              CP_LOAD_STATE6_0_STATE_TYPE(ST6_UBO) |
+              CP_LOAD_STATE6_0_STATE_SRC(SS6_DIRECT) |
+              CP_LOAD_STATE6_0_STATE_BLOCK(SB6_VS_SHADER) |
+              CP_LOAD_STATE6_0_NUM_UNIT(1));
+
+   tu_cs_emit(cs, 0);
+   tu_cs_emit(cs, 0);
+   tu_cs_emit_qw(cs, driver_params_iova |
+                 ((uint64_t)A6XX_UBO_1_SIZE(driver_params_size_vec4) << 32));
+}
+
+static bool
+tu6_allocate_driver_params_vs(struct tu_cmd_buffer *cmd,
+                              const struct ir3_driver_params_vs *params,
+                              uint64_t *iova)
+{
+   const unsigned num_vec4 = DIV_ROUND_UP(sizeof(*params), 16);
+   struct tu_cs_memory mem;
+   VkResult result = tu_cs_alloc(&cmd->sub_cs, num_vec4, 4, &mem);
+   if (result != VK_SUCCESS) {
+      vk_command_buffer_set_error(&cmd->vk, result);
+      return false;
+   }
+
+   memcpy(mem.map, params, sizeof(*params));
+   *iova = mem.iova;
+   return true;
+}
+
+static void
+tu6_emit_driver_params_consts(struct tu_cs *cs,
+                              uint32_t offset,
+                              unsigned num_vec4,
+                              uint64_t consts_iova)
+{
+   tu_cs_emit_pkt7(cs, CP_LOAD_STATE6_GEOM, 3);
+   tu_cs_emit(cs, CP_LOAD_STATE6_0_DST_OFF(offset) |
+                   CP_LOAD_STATE6_0_STATE_TYPE(ST6_CONSTANTS) |
+                   CP_LOAD_STATE6_0_STATE_SRC(SS6_INDIRECT) |
+                   CP_LOAD_STATE6_0_STATE_BLOCK(SB6_VS_SHADER) |
+                   CP_LOAD_STATE6_0_NUM_UNIT(num_vec4));
+   tu_cs_emit_qw(cs, consts_iova);
+}
+
 static void
 tu6_emit_vs_params(struct tu_cmd_buffer *cmd,
+                   struct tu_cs *indirect_draw_cs,
                    uint32_t draw_id,
                    uint32_t vertex_offset,
                    uint32_t first_instance,
-                   bool skip_vfd = false)
+                   uint32_t draw_id_offset = 0,
+                   bool indirect = false)
 {
    uint32_t offset = vs_params_offset(cmd);
+
+   const bool lower_draw_id = cmd->device->compiler->options.lower_draw_id;
+   const bool load_shader_consts_via_preamble =
+      cmd->device->physical_device->info->props.load_shader_consts_via_preamble;
 
    /* When emulating multiview in software the current view index is passed to
     * the VS as a driver param, see tu_sw_multiview_draw(). It lives in the
@@ -9009,7 +9098,7 @@ tu6_emit_vs_params(struct tu_cmd_buffer *cmd,
     */
    const bool sw_multiview = cmd->state.sw_multiview;
    const uint32_t view_index = sw_multiview ? cmd->state.sw_view_index : 0;
-   const unsigned num_vec4 = sw_multiview ? 2 : 1;
+   const unsigned num_vec4 = (sw_multiview || lower_draw_id) ? 2 : 1;
 
    /* Beside re-emitting params when they are changed, we should re-emit
     * them after constants are invalidated via SP_UPDATE_CNTL or after we
@@ -9023,41 +9112,52 @@ tu6_emit_vs_params(struct tu_cmd_buffer *cmd,
        first_instance == cmd->state.last_vs_params.first_instance &&
        sw_multiview == cmd->state.last_vs_params.sw_multiview &&
        view_index == cmd->state.last_vs_params.view_index &&
-       skip_vfd == cmd->state.last_vs_params.skip_vfd) {
+       draw_id_offset == cmd->state.last_vs_params.draw_id_offset &&
+       indirect == cmd->state.last_vs_params.indirect) {
       return;
    }
 
-   uint64_t consts_iova = 0;
+   struct ir3_driver_params_vs params = tu6_build_driver_params_vs(
+      draw_id, vertex_offset, first_instance, view_index, draw_id_offset);
+
+   uint64_t iova = 0;
+   int32_t driver_params_ubo_idx = -1;
+   uint32_t driver_params_size_vec4 = 0;
+   bool need_ubo = load_shader_consts_via_preamble;
+   const bool need_consts = !load_shader_consts_via_preamble || !indirect;
+
    if (offset) {
-      struct tu_cs_memory consts;
-      VkResult result = tu_cs_alloc(&cmd->sub_cs, num_vec4, 4, &consts);
-      if (result != VK_SUCCESS) {
-         vk_command_buffer_set_error(&cmd->vk, result);
-         return;
-      }
-      consts.map[0] = draw_id;
-      consts.map[1] = vertex_offset;
-      consts.map[2] = first_instance;
-      consts.map[3] = 0;
-      if (sw_multiview) {
-         consts.map[4] = 0;
-         consts.map[5] = view_index;
-         consts.map[6] = 0;
-         consts.map[7] = 0;
+      if (need_ubo) {
+         tu6_get_driver_params_ubo_info(cmd, &driver_params_ubo_idx,
+                                        &driver_params_size_vec4);
+         need_ubo = driver_params_ubo_idx >= 0 && driver_params_size_vec4 > 0;
       }
 
-      consts_iova = consts.iova;
+      if (need_ubo || need_consts) {
+         if (!tu6_allocate_driver_params_vs(cmd, &params, &iova)) {
+            return;
+         }
+      }
+   }
+
+   uint32_t vs_params_size = 0;
+   if (!indirect)
+      vs_params_size += 3; /* VFD regs (3) */
+   if (offset) {
+      if (need_consts)
+         vs_params_size += 4; /* CONSTS packet (4) */
+      if (need_ubo)
+         vs_params_size += 6; /* UBO packet (6) */
    }
 
    struct tu_cs cs;
-   VkResult result = tu_cs_begin_sub_stream(&cmd->sub_cs,
-      (skip_vfd ? 0 : 3) + (offset ? 4 : 0), &cs);
+   VkResult result = tu_cs_begin_sub_stream(&cmd->sub_cs, vs_params_size, &cs);
    if (result != VK_SUCCESS) {
       vk_command_buffer_set_error(&cmd->vk, result);
       return;
    }
 
-   if (!skip_vfd) {
+   if (!indirect) {
       tu_cs_emit_regs(&cs,
                       A6XX_VFD_INDEX_OFFSET(vertex_offset),
                       A6XX_VFD_INSTANCE_START_OFFSET(first_instance));
@@ -9066,46 +9166,42 @@ tu6_emit_vs_params(struct tu_cmd_buffer *cmd,
    /* It is implemented as INDIRECT load even on a750+ because with UBO
     * lowering it would be tricky to get const offset for to use in multidraw,
     * also we would need to ensure the offset is not 0.
-    * TODO/A7XX: Rework vs params to use UBO lowering.
     */
    if (offset) {
-      tu_cs_emit_pkt7(&cs, CP_LOAD_STATE6_GEOM, 3);
-      tu_cs_emit(&cs, CP_LOAD_STATE6_0_DST_OFF(offset) |
-            CP_LOAD_STATE6_0_STATE_TYPE(ST6_CONSTANTS) |
-            CP_LOAD_STATE6_0_STATE_SRC(SS6_INDIRECT) |
-            CP_LOAD_STATE6_0_STATE_BLOCK(SB6_VS_SHADER) |
-            CP_LOAD_STATE6_0_NUM_UNIT(num_vec4));
-      tu_cs_emit_qw(&cs, consts_iova);
+      if (need_ubo) {
+         tu6_emit_driver_params_ubo(&cs, iova,
+                             driver_params_ubo_idx, driver_params_size_vec4);
+      }
+      if (need_consts)
+         tu6_emit_driver_params_consts(&cs, offset,
+                                       need_ubo ? 1 : num_vec4, iova);
    }
 
    cmd->state.last_vs_params.vertex_offset = vertex_offset;
    cmd->state.last_vs_params.first_instance = first_instance;
    cmd->state.last_vs_params.draw_id = draw_id;
    cmd->state.last_vs_params.view_index = view_index;
+   cmd->state.last_vs_params.draw_id_offset = draw_id_offset;
    cmd->state.last_vs_params.sw_multiview = sw_multiview;
-   cmd->state.last_vs_params.skip_vfd = skip_vfd;
+   cmd->state.last_vs_params.indirect = indirect;
    cmd->state.last_vs_params.empty = false;
 
    struct tu_cs_entry entry = tu_cs_end_sub_stream(&cmd->sub_cs, &cs);
    cmd->state.vs_params = (struct tu_draw_state) {entry.bo->iova + entry.offset, entry.size / 4};
 
    cmd->state.dirty |= TU_CMD_DIRTY_VS_PARAMS;
+
+   if (need_ubo && indirect_draw_cs) {
+      tu_cs_emit_pkt7(indirect_draw_cs, CP_SET_DRAW_STATE, 3);
+      tu_cs_emit_draw_state(indirect_draw_cs, TU_DRAW_STATE_VS_PARAMS,
+                            cmd->state.vs_params);
+   }
 }
 
 template <chip CHIP>
 static void
 tu6_emit_empty_vs_params(struct tu_cmd_buffer *cmd)
 {
-   if (cmd->state.sw_multiview && vs_params_offset(cmd)) {
-      /* We still have to upload the view index of the current replay. Skip the
-       * VFD registers though: CP_DRAW_INDIRECT_MULTI sources VFD_INDEX_OFFSET
-       * and VFD_INSTANCE_START_OFFSET from the indirect buffer, and a draw
-       * state writing them would clobber those values.
-       */
-      tu6_emit_vs_params(cmd, 0, 0, 0, /* skip_vfd = */ true);
-      return;
-   }
-
    if (cmd->state.last_vs_params.empty)
       return;
 
@@ -9139,7 +9235,7 @@ tu_CmdDraw(VkCommandBuffer commandBuffer,
    VK_FROM_HANDLE(tu_cmd_buffer, cmd, commandBuffer);
    struct tu_cs *cs = &cmd->draw_cs;
 
-   tu6_emit_vs_params(cmd, 0, firstVertex, firstInstance);
+   tu6_emit_vs_params(cmd, NULL, 0, firstVertex, firstInstance);
 
    tu6_draw_common<CHIP>(cmd, cs, false, vertexCount);
 
@@ -9179,7 +9275,7 @@ tu_CmdDrawMultiEXT(VkCommandBuffer commandBuffer,
 
    uint32_t i = 0;
    vk_foreach_multi_draw(draw, i, pVertexInfo, drawCount, stride) {
-      tu6_emit_vs_params(cmd, i, draw->firstVertex, firstInstance);
+      tu6_emit_vs_params(cmd, NULL, i, draw->firstVertex, firstInstance);
 
       if (i == 0)
          tu6_draw_common<CHIP>(cmd, cs, false, max_vertex_count);
@@ -9213,7 +9309,7 @@ tu_CmdDrawIndexed(VkCommandBuffer commandBuffer,
    VK_FROM_HANDLE(tu_cmd_buffer, cmd, commandBuffer);
    struct tu_cs *cs = &cmd->draw_cs;
 
-   tu6_emit_vs_params(cmd, 0, vertexOffset, firstInstance);
+   tu6_emit_vs_params(cmd, NULL, 0, vertexOffset, firstInstance);
 
    tu6_draw_common<CHIP>(cmd, cs, true, indexCount);
 
@@ -9258,7 +9354,7 @@ tu_CmdDrawMultiIndexedEXT(VkCommandBuffer commandBuffer,
    uint32_t i = 0;
    vk_foreach_multi_draw_indexed(draw, i, pIndexInfo, drawCount, stride) {
       int32_t vertexOffset = pVertexOffset ? *pVertexOffset : draw->vertexOffset;
-      tu6_emit_vs_params(cmd, i, vertexOffset, firstInstance);
+      tu6_emit_vs_params(cmd, NULL, i, vertexOffset, firstInstance);
 
       if (i == 0)
          tu6_draw_common<CHIP>(cmd, cs, true, max_index_count);
@@ -9298,6 +9394,21 @@ draw_wfm(struct tu_cmd_buffer *cmd)
 }
 
 template <chip CHIP>
+static uint32_t
+tu_indirect_draw_max_count(uint32_t stride)
+{
+   if (CHIP < A8XX)
+      return UINT32_MAX;
+
+   if (stride == 0)
+      return UINT32_MAX;
+
+   const uint32_t max_fetch_size = ((1 << 20) - 1) * 4;
+   /* Emit at least one draw per packet, even when stride exceeds max_fetch_size. */
+   return MAX2(max_fetch_size / stride, 1);
+}
+
+template <chip CHIP>
 VKAPI_ATTR void VKAPI_CALL
 tu_CmdDrawIndirect(VkCommandBuffer commandBuffer,
                    VkBuffer _buffer,
@@ -9316,13 +9427,29 @@ tu_CmdDrawIndirect(VkCommandBuffer commandBuffer,
 
    tu6_draw_common<CHIP>(cmd, cs, false, 0);
 
-   tu_cs_emit_pkt7(cs, CP_DRAW_INDIRECT_MULTI, 6);
-   tu_cs_emit(cs, tu_draw_initiator(cmd, DI_SRC_SEL_AUTO_INDEX));
-   tu_cs_emit(cs, A6XX_CP_DRAW_INDIRECT_MULTI_1_OPCODE(INDIRECT_OP_NORMAL) |
-                  A6XX_CP_DRAW_INDIRECT_MULTI_1_DST_OFF(vs_params_offset(cmd)));
-   tu_cs_emit(cs, drawCount);
-   tu_cs_emit_qw(cs, vk_buffer_address(&buf->vk, offset));
-   tu_cs_emit(cs, stride);
+   const uint32_t dst_off = vs_params_offset(cmd);
+   const uint32_t limit = tu_indirect_draw_max_count<CHIP>(stride);
+   uint32_t remaining = drawCount;
+   uint64_t indirect_va = vk_buffer_address(&buf->vk, offset);
+   uint32_t draw_id_offset = 0;
+   do {
+      uint32_t chunk = MIN2(remaining, limit);
+
+      if (dst_off)
+         tu6_emit_vs_params(cmd, cs, 0, 0, 0, draw_id_offset, true);
+
+      tu_cs_emit_pkt7(cs, CP_DRAW_INDIRECT_MULTI, 6);
+      tu_cs_emit(cs, tu_draw_initiator(cmd, DI_SRC_SEL_AUTO_INDEX));
+      tu_cs_emit(cs, A6XX_CP_DRAW_INDIRECT_MULTI_1_OPCODE(INDIRECT_OP_NORMAL) |
+                     A6XX_CP_DRAW_INDIRECT_MULTI_1_DST_OFF(dst_off));
+      tu_cs_emit(cs, chunk);
+      tu_cs_emit_qw(cs, indirect_va);
+      tu_cs_emit(cs, stride);
+
+      remaining -= chunk;
+      indirect_va += (uint64_t)chunk * stride;
+      draw_id_offset += chunk;
+   } while (remaining > 0);
 
    trace_end_draw(&cmd->rp_trace, cs);
 }
@@ -9347,19 +9474,135 @@ tu_CmdDrawIndexedIndirect(VkCommandBuffer commandBuffer,
 
    tu6_draw_common<CHIP>(cmd, cs, true, 0);
 
-   tu_cs_emit_pkt7(cs, CP_DRAW_INDIRECT_MULTI, 9);
-   tu_cs_emit(cs, tu_draw_initiator(cmd, DI_SRC_SEL_DMA));
-   tu_cs_emit(cs, A6XX_CP_DRAW_INDIRECT_MULTI_1_OPCODE(INDIRECT_OP_INDEXED) |
-                  A6XX_CP_DRAW_INDIRECT_MULTI_1_DST_OFF(vs_params_offset(cmd)));
-   tu_cs_emit(cs, drawCount);
-   tu_cs_emit_qw(cs, cmd->state.index_va);
-   tu_cs_emit(cs, cmd->state.max_index_count);
-   tu_cs_emit_qw(cs, vk_buffer_address(&buf->vk, offset));
-   tu_cs_emit(cs, stride);
+   const uint32_t dst_off = vs_params_offset(cmd);
+   const uint32_t limit = tu_indirect_draw_max_count<CHIP>(stride);
+   uint32_t remaining = drawCount;
+   uint64_t indirect_va = vk_buffer_address(&buf->vk, offset);
+   uint32_t draw_id_offset = 0;
+   do {
+      uint32_t chunk = MIN2(remaining, limit);
+
+      if (dst_off)
+         tu6_emit_vs_params(cmd, cs, 0, 0, 0, draw_id_offset, true);
+
+      tu_cs_emit_pkt7(cs, CP_DRAW_INDIRECT_MULTI, 9);
+      tu_cs_emit(cs, tu_draw_initiator(cmd, DI_SRC_SEL_DMA));
+      tu_cs_emit(cs, A6XX_CP_DRAW_INDIRECT_MULTI_1_OPCODE(INDIRECT_OP_INDEXED) |
+                     A6XX_CP_DRAW_INDIRECT_MULTI_1_DST_OFF(dst_off));
+      tu_cs_emit(cs, chunk);
+      tu_cs_emit_qw(cs, cmd->state.index_va);
+      tu_cs_emit(cs, cmd->state.max_index_count);
+      tu_cs_emit_qw(cs, indirect_va);
+      tu_cs_emit(cs, stride);
+
+      remaining -= chunk;
+      indirect_va += (uint64_t)chunk * stride;
+      draw_id_offset += chunk;
+   } while (remaining > 0);
 
    trace_end_draw(&cmd->rp_trace, cs);
 }
 TU_GENX(tu_CmdDrawIndexedIndirect);
+
+/* Split an *IndirectCount draw into multiple CP_DRAW_INDIRECT_MULTI packets,
+ * each processing at most `limit` draws.
+ *
+ * The hardware reads the actual draw count from a GPU-side count buffer and
+ * clamps it to the application's max_draw_count. Since the final count is
+ * only known at execution time, per-packet counts are computed on the GPU:
+ *
+ *   slot[0] = min(count_buffer_value, max_draw_count)
+ *   slot[i] = max(slot[0] - i * limit, 0)
+ *
+ * Each packet then uses INDIRECT_OP_INDIRECT_COUNT with slot[i] as its count
+ * buffer and `limit` as the packet's maxDrawCount, so the hardware executes
+ * min(slot[i], limit) draws from the corresponding slice of the indirect buffer
+ */
+template <chip CHIP>
+static void
+tu6_emit_indirect_count_split(struct tu_cmd_buffer *cmd,
+                              struct tu_cs *cs,
+                              enum a6xx_draw_indirect_opcode opcode,
+                              uint32_t draw_initiator,
+                              uint64_t indirect_va,
+                              uint64_t count_va,
+                              uint32_t stride,
+                              uint32_t max_draw_count,
+                              uint32_t limit,
+                              uint32_t dst_off)
+{
+   assert(CHIP >= A8XX);
+
+   max_draw_count = MIN2(max_draw_count, UINT32_MAX - limit);
+
+   const uint32_t packets = max_draw_count ? 1 + (max_draw_count - 1) / limit : 0;
+   const bool indexed = opcode == INDIRECT_OP_INDIRECT_COUNT_INDEXED;
+
+   tu_cs_set_writeable(&cmd->sub_cs, true);
+   struct tu_cs_memory counts;
+   VkResult result = tu_cs_alloc(&cmd->sub_cs, packets, 1, &counts);
+   tu_cs_set_writeable(&cmd->sub_cs, false);
+   if (result != VK_SUCCESS) {
+      vk_command_buffer_set_error(&cmd->vk, result);
+      return;
+   }
+
+   const struct tu_reg_value pipe_scratch = CP_SCRATCH_PIPE_REG(CHIP, 0, 0);
+
+   /* Slot 0 = min(count, max_draw_count). */
+   cs->mem_to_reg(pipe_scratch, count_va);
+   cs->cond_write(pipe_scratch, pipe_scratch, {
+                     .function = WRITE_GT,
+                     .ref = max_draw_count,
+                     .write_data = max_draw_count,
+                  });
+   cs->reg_to_mem(counts.iova, pipe_scratch);
+
+   /* Slots 1.. hold max(clamped_count - i*limit, 0). */
+   for (uint32_t i = 1; i < packets; i++) {
+      const uint64_t slot_va = counts.iova + (uint64_t)i * sizeof(uint32_t);
+
+      cs->rmw(pipe_scratch, {
+                 .src1_add = true,
+                 .src0 = 0xffffffff,
+                 .src1 = -limit,
+              });
+
+      /* Underflow wraps above max_draw_count, so reset it to 0. */
+      cs->cond_write(pipe_scratch, pipe_scratch, {
+                        .function = WRITE_GT,
+                        .ref = max_draw_count,
+                        .write_data = 0,
+                     });
+
+      cs->reg_to_mem(slot_va, pipe_scratch);
+   }
+
+   /* Ensure count writes are visible before indirect draws read them. */
+   tu_cs_emit_pkt7(cs, CP_WAIT_MEM_WRITES, 0);
+   tu_cs_emit_pkt7(cs, CP_WAIT_FOR_ME, 0);
+
+   for (uint32_t i = 0; i < packets; i++) {
+      const uint64_t slot_va = counts.iova + (uint64_t)i * sizeof(uint32_t);
+      const uint64_t indirect_slice_va = indirect_va + (uint64_t)i * limit * stride;
+
+      if (dst_off)
+         tu6_emit_vs_params(cmd, cs, 0, 0, 0, i * limit, true);
+
+      tu_cs_emit_pkt7(cs, CP_DRAW_INDIRECT_MULTI, indexed ? 11 : 8);
+      tu_cs_emit(cs, draw_initiator);
+      tu_cs_emit(cs, A6XX_CP_DRAW_INDIRECT_MULTI_1_OPCODE(opcode) |
+                     A6XX_CP_DRAW_INDIRECT_MULTI_1_DST_OFF(dst_off));
+      tu_cs_emit(cs, limit);
+      if (indexed) {
+         tu_cs_emit_qw(cs, cmd->state.index_va);
+         tu_cs_emit(cs, cmd->state.max_index_count);
+      }
+      tu_cs_emit_qw(cs, indirect_slice_va);
+      tu_cs_emit_qw(cs, slot_va);
+      tu_cs_emit(cs, stride);
+   }
+}
 
 template <chip CHIP>
 VKAPI_ATTR void VKAPI_CALL
@@ -9387,14 +9630,30 @@ tu_CmdDrawIndirectCount(VkCommandBuffer commandBuffer,
 
    tu6_draw_common<CHIP>(cmd, cs, false, 0);
 
-   tu_cs_emit_pkt7(cs, CP_DRAW_INDIRECT_MULTI, 8);
-   tu_cs_emit(cs, tu_draw_initiator(cmd, DI_SRC_SEL_AUTO_INDEX));
-   tu_cs_emit(cs, A6XX_CP_DRAW_INDIRECT_MULTI_1_OPCODE(INDIRECT_OP_INDIRECT_COUNT) |
-                  A6XX_CP_DRAW_INDIRECT_MULTI_1_DST_OFF(vs_params_offset(cmd)));
-   tu_cs_emit(cs, drawCount);
-   tu_cs_emit_qw(cs, vk_buffer_address(&buf->vk, offset));
-   tu_cs_emit_qw(cs, vk_buffer_address(&count_buf->vk, countBufferOffset));
-   tu_cs_emit(cs, stride);
+   const uint32_t dst_off = vs_params_offset(cmd);
+   const uint32_t limit = tu_indirect_draw_max_count<CHIP>(stride);
+   const uint64_t indirect_va = vk_buffer_address(&buf->vk, offset);
+   const uint64_t count_va = vk_buffer_address(&count_buf->vk, countBufferOffset);
+
+   if (limit < drawCount) {
+      tu6_emit_indirect_count_split<CHIP>(cmd, cs,
+                                    INDIRECT_OP_INDIRECT_COUNT,
+                                    tu_draw_initiator(cmd, DI_SRC_SEL_AUTO_INDEX),
+                                    indirect_va, count_va, stride, drawCount,
+                                    limit, dst_off);
+   } else {
+      if (dst_off)
+         tu6_emit_vs_params(cmd, cs, 0, 0, 0, 0, true);
+
+      tu_cs_emit_pkt7(cs, CP_DRAW_INDIRECT_MULTI, 8);
+      tu_cs_emit(cs, tu_draw_initiator(cmd, DI_SRC_SEL_AUTO_INDEX));
+      tu_cs_emit(cs, A6XX_CP_DRAW_INDIRECT_MULTI_1_OPCODE(INDIRECT_OP_INDIRECT_COUNT) |
+                     A6XX_CP_DRAW_INDIRECT_MULTI_1_DST_OFF(dst_off));
+      tu_cs_emit(cs, drawCount);
+      tu_cs_emit_qw(cs, indirect_va);
+      tu_cs_emit_qw(cs, count_va);
+      tu_cs_emit(cs, stride);
+   }
 
    trace_end_draw(&cmd->rp_trace, cs);
 }
@@ -9421,16 +9680,32 @@ tu_CmdDrawIndexedIndirectCount(VkCommandBuffer commandBuffer,
 
    tu6_draw_common<CHIP>(cmd, cs, true, 0);
 
-   tu_cs_emit_pkt7(cs, CP_DRAW_INDIRECT_MULTI, 11);
-   tu_cs_emit(cs, tu_draw_initiator(cmd, DI_SRC_SEL_DMA));
-   tu_cs_emit(cs, A6XX_CP_DRAW_INDIRECT_MULTI_1_OPCODE(INDIRECT_OP_INDIRECT_COUNT_INDEXED) |
-                  A6XX_CP_DRAW_INDIRECT_MULTI_1_DST_OFF(vs_params_offset(cmd)));
-   tu_cs_emit(cs, drawCount);
-   tu_cs_emit_qw(cs, cmd->state.index_va);
-   tu_cs_emit(cs, cmd->state.max_index_count);
-   tu_cs_emit_qw(cs, vk_buffer_address(&buf->vk, offset));
-   tu_cs_emit_qw(cs, vk_buffer_address(&count_buf->vk, countBufferOffset));
-   tu_cs_emit(cs, stride);
+   const uint32_t dst_off = vs_params_offset(cmd);
+   const uint32_t limit = tu_indirect_draw_max_count<CHIP>(stride);
+   const uint64_t indirect_va = vk_buffer_address(&buf->vk, offset);
+   const uint64_t count_va = vk_buffer_address(&count_buf->vk, countBufferOffset);
+
+   if (limit < drawCount) {
+      tu6_emit_indirect_count_split<CHIP>(cmd, cs,
+                                    INDIRECT_OP_INDIRECT_COUNT_INDEXED,
+                                    tu_draw_initiator(cmd, DI_SRC_SEL_DMA),
+                                    indirect_va, count_va, stride, drawCount,
+                                    limit, dst_off);
+   } else {
+      if (dst_off)
+         tu6_emit_vs_params(cmd, cs, 0, 0, 0, 0, true);
+
+      tu_cs_emit_pkt7(cs, CP_DRAW_INDIRECT_MULTI, 11);
+      tu_cs_emit(cs, tu_draw_initiator(cmd, DI_SRC_SEL_DMA));
+      tu_cs_emit(cs, A6XX_CP_DRAW_INDIRECT_MULTI_1_OPCODE(INDIRECT_OP_INDIRECT_COUNT_INDEXED) |
+                     A6XX_CP_DRAW_INDIRECT_MULTI_1_DST_OFF(dst_off));
+      tu_cs_emit(cs, drawCount);
+      tu_cs_emit_qw(cs, cmd->state.index_va);
+      tu_cs_emit(cs, cmd->state.max_index_count);
+      tu_cs_emit_qw(cs, indirect_va);
+      tu_cs_emit_qw(cs, count_va);
+      tu_cs_emit(cs, stride);
+   }
 
    trace_end_draw(&cmd->rp_trace, cs);
 }
@@ -9457,7 +9732,7 @@ tu_CmdDrawIndirectByteCountEXT(VkCommandBuffer commandBuffer,
     */
    draw_wfm(cmd);
 
-   tu6_emit_vs_params(cmd, 0, 0, firstInstance);
+   tu6_emit_vs_params(cmd, NULL, 0, 0, firstInstance);
 
    tu6_draw_common<CHIP>(cmd, cs, false, 0);
 
