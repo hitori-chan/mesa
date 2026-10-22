@@ -2119,17 +2119,19 @@ jay_emit_btd_ops(struct nir_to_jay_state *nj, nir_intrinsic_instr *instr)
     *    RayQuery for all valid Rays (SIMD lanes) have completed."
     */
    jay_def notif = synchronous ?
-                      jay_alloc_def(&nj->bld, UGPR, jay_ugpr_per_grf(nj->s)) :
-                      jay_null();
+      nj_def(&instr->def) : jay_null();
 
    switch (instr->intrinsic) {
-   case nir_intrinsic_trace_ray_intel:
+   case nir_intrinsic_trace_ray_intel: {
       desc = brw_rt_trace_ray_desc(s->devinfo, width);
 
+      /* Gfx35 changes the message return format from u32 to u16 to allow SIMD32 */
+      enum jay_type dst_type = s->devinfo->ver < 35 ? JAY_TYPE_U32 : JAY_TYPE_U16;
       jay_SEND(&nj->bld, .sfid = GEN_SFID_RAY_TRACE_ACCELERATOR,
-               .msg_desc = desc, .type = JAY_TYPE_U32, .srcs = srcs,
+               .msg_desc = desc, .type = dst_type, .srcs = srcs,
                .nr_srcs = nr_srcs, .dst = notif, .simd_width = width);
       break;
+   }
 
    case nir_intrinsic_btd_retire_intel:
    case nir_intrinsic_btd_spawn_intel:
@@ -5019,7 +5021,7 @@ jay_compile_simd(const struct intel_device_info *devinfo,
    if (debug) {
       fprintf(stderr, "Jay shader (post-RA):\n\n");
       jay_print(stderr, s);
-      jay_print_partition(s);
+      jay_print_partition(stderr, s);
    }
 
    if (INTEL_DEBUG(DEBUG_SHADER_HASH)) {
