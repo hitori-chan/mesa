@@ -177,7 +177,11 @@ hk_CmdDispatchIndirect(VkCommandBuffer commandBuffer, VkBuffer _buffer,
    desc->root.cs.base_group[1] = 0;
    desc->root.cs.base_group[2] = 0;
 
-   uint64_t dispatch_addr = hk_buffer_address(buffer, offset, true);
+   /* The CDM fetches the group counts through the address it is given, and a
+    * sparse buffer's read-only shadow of a page a GPU copy just wrote through
+    * the read-write mapping can still read as stale: use the read-write one.
+    */
+   uint64_t dispatch_addr = hk_buffer_address(buffer, offset, false);
    assert(dispatch_addr != 0);
 
    desc->root.cs.group_count_addr = dispatch_addr;
