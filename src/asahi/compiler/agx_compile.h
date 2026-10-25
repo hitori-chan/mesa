@@ -498,5 +498,11 @@ static const nir_shader_compiler_options agx_nir_options = {
    .compact_arrays = true,
    .discard_is_demote = true,
    .scalarize_ddx = true,
-   .io_options = nir_io_always_interpolate_convergent_fs_inputs,
+   .io_options = (nir_io_options)(nir_io_always_interpolate_convergent_fs_inputs |
+                                  nir_io_linear_if_pos_w_is_constant),
+   /* A uniform expression moved into the next stage is computed once by its
+    * preamble, while a varying costs per-pixel interpolation (on G15 about
+    * eight instructions a channel).
+    */
+   .max_varying_expression_cost = 8,
 };
