@@ -6026,6 +6026,127 @@ print_shader_linkage(nir_shader *producer, nir_shader *consumer)
    FREE(linkage);
 }
 
+/* Whether every store of gl_Position.w in the producer stores the same
+ * non-zero finite 32-bit constant.
+ */
+static bool
+pos_w_is_constant(nir_shader *producer)
+{
+   if (producer->info.stage != MESA_SHADER_VERTEX &&
+       producer->info.stage != MESA_SHADER_TESS_EVAL &&
+       producer->info.stage != MESA_SHADER_GEOMETRY)
+      return false;
+
+   if (!(producer->info.outputs_written & VARYING_BIT_POS))
+      return false;
+
+   bool found = false;
+   uint32_t w = 0;
+
+   nir_foreach_function_impl(impl, producer) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+
+            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (!nir_intrinsic_has_io_semantics(intr) ||
+                nir_intrinsic_io_semantics(intr).location != VARYING_SLOT_POS)
+               continue;
+
+            /* A per-view position or anything but a direct store: give up. */
+            if (intr->intrinsic != nir_intrinsic_store_output)
+               return false;
+
+            if (!nir_src_is_const(*nir_get_io_offset_src(intr)) ||
+                intr->src[0].ssa->bit_size != 32)
+               return false;
+
+            unsigned c = nir_intrinsic_component(intr);
+            if (!((nir_intrinsic_write_mask(intr) << c) & BITFIELD_BIT(3)))
+               continue;
+
+            nir_scalar s = nir_scalar_resolved(intr->src[0].ssa, 3 - c);
+            if (!nir_scalar_is_const(s))
+               return false;
+
+            uint32_t v = nir_scalar_as_uint(s);
+            if (!isfinite(uif(v)) || uif(v) == 0.0f || (found && v != w))
+               return false;
+
+            found = true;
+            w = v;
+         }
+      }
+   }
+
+   return found;
+}
+
+/* With W equal at every vertex, perspective-correct interpolation is linear
+ * interpolation: interpolate the consumer's inputs with noperspective
+ * barycentrics. Colours with the default qualifier are left alone, since
+ * the flat shading state decides theirs.
+ */
+static bool
+convert_fs_inputs_to_linear(nir_shader *consumer)
+{
+   bool progress = false;
+
+   nir_foreach_function_impl(impl, consumer) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+
+            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic != nir_intrinsic_load_interpolated_input)
+               continue;
+
+            nir_intrinsic_instr *bary = nir_src_as_intrinsic(intr->src[0]);
+            if (!bary)
+               continue;
+
+            switch (bary->intrinsic) {
+            case nir_intrinsic_load_barycentric_pixel:
+            case nir_intrinsic_load_barycentric_centroid:
+            case nir_intrinsic_load_barycentric_sample:
+            case nir_intrinsic_load_barycentric_at_sample:
+            case nir_intrinsic_load_barycentric_at_offset:
+               break;
+            default:
+               continue;
+            }
+
+            enum glsl_interp_mode mode = nir_intrinsic_interp_mode(bary);
+            gl_varying_slot loc = nir_intrinsic_io_semantics(intr).location;
+            bool color = loc == VARYING_SLOT_COL0 || loc == VARYING_SLOT_COL1 ||
+                         loc == VARYING_SLOT_BFC0 || loc == VARYING_SLOT_BFC1;
+
+            if (mode != INTERP_MODE_SMOOTH &&
+                (mode != INTERP_MODE_NONE || color))
+               continue;
+
+            nir_intrinsic_instr *linear =
+               nir_instr_as_intrinsic(nir_instr_clone(consumer, &bary->instr));
+            nir_intrinsic_set_interp_mode(linear, INTERP_MODE_NOPERSPECTIVE);
+            nir_instr_insert_before(&bary->instr, &linear->instr);
+            nir_src_rewrite(&intr->src[0], &linear->def);
+            progress = true;
+         }
+      }
+
+      nir_progress(progress, impl, nir_metadata_control_flow);
+   }
+
+   if (progress) {
+      NIR_PASS(_, consumer, nir_opt_cse);
+      NIR_PASS(_, consumer, nir_opt_dce);
+   }
+
+   return progress;
+}
+
 /**
  * Run lots of optimizations on varyings. See the description at the beginning
  * of this file.
@@ -6055,6 +6176,15 @@ nir_opt_varyings(nir_shader *producer, nir_shader *consumer, bool spirv,
                nir_divergence_across_subgroups : nir_divergence_vertex;
 
       nir_custom_divergence_analysis(producer, divergence_options);
+
+      /* A separate shader's other side can come from another program. */
+      if ((consumer->options->io_options &
+           nir_io_linear_if_pos_w_is_constant) &&
+          !producer->info.separate_shader &&
+          !consumer->info.separate_shader &&
+          pos_w_is_constant(producer) &&
+          convert_fs_inputs_to_linear(consumer))
+         progress |= nir_progress_consumer;
    }
 
    /* This also removes dead varyings. */

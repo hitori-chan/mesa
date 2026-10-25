@@ -239,6 +239,16 @@ typedef enum {
     */
    nir_io_non_interpolated_as_uint = BITFIELD_BIT(14),
 
+   /**
+    * Whether nir_opt_varyings should interpolate the FS inputs linearly
+    * (noperspective) when every store of gl_Position.w in the last
+    * pre-rasterization stage stores the same non-zero constant. With W equal
+    * at every vertex, perspective-correct interpolation is linear
+    * interpolation, so this is for hardware where the perspective division
+    * costs instructions per pixel.
+    */
+   nir_io_linear_if_pos_w_is_constant = BITFIELD_BIT(15),
+
    /* Options affecting the GLSL compiler or Gallium are below. */
 
    /**
