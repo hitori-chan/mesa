@@ -1117,6 +1117,7 @@ agx_transfer_map(struct pipe_context *pctx, struct pipe_resource *resource,
           (usage &
            (PIPE_MAP_DIRECTLY | PIPE_MAP_PERSISTENT | PIPE_MAP_COHERENT))) {
          BITSET_SET(rsrc->data_valid, level);
+         rsrc->discarded = false;
       }
 
       uint32_t offset =
@@ -1158,8 +1159,10 @@ agx_transfer_unmap(struct pipe_context *pctx, struct pipe_transfer *transfer)
    /* The level we wrote is now initialized. We do this at the end so
     * blit_from_staging can avoid reloading existing contents.
     */
-   if (transfer->usage & PIPE_MAP_WRITE)
+   if (transfer->usage & PIPE_MAP_WRITE) {
       BITSET_SET(rsrc->data_valid, transfer->level);
+      rsrc->discarded = false;
+   }
 
    /* Free the transfer */
    free(trans->map);
@@ -1823,6 +1826,7 @@ agx_invalidate_resource(struct pipe_context *pctx,
                         struct pipe_resource *resource)
 {
    struct agx_context *ctx = agx_context(pctx);
+   struct agx_resource *rsrc = agx_resource(resource);
    struct agx_batch *batch = agx_get_batch(ctx);
 
    /* Handle the glInvalidateFramebuffer case */
@@ -1834,6 +1838,19 @@ agx_invalidate_resource(struct pipe_context *pctx,
 
       if (surf->texture == resource)
          batch->resolve &= ~(PIPE_CLEAR_COLOR0 << i);
+   }
+
+   /* The next draw stores what it renders again */
+   ctx->dirty |= AGX_DIRTY_BLEND | AGX_DIRTY_ZS;
+
+   /* With no batch recording a write, the next render pass to the resource
+    * need not load it. One still recording may draw to it again.
+    */
+   if (resource->target != PIPE_BUFFER && rsrc->bo) {
+      struct agx_batch *writer = agx_writer_get(ctx, rsrc->bo->handle);
+
+      if (!writer || agx_batch_is_submitted(writer))
+         rsrc->discarded = true;
    }
 }
 
