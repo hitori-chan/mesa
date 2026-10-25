@@ -1402,9 +1402,7 @@ hk_image_plane_init_metadata(struct hk_device *dev,
    if (dev->dev.params.gpu_generation < 15 || !layout->compressed)
       return;
 
-   memset((uint8_t *)plane->map + layout->metadata_offset_B,
-          ail_subtile_uncompressed_mode(layout->format),
-          layout->compression_layer_stride_B * layout->depth_px);
+   ail_init_metadata_g15(layout, plane->map);
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL

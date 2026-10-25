@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <string.h>
 #include "drm-uapi/drm_fourcc.h"
 #include "util/format/u_format.h"
 #include "util/macros.h"
@@ -494,6 +495,19 @@ ail_subtile_uncompressed_mode(enum pipe_format format)
    default: UNREACHABLE("invalid block size");
    }
    /* clang-format on */
+}
+
+/* G15 decodes a zeroed subtile mode as a compressed block, so an image not yet
+ * written would read back garbage where an uncompressed one reads its zeroed
+ * BO: its metadata starts with every subtile uncompressed. map is the image's
+ * CPU mapping.
+ */
+static inline void
+ail_init_metadata_g15(const struct ail_layout *layout, uint8_t *map)
+{
+   memset(map + layout->metadata_offset_B,
+          ail_subtile_uncompressed_mode(layout->format),
+          layout->compression_layer_stride_B * layout->depth_px);
 }
 
 static inline uint8_t

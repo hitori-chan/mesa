@@ -308,3 +308,21 @@ agx_cmd_header(bool compute, uint16_t barrier_vdm, uint16_t barrier_cdm)
       .cdm_barrier = barrier_cdm,
    };
 }
+
+/* G15 takes the background and end-of-tile programs as {binding word, entry
+ * program VA}. The binding words are demo15's (the background's
+ * 0xFFFF800000000040, the end of tile's 0); their meaning is not traced.
+ */
+static inline struct drm_asahi_cmd_render_g15
+agx_cmd_render_g15(uint64_t bg, uint64_t eot, uint64_t partial_bg,
+                   uint64_t partial_eot)
+{
+   const uint64_t bg_binding = 0xFFFF800000000040ull;
+
+   return (struct drm_asahi_cmd_render_g15){
+      .bg = {bg_binding, bg},
+      .eot = {0, eot},
+      .partial_bg = {bg_binding, partial_bg},
+      .partial_eot = {0, partial_eot},
+   };
+}
