@@ -353,29 +353,6 @@ static const nir_opt_preamble_options preamble_options = {
    /* We have at least 16 sampler state registers. TODO: check for more? */
    .preamble_storage_size[nir_preamble_class_sampler] = 16,
 };
-static const nir_opt_preamble_options preamble_options_g15 = {
-   .drawid_uniform = true,
-   .subgroup_size_uniform = true,
-   /* not supported in hardware */
-   .load_workgroup_size_allowed = false,
-   .def_size = def_size,
-   .instr_cost_cb = instr_cost,
-   .rewrite_cost_cb = rewrite_cost,
-   .avoid_instr_cb = avoid_instr_g15,
-   .can_move_instr_cb = can_move_instr_g15,
-
-   /* hardware size is 512, but it's polite to leave some wiggle room to push
-    * hot constants so we don't end up rematerializing all over the place.
-    * 480 seems to be a sweetspot, based on a few minutes of shader-db.
-    */
-   .preamble_storage_size[nir_preamble_class_general] = 480,
-
-   /* We have at least 32 texture state registers. TODO: check for more? */
-   .preamble_storage_size[nir_preamble_class_image] = 32,
-
-   /* We have at least 16 sampler state registers. TODO: check for more? */
-   .preamble_storage_size[nir_preamble_class_sampler] = 16,
-};
 
 /*
  * Bindless image handles can't be stored to uniforms, so we move them back to
@@ -484,8 +461,13 @@ bool
 agx_nir_opt_preamble(nir_shader *nir, unsigned *sizes, bool g15)
 {
    bool progress = false;
-   NIR_PASS(progress, nir, nir_opt_preamble,
-            g15 ? &preamble_options_g15 : &preamble_options, sizes);
+   nir_opt_preamble_options options = preamble_options;
+   if (g15) {
+      options.avoid_instr_cb = avoid_instr_g15;
+      options.can_move_instr_cb = can_move_instr_g15;
+   }
+
+   NIR_PASS(progress, nir, nir_opt_preamble, &options, sizes);
 
    int16_t heap[512];
    memset(heap, ~0, sizeof(heap));
