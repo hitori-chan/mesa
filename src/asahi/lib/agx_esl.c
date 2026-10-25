@@ -268,22 +268,15 @@ esl_preamble(struct util_dynarray *out, const struct agx_esl_code *code,
    if (!code || va < code->va || va >= code->va + code->size)
       return false;
 
-   const uint8_t *p = code->cpu + (va - code->va);
-   const uint8_t *end = code->cpu + code->size;
+   uint64_t off = va - code->va;
+   int size = off == code->preamble_offset && code->preamble_size
+                 ? code->preamble_size
+                 : agx3_stop_offset(code->cpu + off, code->size - off);
+   if (size < 0)
+      return false;
 
-   while (p + 4 <= end) {
-      if (p[0] == 0x0e && p[1] == 0 && p[2] == 0 && p[3] == 0)
-         return true;
-
-      unsigned len = agx3_instr_length(p, end - p);
-      if (!len)
-         return false;
-
-      memcpy(util_dynarray_grow_bytes(out, 1, len), p, len);
-      p += len;
-   }
-
-   return false;
+   memcpy(util_dynarray_grow_bytes(out, 1, size), code->cpu + off, size);
+   return true;
 }
 
 /* Read once: the entry program is built for every draw */
