@@ -77,9 +77,9 @@ static const struct debug_named_value agx_debug_options[] = {
    {"nosoft",    AGX_DBG_NOSOFT,   "Disable soft fault optimizations"},
    {"nomerge",   AGX_DBG_NOMERGE,  "Disable control stream merging"},
    {"linear",    AGX_DBG_LINEAR,   "Prefer linear layouts where allowed"},
-   {"compress",  AGX_DBG_COMPRESS, "Allow lossless compression on G15 (colour images)"},
-   {"compresszs",AGX_DBG_COMPRESSZS,"With compress, also depth and stencil on G15"},
-   {"ix",        AGX_DBG_IX,       "With compress, offer the interchange modifier for scanout on G15"},
+   {"compress",  AGX_DBG_COMPRESS, "Allow lossless compression on G15 in Vulkan (colour images; GL compresses them by default)"},
+   {"compresszs",AGX_DBG_COMPRESSZS,"Also compress depth and stencil on G15"},
+   {"ix",        AGX_DBG_IX,       "Offer the interchange modifier for scanout on G15 (GL)"},
    {"bodumpverbose", AGX_DBG_BODUMPVERBOSE,   "Include extra info with dumps"},
    DEBUG_NAMED_VALUE_END
 };
