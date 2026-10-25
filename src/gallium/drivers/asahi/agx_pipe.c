@@ -450,12 +450,15 @@ agx_compression_allowed(const struct agx_resource *pres)
 
 /*
  * Apple Interchange, which the display controller scans out compressed: G15
- * only, with ASAHI_MESA_DEBUG=ix, for 32-bit RGB formats.
+ * only (not with ASAHI_MESA_DEBUG=noix), for 8-bit RGB formats, and 10-bit ones
+ * with ASAHI_MESA_DEBUG=ix (their scanout is not checked). The display's planes
+ * take it and linear only, so a shared buffer picked from their list is
+ * compressed only this way.
  */
 static bool
 agx_interchange_offered(const struct agx_device *dev, enum pipe_format format)
 {
-   if (dev->params.gpu_generation < 15 || !(dev->debug & AGX_DBG_IX) ||
+   if (dev->params.gpu_generation < 15 || (dev->debug & AGX_DBG_NOIX) ||
        (dev->debug & AGX_DBG_NOCOMPRESS))
       return false;
 
@@ -468,13 +471,14 @@ agx_interchange_offered(const struct agx_device *dev, enum pipe_format format)
    case PIPE_FORMAT_A8B8G8R8_UNORM:
    case PIPE_FORMAT_X8R8G8B8_UNORM:
    case PIPE_FORMAT_X8B8G8R8_UNORM:
+      return true;
    case PIPE_FORMAT_A2R10G10B10_UNORM:
    case PIPE_FORMAT_A2B10G10R10_UNORM:
    case PIPE_FORMAT_R10G10B10X2_UNORM:
    case PIPE_FORMAT_R10G10B10A2_UNORM:
    case PIPE_FORMAT_B10G10R10X2_UNORM:
    case PIPE_FORMAT_B10G10R10A2_UNORM:
-      return true;
+      return dev->debug & AGX_DBG_IX;
    default:
       return false;
    }
