@@ -702,26 +702,36 @@ hk_reserve_scratch(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
    }
 }
 
-/* G15: the entry program for a USC word list (agx_esl.h) */
-static uint32_t
-hk_upload_esl_code(struct hk_cmd_buffer *cmd, const struct agx_esl_code *code,
-                   enum agx_esl_stage stage, const uint8_t *usc)
+/* G15: the entry program for a USC word list (agx_esl.h): its VA, 0 when G15
+ * cannot build it yet */
+uint64_t
+hk_upload_esl_va(struct hk_cmd_buffer *cmd, const struct agx_esl_code *code,
+                 enum agx_esl_stage stage, const uint8_t *usc)
 {
    struct hk_device *dev = hk_cmd_buffer_device(cmd);
    struct util_dynarray esl;
    util_dynarray_init(&esl, NULL);
 
-   uint32_t addr = 0;
+   uint64_t va = 0;
    if (agx_esl_from_usc(&esl, usc, dev->dev.shader_base, code, stage)) {
       struct agx_ptr t = hk_pool_usc_alloc(cmd, esl.size, 64);
       if (t.cpu) {
          memcpy(t.cpu, esl.data, esl.size);
-         addr = agx_usc_addr(&dev->dev, t.gpu);
+         va = t.gpu;
       }
    }
 
    util_dynarray_fini(&esl);
-   return addr;
+   return va;
+}
+
+/* The same as a USC address */
+static uint32_t
+hk_upload_esl_code(struct hk_cmd_buffer *cmd, const struct agx_esl_code *code,
+                   enum agx_esl_stage stage, const uint8_t *usc)
+{
+   uint64_t va = hk_upload_esl_va(cmd, code, stage, usc);
+   return va ? agx_usc_addr(&hk_cmd_buffer_device(cmd)->dev, va) : 0;
 }
 
 static uint32_t
