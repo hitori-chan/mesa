@@ -4017,7 +4017,7 @@ agx_batch_init_state(struct agx_batch *batch)
          struct agx_resource *rsrc = agx_resource(batch->key.cbufs[i].texture);
          unsigned level = batch->key.cbufs[i].level;
 
-         if (agx_resource_valid(rsrc, level))
+         if (agx_resource_valid(rsrc, level) && !rsrc->discarded)
             batch->load |= PIPE_CLEAR_COLOR0 << i;
 
          agx_batch_writes(batch, rsrc, level);

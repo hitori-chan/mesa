@@ -927,6 +927,11 @@ struct agx_resource {
 
    BITSET_DECLARE(data_valid, PIPE_MAX_TEXTURE_LEVELS);
 
+   /* The contents were invalidated (glInvalidateFramebuffer) and nothing wrote
+    * them since, so a render pass need not load them.
+    */
+   bool discarded;
+
    struct ail_layout layout;
 
    /* Metal does not support packed depth/stencil formats; presumably AGX does
