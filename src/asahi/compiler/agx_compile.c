@@ -5155,6 +5155,16 @@ agx_compile_shader_nir_impl(nir_shader *nir, struct agx_shader_key *key,
       }
    }
 
+   /* G15's entry program copies the preamble at every draw: find its stop
+    * once
+    */
+   if (info->has_preamble && key->dev.gpu_generation >= 15) {
+      int stop =
+         agx3_stop_offset((uint8_t *)binary.data + info->preamble_offset,
+                          binary.size - info->preamble_offset);
+      info->preamble_size = MAX2(stop, 0);
+   }
+
    if (agx_should_dump(nir, AGX_DBG_SHADERDB)) {
       agx2_stats_fprintf(stderr, _mesa_shader_stage_to_abbrev(nir->info.stage),
                          &out->info.stats);
