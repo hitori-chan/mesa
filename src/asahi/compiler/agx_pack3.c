@@ -19,6 +19,7 @@
 
 #include <setjmp.h>
 #include "util/bitscan.h"
+#include "util/simple_mtx.h"
 #include "util/u_debug.h"
 #include "agx3_pack.h"
 #include "agx_builder.h"
@@ -3387,6 +3388,69 @@ agx3_emit_mov_imm(struct util_dynarray *out, unsigned reg, uint32_t imm)
    agx3_pack_instr(out, NULL, &I, 0);
 }
 
+/* The drivers build an entry program for every pipeline they emit, and the
+ * packer checks each instruction it packs, so the building blocks other than
+ * mov_imm (whose immediate is a buffer address) keep their encodings by their
+ * operands: direct-mapped, key 0 empty */
+#define A3_MEMO_BITS 10
+
+enum a3_memo_tag {
+   A3_MEMO_LOAD = 1,
+   A3_MEMO_WAIT,
+   A3_MEMO_UNIFORM_STORE,
+   A3_MEMO_STOP,
+   A3_MEMO_SIGNAL_PIX,
+};
+
+static struct {
+   uint64_t key;
+   uint8_t length;
+   uint8_t code[AGX3_MAX_BYTES];
+} a3_memo[1 << A3_MEMO_BITS];
+
+static simple_mtx_t a3_memo_lock = SIMPLE_MTX_INITIALIZER;
+
+static unsigned
+a3_memo_slot(uint64_t key)
+{
+   return (key * 0x9e3779b97f4a7c15ull) >> (64 - A3_MEMO_BITS);
+}
+
+static uint64_t
+a3_memo_key(enum a3_memo_tag tag, uint64_t operands)
+{
+   assert(operands < BITFIELD64_BIT(56));
+   return ((uint64_t)tag << 56) | operands;
+}
+
+static void
+a3_memo_pack(struct util_dynarray *out, uint64_t key, const agx_instr *I)
+{
+   unsigned slot = a3_memo_slot(key);
+
+   simple_mtx_lock(&a3_memo_lock);
+   if (a3_memo[slot].key == key) {
+      memcpy(util_dynarray_grow_bytes(out, 1, a3_memo[slot].length),
+             a3_memo[slot].code, a3_memo[slot].length);
+      simple_mtx_unlock(&a3_memo_lock);
+      return;
+   }
+   simple_mtx_unlock(&a3_memo_lock);
+
+   size_t at = out->size;
+   agx3_pack_instr(out, NULL, I, 0);
+   size_t length = out->size - at;
+
+   if (length > AGX3_MAX_BYTES)
+      return;
+
+   simple_mtx_lock(&a3_memo_lock);
+   a3_memo[slot].key = key;
+   a3_memo[slot].length = length;
+   memcpy(a3_memo[slot].code, (uint8_t *)out->data + at, length);
+   simple_mtx_unlock(&a3_memo_lock);
+}
+
 void
 agx3_emit_load(struct util_dynarray *out, unsigned slot, unsigned dst,
                unsigned base, unsigned index16, unsigned count)
@@ -3405,14 +3469,21 @@ agx3_emit_load(struct util_dynarray *out, unsigned slot, unsigned dst,
       .dest = &d,
       .src = srcs,
    };
-   agx3_pack_instr(out, NULL, &I, 0);
+
+   assert(slot < 8 && dst < 128 && base < 128 && index16 < (1 << 16) &&
+          count <= 4);
+   a3_memo_pack(out,
+                a3_memo_key(A3_MEMO_LOAD, slot | (dst << 3) | (base << 10) |
+                                             (index16 << 17) |
+                                             ((uint64_t)count << 33)),
+                &I);
 }
 
 void
 agx3_emit_wait(struct util_dynarray *out, unsigned slot)
 {
    agx_instr I = {.op = AGX_OPCODE_WAIT, .scoreboard = slot};
-   agx3_pack_instr(out, NULL, &I, 0);
+   a3_memo_pack(out, a3_memo_key(A3_MEMO_WAIT, slot), &I);
 }
 
 void
@@ -3424,21 +3495,24 @@ agx3_emit_uniform_store(struct util_dynarray *out, unsigned uniform,
       agx_immediate(2 * uniform),
    };
    agx_instr I = {.op = AGX_OPCODE_UNIFORM_STORE, .src = srcs};
-   agx3_pack_instr(out, NULL, &I, 0);
+
+   assert(uniform < (1 << 16) && src < 128);
+   a3_memo_pack(out, a3_memo_key(A3_MEMO_UNIFORM_STORE, src | (uniform << 7)),
+                &I);
 }
 
 void
 agx3_emit_stop(struct util_dynarray *out)
 {
    agx_instr I = {.op = AGX_OPCODE_STOP};
-   agx3_pack_instr(out, NULL, &I, 0);
+   a3_memo_pack(out, a3_memo_key(A3_MEMO_STOP, 0), &I);
 }
 
 void
 agx3_emit_signal_pix(struct util_dynarray *out, unsigned mask)
 {
    agx_instr I = {.op = AGX_OPCODE_SIGNAL_PIX, .writeout = mask};
-   agx3_pack_instr(out, NULL, &I, 0);
+   a3_memo_pack(out, a3_memo_key(A3_MEMO_SIGNAL_PIX, mask), &I);
 }
 
 /*
@@ -3520,8 +3594,12 @@ agx3_instr_length(const uint8_t *code, size_t size)
    for (unsigned i = 0; i < MIN2(size, AGX3_MAX_BYTES); i++)
       raw[i / 8] |= (uint64_t)code[i] << (8 * (i % 8));
 
-   for (unsigned i = 0; i < AGX3_NUM_INSTRS; i++) {
-      const struct agx3_pack_spec *spec = agx3_spec(i);
+   if (!size)
+      return 0;
+
+   for (unsigned k = agx3_byte0_start[code[0]];
+        k < agx3_byte0_start[code[0] + 1]; k++) {
+      const struct agx3_pack_spec *spec = agx3_spec(agx3_byte0_instrs[k]);
       unsigned length = spec->lengths[0];
 
       if (spec->has_length) {
