@@ -1387,6 +1387,28 @@ hk_image_plane_bind(struct hk_device *dev, struct hk_image_plane *plane,
    *offset_B += plane->layout.size_B;
 }
 
+/*
+ * G15 decodes a zeroed subtile mode as a compressed block, so a compressed
+ * image not yet written would read back garbage where an uncompressed one
+ * reads its memory. As Gallium at creation, mark every subtile uncompressed
+ * when the image is bound (Apple's memory is always mapped), but only in memory
+ * Honeykrisp allocated: imported memory holds its exporter's image, and an
+ * alias shares its contents with an image already bound.
+ */
+static void
+hk_image_plane_init_metadata(struct hk_device *dev,
+                             struct hk_image_plane *plane)
+{
+   const struct ail_layout *layout = &plane->layout;
+
+   if (dev->dev.params.gpu_generation < 15 || !layout->compressed)
+      return;
+
+   memset((uint8_t *)plane->map + layout->metadata_offset_B,
+          ail_subtile_uncompressed_mode(layout->format),
+          layout->compression_layer_stride_B * layout->depth_px);
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL
 hk_BindImageMemory2(VkDevice device, uint32_t bindInfoCount,
                     const VkBindImageMemoryInfo *pBindInfos)
@@ -1395,6 +1417,7 @@ hk_BindImageMemory2(VkDevice device, uint32_t bindInfoCount,
    for (uint32_t i = 0; i < bindInfoCount; ++i) {
       VK_FROM_HANDLE(hk_device_memory, mem, pBindInfos[i].memory);
       VK_FROM_HANDLE(hk_image, image, pBindInfos[i].image);
+      bool alias = image->vk.create_flags & VK_IMAGE_CREATE_ALIAS_BIT;
 
       /* Ignore this struct on Android, we cannot access swapchain structures
        * there. */
@@ -1406,10 +1429,14 @@ hk_BindImageMemory2(VkDevice device, uint32_t bindInfoCount,
          assert(swapchain_info && swapchain_info->swapchain != VK_NULL_HANDLE);
          mem = hk_device_memory_from_handle(wsi_common_get_memory(
             swapchain_info->swapchain, swapchain_info->imageIndex));
+
+         /* The swapchain's own image is bound to it already */
+         alias = true;
       }
 #endif
 
       assert(mem);
+      bool init_metadata = !alias && !mem->vk.import_handle_type;
       uint64_t offset_B = pBindInfos[i].memoryOffset;
       if (image->disjoint) {
          const VkBindImagePlaneMemoryInfo *plane_info = vk_find_struct_const(
@@ -1417,9 +1444,15 @@ hk_BindImageMemory2(VkDevice device, uint32_t bindInfoCount,
          uint8_t plane =
             hk_image_aspects_to_plane(image, plane_info->planeAspect);
          hk_image_plane_bind(dev, &image->planes[plane], mem, &offset_B);
+
+         if (init_metadata)
+            hk_image_plane_init_metadata(dev, &image->planes[plane]);
       } else {
          for (unsigned plane = 0; plane < image->plane_count; plane++) {
             hk_image_plane_bind(dev, &image->planes[plane], mem, &offset_B);
+
+            if (init_metadata)
+               hk_image_plane_init_metadata(dev, &image->planes[plane]);
          }
       }
 
