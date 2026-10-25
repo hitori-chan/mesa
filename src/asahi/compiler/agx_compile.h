@@ -124,6 +124,11 @@ struct agx_shader_info {
    bool has_preamble;
    unsigned preamble_offset, main_offset;
 
+   /* G15: the preamble's bytes before its stop, which the entry program
+    * copies (lib/agx_esl.c), 0 to find them there
+    */
+   unsigned preamble_size;
+
    /* G15: the preamble did not fit in the registers, so the shader is
     * compiled again without one (agx_compile_shader_nir)
     */
@@ -194,7 +199,7 @@ struct agx_shader_info {
 };
 
 struct agx_precompiled_kernel_info {
-   uint32_t preamble_offset, main_offset;
+   uint32_t preamble_offset, preamble_size, main_offset;
    uint32_t main_size, binary_size;
    struct agx_rodata rodata;
    uint16_t nr_gprs, nr_preamble_gprs;
@@ -217,6 +222,7 @@ agx_compact_kernel_info(struct agx_shader_info *info)
 
    return (struct agx_precompiled_kernel_info){
       .preamble_offset = info->preamble_offset,
+      .preamble_size = info->preamble_size,
       .main_offset = info->main_offset,
       .main_size = info->main_size,
       .binary_size = info->binary_size,
@@ -274,6 +280,7 @@ void agx3_emit_sample_loop_footer(struct util_dynarray *out,
                                   unsigned nr_samples, unsigned footer_offset,
                                   unsigned loop_begin);
 unsigned agx3_instr_length(const uint8_t *code, size_t size);
+int agx3_stop_offset(const uint8_t *code, size_t size);
 
 struct agx_shader_part {
    struct agx_shader_info info;

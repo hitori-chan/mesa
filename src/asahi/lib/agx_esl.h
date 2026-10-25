@@ -27,6 +27,11 @@ struct agx_esl_code {
    uint64_t va;
    const uint8_t *cpu;
    uint32_t size;
+
+   /* The preamble's offset and its bytes before the stop
+    * (agx_shader_info::preamble_size), 0 to find them
+    */
+   uint32_t preamble_offset, preamble_size;
    uint32_t main_size;
    uint32_t stack_size;
    uint32_t cr_count;
