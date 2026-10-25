@@ -240,20 +240,12 @@ asahi_fill_sync(struct drm_asahi_sync *sync, struct vk_sync *vk_sync,
    }
 }
 
-/* G15: the background and end-of-tile programs as {binding word, entry
- * program VA}. The binding words are demo15's (the background's
- * 0xFFFF800000000040, the end of tile's 0); their meaning is not traced. */
+/* G15: the background and end-of-tile programs (agx_cmd_render_g15) */
 static void
 asahi_fill_vdm_command_g15(struct hk_cs *cs, struct drm_asahi_cmd_render_g15 *g)
 {
-   const uint64_t bg_binding = 0xFFFF800000000040ull;
-
-   *g = (struct drm_asahi_cmd_render_g15){
-      .bg = {bg_binding, cs->cr.bg.main.usc},
-      .eot = {0, cs->cr.eot.main.usc},
-      .partial_bg = {bg_binding, cs->cr.bg.partial.usc},
-      .partial_eot = {0, cs->cr.eot.partial.usc},
-   };
+   *g = agx_cmd_render_g15(cs->cr.bg.main.usc, cs->cr.eot.main.usc,
+                           cs->cr.bg.partial.usc, cs->cr.eot.partial.usc);
 }
 
 union drm_asahi_cmd {
