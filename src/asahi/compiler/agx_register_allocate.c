@@ -1211,10 +1211,18 @@ agx_ra_assign_local(struct ra_ctx *rctx)
          continue;
       }
 
-      /* Search for regions of contiguous killed sources to early-kill. */
+      /* Search for regions of contiguous killed sources to early-kill. G15
+       * packs an iter at coordinates as one iter per channel, each reading the
+       * coordinates, so its destination must not take their register.
+       */
       rctx->early_killed = false;
 
-      if (I->nr_dests == 1 && !ra_low_only(rctx, I->dest[0])) {
+      bool iter_per_channel = I->op == AGX_OPCODE_ITER &&
+                              I->interpolation == AGX_INTERPOLATION_COORDS &&
+                              I->channels > 1;
+
+      if (I->nr_dests == 1 && !ra_low_only(rctx, I->dest[0]) &&
+          !iter_per_channel) {
          unsigned first_src = 0;
          unsigned end = 0;
          unsigned start = 0;
