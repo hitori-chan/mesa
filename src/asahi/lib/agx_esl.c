@@ -286,6 +286,10 @@ esl_preamble(struct util_dynarray *out, const struct agx_esl_code *code,
    return false;
 }
 
+/* Read once: the entry program is built for every draw */
+DEBUG_GET_ONCE_BOOL_OPTION(esl_preamble_last, "AGX_G15_PREAMBLE_LAST", false)
+DEBUG_GET_ONCE_BOOL_OPTION(esl_fs_notpr, "AGX_G15_FS_NOTPR", false)
+
 bool
 agx_esl_from_usc(struct util_dynarray *out, const uint8_t *usc,
                  uint64_t shader_base, const struct agx_esl_code *code,
@@ -398,7 +402,7 @@ agx_esl_from_usc(struct util_dynarray *out, const uint8_t *usc,
    /* The preamble runs before the tail, as G13's preshader runs before the
     * shader (AGX_G15_PREAMBLE_LAST=1: after it, where Metal branches to its
     * constant-calculation program). */
-   bool last = debug_get_bool_option("AGX_G15_PREAMBLE_LAST", false);
+   bool last = debug_get_option_esl_preamble_last();
 
    if (preamble_va && !last && !esl_preamble(out, code, preamble_va))
       goto no_preamble;
@@ -423,7 +427,7 @@ agx_esl_from_usc(struct util_dynarray *out, const uint8_t *usc,
       /* Apple's fragment programs have a specTPR after ldshdr */
       esl_speclm_imageblock(out, &tile);
       esl_ldshdr(out, main_va, code ? code->main_size : 0);
-      if (!getenv("AGX_G15_FS_NOTPR"))
+      if (!debug_get_option_esl_fs_notpr())
          esl_spectpr(out, code ? code->stack_size : 0,
                      code ? code->cr_count : 0);
       esl_pixrel(out, code ? code->pix_wait_mask : 0);
