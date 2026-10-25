@@ -272,7 +272,6 @@ static uint64_t
 hk_bg_eot_esl(struct hk_cmd_buffer *cmd, const uint8_t *usc,
               struct agx_bg_eot_shader *shader, enum agx_esl_stage stage)
 {
-   struct hk_device *dev = hk_cmd_buffer_device(cmd);
    uint8_t *map = agx_bo_map(shader->bo);
    struct agx_esl_code code = {
       .va = shader->ptr,
@@ -283,20 +282,7 @@ hk_bg_eot_esl(struct hk_cmd_buffer *cmd, const uint8_t *usc,
       .cr_count = shader->info.cr_count,
    };
 
-   struct util_dynarray esl;
-   util_dynarray_init(&esl, NULL);
-
-   uint64_t va = 0;
-   if (agx_esl_from_usc(&esl, usc, dev->dev.shader_base, &code, stage)) {
-      struct agx_ptr t = hk_pool_usc_alloc(cmd, esl.size, 64);
-      if (t.cpu) {
-         memcpy(t.cpu, esl.data, esl.size);
-         va = t.gpu;
-      }
-   }
-
-   util_dynarray_fini(&esl);
-   return va;
+   return hk_upload_esl_va(cmd, &code, stage, usc);
 }
 
 static struct hk_bg_eot
