@@ -3379,23 +3379,15 @@ agx3_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
  * Building blocks for the G15 entry program (lib/agx_esl.c), through the
  * same packer: registers and uniforms are 32-bit, numbered as rN/uN.
  */
-void
-agx3_emit_mov_imm(struct util_dynarray *out, unsigned reg, uint32_t imm)
-{
-   agx_instr I = {.op = AGX_OPCODE_MOV_IMM, .imm = imm};
-   agx_index dst = agx_register(2 * reg, AGX_SIZE_32);
-   I.dest = &dst;
-   agx3_pack_instr(out, NULL, &I, 0);
-}
 
 /* The drivers build an entry program for every pipeline they emit, and the
- * packer checks each instruction it packs, so the building blocks other than
- * mov_imm (whose immediate is a buffer address) keep their encodings by their
- * operands: direct-mapped, key 0 empty */
+ * packer checks each instruction it packs, so the building blocks keep their
+ * encodings by their operands: direct-mapped, key 0 empty */
 #define A3_MEMO_BITS 10
 
 enum a3_memo_tag {
-   A3_MEMO_LOAD = 1,
+   A3_MEMO_MOV_IMM = 1,
+   A3_MEMO_LOAD,
    A3_MEMO_WAIT,
    A3_MEMO_UNIFORM_STORE,
    A3_MEMO_STOP,
@@ -3451,6 +3443,29 @@ a3_memo_pack(struct util_dynarray *out, uint64_t key, const agx_instr *I)
    simple_mtx_unlock(&a3_memo_lock);
 }
 
+/* mov_imm's immediate is a plain operand: the memo keeps the encoding with 0,
+ * and the immediate is deposited into its fields */
+void
+agx3_emit_mov_imm(struct util_dynarray *out, unsigned reg, uint32_t imm)
+{
+   agx_instr I = {.op = AGX_OPCODE_MOV_IMM, .imm = 0};
+   agx_index dst = agx_register(2 * reg, AGX_SIZE_32);
+   I.dest = &dst;
+
+   size_t at = out->size;
+   assert(reg < 128);
+   a3_memo_pack(out, a3_memo_key(A3_MEMO_MOV_IMM, reg), &I);
+
+   const struct agx3_pack_spec *spec = agx3_spec(AGX3_MOV_IMM32);
+   uint8_t *code = (uint8_t *)out->data + at;
+   unsigned length = out->size - at;
+   uint64_t ops[A3_MAX_OPS];
+
+   agx3_unpack(code, spec, length, ops);
+   ops[MOV_IMM_IMM] = imm;
+   agx3_pack(code, spec, length, ops);
+}
+
 void
 agx3_emit_load(struct util_dynarray *out, unsigned slot, unsigned dst,
                unsigned base, unsigned index16, unsigned count)
@@ -3472,11 +3487,11 @@ agx3_emit_load(struct util_dynarray *out, unsigned slot, unsigned dst,
 
    assert(slot < 8 && dst < 128 && base < 128 && index16 < (1 << 16) &&
           count <= 4);
-   a3_memo_pack(out,
-                a3_memo_key(A3_MEMO_LOAD, slot | (dst << 3) | (base << 10) |
-                                             (index16 << 17) |
-                                             ((uint64_t)count << 33)),
-                &I);
+   a3_memo_pack(
+      out,
+      a3_memo_key(A3_MEMO_LOAD, slot | (dst << 3) | (base << 10) |
+                                   (index16 << 17) | ((uint64_t)count << 33)),
+      &I);
 }
 
 void
@@ -3583,6 +3598,26 @@ agx3_emit_sample_loop_footer(struct util_dynarray *out, unsigned nr_samples,
       agx_instr I = {.op = AGX_OPCODE_POP_EXEC, .nest = 1};
       agx3_pack_instr(out, NULL, &I, 0);
    }
+}
+
+/* The offset of the first stop in the size bytes of instructions at code, -1
+ * if none comes before the end or an instruction that does not decode */
+int
+agx3_stop_offset(const uint8_t *code, size_t size)
+{
+   for (size_t at = 0; at + 4 <= size;) {
+      const uint8_t *p = code + at;
+      if (p[0] == 0x0e && p[1] == 0 && p[2] == 0 && p[3] == 0)
+         return at;
+
+      unsigned len = agx3_instr_length(p, size - at);
+      if (!len)
+         return -1;
+
+      at += len;
+   }
+
+   return -1;
 }
 
 /* The length of the AGX3 instruction in the size bytes at code, 0 if none
