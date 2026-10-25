@@ -78,7 +78,8 @@ static const struct debug_named_value agx_debug_options[] = {
    {"nomerge",   AGX_DBG_NOMERGE,  "Disable control stream merging"},
    {"linear",    AGX_DBG_LINEAR,   "Prefer linear layouts where allowed"},
    {"compresszs",AGX_DBG_COMPRESSZS,"Also compress depth and stencil on G15"},
-   {"ix",        AGX_DBG_IX,       "Offer the interchange modifier for scanout on G15 (GL)"},
+   {"noix",      AGX_DBG_NOIX,     "Do not offer the interchange modifier for scanout on G15 (GL)"},
+   {"ix",        AGX_DBG_IX,       "Offer interchange for 10-bit RGB too (GL)"},
    {"bodumpverbose", AGX_DBG_BODUMPVERBOSE,   "Include extra info with dumps"},
    DEBUG_NAMED_VALUE_END
 };
