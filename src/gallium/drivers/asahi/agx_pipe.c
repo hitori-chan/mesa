@@ -414,17 +414,15 @@ agx_compression_allowed(const struct agx_resource *pres)
       return false;
    }
 
-   /* G15 compresses only when asked: colour images with
-    * ASAHI_MESA_DEBUG=compress, depth and stencil too with compresszs. Apple's
-    * depth and stencil attachments are always compressed, the render job's
-    * fields in G13's layout (draws.md); Mesa's have not run compressed.
+   /* G15 compresses colour images, and depth and stencil only with
+    * ASAHI_MESA_DEBUG=compresszs: Apple's depth and stencil attachments are
+    * always compressed, the render job's fields in G13's layout (draws.md), but
+    * Mesa's have not run compressed.
     */
-   uint32_t debug = agx_device(pres->base.screen)->debug;
    if (agx_device(pres->base.screen)->params.gpu_generation >= 15 &&
-       (!(debug & AGX_DBG_COMPRESS) ||
-        (util_format_is_depth_or_stencil(pres->base.format) &&
-         !(debug & AGX_DBG_COMPRESSZS)))) {
-      rsrc_debug(pres, "No compression: G15\n");
+       util_format_is_depth_or_stencil(pres->base.format) &&
+       !(agx_device(pres->base.screen)->debug & AGX_DBG_COMPRESSZS)) {
+      rsrc_debug(pres, "No compression: G15 depth/stencil\n");
       return false;
    }
 
@@ -452,13 +450,13 @@ agx_compression_allowed(const struct agx_resource *pres)
 
 /*
  * Apple Interchange, which the display controller scans out compressed: G15
- * only, with ASAHI_MESA_DEBUG=compress,ix, for 32-bit RGB formats.
+ * only, with ASAHI_MESA_DEBUG=ix, for 32-bit RGB formats.
  */
 static bool
 agx_interchange_offered(const struct agx_device *dev, enum pipe_format format)
 {
    if (dev->params.gpu_generation < 15 || !(dev->debug & AGX_DBG_IX) ||
-       !(dev->debug & AGX_DBG_COMPRESS))
+       (dev->debug & AGX_DBG_NOCOMPRESS))
       return false;
 
    switch (format) {
