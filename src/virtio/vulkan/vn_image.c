@@ -591,9 +591,10 @@ vn_CreateImage(VkDevice device,
 #ifdef VK_USE_PLATFORM_ANDROID_KHR
       result = vn_image_create_deferred(dev, pCreateInfo, alloc, &img);
 #else
+      VkImage img_handle = VK_NULL_HANDLE;
       result = wsi_common_create_swapchain_image(
-         &dev->physical_device->wsi_device, pCreateInfo,
-         (VkImage *)&img);
+         &dev->physical_device->wsi_device, pCreateInfo, &img_handle);
+      img = vn_image_from_handle(img_handle);
 #endif
    } else {
       struct vn_image_create_info local_info;
@@ -671,6 +672,18 @@ vn_GetImageSparseMemoryRequirements2(
       pSparseMemoryRequirements);
 }
 
+static void
+vn_image_fill_bind_memory_status(uint32_t count,
+                                 const VkBindImageMemoryInfo *infos)
+{
+   for (uint32_t i = 0; i < count; i++) {
+      const VkBindMemoryStatus *bind_status =
+         vk_find_struct_const(infos[i].pNext, BIND_MEMORY_STATUS);
+      if (bind_status)
+         *bind_status->pResult = VK_SUCCESS;
+   }
+}
+
 static VkResult
 vn_image_bind_wsi_memory(struct vn_device *dev,
                          uint32_t count,
@@ -708,6 +721,8 @@ vn_image_bind_wsi_memory(struct vn_device *dev,
 
    STACK_ARRAY_FINISH(local_infos);
 
+   vn_image_fill_bind_memory_status(count, infos);
+
    return VK_SUCCESS;
 }
 
@@ -726,12 +741,7 @@ vn_BindImageMemory2(VkDevice device,
    vn_async_vkBindImageMemory2(dev->primary_ring, device, bindInfoCount,
                                pBindInfos);
 
-   for (uint32_t i = 0; i < bindInfoCount; i++) {
-      const VkBindMemoryStatus *bind_status =
-         vk_find_struct((void *)pBindInfos[i].pNext, BIND_MEMORY_STATUS);
-      if (bind_status)
-         *bind_status->pResult = VK_SUCCESS;
-   }
+   vn_image_fill_bind_memory_status(bindInfoCount, pBindInfos);
 
    return VK_SUCCESS;
 }

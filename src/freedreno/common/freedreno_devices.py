@@ -78,7 +78,7 @@ add_gpus([
         gmem_align_w = 64,  gmem_align_h = 32,
         tile_align_w = 64,  tile_align_h = 32,
         tile_max_w   = 1024, # max_bitfield_val(7, 0, 5)
-        tile_max_h   = max_bitfield_val(16, 9, 5),
+        tile_max_h   = 1024, # bins of 2048 rows and up render wrong with hw binning
         num_vsc_pipes = 16,
         cs_shared_mem_size = 32 * 1024,
         num_sp_cores = 1,
@@ -97,7 +97,7 @@ add_gpus([
         gmem_align_w = 64,  gmem_align_h = 32,
         tile_align_w = 64,  tile_align_h = 32,
         tile_max_w   = 1024, # max_bitfield_val(7, 0, 5)
-        tile_max_h   = max_bitfield_val(16, 9, 5),
+        tile_max_h   = 1024, # bins of 2048 rows and up render wrong with hw binning
         num_vsc_pipes = 16,
         cs_shared_mem_size = 32 * 1024,
         num_sp_cores = 2,
@@ -116,7 +116,7 @@ add_gpus([
         gmem_align_w = 64,  gmem_align_h = 32,
         tile_align_w = 64,  tile_align_h = 32,
         tile_max_w   = 1024, # max_bitfield_val(7, 0, 5)
-        tile_max_h   = max_bitfield_val(16, 9, 5),
+        tile_max_h   = 1024, # bins of 2048 rows and up render wrong with hw binning
         num_vsc_pipes = 16,
         cs_shared_mem_size = 32 * 1024,
         num_sp_cores = 4,
@@ -171,6 +171,7 @@ a6xx_gen1_low = GPUProps(
         instr_cache_size = 64,
         indirect_draw_wfm_quirk = True,
         draw_auto_stale_stride_quirk = True,
+        predicated_binning_quirk = True,
         depth_bounds_require_depth_test_quirk = True,
 
         has_gmem_fast_clear = False,
@@ -191,6 +192,7 @@ a6xx_gen1 = GPUProps(
         instr_cache_size = 64,
         indirect_draw_wfm_quirk = True,
         draw_auto_stale_stride_quirk = True,
+        predicated_binning_quirk = True,
         depth_bounds_require_depth_test_quirk = True,
     )
 
@@ -201,6 +203,7 @@ a6xx_gen2 = GPUProps(
         has_z24uint_s8uint = True,
         indirect_draw_wfm_quirk = True,
         draw_auto_stale_stride_quirk = True,
+        predicated_binning_quirk = True,
         depth_bounds_require_depth_test_quirk = True, # TODO: check if true
         has_dp2acc = False, # TODO: check if true
         has_8bpp_ubwc = False,
@@ -377,7 +380,8 @@ add_gpus([
         GPUId(620),
     ], A6xxGPUInfo(
         CHIP.A6XX,
-        [a6xx_base, a6xx_gen1, GPUProps(draw_auto_stale_stride_quirk = False)],
+        [a6xx_base, a6xx_gen1, GPUProps(draw_auto_stale_stride_quirk = False,
+                                         predicated_binning_quirk = False)],
         num_ccu = 1,
         tile_align_w = 32,
         tile_align_h = 16,
@@ -552,8 +556,8 @@ add_gpus([
             [A6XXRegs.REG_A6XX_PC_MODE_CNTL, 0x1f],
             [A6XXRegs.REG_A6XX_PC_POWER_CNTL, 2],
             [A6XXRegs.REG_A6XX_VFD_POWER_CNTL, 2],
-            # this seems to be a chicken bit that fixes cubic filtering:
-            [A6XXRegs.REG_A6XX_TPL1_DBG_ECO_CNTL, 0x00108000],
+            # bit 24 seems to be a chicken bit that fixes cubic filtering:
+            [A6XXRegs.REG_A6XX_TPL1_DBG_ECO_CNTL, 0x01008000],
             [A6XXRegs.REG_A6XX_GRAS_DBG_ECO_CNTL, 0],
             [A6XXRegs.REG_A6XX_SP_CHICKEN_BITS, 0x00001400],
             [A6XXRegs.REG_A6XX_SP_DBG_ECO_CNTL, 0x01000000],
@@ -716,6 +720,7 @@ add_gpus([
             storage_16bit = True,
             is_a702 = True,
             draw_auto_stale_stride_quirk = False,
+            predicated_binning_quirk = False,
             )
         ],
         num_ccu = 1,

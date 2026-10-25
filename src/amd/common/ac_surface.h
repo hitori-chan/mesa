@@ -80,6 +80,9 @@ enum radeon_micro_mode
 #define RADEON_SURF_ALIASED               (1ull << 42)
 #define RADEON_SURF_REPLAYABLE            (1ull << 43)
 #define RADEON_SURF_VIEW_3D_AS_2D_ARRAY   (1ull << 44)
+/* This must be set when CMASK_ADDR_TYPE=2, not whether TC-compatible CMASK is actually enabled. */
+#define RADEON_SURF_TC_COMPATIBLE_CMASK   (1ull << 45)
+#define RADEON_SURF_REQUIRE_CONTIGUOUS_CMASK_SLICES (1ull << 46)
 
 struct legacy_surf_level {
    uint32_t offset_256B;   /* divided by 256, the hw can only do 40-bit addresses */
@@ -99,6 +102,7 @@ struct legacy_surf_fmask {
    unsigned slice_tile_max; /* max 4M */
    uint8_t tiling_index;    /* max 31 */
    uint8_t bankh;           /* max 8 */
+   uint8_t num_banks;
    uint16_t pitch_in_pixels;
 };
 
@@ -390,6 +394,12 @@ struct radeon_surf {
 
    uint32_t cmask_size;
    uint32_t cmask_slice_size;
+   /* How many CMASK slices form a contiguous range, i.e. the group can be cleared as a whole,
+    * but not individual slices within the group because CMASK elements from different slices
+    * within a group can be interleaved. The value of 1 means that each slice is contiguous.
+    * (UINT16_MAX means that all slices are non-contiguous)
+    */
+   uint16_t cmask_slices_per_group;
    uint16_t cmask_pitch; /* GFX9+ */
    uint16_t cmask_height; /* GFX9+ */
 

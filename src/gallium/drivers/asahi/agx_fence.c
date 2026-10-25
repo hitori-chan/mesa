@@ -71,6 +71,28 @@ agx_fence_get_fd(struct pipe_screen *screen, struct pipe_fence_handle *f)
 }
 
 struct pipe_fence_handle *
+agx_semaphore_create(struct pipe_screen *pscreen)
+{
+   struct agx_device *dev = agx_device(pscreen);
+   int ret;
+
+   struct pipe_fence_handle *f = calloc(1, sizeof(*f));
+   if (!f)
+      return NULL;
+
+   ret = drmSyncobjCreate(dev->fd, 0, &f->syncobj);
+   if (ret) {
+      agx_msg("create syncobj failed\n");
+      free(f);
+      return NULL;
+   }
+
+   pipe_reference_init(&f->reference, 1);
+
+   return f;
+}
+
+struct pipe_fence_handle *
 agx_fence_from_fd(struct agx_context *ctx, int fd, enum pipe_fd_type type)
 {
    struct agx_device *dev = agx_device(ctx->base.screen);
@@ -99,6 +121,20 @@ agx_fence_from_fd(struct agx_context *ctx, int fd, enum pipe_fd_type type)
          agx_msg("import syncobj FD failed\n");
          goto err_free_fence;
       }
+   }
+
+   /* For imported fences we have to wait until they materialize */
+   struct drm_syncobj_timeline_wait wait_args = {
+      .handles = (uintptr_t) &f->syncobj,
+      .timeout_nsec = INT64_MAX,
+      .count_handles = 1,
+      .flags = DRM_SYNCOBJ_WAIT_FLAGS_WAIT_AVAILABLE,
+   };
+
+   ret = drmIoctl(dev->fd, DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT, &wait_args);
+   if (ret) {
+         agx_msg("agx_fence_from_fd failed\n");
+         goto err_free_fence;
    }
 
    pipe_reference_init(&f->reference, 1);
@@ -159,5 +195,27 @@ agx_fence_server_sync(struct pipe_context *pctx, struct pipe_fence_handle *f,
    assert(!ret);
 
    sync_accumulate("asahi", &ctx->in_sync_fd, fd);
+   close(fd);
+}
+
+void
+agx_fence_server_signal(struct pipe_context *pctx, struct pipe_fence_handle *f,
+                        uint64_t value)
+{
+   struct agx_device *dev = agx_device(pctx->screen);
+   struct agx_context *ctx = agx_context(pctx);
+   int fd = -1, ret;
+   assert(!value);
+
+   agx_flush_all(ctx, "Gallium fence_server_signal");
+
+   ret = drmSyncobjExportSyncFile(dev->fd, ctx->syncobj, &fd);
+   assert(!ret);
+
+   ret = drmSyncobjImportSyncFile(dev->fd, f->syncobj, fd);
+   if (ret) {
+      agx_msg("import syncfile failed\n");
+   }
+
    close(fd);
 }

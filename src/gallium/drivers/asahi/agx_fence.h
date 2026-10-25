@@ -37,3 +37,8 @@ void agx_create_fence_fd(struct pipe_context *pctx,
 
 void agx_fence_server_sync(struct pipe_context *pctx,
                            struct pipe_fence_handle *f, uint64_t value);
+
+void agx_fence_server_signal(struct pipe_context *pctx,
+                             struct pipe_fence_handle *f, uint64_t value);
+
+struct pipe_fence_handle *agx_semaphore_create(struct pipe_screen *pscreen);
