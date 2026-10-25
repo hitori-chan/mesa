@@ -660,6 +660,18 @@ agx_resource_create_with_modifiers(struct pipe_screen *screen,
       return NULL;
    }
 
+   /* G15 decodes a zeroed subtile mode as a compressed block, so an image not
+    * yet written would read back garbage where an uncompressed one reads its
+    * zeroed BO. Mark every subtile uncompressed.
+    */
+   if (dev->params.gpu_generation >= 15 && nresource->layout.compressed) {
+      memset((uint8_t *)agx_bo_map(nresource->bo) +
+                nresource->layout.metadata_offset_B,
+             ail_subtile_uncompressed_mode(nresource->layout.format),
+             nresource->layout.compression_layer_stride_B *
+                nresource->layout.depth_px);
+   }
+
    agx_resource_debug(nresource, "New: ");
    return &nresource->base;
 }
