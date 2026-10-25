@@ -658,17 +658,8 @@ agx_resource_create_with_modifiers(struct pipe_screen *screen,
       return NULL;
    }
 
-   /* G15 decodes a zeroed subtile mode as a compressed block, so an image not
-    * yet written would read back garbage where an uncompressed one reads its
-    * zeroed BO. Mark every subtile uncompressed.
-    */
-   if (dev->params.gpu_generation >= 15 && nresource->layout.compressed) {
-      memset((uint8_t *)agx_bo_map(nresource->bo) +
-                nresource->layout.metadata_offset_B,
-             ail_subtile_uncompressed_mode(nresource->layout.format),
-             nresource->layout.compression_layer_stride_B *
-                nresource->layout.depth_px);
-   }
+   if (dev->params.gpu_generation >= 15 && nresource->layout.compressed)
+      ail_init_metadata_g15(&nresource->layout, agx_bo_map(nresource->bo));
 
    agx_resource_debug(nresource, "New: ");
    return &nresource->base;
@@ -1489,19 +1480,10 @@ agx_cmdbuf(struct agx_device *dev, struct drm_asahi_cmd_render *c,
    c->partial_eot.usc = pipeline_store.usc | 4;
 
    /* G15 takes each program as the binding word and the entry program's VA,
-    * and ignores the fields above. The binding words are demo15's (the
-    * background's 0xFFFF800000000040, the end of tile's 0); their meaning is
-    * not traced.
-    */
+    * and ignores the fields above */
    if (g15) {
-      const uint64_t bg_binding = 0xFFFF800000000040ull;
-
-      *g15 = (struct drm_asahi_cmd_render_g15){
-         .bg = {bg_binding, pipeline_clear.usc},
-         .eot = {0, pipeline_store.usc},
-         .partial_bg = {bg_binding, pipeline_load.usc},
-         .partial_eot = {0, pipeline_store.usc},
-      };
+      *g15 = agx_cmd_render_g15(pipeline_clear.usc, pipeline_store.usc,
+                                pipeline_load.usc, pipeline_store.usc);
    }
 
    agx_tilebuffer_set_drm_cmd(c, tib);
