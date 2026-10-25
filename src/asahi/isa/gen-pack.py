@@ -650,9 +650,27 @@ for k, instr in isa.instrs.items():
         + '   },\n')
     entries.append(entry)
 
+# The instructions whose fixed bits allow each first byte, in table order:
+# agx3_instr_length tries only these
+assert len(isa.instrs) <= 256
+byte0 = [[i for i, instr in enumerate(isa.instrs.values())
+          if b & instr.exact.mask & 0xff == instr.exact.value & 0xff]
+         for b in range(256)]
+byte0_start = [0]
+for ins in byte0:
+    byte0_start.append(byte0_start[-1] + len(ins))
+
 footer = f'''
 static const struct agx3_pack_spec agx3_specs[AGX3_NUM_INSTRS] = {{
 {"".join(entries)}}};
+
+static const uint16_t agx3_byte0_start[257] = {{
+   {", ".join(str(x) for x in byte0_start)}
+}};
+
+static const uint8_t agx3_byte0_instrs[] = {{
+   {", ".join(str(i) for ins in byte0 for i in ins)}
+}};
 
 static inline const struct agx3_pack_spec *
 agx3_spec(unsigned instr)
