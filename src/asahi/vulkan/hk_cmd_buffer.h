@@ -11,6 +11,7 @@
 
 #include "util/list.h"
 #include "agx_abi.h"
+#include "agx_esl.h"
 #include "agx_helpers.h"
 #include "agx_linker.h"
 #include "agx_pack.h"
@@ -846,6 +847,10 @@ void hk_reserve_scratch(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
 
 uint32_t hk_upload_usc_words(struct hk_cmd_buffer *cmd, struct hk_shader *s,
                              struct hk_linked_shader *linked);
+
+uint64_t hk_upload_esl_va(struct hk_cmd_buffer *cmd,
+                          const struct agx_esl_code *code,
+                          enum agx_esl_stage stage, const uint8_t *usc);
 
 #define HK_SPILL_TABLE_G15_B ((2 * HK_MAX_RTS + 1) * 32)
 void hk_spilled_rt_descs_g15(struct hk_cmd_buffer *cmd, uint8_t *dst);
