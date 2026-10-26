@@ -849,11 +849,11 @@ cube_min_lod_to_txd(nir_builder *b, nir_tex_instr *tex, UNUSED void *data)
  * G15 has no image load (libLLVM 32023 knows none): a bindless image load
  * becomes a fetch of its texture descriptor with the txf sampler, the
  * coordinates as agx_nir_lower_texture leaves them (a 1D or buffer image as
- * 2D, a cube as a 2D array). The sampler may be NULL, for the caller to add.
+ * 2D, a cube as a 2D array).
  */
-nir_tex_instr *
-agx_nir_image_load_to_txf_g15(nir_builder *b, nir_intrinsic_instr *intr,
-                              nir_def *sampler)
+static void
+image_load_to_txf_g15(nir_builder *b, nir_intrinsic_instr *intr,
+                      nir_def *sampler)
 {
    enum glsl_sampler_dim dim = nir_intrinsic_image_dim(intr);
    bool array = nir_intrinsic_image_array(intr);
@@ -868,7 +868,7 @@ agx_nir_image_load_to_txf_g15(nir_builder *b, nir_intrinsic_instr *intr,
    assert(dim == GLSL_SAMPLER_DIM_2D || dim == GLSL_SAMPLER_DIM_3D);
    unsigned n = glsl_get_sampler_dim_coordinate_components(dim) + array;
 
-   nir_tex_instr *tex = nir_tex_instr_create(b->shader, sampler ? 4 : 3);
+   nir_tex_instr *tex = nir_tex_instr_create(b->shader, 4);
    tex->op = nir_texop_txf;
    tex->sampler_dim = dim;
    tex->is_array = array;
@@ -879,14 +879,31 @@ agx_nir_image_load_to_txf_g15(nir_builder *b, nir_intrinsic_instr *intr,
    tex->src[1] = nir_tex_src_for_ssa(nir_tex_src_lod, intr->src[3].ssa);
    tex->src[2] =
       nir_tex_src_for_ssa(nir_tex_src_texture_handle, intr->src[0].ssa);
-   if (sampler)
-      tex->src[3] = nir_tex_src_for_ssa(nir_tex_src_sampler_handle, sampler);
+   tex->src[3] = nir_tex_src_for_ssa(nir_tex_src_sampler_handle, sampler);
 
    nir_def_init(&tex->instr, &tex->def, 4, intr->def.bit_size);
    nir_builder_instr_insert(b, &tex->instr);
    nir_def_replace(&intr->def,
                    nir_trim_vector(b, &tex->def, intr->def.num_components));
-   return tex;
+}
+
+/*
+ * G15 reads an image with the txf sampler: in the LOD's place for a
+ * multisampled image, in the sample index's for a load that must stay in order
+ * with the image's writes (sparse, or one that may not be reordered), where
+ * agx_emit_image_load reads it; another load becomes a txf.
+ */
+void
+agx_nir_lower_image_load_g15(nir_builder *b, nir_intrinsic_instr *intr,
+                             nir_def *sampler)
+{
+   if (nir_intrinsic_image_dim(intr) == GLSL_SAMPLER_DIM_MS)
+      nir_src_rewrite(&intr->src[3], sampler);
+   else if (intr->intrinsic == nir_intrinsic_bindless_image_sparse_load ||
+            !(nir_intrinsic_access(intr) & ACCESS_CAN_REORDER))
+      nir_src_rewrite(&intr->src[2], sampler);
+   else
+      image_load_to_txf_g15(b, intr, sampler);
 }
 
 bool

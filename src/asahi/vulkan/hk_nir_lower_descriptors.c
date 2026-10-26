@@ -1048,10 +1048,8 @@ sampler_after_texture_g15(nir_builder *b, nir_def *handle)
 }
 
 /*
- * G15 has no image load: as Gallium's lower_image_load_g15, only a load that
- * may be reordered and is not sparse becomes a txf of its texture descriptor
- * (agx_nir_image_load_to_txf_g15), another stays an intrinsic, the txf sampler
- * in the sample index's place, or the LOD's for a multisampled image. Fetches
+ * G15 has no image load: an image load takes the txf sampler in the entry
+ * after its texture (agx_nir_lower_image_load_g15). Fetches
  * agx_nir_lower_texture took the sampler from (a buffer texture's) get the one
  * after the texture again.
  */
@@ -1088,17 +1086,7 @@ lower_image_load_g15(nir_builder *b, nir_instr *instr, UNUSED void *data)
    if (!sampler)
       return false;
 
-   if (nir_intrinsic_image_dim(intr) == GLSL_SAMPLER_DIM_MS) {
-      nir_src_rewrite(&intr->src[3], sampler);
-      return true;
-   }
-
-   if (sparse || !(nir_intrinsic_access(intr) & ACCESS_CAN_REORDER)) {
-      nir_src_rewrite(&intr->src[2], sampler);
-      return true;
-   }
-
-   agx_nir_image_load_to_txf_g15(b, intr, sampler);
+   agx_nir_lower_image_load_g15(b, intr, sampler);
    return true;
 }
 
