@@ -101,16 +101,12 @@ lower_tex_crawl(nir_builder *b, nir_instr *instr, void *data)
          nir_imm_bool(b, tex->sampler_dim == GLSL_SAMPLER_DIM_CUBE),
          nir_imm_bool(b, tex->is_array),
       };
-      res = g15 ? libagx_txs_g15(b, ptr, lod, args[0], args[1], args[2],
-                                 args[3], args[4], args[5])
-                : libagx_txs(b, ptr, lod, args[0], args[1], args[2], args[3],
-                             args[4], args[5]);
+      res = libagx_txs(b, ptr, lod, args[0], args[1], args[2], args[3], args[4],
+                       args[5], nir_imm_bool(b, g15));
    } else if (tex->op == nir_texop_query_levels) {
-      res = g15 ? libagx_texture_levels_g15(b, ptr)
-                : libagx_texture_levels(b, ptr);
+      res = libagx_texture_levels(b, ptr, nir_imm_bool(b, g15));
    } else {
-      res = g15 ? libagx_texture_samples_g15(b, ptr)
-                : libagx_texture_samples(b, ptr);
+      res = libagx_texture_samples(b, ptr, nir_imm_bool(b, g15));
    }
 
    nir_def_rewrite_uses(&tex->def, nir_trim_vector(b, res, nr_comps));
@@ -454,23 +450,15 @@ image_texel_address(nir_builder *b, nir_intrinsic_instr *intr,
 
    if (dim == GLSL_SAMPLER_DIM_BUF && return_index) {
       return nir_channel(b, coord, 0);
-   } else if (dim == GLSL_SAMPLER_DIM_BUF && g15) {
-      return libagx_buffer_texel_address_g15(b, desc_address, coord,
-                                             blocksize_B);
    } else if (dim == GLSL_SAMPLER_DIM_BUF) {
-      return libagx_buffer_texel_address(b, desc_address, coord, blocksize_B);
-   } else if (g15) {
-      return libagx_image_texel_address_g15(
-         b, desc_address, coord, nir_u2u32(b, intr->src[2].ssa), blocksize_B,
-         nir_imm_bool(b, dim == GLSL_SAMPLER_DIM_1D),
-         nir_imm_bool(b, dim == GLSL_SAMPLER_DIM_MS), nir_imm_bool(b, layered),
-         nir_imm_bool(b, return_index));
+      return libagx_buffer_texel_address(b, desc_address, coord, blocksize_B,
+                                         nir_imm_bool(b, g15));
    } else {
       return libagx_image_texel_address(
          b, desc_address, coord, nir_u2u32(b, intr->src[2].ssa), blocksize_B,
          nir_imm_bool(b, dim == GLSL_SAMPLER_DIM_1D),
          nir_imm_bool(b, dim == GLSL_SAMPLER_DIM_MS), nir_imm_bool(b, layered),
-         nir_imm_bool(b, return_index));
+         nir_imm_bool(b, return_index), nir_imm_bool(b, g15));
    }
 }
 
@@ -923,7 +911,7 @@ agx_nir_lower_cube_g15(nir_shader *s)
    return progress;
 }
 
-/* g15: image atomics crawl G15's PBE (libagx_image_texel_address_g15);
+/* g15: image atomics crawl G15's PBE (libagx_image_texel_address);
  * g15_queries: size, level and sample queries read G15's texture descriptor
  */
 static bool
