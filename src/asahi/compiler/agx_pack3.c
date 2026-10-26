@@ -921,6 +921,17 @@ enum {
    TEX_MODE = 15,
    /* a gather's component sits where the others' mask does */
    TEX_COMPONENT = TEX_MASK,
+   SPECLM_SAMPLES = 0,
+   SPECLM_STRIDE = 1,
+   SPECLM_SHAPE = 2,
+   SPECLM_IMAGEBLOCK = 3,
+   SPECLM_THREADGROUP = 4,
+   SPECLM_SIZE = 5,
+   LDSHDR_VA = 0,
+   LDSHDR_SIZE = 1,
+   SPECTPR_CR = 0,
+   SPECTPR_STACK = 1,
+   SPECTPR_STACK2 = 2,
 };
 
 /* An ALU instruction: the destination, the sources in IR order at the
@@ -3528,6 +3539,62 @@ agx3_emit_signal_pix(struct util_dynarray *out, unsigned mask)
 {
    agx_instr I = {.op = AGX_OPCODE_SIGNAL_PIX, .writeout = mask};
    a3_memo_pack(out, a3_memo_key(A3_MEMO_SIGNAL_PIX, mask), &I);
+}
+
+/* The entry program's setup instructions, which no IR instruction packs:
+ * their operands straight into AGX3.xml's fields */
+static void
+a3_emit_ops(struct util_dynarray *out, enum agx3_instr instr,
+            const uint64_t *ops)
+{
+   const struct agx3_pack_spec *spec = agx3_spec(instr);
+   uint8_t *code = util_dynarray_grow(out, uint8_t, spec->lengths[0]);
+
+   assert(spec->nlengths == 1);
+   agx3_pack(code, spec, spec->lengths[0], ops);
+}
+
+void
+agx3_emit_speclm(struct util_dynarray *out, unsigned samples, unsigned stride,
+                 unsigned shape, bool imageblock, unsigned threadgroup_64B)
+{
+   uint64_t ops[A3_MAX_OPS] = {
+      [SPECLM_SAMPLES] = samples,
+      [SPECLM_STRIDE] = stride,
+      [SPECLM_SHAPE] = shape,
+      [SPECLM_IMAGEBLOCK] = imageblock,
+      [SPECLM_THREADGROUP] = threadgroup_64B != 0,
+      [SPECLM_SIZE] = threadgroup_64B,
+   };
+
+   assert(samples < 4 && stride < 32 && shape < 256 &&
+          threadgroup_64B < (1 << 10));
+   a3_emit_ops(out, AGX3_SPECLM, ops);
+}
+
+void
+agx3_emit_ldshdr(struct util_dynarray *out, uint64_t va, unsigned size_class)
+{
+   uint64_t ops[A3_MAX_OPS] = {
+      [LDSHDR_VA] = va >> 6,
+      [LDSHDR_SIZE] = size_class,
+   };
+
+   assert((va & 63) == 0 && va < BITFIELD64_BIT(48) && size_class < 4);
+   a3_emit_ops(out, AGX3_LDSHDR, ops);
+}
+
+void
+agx3_emit_spectpr(struct util_dynarray *out, unsigned crs, unsigned stack_words)
+{
+   uint64_t ops[A3_MAX_OPS] = {
+      [SPECTPR_CR] = crs,
+      [SPECTPR_STACK] = stack_words,
+      [SPECTPR_STACK2] = stack_words,
+   };
+
+   assert(crs < (1 << 11) && stack_words < (1 << 16));
+   a3_emit_ops(out, AGX3_SPECTPR, ops);
 }
 
 /*
