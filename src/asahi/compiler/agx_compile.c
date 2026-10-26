@@ -1431,6 +1431,39 @@ lower_tex_offset_g15(nir_builder *b, nir_tex_instr *tex, void *data)
 }
 
 /*
+ * G15: a texture's size at its view's first level, in n dimensions, decoded
+ * from its 32 B descriptor (width at bit 28, height at 42, depth at 110, the
+ * first level at 172), and the descriptor's words lower_tex_lod_g15 reads too
+ */
+struct g15_tex_size {
+   nir_def *desc, *w1, *w3, *w5, *first, *size;
+};
+
+static struct g15_tex_size
+g15_tex_size(nir_builder *b, nir_def *handle, unsigned n)
+{
+   struct g15_tex_size t;
+   nir_def *addr = nir_load_from_texture_handle_agx(b, handle);
+   t.desc = nir_load_global_constant(b, 4, 32, addr);
+   nir_def *w0 = nir_channel(b, t.desc, 0);
+   t.w1 = nir_channel(b, t.desc, 1);
+   t.w3 = nir_channel(b, t.desc, 3);
+   t.w5 = nir_load_global_constant(b, 1, 32, nir_iadd_imm(b, addr, 20));
+
+   nir_def *wh_lo = nir_ushr_imm(b, w0, 28);
+   nir_def *width =
+      nir_ior(b, wh_lo, nir_ishl_imm(b, nir_iand_imm(b, t.w1, 0x3ff), 4));
+   nir_def *height = nir_ubitfield_extract_imm(b, t.w1, 10, 14);
+   nir_def *depth = nir_ubitfield_extract_imm(b, t.w3, 14, 14);
+   nir_def *size = nir_vec3(b, width, height, depth);
+   size = nir_iadd_imm(b, nir_trim_vector(b, size, n), 1);
+
+   t.first = nir_ubitfield_extract_imm(b, t.w5, 12, 4);
+   t.size = nir_u2f32(b, nir_umax_imm(b, nir_ushr(b, size, t.first), 1));
+   return t;
+}
+
+/*
  * G15: a LOD clamp (a min LOD: Vulkan's MinLod operand, GL's textureClampARB)
  * has no known form (smp.md: the min-LOD kind f140 is not run). Sample with
  * gradients instead: the given ones, or an implicit LOD's coordinate
@@ -1479,21 +1512,7 @@ lower_tex_min_lod_g15(nir_builder *b, nir_tex_instr *tex, void *data)
    dy = nir_f2f32(b, nir_trim_vector(b, dy, n));
 
    int ti2 = nir_tex_instr_src_index(tex, nir_tex_src_texture_handle);
-   nir_def *addr = nir_load_from_texture_handle_agx(b, tex->src[ti2].src.ssa);
-   nir_def *desc = nir_load_global_constant(b, 4, 32, addr);
-   nir_def *w0 = nir_channel(b, desc, 0), *w1 = nir_channel(b, desc, 1);
-   nir_def *w3 = nir_channel(b, desc, 3);
-   nir_def *w5 = nir_load_global_constant(b, 1, 32, nir_iadd_imm(b, addr, 20));
-   nir_def *width = nir_ior(b, nir_ushr_imm(b, w0, 28),
-                            nir_ishl_imm(b, nir_iand_imm(b, w1, 0x3ff), 4));
-   nir_def *height = nir_ubitfield_extract_imm(b, w1, 10, 14);
-   nir_def *depth = nir_ubitfield_extract_imm(b, w3, 14, 14);
-   nir_def *size = nir_vec3(b, width, height, depth);
-   size = nir_iadd_imm(b, nir_trim_vector(b, size, n), 1);
-
-   /* The view's first level's size */
-   nir_def *first = nir_ubitfield_extract_imm(b, w5, 12, 4);
-   size = nir_u2f32(b, nir_umax_imm(b, nir_ushr(b, size, first), 1));
+   nir_def *size = g15_tex_size(b, tex->src[ti2].src.ssa, n).size;
 
    nir_def *scale = nir_fexp2(b, bias);
    dx = nir_fmul(b, dx, scale);
@@ -1526,18 +1545,17 @@ lower_tex_min_lod_g15(nir_builder *b, nir_tex_instr *tex, void *data)
  * G15's LOD query, smp bit 85 (Apple's compiler sets it for an smp intrinsic's
  * query flag), is not run: its result layout is not traced. Here the LOD is
  * computed instead: log2 of the larger footprint of the coordinates'
- * derivatives scaled by the size (the 32 B descriptor: width at bit 28, height
- * at 42, depth at 110), plus the bias; x clamps it to the sampler's LOD range
- * (its state's 9:0 and 19:10, q4.6) and the texture's levels (last level at bit
- * 176 when mipmapped, bit 58). A cube's query keeps its direction
- * (lower_cube_g15): its footprint is that of the face coordinates, the quotient
- * rule's derivatives as nir_lower_tex's lower_gradient_cube_map takes them
- * (dEQP-VK textureQueryLod cubes read the direction's x and y as a 2D
- * coordinate). A null descriptor (agx_set_null_texture, at the zero page)
- * queries 0, as G13's hardware query of it: its 1x1x1 size gave a fragment's 3D
- * query of gl_FragCoord.xyz, whose z slopes, a small positive LOD (dEQP-VK
- * robustness2's null_descriptor 3D fragment cases). Not verified on the
- * hardware otherwise.
+ * derivatives scaled by the size (g15_tex_size), plus the bias; x clamps it to
+ * the sampler's LOD range (its state's 9:0 and 19:10, q4.6) and the texture's
+ * levels (last level at bit 176 when mipmapped, bit 58). A cube's query keeps
+ * its direction (lower_cube_g15): its footprint is that of the face
+ * coordinates, the quotient rule's derivatives as nir_lower_tex's
+ * lower_gradient_cube_map takes them (dEQP-VK textureQueryLod cubes read the
+ * direction's x and y as a 2D coordinate). A null descriptor
+ * (agx_set_null_texture, at the zero page) queries 0, as G13's hardware query
+ * of it: its 1x1x1 size gave a fragment's 3D query of gl_FragCoord.xyz, whose z
+ * slopes, a small positive LOD (dEQP-VK robustness2's null_descriptor 3D
+ * fragment cases). Not verified on the hardware otherwise.
  */
 static bool
 lower_tex_lod_g15(nir_builder *b, nir_tex_instr *tex, void *data)
@@ -1556,23 +1574,9 @@ lower_tex_lod_g15(nir_builder *b, nir_tex_instr *tex, void *data)
    unsigned n = tex->sampler_dim == GLSL_SAMPLER_DIM_3D ? 3 : 2;
    nir_def *coord = nir_trim_vector(b, tex->src[ci].src.ssa, n);
 
-   nir_def *addr = nir_load_from_texture_handle_agx(b, tex->src[ti].src.ssa);
-   nir_def *desc = nir_load_global_constant(b, 4, 32, addr);
-   nir_def *w0 = nir_channel(b, desc, 0), *w1 = nir_channel(b, desc, 1);
-   nir_def *w3 = nir_channel(b, desc, 3);
-   nir_def *w5 = nir_load_global_constant(b, 1, 32, nir_iadd_imm(b, addr, 20));
-
-   nir_def *wh_lo = nir_ushr_imm(b, w0, 28);
-   nir_def *width =
-      nir_ior(b, wh_lo, nir_ishl_imm(b, nir_iand_imm(b, w1, 0x3ff), 4));
-   nir_def *height = nir_ubitfield_extract_imm(b, w1, 10, 14);
-   nir_def *depth = nir_ubitfield_extract_imm(b, w3, 14, 14);
-   nir_def *size = nir_vec3(b, width, height, depth);
-   size = nir_iadd_imm(b, nir_trim_vector(b, size, n), 1);
-
-   /* The view's first level's size */
-   nir_def *first = nir_ubitfield_extract_imm(b, w5, 12, 4);
-   size = nir_u2f32(b, nir_umax_imm(b, nir_ushr(b, size, first), 1));
+   struct g15_tex_size t = g15_tex_size(b, tex->src[ti].src.ssa, n);
+   nir_def *desc = t.desc, *w1 = t.w1, *w3 = t.w3, *w5 = t.w5;
+   nir_def *first = t.first, *size = t.size;
 
    nir_def *dx, *dy;
    if (tex->sampler_dim == GLSL_SAMPLER_DIM_CUBE) {
