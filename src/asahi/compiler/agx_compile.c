@@ -1327,83 +1327,6 @@ lower_ffma32_exact_g15(nir_builder *b, nir_alu_instr *alu, void *data)
 }
 
 /*
- * G15 takes a multisampled fetch's sample index at bit 12 of the layer word,
- * an array's layer in its low bits (smp.md, Dimensions and arrays): Apple's
- * read sequence for the multisampled dimensions (libLLVM_32023
- * sub_25092FC54) packs the index with code 9 at position 12 and the layer with
- * code 4 (umin(x, 0x7ff)) at position 0. agx_nir_lower_texture left G13's
- * word, the index in the low half and the layer in the high half;
- * agx_pack3.c puts the word in cr2.
- */
-static bool
-lower_ms_index_g15(nir_builder *b, nir_tex_instr *tex, void *data)
-{
-   int idx = nir_tex_instr_src_index(tex, nir_tex_src_backend1);
-
-   if (tex->sampler_dim != GLSL_SAMPLER_DIM_MS || idx < 0 ||
-       (tex->backend_flags & AGX_TEXTURE_FLAG_G15_MS_INDEX))
-      return false;
-
-   b->cursor = nir_before_instr(&tex->instr);
-   nir_def *coord = tex->src[idx].src.ssa;
-   unsigned last = coord->num_components - 1;
-   nir_def *word = nir_channel(b, coord, last);
-   nir_def *sample = nir_iand_imm(b, word, 0xf);
-   nir_def *layer = nir_umin_imm(b, nir_ushr_imm(b, word, 16), 0x7ff);
-   word = nir_ior(b, nir_ishl_imm(b, sample, 12), layer);
-
-   nir_src_rewrite(&tex->src[idx].src,
-                   nir_vector_insert_imm(b, coord, word, last));
-   tex->backend_flags |= AGX_TEXTURE_FLAG_G15_MS_INDEX;
-   return true;
-}
-
-/*
- * G15 takes a texel offset that is not F42's immediate in the LOD word (cr3),
- * with x at bits 12:15, y at 28:31 and z at 0:3 (libLLVM_32023's pack
- * sequence for an offset in that word, sub_25092F24C: pack_smpir code 5 at
- * positions 12 and 28, and at 0 for 3D), around the layer (bits 0:10), the
- * face or sample index and the LOD (16:27). agx_nir_lower_texture packed G13's
- * word, x | y << 4 | z << 8; rewrite it. agx_optimizer turns a constant back
- * into F42's immediate, G13's layout.
- */
-static bool
-lower_tex_offset_g15(nir_builder *b, nir_tex_instr *tex, void *data)
-{
-   int idx = nir_tex_instr_src_index(tex, nir_tex_src_backend2);
-
-   if (idx < 0 || (tex->backend_flags & AGX_TEXTURE_FLAG_G15_IR_OFFSET))
-      return false;
-
-   b->cursor = nir_before_instr(&tex->instr);
-   nir_def *p = tex->src[idx].src.ssa;
-   nir_def *x = nir_ishl_imm(b, nir_iand_imm(b, p, 0xf), 12);
-   nir_def *y = nir_ishl_imm(b, nir_ubitfield_extract_imm(b, p, 4, 4), 28);
-   nir_def *z = nir_ubitfield_extract_imm(b, p, 8, 4);
-   nir_def *word = nir_ior(b, nir_ior(b, x, y), z);
-
-   /* An array's layer shares the word (bits 0:10, umin(layer, 0x7ff) as
-    * pack_smpir's mode 4 makes it). When the offset goes in the word (a
-    * register, or with a compare), OR the layer in here too: the packer then
-    * needs one pack_smpir for a LOD or bias, the offset and the layer (C is
-    * a single register), and ORing the layer a second time where it packs it
-    * itself changes nothing */
-   int ci = nir_tex_instr_src_index(tex, nir_tex_src_backend1);
-   if (tex->is_array && tex->sampler_dim != GLSL_SAMPLER_DIM_CUBE &&
-       tex->sampler_dim != GLSL_SAMPLER_DIM_MS && ci >= 0 &&
-       (tex->is_shadow || !nir_src_is_const(tex->src[idx].src))) {
-      nir_def *coord = tex->src[ci].src.ssa;
-      nir_def *layer =
-         nir_u2u32(b, nir_channel(b, coord, coord->num_components - 1));
-      word = nir_ior(b, word, nir_umin(b, layer, nir_imm_int(b, 0x7ff)));
-   }
-
-   nir_src_rewrite(&tex->src[idx].src, word);
-   tex->backend_flags |= AGX_TEXTURE_FLAG_G15_IR_OFFSET;
-   return true;
-}
-
-/*
  * G15: a texture's size at its view's first level, in n dimensions, decoded
  * from its 32 B descriptor (width at bit 28, height at 42, depth at 110, the
  * first level at 172), and the descriptor's words lower_tex_lod_g15 reads too
@@ -2189,7 +2112,7 @@ agx_emit_image_load(agx_builder *b, agx_index dst, nir_intrinsic_instr *intr)
    unsigned coord_comps = glsl_get_sampler_dim_coordinate_components(dim);
    if (is_ms && b->shader->key->dev.gpu_generation >= 15) {
       /* G15's word: the sample index at bit 12, an array's layer clamped to
-       * 0x7ff below it (lower_ms_index_g15) */
+       * 0x7ff below it (lower_regular_texture) */
       agx_index sample = agx_temp(b->shader, AGX_SIZE_32);
       agx_mov_to(b, sample, ms_index);
 
@@ -4994,14 +4917,6 @@ agx_compile_shader_nir_impl(nir_shader *nir, struct agx_shader_key *key,
                nir->info.stage == MESA_SHADER_FRAGMENT ? key->fs.nr_samples : 0,
                nir->info.stage == MESA_SHADER_FRAGMENT &&
                   !key->fs.ignore_tib_dependencies);
-
-   if (key->dev.gpu_generation >= 15)
-      NIR_PASS(_, nir, nir_shader_tex_pass, lower_ms_index_g15,
-               nir_metadata_control_flow, NULL);
-
-   if (key->dev.gpu_generation >= 15)
-      NIR_PASS(_, nir, nir_shader_tex_pass, lower_tex_offset_g15,
-               nir_metadata_control_flow, NULL);
 
    if (key->dev.gpu_generation >= 15)
       NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_load_format_g15,

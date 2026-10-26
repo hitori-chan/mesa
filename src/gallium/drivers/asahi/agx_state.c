@@ -2825,7 +2825,8 @@ agx_build_meta_shader_internal(struct agx_context *ctx,
    struct agx_device *dev = agx_device(ctx->base.screen);
    if (!prolog) {
       agx_preprocess_nir(b.shader);
-      NIR_PASS(_, b.shader, agx_nir_lower_texture);
+      NIR_PASS(_, b.shader, agx_nir_lower_texture_gen,
+               dev->params.gpu_generation >= 15);
       NIR_PASS(_, b.shader, agx_nir_lower_multisampled_image_store,
                dev->params.gpu_generation >= 15);
    }
