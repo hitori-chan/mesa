@@ -206,8 +206,10 @@ lower_buffer_texture(nir_builder *b, nir_tex_instr *tex)
  * tex_src_backend1 for array textures by type-converting and clamping.
  */
 static bool
-lower_regular_texture(nir_builder *b, nir_instr *instr, UNUSED void *data)
+lower_regular_texture(nir_builder *b, nir_instr *instr, void *data)
 {
+   bool g15 = *(bool *)data;
+
    if (instr->type != nir_instr_type_tex)
       return false;
 
@@ -311,6 +313,24 @@ lower_regular_texture(nir_builder *b, nir_instr *instr, UNUSED void *data)
                            : layer  ? nir_u2u32(b, layer)
                                     : NULL;
 
+   /* G15 takes a multisampled fetch's sample index at bit 12 of the layer
+    * word, an array's layer in its low bits (smp.md, Dimensions and arrays):
+    * Apple's read sequence for the multisampled dimensions (libLLVM_32023
+    * sub_25092FC54) packs the index with code 9 at position 12 and the layer
+    * with code 4 (umin(x, 0x7ff)) at position 0. agx_pack3.c puts the word in
+    * cr2.
+    */
+   if (g15 && tex->sampler_dim == GLSL_SAMPLER_DIM_MS) {
+      assert(ms_idx != NULL);
+      sample_array =
+         nir_ishl_imm(b, nir_iand_imm(b, nir_u2u32(b, ms_idx), 0xf), 12);
+
+      if (layer) {
+         sample_array = nir_ior(b, sample_array,
+                                nir_umin_imm(b, nir_u2u32(b, layer), 0x7ff));
+      }
+   }
+
    /* Combine into the final 32-bit tuple */
    if (sample_array != NULL) {
       unsigned end = coord->num_components;
@@ -323,12 +343,20 @@ lower_regular_texture(nir_builder *b, nir_instr *instr, UNUSED void *data)
    /* Furthermore, if there is an offset vector, it must be packed */
    nir_def *offset = nir_steal_tex_src(tex, nir_tex_src_offset);
 
+   /* G15 takes a texel offset that is not F42's immediate in the LOD word
+    * (cr3), with x at bits 12:15, y at 28:31 and z at 0:3 (libLLVM_32023's
+    * pack sequence for an offset in that word, sub_25092F24C: pack_smpir code
+    * 5 at positions 12 and 28, and at 0 for 3D), around the layer (bits 0:10),
+    * the face or sample index and the LOD (16:27). agx_optimizer turns a
+    * constant into F42's immediate, G13's layout.
+    */
    if (offset != NULL) {
+      static const unsigned g15_shift[3] = {12, 28, 0};
       nir_def *packed = NULL;
 
       for (unsigned c = 0; c < offset->num_components; ++c) {
          nir_def *nibble = nir_iand_imm(b, nir_channel(b, offset, c), 0xF);
-         nir_def *shifted = nir_ishl_imm(b, nibble, 4 * c);
+         nir_def *shifted = nir_ishl_imm(b, nibble, g15 ? g15_shift[c] : 4 * c);
 
          /* We pack with iadd instead of ior to let us fuse in the shift with an
           * iadd-lsl instruction.
@@ -337,6 +365,20 @@ lower_regular_texture(nir_builder *b, nir_instr *instr, UNUSED void *data)
             packed = nir_iadd(b, packed, shifted);
          else
             packed = shifted;
+      }
+
+      /* G15: an array's layer shares the word (umin(layer, 0x7ff) as
+       * pack_smpir's mode 4 makes it). When the offset goes in the word (a
+       * register, or with a compare), OR the layer in here too: the packer
+       * then needs one pack_smpir for a LOD or bias, the offset and the layer
+       * (C is a single register), and ORing the layer a second time where it
+       * packs it itself changes nothing.
+       */
+      if (g15 && layer && tex->sampler_dim != GLSL_SAMPLER_DIM_CUBE &&
+          tex->sampler_dim != GLSL_SAMPLER_DIM_MS &&
+          (tex->is_shadow || !nir_def_is_const(offset))) {
+         packed =
+            nir_ior(b, packed, nir_umin_imm(b, nir_u2u32(b, layer), 0x7ff));
       }
 
       nir_tex_instr_add_src(tex, nir_tex_src_backend2, packed);
@@ -952,7 +994,7 @@ lower_texture(nir_shader *s, bool g15, bool g15_queries)
     * generates txs for array textures).
     */
    NIR_PASS(progress, s, nir_shader_instructions_pass, lower_regular_texture,
-            nir_metadata_none, NULL);
+            nir_metadata_none, &g15);
    NIR_PASS(progress, s, nir_shader_instructions_pass, lower_tex_crawl,
             nir_metadata_control_flow, &g15_queries);
 
