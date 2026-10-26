@@ -466,14 +466,10 @@ lower_uvs_index(nir_builder *b, nir_intrinsic_instr *intrin, void *data)
       if (!args->g15)
          return false;
 
-      /* G15 has no readable sample count (draws.md, Multisampling): as in
-       * Gallium, 1, 2 and 4 samples are told apart by the size of
-       * PPP_MULTISAMPLECTL, one nonzero byte per sample from sample 0 */
       b->cursor = nir_instr_remove(&intrin->instr);
       unsigned offset = hk_root_descriptor_offset(draw.ppp_multisamplectl);
       nir_def *ctl = load_root(b, 1, 32, nir_imm_int(b, offset), 4);
-      nir_def *log2 = nir_iadd(b, nir_b2i32(b, nir_uge_imm(b, ctl, 0x100)),
-                               nir_b2i32(b, nir_uge_imm(b, ctl, 0x10000)));
+      nir_def *log2 = agx_nir_samples_log2_g15(b, ctl);
       nir_def_rewrite_uses(&intrin->def,
                            nir_u2uN(b, log2, intrin->def.bit_size));
       return true;

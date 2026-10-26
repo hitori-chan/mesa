@@ -921,6 +921,17 @@ enum {
    TEX_MODE = 15,
    /* a gather's component sits where the others' mask does */
    TEX_COMPONENT = TEX_MASK,
+   SPECLM_SAMPLES = 0,
+   SPECLM_STRIDE = 1,
+   SPECLM_SHAPE = 2,
+   SPECLM_IMAGEBLOCK = 3,
+   SPECLM_THREADGROUP = 4,
+   SPECLM_SIZE = 5,
+   LDSHDR_VA = 0,
+   LDSHDR_SIZE = 1,
+   SPECTPR_CR = 0,
+   SPECTPR_STACK = 1,
+   SPECTPR_STACK2 = 2,
 };
 
 /* An ALU instruction: the destination, the sources in IR order at the
@@ -1730,7 +1741,7 @@ a3_tex_has_layer_word(const agx_instr *I)
 /* The cr slot of IR coordinate word c (smp.md, Dimensions and arrays): the
  * spatial coordinates in slots 0-2, the layer word in slot 3 (a 2D array's
  * layer in slot 2 is ignored), but a multisampled read's word (the sample
- * index at bit 12, an array's layer below it, lower_ms_index_g15) right
+ * index at bit 12, an array's layer below it, lower_regular_texture) right
  * after y, in slot 2 (in slot 3 both are ignored) */
 static unsigned
 a3_tex_slot(const agx_instr *I, unsigned c)
@@ -1743,7 +1754,7 @@ a3_tex_slot(const agx_instr *I, unsigned c)
 
 /* The offset of I that is not F42's immediate: the IR's offset word (with a
  * compare, the second word of the reference's pair), in the LOD word's
- * layout (lower_tex_offset_g15) */
+ * layout (lower_regular_texture) */
 static agx_index
 a3_tex_offset_word(const agx_instr *I)
 {
@@ -1931,8 +1942,8 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
     * Apple's for both) or a fetch's 16-bit level (mode 0xe, s16 to q5.6), at
     * bits 16:27; with none, the layer clamped to 0x7ff (mode 4, Apple's code
     * 4 at position 0); its C the offset word or the layer, ORed in. An
-    * array's offset word already holds the layer (lower_tex_offset_g15 in
-    * agx_compile.c), which a LOD and an offset need: C is one register */
+    * array's offset word already holds the layer (lower_regular_texture),
+    * which a LOD and an offset need: C is one register */
    if (word) {
       agx_index pa = lodw ? lod : layer;
       agx_index pc = off_word ? offset : lodw ? layer : agx_null();
@@ -3528,6 +3539,62 @@ agx3_emit_signal_pix(struct util_dynarray *out, unsigned mask)
 {
    agx_instr I = {.op = AGX_OPCODE_SIGNAL_PIX, .writeout = mask};
    a3_memo_pack(out, a3_memo_key(A3_MEMO_SIGNAL_PIX, mask), &I);
+}
+
+/* The entry program's setup instructions, which no IR instruction packs:
+ * their operands straight into AGX3.xml's fields */
+static void
+a3_emit_ops(struct util_dynarray *out, enum agx3_instr instr,
+            const uint64_t *ops)
+{
+   const struct agx3_pack_spec *spec = agx3_spec(instr);
+   uint8_t *code = util_dynarray_grow(out, uint8_t, spec->lengths[0]);
+
+   assert(spec->nlengths == 1);
+   agx3_pack(code, spec, spec->lengths[0], ops);
+}
+
+void
+agx3_emit_speclm(struct util_dynarray *out, unsigned samples, unsigned stride,
+                 unsigned shape, bool imageblock, unsigned threadgroup_64B)
+{
+   uint64_t ops[A3_MAX_OPS] = {
+      [SPECLM_SAMPLES] = samples,
+      [SPECLM_STRIDE] = stride,
+      [SPECLM_SHAPE] = shape,
+      [SPECLM_IMAGEBLOCK] = imageblock,
+      [SPECLM_THREADGROUP] = threadgroup_64B != 0,
+      [SPECLM_SIZE] = threadgroup_64B,
+   };
+
+   assert(samples < 4 && stride < 32 && shape < 256 &&
+          threadgroup_64B < (1 << 10));
+   a3_emit_ops(out, AGX3_SPECLM, ops);
+}
+
+void
+agx3_emit_ldshdr(struct util_dynarray *out, uint64_t va, unsigned size_class)
+{
+   uint64_t ops[A3_MAX_OPS] = {
+      [LDSHDR_VA] = va >> 6,
+      [LDSHDR_SIZE] = size_class,
+   };
+
+   assert((va & 63) == 0 && va < BITFIELD64_BIT(48) && size_class < 4);
+   a3_emit_ops(out, AGX3_LDSHDR, ops);
+}
+
+void
+agx3_emit_spectpr(struct util_dynarray *out, unsigned crs, unsigned stack_words)
+{
+   uint64_t ops[A3_MAX_OPS] = {
+      [SPECTPR_CR] = crs,
+      [SPECTPR_STACK] = stack_words,
+      [SPECTPR_STACK2] = stack_words,
+   };
+
+   assert(crs < (1 << 11) && stack_words < (1 << 16));
+   a3_emit_ops(out, AGX3_SPECTPR, ops);
 }
 
 /*

@@ -1125,24 +1125,36 @@ lower_load_format_g15(nir_builder *b, nir_intrinsic_instr *intr, void *data)
    enum pipe_format format = nir_intrinsic_format(intr);
    unsigned comps = intr->def.num_components;
    unsigned raw_comps = comps, raw_bits = 32;
-   enum pipe_format raw_format;
+   enum pipe_format raw_format = PIPE_FORMAT_R8_UINT;
+   enum ail_isa_format isa;
 
    switch (format) {
    case PIPE_FORMAT_R8_UNORM:
+      isa = AIL_ISA_FORMAT_U8NORM;
+      break;
    case PIPE_FORMAT_R8_SNORM:
+      isa = AIL_ISA_FORMAT_S8NORM;
+      break;
    case PIPE_FORMAT_R8G8B8A8_SRGB:
-      raw_format = PIPE_FORMAT_R8_UINT;
+      isa = AIL_ISA_FORMAT_SRGBA8;
       break;
    case PIPE_FORMAT_R16_UNORM:
+      isa = AIL_ISA_FORMAT_U16NORM;
+      raw_format = PIPE_FORMAT_R16_UINT;
+      break;
    case PIPE_FORMAT_R16_SNORM:
+      isa = AIL_ISA_FORMAT_S16NORM;
       raw_format = PIPE_FORMAT_R16_UINT;
       break;
    case PIPE_FORMAT_R16_FLOAT:
+      isa = AIL_ISA_FORMAT_F16;
       raw_format = PIPE_FORMAT_R16_UINT;
       raw_bits = 16;
       break;
    case PIPE_FORMAT_R10G10B10A2_UNORM:
    case PIPE_FORMAT_R11G11B10_FLOAT:
+      isa = format == PIPE_FORMAT_R10G10B10A2_UNORM ? AIL_ISA_FORMAT_RGB10A2
+                                                    : AIL_ISA_FORMAT_RG11B10F;
       raw_format = PIPE_FORMAT_R32_UINT;
       raw_comps = 1;
       break;
@@ -1168,50 +1180,11 @@ lower_load_format_g15(nir_builder *b, nir_intrinsic_instr *intr, void *data)
          .format = raw_format, .sign_extend = sign_extend);
    }
 
-   const unsigned bits8[4] = {8, 8, 8, 8}, bits16[4] = {16, 16, 16, 16};
-   const unsigned bits1010102[4] = {10, 10, 10, 2};
-   nir_def *value;
+   /* The conversion of a tile load (agx_nir_lower_tile_raw) */
+   nir_def *value = isa == AIL_ISA_FORMAT_F16
+                       ? raw
+                       : agx_nir_unpack_isa_format(b, raw, isa, comps);
 
-   switch (format) {
-   case PIPE_FORMAT_R8_UNORM:
-      value = nir_format_unorm_to_float(b, raw, bits8);
-      break;
-   case PIPE_FORMAT_R8_SNORM:
-      value = nir_format_snorm_to_float(
-         b, nir_format_sign_extend_ivec(b, raw, bits8), bits8);
-      break;
-   case PIPE_FORMAT_R16_UNORM:
-      value = nir_format_unorm_to_float(b, raw, bits16);
-      break;
-   case PIPE_FORMAT_R16_SNORM:
-      value = nir_format_snorm_to_float(
-         b, nir_format_sign_extend_ivec(b, raw, bits16), bits16);
-      break;
-   case PIPE_FORMAT_R16_FLOAT:
-      value = raw;
-      break;
-   case PIPE_FORMAT_R8G8B8A8_SRGB: {
-      nir_def *unorm = nir_format_unorm_to_float(b, raw, bits8);
-      nir_def *rgb = nir_format_srgb_to_linear(
-         b, nir_trim_vector(b, unorm, MIN2(comps, 3)));
-      value = comps > 3 ? nir_vector_insert_imm(b, nir_pad_vector(b, rgb, 4),
-                                                nir_channel(b, unorm, 3), 3)
-                        : rgb;
-      break;
-   }
-   case PIPE_FORMAT_R10G10B10A2_UNORM:
-      value = nir_format_unorm_to_float(
-         b, nir_format_unpack_uint(b, raw, bits1010102, 4), bits1010102);
-      break;
-   case PIPE_FORMAT_R11G11B10_FLOAT:
-      value = nir_pad_vector_imm_int(b, nir_format_unpack_11f11f10f(b, raw),
-                                     fui(1.0), 4);
-      break;
-   default:
-      UNREACHABLE("handled above");
-   }
-
-   value = nir_trim_vector(b, value, comps);
    if (format != PIPE_FORMAT_R16_FLOAT || intr->def.bit_size != 16)
       value = nir_f2fN(b, value, intr->def.bit_size);
 
@@ -1354,80 +1327,36 @@ lower_ffma32_exact_g15(nir_builder *b, nir_alu_instr *alu, void *data)
 }
 
 /*
- * G15 takes a multisampled fetch's sample index at bit 12 of the layer word,
- * an array's layer in its low bits (smp.md, Dimensions and arrays): Apple's
- * read sequence for the multisampled dimensions (libLLVM_32023
- * sub_25092FC54) packs the index with code 9 at position 12 and the layer with
- * code 4 (umin(x, 0x7ff)) at position 0. agx_nir_lower_texture left G13's
- * word, the index in the low half and the layer in the high half;
- * agx_pack3.c puts the word in cr2.
+ * G15: a texture's size at its view's first level, in n dimensions, decoded
+ * from its 32 B descriptor (width at bit 28, height at 42, depth at 110, the
+ * first level at 172), and the descriptor's words lower_tex_lod_g15 reads too
  */
-static bool
-lower_ms_index_g15(nir_builder *b, nir_tex_instr *tex, void *data)
+struct g15_tex_size {
+   nir_def *desc, *w1, *w3, *w5, *first, *size;
+};
+
+static struct g15_tex_size
+g15_tex_size(nir_builder *b, nir_def *handle, unsigned n)
 {
-   int idx = nir_tex_instr_src_index(tex, nir_tex_src_backend1);
+   struct g15_tex_size t;
+   nir_def *addr = nir_load_from_texture_handle_agx(b, handle);
+   t.desc = nir_load_global_constant(b, 4, 32, addr);
+   nir_def *w0 = nir_channel(b, t.desc, 0);
+   t.w1 = nir_channel(b, t.desc, 1);
+   t.w3 = nir_channel(b, t.desc, 3);
+   t.w5 = nir_load_global_constant(b, 1, 32, nir_iadd_imm(b, addr, 20));
 
-   if (tex->sampler_dim != GLSL_SAMPLER_DIM_MS || idx < 0 ||
-       (tex->backend_flags & AGX_TEXTURE_FLAG_G15_MS_INDEX))
-      return false;
+   nir_def *wh_lo = nir_ushr_imm(b, w0, 28);
+   nir_def *width =
+      nir_ior(b, wh_lo, nir_ishl_imm(b, nir_iand_imm(b, t.w1, 0x3ff), 4));
+   nir_def *height = nir_ubitfield_extract_imm(b, t.w1, 10, 14);
+   nir_def *depth = nir_ubitfield_extract_imm(b, t.w3, 14, 14);
+   nir_def *size = nir_vec3(b, width, height, depth);
+   size = nir_iadd_imm(b, nir_trim_vector(b, size, n), 1);
 
-   b->cursor = nir_before_instr(&tex->instr);
-   nir_def *coord = tex->src[idx].src.ssa;
-   unsigned last = coord->num_components - 1;
-   nir_def *word = nir_channel(b, coord, last);
-   nir_def *sample = nir_iand_imm(b, word, 0xf);
-   nir_def *layer = nir_umin_imm(b, nir_ushr_imm(b, word, 16), 0x7ff);
-   word = nir_ior(b, nir_ishl_imm(b, sample, 12), layer);
-
-   nir_src_rewrite(&tex->src[idx].src,
-                   nir_vector_insert_imm(b, coord, word, last));
-   tex->backend_flags |= AGX_TEXTURE_FLAG_G15_MS_INDEX;
-   return true;
-}
-
-/*
- * G15 takes a texel offset that is not F42's immediate in the LOD word (cr3),
- * with x at bits 12:15, y at 28:31 and z at 0:3 (libLLVM_32023's pack
- * sequence for an offset in that word, sub_25092F24C: pack_smpir code 5 at
- * positions 12 and 28, and at 0 for 3D), around the layer (bits 0:10), the
- * face or sample index and the LOD (16:27). agx_nir_lower_texture packed G13's
- * word, x | y << 4 | z << 8; rewrite it. agx_optimizer turns a constant back
- * into F42's immediate, G13's layout.
- */
-static bool
-lower_tex_offset_g15(nir_builder *b, nir_tex_instr *tex, void *data)
-{
-   int idx = nir_tex_instr_src_index(tex, nir_tex_src_backend2);
-
-   if (idx < 0 || (tex->backend_flags & AGX_TEXTURE_FLAG_G15_IR_OFFSET))
-      return false;
-
-   b->cursor = nir_before_instr(&tex->instr);
-   nir_def *p = tex->src[idx].src.ssa;
-   nir_def *x = nir_ishl_imm(b, nir_iand_imm(b, p, 0xf), 12);
-   nir_def *y = nir_ishl_imm(b, nir_ubitfield_extract_imm(b, p, 4, 4), 28);
-   nir_def *z = nir_ubitfield_extract_imm(b, p, 8, 4);
-   nir_def *word = nir_ior(b, nir_ior(b, x, y), z);
-
-   /* An array's layer shares the word (bits 0:10, umin(layer, 0x7ff) as
-    * pack_smpir's mode 4 makes it). When the offset goes in the word (a
-    * register, or with a compare), OR the layer in here too: the packer then
-    * needs one pack_smpir for a LOD or bias, the offset and the layer (C is
-    * a single register), and ORing the layer a second time where it packs it
-    * itself changes nothing */
-   int ci = nir_tex_instr_src_index(tex, nir_tex_src_backend1);
-   if (tex->is_array && tex->sampler_dim != GLSL_SAMPLER_DIM_CUBE &&
-       tex->sampler_dim != GLSL_SAMPLER_DIM_MS && ci >= 0 &&
-       (tex->is_shadow || !nir_src_is_const(tex->src[idx].src))) {
-      nir_def *coord = tex->src[ci].src.ssa;
-      nir_def *layer =
-         nir_u2u32(b, nir_channel(b, coord, coord->num_components - 1));
-      word = nir_ior(b, word, nir_umin(b, layer, nir_imm_int(b, 0x7ff)));
-   }
-
-   nir_src_rewrite(&tex->src[idx].src, word);
-   tex->backend_flags |= AGX_TEXTURE_FLAG_G15_IR_OFFSET;
-   return true;
+   t.first = nir_ubitfield_extract_imm(b, t.w5, 12, 4);
+   t.size = nir_u2f32(b, nir_umax_imm(b, nir_ushr(b, size, t.first), 1));
+   return t;
 }
 
 /*
@@ -1479,21 +1408,7 @@ lower_tex_min_lod_g15(nir_builder *b, nir_tex_instr *tex, void *data)
    dy = nir_f2f32(b, nir_trim_vector(b, dy, n));
 
    int ti2 = nir_tex_instr_src_index(tex, nir_tex_src_texture_handle);
-   nir_def *addr = nir_load_from_texture_handle_agx(b, tex->src[ti2].src.ssa);
-   nir_def *desc = nir_load_global_constant(b, 4, 32, addr);
-   nir_def *w0 = nir_channel(b, desc, 0), *w1 = nir_channel(b, desc, 1);
-   nir_def *w3 = nir_channel(b, desc, 3);
-   nir_def *w5 = nir_load_global_constant(b, 1, 32, nir_iadd_imm(b, addr, 20));
-   nir_def *width = nir_ior(b, nir_ushr_imm(b, w0, 28),
-                            nir_ishl_imm(b, nir_iand_imm(b, w1, 0x3ff), 4));
-   nir_def *height = nir_ubitfield_extract_imm(b, w1, 10, 14);
-   nir_def *depth = nir_ubitfield_extract_imm(b, w3, 14, 14);
-   nir_def *size = nir_vec3(b, width, height, depth);
-   size = nir_iadd_imm(b, nir_trim_vector(b, size, n), 1);
-
-   /* The view's first level's size */
-   nir_def *first = nir_ubitfield_extract_imm(b, w5, 12, 4);
-   size = nir_u2f32(b, nir_umax_imm(b, nir_ushr(b, size, first), 1));
+   nir_def *size = g15_tex_size(b, tex->src[ti2].src.ssa, n).size;
 
    nir_def *scale = nir_fexp2(b, bias);
    dx = nir_fmul(b, dx, scale);
@@ -1526,18 +1441,17 @@ lower_tex_min_lod_g15(nir_builder *b, nir_tex_instr *tex, void *data)
  * G15's LOD query, smp bit 85 (Apple's compiler sets it for an smp intrinsic's
  * query flag), is not run: its result layout is not traced. Here the LOD is
  * computed instead: log2 of the larger footprint of the coordinates'
- * derivatives scaled by the size (the 32 B descriptor: width at bit 28, height
- * at 42, depth at 110), plus the bias; x clamps it to the sampler's LOD range
- * (its state's 9:0 and 19:10, q4.6) and the texture's levels (last level at bit
- * 176 when mipmapped, bit 58). A cube's query keeps its direction
- * (lower_cube_g15): its footprint is that of the face coordinates, the quotient
- * rule's derivatives as nir_lower_tex's lower_gradient_cube_map takes them
- * (dEQP-VK textureQueryLod cubes read the direction's x and y as a 2D
- * coordinate). A null descriptor (agx_set_null_texture, at the zero page)
- * queries 0, as G13's hardware query of it: its 1x1x1 size gave a fragment's 3D
- * query of gl_FragCoord.xyz, whose z slopes, a small positive LOD (dEQP-VK
- * robustness2's null_descriptor 3D fragment cases). Not verified on the
- * hardware otherwise.
+ * derivatives scaled by the size (g15_tex_size), plus the bias; x clamps it to
+ * the sampler's LOD range (its state's 9:0 and 19:10, q4.6) and the texture's
+ * levels (last level at bit 176 when mipmapped, bit 58). A cube's query keeps
+ * its direction (lower_cube_g15): its footprint is that of the face
+ * coordinates, the quotient rule's derivatives as nir_lower_tex's
+ * lower_gradient_cube_map takes them (dEQP-VK textureQueryLod cubes read the
+ * direction's x and y as a 2D coordinate). A null descriptor
+ * (agx_set_null_texture, at the zero page) queries 0, as G13's hardware query
+ * of it: its 1x1x1 size gave a fragment's 3D query of gl_FragCoord.xyz, whose z
+ * slopes, a small positive LOD (dEQP-VK robustness2's null_descriptor 3D
+ * fragment cases). Not verified on the hardware otherwise.
  */
 static bool
 lower_tex_lod_g15(nir_builder *b, nir_tex_instr *tex, void *data)
@@ -1556,23 +1470,9 @@ lower_tex_lod_g15(nir_builder *b, nir_tex_instr *tex, void *data)
    unsigned n = tex->sampler_dim == GLSL_SAMPLER_DIM_3D ? 3 : 2;
    nir_def *coord = nir_trim_vector(b, tex->src[ci].src.ssa, n);
 
-   nir_def *addr = nir_load_from_texture_handle_agx(b, tex->src[ti].src.ssa);
-   nir_def *desc = nir_load_global_constant(b, 4, 32, addr);
-   nir_def *w0 = nir_channel(b, desc, 0), *w1 = nir_channel(b, desc, 1);
-   nir_def *w3 = nir_channel(b, desc, 3);
-   nir_def *w5 = nir_load_global_constant(b, 1, 32, nir_iadd_imm(b, addr, 20));
-
-   nir_def *wh_lo = nir_ushr_imm(b, w0, 28);
-   nir_def *width =
-      nir_ior(b, wh_lo, nir_ishl_imm(b, nir_iand_imm(b, w1, 0x3ff), 4));
-   nir_def *height = nir_ubitfield_extract_imm(b, w1, 10, 14);
-   nir_def *depth = nir_ubitfield_extract_imm(b, w3, 14, 14);
-   nir_def *size = nir_vec3(b, width, height, depth);
-   size = nir_iadd_imm(b, nir_trim_vector(b, size, n), 1);
-
-   /* The view's first level's size */
-   nir_def *first = nir_ubitfield_extract_imm(b, w5, 12, 4);
-   size = nir_u2f32(b, nir_umax_imm(b, nir_ushr(b, size, first), 1));
+   struct g15_tex_size t = g15_tex_size(b, tex->src[ti].src.ssa, n);
+   nir_def *desc = t.desc, *w1 = t.w1, *w3 = t.w3, *w5 = t.w5;
+   nir_def *first = t.first, *size = t.size;
 
    nir_def *dx, *dy;
    if (tex->sampler_dim == GLSL_SAMPLER_DIM_CUBE) {
@@ -2212,7 +2112,7 @@ agx_emit_image_load(agx_builder *b, agx_index dst, nir_intrinsic_instr *intr)
    unsigned coord_comps = glsl_get_sampler_dim_coordinate_components(dim);
    if (is_ms && b->shader->key->dev.gpu_generation >= 15) {
       /* G15's word: the sample index at bit 12, an array's layer clamped to
-       * 0x7ff below it (lower_ms_index_g15) */
+       * 0x7ff below it (lower_regular_texture) */
       agx_index sample = agx_temp(b->shader, AGX_SIZE_32);
       agx_mov_to(b, sample, ms_index);
 
@@ -5017,14 +4917,6 @@ agx_compile_shader_nir_impl(nir_shader *nir, struct agx_shader_key *key,
                nir->info.stage == MESA_SHADER_FRAGMENT ? key->fs.nr_samples : 0,
                nir->info.stage == MESA_SHADER_FRAGMENT &&
                   !key->fs.ignore_tib_dependencies);
-
-   if (key->dev.gpu_generation >= 15)
-      NIR_PASS(_, nir, nir_shader_tex_pass, lower_ms_index_g15,
-               nir_metadata_control_flow, NULL);
-
-   if (key->dev.gpu_generation >= 15)
-      NIR_PASS(_, nir, nir_shader_tex_pass, lower_tex_offset_g15,
-               nir_metadata_control_flow, NULL);
 
    if (key->dev.gpu_generation >= 15)
       NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_load_format_g15,

@@ -7,6 +7,7 @@
 
 #include <stdbool.h>
 #include "asahi/compiler/agx_compile.h"
+#include "asahi/compiler/agx_nir_texture.h"
 #include "asahi/layout/layout.h"
 #include "agx_abi.h"
 #include "agx_pack.h"
@@ -115,6 +116,159 @@ agx_translate_layout(enum ail_tiling tiling)
    }
 
    UNREACHABLE("Invalid tiling");
+}
+
+/* The format's channel a PBE stores component c from (G13's PBE and G15's
+ * alike): the last that holds it, 0 when none does */
+static inline unsigned
+agx_pbe_swizzle(const struct util_format_description *desc, unsigned c)
+{
+   assert(desc->nr_channels >= 1 && desc->nr_channels <= 4);
+
+   for (int i = desc->nr_channels - 1; i >= 0; --i) {
+      if (desc->swizzle[i] == c)
+         return i;
+   }
+
+   return 0;
+}
+
+/* G15's PBE format */
+static inline void
+agx_pbe_g15_format(struct AGX_PBE_G15 *cfg, enum pipe_format format)
+{
+   const struct util_format_description *desc = util_format_description(format);
+
+   cfg->channels = ail_pixel_format[format].channels;
+   cfg->type = ail_pixel_format[format].type;
+   cfg->srgb = util_format_is_srgb(format);
+   cfg->swizzle_r = agx_pbe_swizzle(desc, 0);
+   cfg->swizzle_g = agx_pbe_swizzle(desc, 1);
+   cfg->swizzle_b = agx_pbe_swizzle(desc, 2);
+   cfg->swizzle_a = agx_pbe_swizzle(desc, 3);
+
+   /* An X channel takes the alpha, which the tilebuffer store sets to 1 */
+   if (desc->nr_channels == 4 && desc->channel[3].type == UTIL_FORMAT_TYPE_VOID)
+      cfg->swizzle_a = AGX_CHANNEL_A;
+}
+
+/*
+ * G15: a buffer is a linear 2D image AGX_TEXTURE_BUFFER_WIDTH texels wide, as
+ * on G13 (not verified on G15), at its raw VA (texture.md). libagx reads
+ * G13's software words: the texture's size and offset in elements in words 4
+ * and 5 and the PBE's offset in word 4, which G15 reads only when a
+ * descriptor is extended, and an emulated RGB32 buffer's address in G13's
+ * address field (the hardware fetches such a texture only out of bounds).
+ */
+static inline void
+agx_pack_buffer_texture_g15(void *out, enum pipe_format format,
+                            const uint8_t *swizzle, uint64_t address,
+                            uint32_t size_el, uint32_t offset_el)
+{
+   const struct util_format_description *desc = util_format_description(format);
+
+   agx_pack(out, TEXTURE_G15, cfg) {
+      cfg.dimension = AGX_TEXTURE_DIMENSION_2D;
+      cfg.layout = AGX_LAYOUT_LINEAR;
+      cfg.channels = ail_pixel_format[format].channels;
+      cfg.type = ail_pixel_format[format].type;
+      cfg.swizzle_r = agx_channel_from_pipe(swizzle[0]);
+      cfg.swizzle_g = agx_channel_from_pipe(swizzle[1]);
+      cfg.swizzle_b = agx_channel_from_pipe(swizzle[2]);
+      cfg.swizzle_a = agx_channel_from_pipe(swizzle[3]);
+      cfg.width = AGX_TEXTURE_BUFFER_WIDTH;
+      cfg.height = MAX2(DIV_ROUND_UP(size_el, cfg.width), 1);
+      cfg.srgb = (desc->colorspace == UTIL_FORMAT_COLORSPACE_SRGB);
+      cfg.srgb_2_channel = cfg.srgb && util_format_colormask(desc) == 0x3;
+      cfg.address = address;
+      cfg.stride = (cfg.width * util_format_get_blocksize(format)) - 16;
+   }
+
+   uint32_t *w = out;
+   w[4] = size_el;
+   w[5] = offset_el;
+
+   if (ail_pixel_format[format].channels == AGX_CHANNELS_R32G32B32_EMULATED) {
+      uint64_t *q = out;
+      q[1] &= ~BITFIELD64_RANGE(2, 36);
+      q[1] |= ((address >> 4) & BITFIELD64_MASK(36)) << 2;
+   }
+}
+
+static inline void
+agx_pack_buffer_pbe_g15(void *out, enum pipe_format format, uint64_t address,
+                        uint32_t size_el, uint32_t offset_el)
+{
+   unsigned stride_B =
+      AGX_TEXTURE_BUFFER_WIDTH * util_format_get_blocksize(format);
+
+   agx_pack(out, PBE_G15, cfg) {
+      cfg.dimension = AGX_TEXTURE_DIMENSION_2D;
+      cfg.layout = AGX_LAYOUT_LINEAR;
+      agx_pbe_g15_format(&cfg, format);
+      cfg.buffer = address;
+      cfg.width = AGX_TEXTURE_BUFFER_WIDTH;
+      cfg.height = MAX2(DIV_ROUND_UP(size_el, cfg.width), 1);
+      cfg.stride = (stride_B >> 4) - 1;
+   }
+
+   ((uint32_t *)out)[4] = offset_el;
+}
+
+/* G15: an image store or atomic reaches a multisampled image through a linear
+ * 2D view of its samples from the layer on, as on G13: G15 has no
+ * multisampled image write */
+static inline void
+agx_pbe_g15_ms_view(struct AGX_PBE_G15 *cfg, const struct ail_layout *layout,
+                    unsigned layer, unsigned level, enum pipe_format format)
+{
+   unsigned blocksize_B = util_format_get_blocksize(format);
+   unsigned size_px =
+      (layout->size_B - layout->layer_stride_B * layer) / blocksize_B;
+
+   cfg->dimension = AGX_TEXTURE_DIMENSION_2D;
+   cfg->layout = AGX_LAYOUT_LINEAR;
+   cfg->width = AGX_TEXTURE_BUFFER_WIDTH;
+   cfg->height = DIV_ROUND_UP(size_px, cfg->width);
+   cfg->stride = ((cfg->width * blocksize_B) >> 4) - 1;
+   cfg->buffer += layout->level_offsets_B[level];
+   cfg->mipmapped = false;
+}
+
+/*
+ * G15: what an image store's or atomic's texel address needs (PBE G15
+ * software), in the fourth word of the PBE's 32 B slot. A multisampled image's
+ * is its linear view's (agx_pbe_g15_ms_view); level_offset_B is the image
+ * level's offset from the PBE's address.
+ */
+static inline void
+agx_pack_pbe_g15_software(void *out, const struct ail_layout *layout,
+                          unsigned level, uint64_t level_offset_B,
+                          unsigned nr_samples, enum pipe_format format)
+{
+   struct ail_tile tile = {1, 1};
+   if (layout->tiling != AIL_TILING_LINEAR)
+      tile = layout->tilesize_el[level];
+
+   if (nr_samples > 1) {
+      agx_pack(out, PBE_G15_SOFTWARE_MSAA, cfg) {
+         cfg.aligned_width =
+            align(u_minify(layout->width_px, level), tile.width_el);
+         cfg.tile_width = tile.width_el;
+         cfg.tile_height = tile.height_el;
+         cfg.layer_stride = layout->layer_stride_B;
+         cfg.sample_count_log2 = util_logbase2(nr_samples);
+         cfg.sample_size_log2 =
+            util_logbase2(util_format_get_blocksize(format));
+      }
+   } else {
+      agx_pack(out, PBE_G15_SOFTWARE, cfg) {
+         cfg.level_offset = level_offset_B;
+         cfg.tile_width = tile.width_el;
+         cfg.tile_height = tile.height_el;
+         cfg.layer_stride = layout->layer_stride_B;
+      }
+   }
 }
 
 static inline enum agx_zls_tiling
@@ -254,6 +408,43 @@ agx_ppp_fragment_shader_g15(struct agx_ppp_update *ppp, uint64_t shader_base,
       cfg.depth_stencil_output = zs_out;
       cfg.pipeline_hi = agx_g15_pipeline_hi(va);
       cfg.pipeline_lo = agx_g15_pipeline_lo(va);
+   }
+}
+
+/* The vertex shader's pipeline word: G15's names the entry program by its VA */
+static inline uint8_t *
+agx_push_vertex_shader_word_1(uint8_t *out, unsigned gpu_generation,
+                              uint64_t shader_base, uint32_t pipeline)
+{
+   if (gpu_generation >= 15) {
+      uint64_t va = shader_base + pipeline;
+
+      agx_push(out, VDM_STATE_VERTEX_SHADER_WORD_1_G15, cfg) {
+         cfg.pipeline_hi = agx_g15_pipeline_hi(va);
+         cfg.pipeline_lo = agx_g15_pipeline_lo(va);
+      }
+   } else {
+      agx_push(out, VDM_STATE_VERTEX_SHADER_WORD_1, cfg) {
+         cfg.pipeline = pipeline;
+      }
+   }
+
+   return out;
+}
+
+/*
+ * G15: with neither depth writes nor a stencil test, a stencil test that
+ * always passes and masks nothing, as Apple's Metal driver enables for a pass
+ * without a depth attachment (without it nothing is drawn).
+ */
+static inline void
+agx_pack_stencil_always_g15(struct agx_fragment_stencil_packed *out)
+{
+   agx_pack(out, FRAGMENT_STENCIL, cfg) {
+      cfg.compare = AGX_ZS_FUNC_ALWAYS;
+      cfg.depth_pass = AGX_STENCIL_OP_KEEP;
+      cfg.depth_fail = AGX_STENCIL_OP_KEEP;
+      cfg.stencil_fail = AGX_STENCIL_OP_KEEP;
    }
 }
 

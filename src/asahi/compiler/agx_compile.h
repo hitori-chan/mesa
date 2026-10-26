@@ -275,6 +275,13 @@ void agx3_emit_uniform_store(struct util_dynarray *out, unsigned uniform,
                              unsigned src);
 void agx3_emit_stop(struct util_dynarray *out);
 void agx3_emit_signal_pix(struct util_dynarray *out, unsigned mask);
+void agx3_emit_speclm(struct util_dynarray *out, unsigned samples,
+                      unsigned stride, unsigned shape, bool imageblock,
+                      unsigned threadgroup_64B);
+void agx3_emit_ldshdr(struct util_dynarray *out, uint64_t va,
+                      unsigned size_class);
+void agx3_emit_spectpr(struct util_dynarray *out, unsigned crs,
+                       unsigned stack_words);
 void agx3_emit_sample_loop_header(struct util_dynarray *out);
 void agx3_emit_sample_loop_footer(struct util_dynarray *out,
                                   unsigned nr_samples, unsigned footer_offset,
