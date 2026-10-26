@@ -103,6 +103,35 @@ g15_opaque_black_as_custom(struct hk_sampled_image_descriptor_g15 *desc,
    agx_pack_border(&desc->border, black, format);
 }
 
+/* A view plane's texture and minimum LOD, as both descriptor layouts hold
+ * them */
+static void
+desc_view_plane(const struct hk_image_view *view, uint8_t plane, bool ia,
+                struct agx_texture_packed *tex, uint16_t *min_lod_fp16,
+                uint16_t *min_lod_uint16)
+{
+   *tex = ia ? view->planes[plane].ia : view->planes[plane].sampled;
+
+   float min_lod = MAX2(view->vk.min_lod - view->vk.base_mip_level, 0.0);
+
+   *min_lod_fp16 = _mesa_float_to_half(min_lod);
+   *min_lod_uint16 = min_lod;
+}
+
+/* The sampler a descriptor binds: its binding's immutable one, else info's */
+static struct hk_sampler *
+desc_sampler(struct hk_descriptor_set *set, uint32_t binding, uint32_t elem,
+             const VkDescriptorImageInfo *info)
+{
+   const struct hk_descriptor_set_binding_layout *binding_layout =
+      &set->layout->binding[binding];
+
+   if (binding_layout->immutable_samplers)
+      return binding_layout->immutable_samplers[elem];
+   else
+      return hk_sampler_from_handle(info->sampler);
+}
+
 /* G15's layout of a sampled image descriptor (hk_descriptor_set.h) */
 static void
 write_sampled_image_view_desc_g15(struct hk_descriptor_set *set,
@@ -133,27 +162,15 @@ write_sampled_image_view_desc_g15(struct hk_descriptor_set *set,
 
       plane_count = view->plane_count;
       for (uint8_t plane = 0; plane < plane_count; plane++) {
-         desc[plane].tex =
-            ia ? view->planes[plane].ia : view->planes[plane].sampled;
-
-         float min_lod = MAX2(view->vk.min_lod - view->vk.base_mip_level, 0.0);
-
-         desc[plane].min_lod_fp16 = _mesa_float_to_half(min_lod);
-         desc[plane].min_lod_uint16 = min_lod;
+         desc_view_plane(view, plane, ia, &desc[plane].tex,
+                         &desc[plane].min_lod_fp16,
+                         &desc[plane].min_lod_uint16);
       }
    }
 
    if (descriptor_type == VK_DESCRIPTOR_TYPE_SAMPLER ||
        descriptor_type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
-      const struct hk_descriptor_set_binding_layout *binding_layout =
-         &set->layout->binding[binding];
-
-      struct hk_sampler *sampler;
-      if (binding_layout->immutable_samplers) {
-         sampler = binding_layout->immutable_samplers[elem];
-      } else {
-         sampler = hk_sampler_from_handle(info->sampler);
-      }
+      struct hk_sampler *sampler = desc_sampler(set, binding, elem, info);
 
       plane_count = MAX2(plane_count, sampler->plane_count);
 
@@ -204,27 +221,15 @@ write_sampled_image_view_desc(struct hk_descriptor_set *set,
 
       plane_count = view->plane_count;
       for (uint8_t plane = 0; plane < plane_count; plane++) {
-         desc[plane].tex =
-            ia ? view->planes[plane].ia : view->planes[plane].sampled;
-
-         float min_lod = MAX2(view->vk.min_lod - view->vk.base_mip_level, 0.0);
-
-         desc[plane].min_lod_fp16 = _mesa_float_to_half(min_lod);
-         desc[plane].min_lod_uint16 = min_lod;
+         desc_view_plane(view, plane, ia, &desc[plane].tex,
+                         &desc[plane].min_lod_fp16,
+                         &desc[plane].min_lod_uint16);
       }
    }
 
    if (descriptor_type == VK_DESCRIPTOR_TYPE_SAMPLER ||
        descriptor_type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
-      const struct hk_descriptor_set_binding_layout *binding_layout =
-         &set->layout->binding[binding];
-
-      struct hk_sampler *sampler;
-      if (binding_layout->immutable_samplers) {
-         sampler = binding_layout->immutable_samplers[elem];
-      } else {
-         sampler = hk_sampler_from_handle(info->sampler);
-      }
+      struct hk_sampler *sampler = desc_sampler(set, binding, elem, info);
 
       if (sampler->has_border)
          assert(plane_count == 1);
