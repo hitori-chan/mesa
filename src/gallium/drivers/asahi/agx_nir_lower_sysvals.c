@@ -202,13 +202,8 @@ lower_intrinsic(nir_builder *b, nir_intrinsic_instr *intr,
       if (!opts->g15)
          return NULL;
 
-      /* G15 has no readable sample count (spec: draws.md, Multisampling):
-       * PPP_MULTISAMPLECTL holds one byte per sample from sample 0, none of
-       * them 0, so 1, 2 and 4 samples are told apart by its size */
       nir_def *ctl = load_sysval_root(b, 1, 32, &u->ppp_multisamplectl);
-      nir_def *log2 = nir_iadd(b, nir_b2i32(b, nir_uge_imm(b, ctl, 0x100)),
-                               nir_b2i32(b, nir_uge_imm(b, ctl, 0x10000)));
-      return nir_u2uN(b, log2, intr->def.bit_size);
+      return nir_u2uN(b, agx_nir_samples_log2_g15(b, ctl), intr->def.bit_size);
    }
    case nir_intrinsic_load_stat_query_address_poly:
       return load_sysval_root(
