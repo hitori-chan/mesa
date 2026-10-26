@@ -257,6 +257,66 @@ lower_store(nir_builder *b, nir_intrinsic_instr *intr)
    }
 }
 
+/*
+ * The value of n channels in a format G13's loads convert, in 32 bits, from
+ * G15's raw load of it: an integer per channel for the 8- and 16-bit formats
+ * (a 16-bit one either 16 bits or zero-extended), 4 for SRGBA8, and the packed
+ * word for RGB10A2, RG11B10F and RGB9E5 (a three-channel format's load of
+ * four, a blend's destination, reads alpha 1). lower_load_format_g15 in
+ * agx_compile.c converts device loads with it.
+ */
+nir_def *
+agx_nir_unpack_isa_format(nir_builder *b, nir_def *raw,
+                          enum ail_isa_format format, unsigned n)
+{
+   switch (format) {
+   case AIL_ISA_FORMAT_U8NORM:
+      return nir_format_unorm_to_float(b, raw, bits8);
+
+   case AIL_ISA_FORMAT_S8NORM:
+      return nir_format_snorm_to_float(
+         b, nir_format_sign_extend_ivec(b, raw, bits8), bits8);
+
+   case AIL_ISA_FORMAT_U16NORM:
+      return nir_format_unorm_to_float(b, nir_u2u32(b, raw), bits16);
+
+   case AIL_ISA_FORMAT_S16NORM: {
+      nir_def *s = raw->bit_size == 16
+                      ? nir_i2i32(b, raw)
+                      : nir_format_sign_extend_ivec(b, raw, bits16);
+      return nir_format_snorm_to_float(b, s, bits16);
+   }
+
+   case AIL_ISA_FORMAT_SRGBA8: {
+      nir_def *f = nir_format_unorm_to_float(b, raw, bits8);
+      nir_def *rgb = nir_format_srgb_to_linear(
+         b, channels(b, f, 0, MIN2(f->num_components, 3)));
+
+      if (f->num_components < 4)
+         return nir_trim_vector(b, rgb, n);
+
+      nir_def *c[4] = {nir_channel(b, rgb, 0), nir_channel(b, rgb, 1),
+                       nir_channel(b, rgb, 2), nir_channel(b, f, 3)};
+      return nir_trim_vector(b, nir_vec(b, c, 4), n);
+   }
+
+   case AIL_ISA_FORMAT_RGB10A2: {
+      nir_def *u = nir_format_unpack_uint(b, raw, bits1010102, 4);
+      return nir_trim_vector(b, nir_format_unorm_to_float(b, u, bits1010102),
+                             n);
+   }
+
+   case AIL_ISA_FORMAT_RG11B10F:
+      return resize_f32(b, nir_format_unpack_11f11f10f(b, raw), n);
+
+   case AIL_ISA_FORMAT_RGB9E5:
+      return resize_f32(b, nir_format_unpack_r9g9b9e5(b, raw), n);
+
+   default:
+      UNREACHABLE("not a converted format");
+   }
+}
+
 static bool
 lower_load(nir_builder *b, nir_intrinsic_instr *intr)
 {
@@ -288,56 +348,27 @@ lower_load(nir_builder *b, nir_intrinsic_instr *intr)
       break;
 
    case AIL_ISA_FORMAT_U8NORM:
-      res = nir_format_unorm_to_float(
-         b, unpack_bytes(b, load_bytes(b, intr, k, base), k), bits8);
+   case AIL_ISA_FORMAT_S8NORM:
+      res = agx_nir_unpack_isa_format(
+         b, unpack_bytes(b, load_bytes(b, intr, k, base), k), format, k);
       break;
-
-   case AIL_ISA_FORMAT_S8NORM: {
-      nir_def *s = nir_format_sign_extend_ivec(
-         b, unpack_bytes(b, load_bytes(b, intr, k, base), k), bits8);
-      res = nir_format_snorm_to_float(b, s, bits8);
-      break;
-   }
 
    case AIL_ISA_FORMAT_U16NORM:
-      res = nir_format_unorm_to_float(
-         b, nir_u2u32(b, load_raw(b, intr, k, 16, base, AIL_ISA_FORMAT_I16)),
-         bits16);
+   case AIL_ISA_FORMAT_S16NORM:
+      res = agx_nir_unpack_isa_format(
+         b, load_raw(b, intr, k, 16, base, AIL_ISA_FORMAT_I16), format, k);
       break;
 
-   case AIL_ISA_FORMAT_S16NORM: {
-      nir_def *s =
-         nir_i2i32(b, load_raw(b, intr, k, 16, base, AIL_ISA_FORMAT_I16));
-      res = nir_format_snorm_to_float(b, s, bits16);
+   case AIL_ISA_FORMAT_SRGBA8:
+      res = agx_nir_unpack_isa_format(
+         b, unpack_bytes(b, load_bytes(b, intr, 4, base), 4), format, k);
       break;
-   }
 
-   case AIL_ISA_FORMAT_SRGBA8: {
-      nir_def *f = nir_format_unorm_to_float(
-         b, unpack_bytes(b, load_bytes(b, intr, 4, base), 4), bits8);
-      nir_def *rgb = nir_format_srgb_to_linear(b, channels(b, f, 0, 3));
-      nir_def *c[4] = {nir_channel(b, rgb, 0), nir_channel(b, rgb, 1),
-                       nir_channel(b, rgb, 2), nir_channel(b, f, 3)};
-      res = nir_trim_vector(b, nir_vec(b, c, 4), k);
-      break;
-   }
-
-   case AIL_ISA_FORMAT_RGB10A2: {
-      nir_def *u = nir_format_unpack_uint(b, load_bytes(b, intr, 4, base),
-                                          bits1010102, 4);
-      res = nir_trim_vector(b, nir_format_unorm_to_float(b, u, bits1010102), k);
-      break;
-   }
-
-   /* Three channels: a load of four (a blend's destination) reads alpha 1 */
+   case AIL_ISA_FORMAT_RGB10A2:
    case AIL_ISA_FORMAT_RG11B10F:
-      res = resize_f32(
-         b, nir_format_unpack_11f11f10f(b, load_bytes(b, intr, 4, base)), k);
-      break;
-
    case AIL_ISA_FORMAT_RGB9E5:
-      res = resize_f32(
-         b, nir_format_unpack_r9g9b9e5(b, load_bytes(b, intr, 4, base)), k);
+      res =
+         agx_nir_unpack_isa_format(b, load_bytes(b, intr, 4, base), format, k);
       break;
 
    default:
