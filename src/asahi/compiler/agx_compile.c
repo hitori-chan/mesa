@@ -1125,24 +1125,36 @@ lower_load_format_g15(nir_builder *b, nir_intrinsic_instr *intr, void *data)
    enum pipe_format format = nir_intrinsic_format(intr);
    unsigned comps = intr->def.num_components;
    unsigned raw_comps = comps, raw_bits = 32;
-   enum pipe_format raw_format;
+   enum pipe_format raw_format = PIPE_FORMAT_R8_UINT;
+   enum ail_isa_format isa;
 
    switch (format) {
    case PIPE_FORMAT_R8_UNORM:
+      isa = AIL_ISA_FORMAT_U8NORM;
+      break;
    case PIPE_FORMAT_R8_SNORM:
+      isa = AIL_ISA_FORMAT_S8NORM;
+      break;
    case PIPE_FORMAT_R8G8B8A8_SRGB:
-      raw_format = PIPE_FORMAT_R8_UINT;
+      isa = AIL_ISA_FORMAT_SRGBA8;
       break;
    case PIPE_FORMAT_R16_UNORM:
+      isa = AIL_ISA_FORMAT_U16NORM;
+      raw_format = PIPE_FORMAT_R16_UINT;
+      break;
    case PIPE_FORMAT_R16_SNORM:
+      isa = AIL_ISA_FORMAT_S16NORM;
       raw_format = PIPE_FORMAT_R16_UINT;
       break;
    case PIPE_FORMAT_R16_FLOAT:
+      isa = AIL_ISA_FORMAT_F16;
       raw_format = PIPE_FORMAT_R16_UINT;
       raw_bits = 16;
       break;
    case PIPE_FORMAT_R10G10B10A2_UNORM:
    case PIPE_FORMAT_R11G11B10_FLOAT:
+      isa = format == PIPE_FORMAT_R10G10B10A2_UNORM ? AIL_ISA_FORMAT_RGB10A2
+                                                    : AIL_ISA_FORMAT_RG11B10F;
       raw_format = PIPE_FORMAT_R32_UINT;
       raw_comps = 1;
       break;
@@ -1168,50 +1180,11 @@ lower_load_format_g15(nir_builder *b, nir_intrinsic_instr *intr, void *data)
          .format = raw_format, .sign_extend = sign_extend);
    }
 
-   const unsigned bits8[4] = {8, 8, 8, 8}, bits16[4] = {16, 16, 16, 16};
-   const unsigned bits1010102[4] = {10, 10, 10, 2};
-   nir_def *value;
+   /* The conversion of a tile load (agx_nir_lower_tile_raw) */
+   nir_def *value = isa == AIL_ISA_FORMAT_F16
+                       ? raw
+                       : agx_nir_unpack_isa_format(b, raw, isa, comps);
 
-   switch (format) {
-   case PIPE_FORMAT_R8_UNORM:
-      value = nir_format_unorm_to_float(b, raw, bits8);
-      break;
-   case PIPE_FORMAT_R8_SNORM:
-      value = nir_format_snorm_to_float(
-         b, nir_format_sign_extend_ivec(b, raw, bits8), bits8);
-      break;
-   case PIPE_FORMAT_R16_UNORM:
-      value = nir_format_unorm_to_float(b, raw, bits16);
-      break;
-   case PIPE_FORMAT_R16_SNORM:
-      value = nir_format_snorm_to_float(
-         b, nir_format_sign_extend_ivec(b, raw, bits16), bits16);
-      break;
-   case PIPE_FORMAT_R16_FLOAT:
-      value = raw;
-      break;
-   case PIPE_FORMAT_R8G8B8A8_SRGB: {
-      nir_def *unorm = nir_format_unorm_to_float(b, raw, bits8);
-      nir_def *rgb = nir_format_srgb_to_linear(
-         b, nir_trim_vector(b, unorm, MIN2(comps, 3)));
-      value = comps > 3 ? nir_vector_insert_imm(b, nir_pad_vector(b, rgb, 4),
-                                                nir_channel(b, unorm, 3), 3)
-                        : rgb;
-      break;
-   }
-   case PIPE_FORMAT_R10G10B10A2_UNORM:
-      value = nir_format_unorm_to_float(
-         b, nir_format_unpack_uint(b, raw, bits1010102, 4), bits1010102);
-      break;
-   case PIPE_FORMAT_R11G11B10_FLOAT:
-      value = nir_pad_vector_imm_int(b, nir_format_unpack_11f11f10f(b, raw),
-                                     fui(1.0), 4);
-      break;
-   default:
-      UNREACHABLE("handled above");
-   }
-
-   value = nir_trim_vector(b, value, comps);
    if (format != PIPE_FORMAT_R16_FLOAT || intr->def.bit_size != 16)
       value = nir_f2fN(b, value, intr->def.bit_size);
 
