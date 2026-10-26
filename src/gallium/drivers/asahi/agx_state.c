@@ -3117,10 +3117,7 @@ agx_upload_textures(struct agx_batch *batch, struct agx_compiled_shader *cs,
       struct agx_sampler_view *tex = ctx->stage[stage].textures[i];
 
       if (tex == NULL) {
-         if (g15)
-            agx_set_null_texture_g15(TEX_DESC(i));
-         else
-            agx_set_null_texture(TEX_DESC(i));
+         agx_set_null_texture(TEX_DESC(i), g15);
          continue;
       }
 
@@ -3135,12 +3132,8 @@ agx_upload_textures(struct agx_batch *batch, struct agx_compiled_shader *cs,
       *TEX_DESC(i) = tex->desc;
    }
 
-   for (unsigned i = nr_active_textures; i < nr_textures; ++i) {
-      if (g15)
-         agx_set_null_texture_g15(TEX_DESC(i));
-      else
-         agx_set_null_texture(TEX_DESC(i));
-   }
+   for (unsigned i = nr_active_textures; i < nr_textures; ++i)
+      agx_set_null_texture(TEX_DESC(i), g15);
 
    for (unsigned i = 0; i < nr_images; ++i) {
       /* Image descriptors come in pairs after the textures */
@@ -3149,11 +3142,8 @@ agx_upload_textures(struct agx_batch *batch, struct agx_compiled_shader *cs,
          (struct agx_pbe_packed *)TEX_DESC(nr_textures + (2 * i) + 1);
 
       if (!(ctx->stage[stage].image_mask & BITFIELD_BIT(i))) {
-         if (g15)
-            agx_set_null_texture_g15(texture);
-         else
-            agx_set_null_texture(texture);
-         agx_set_null_pbe(pbe);
+         agx_set_null_texture(texture, g15);
+         agx_set_null_pbe(pbe, g15);
          continue;
       }
 
@@ -3180,7 +3170,7 @@ agx_upload_textures(struct agx_batch *batch, struct agx_compiled_shader *cs,
        */
       if (g15 && !(view->shader_access & PIPE_IMAGE_ACCESS_WRITE) &&
           rsrc->layout.compressed && util_res_sample_count(&rsrc->base) > 1)
-         agx_set_null_pbe(pbe);
+         agx_set_null_pbe(pbe, true);
       else
          agx_batch_upload_pbe(batch, pbe, view, false, false, false, false);
 
@@ -3463,27 +3453,12 @@ agx_build_pipeline(struct agx_batch *batch, struct agx_compiled_shader *cs,
    }
 
    if (dev->params.gpu_generation >= 15) {
-      struct agx_esl_code code = {
-         .va = cs->bo ? cs->bo->va->addr : 0,
-         .cpu = cs->bo ? agx_bo_map(cs->bo) : NULL,
-         .size = cs->b.info.binary_size,
-         .preamble_offset = cs->b.info.preamble_offset,
-         .preamble_size = cs->b.info.preamble_size,
-         .main_size = linked ? linked->main_size : cs->b.info.main_size,
-         .stack_size = cs->b.info.stack_size,
-         .cr_count = linked ? MAX2(linked->cr_count, cs->b.info.cr_count)
-                            : cs->b.info.cr_count,
-         .pix_wait_mask = linked ? linked->pix_wait_mask : 0,
-      };
+      struct agx_esl_code code = agx_esl_code_for_shader(
+         cs->bo ? cs->bo->va->addr : 0, cs->bo ? agx_bo_map(cs->bo) : NULL,
+         &cs->b.info, linked);
 
-      /* The hardware stage: geometry and tessellation run as compute kernels
-       * and a hardware vertex shader */
-      enum agx_esl_stage esl_stage =
-         phys_stage == MESA_SHADER_FRAGMENT ? AGX_ESL_FRAGMENT
-         : phys_stage == MESA_SHADER_VERTEX ? AGX_ESL_VERTEX
-                                            : AGX_ESL_COMPUTE;
-
-      uint64_t esl = agx_upload_esl(batch, t.cpu, &code, esl_stage);
+      uint64_t esl =
+         agx_upload_esl(batch, t.cpu, &code, agx_esl_stage_for(phys_stage));
       return esl ? agx_usc_addr(dev, esl) : 0;
    }
 
@@ -3501,15 +3476,11 @@ agx_launch_internal(struct agx_batch *batch, struct agx_grid grid,
 
    uint32_t *out = (uint32_t *)batch->cdm.current;
 
-   if (dev->params.gpu_generation >= 15) {
-      if (!usc) {
-         fprintf(stderr, "G15: dispatch skipped (no entry program)\n");
-      } else {
-         out = agx_cdm_launch_g15(out, grid, wg, dev->shader_base + usc);
-         out = agx_cdm_barrier(out, dev->chip);
-      }
+   if (dev->params.gpu_generation >= 15 && !usc) {
+      fprintf(stderr, "G15: dispatch skipped (no entry program)\n");
    } else {
-      out = agx_cdm_launch(out, dev->chip, grid, wg, launch, usc);
+      out = agx_cdm_launch(out, dev->chip, grid, wg, launch, dev->shader_base,
+                           usc);
       out = agx_cdm_barrier(out, dev->chip);
    }
 
@@ -3559,18 +3530,8 @@ agx_launch_precomp(struct agx_batch *batch, struct agx_grid grid,
 
    /* G15 launches the kernel's entry program, built from the words */
    if (dev->params.gpu_generation >= 15) {
-      const uint32_t *bin = dev->libagx_programs[program];
-      const struct agx_precompiled_kernel_info *info = (const void *)bin;
-      struct agx_esl_code code = {
-         .va = cs->ptr,
-         .cpu = (const uint8_t *)bin + sizeof(*info),
-         .size = info->binary_size,
-         .preamble_offset = info->preamble_offset,
-         .preamble_size = info->preamble_size,
-         .main_size = info->main_size,
-         .stack_size = info->stack_size,
-         .cr_count = info->cr_count,
-      };
+      struct agx_esl_code code =
+         agx_esl_code_for_precomp(cs->ptr, dev->libagx_programs[program]);
 
       uint64_t esl = agx_upload_esl(batch, t.cpu, &code, AGX_ESL_COMPUTE);
       usc = esl ? agx_usc_addr(dev, esl) : 0;
@@ -3842,17 +3803,10 @@ agx_build_bg_eot(struct agx_batch *batch, bool store, bool partial_render)
 
    /* G15 runs an entry program; usc is its VA */
    if (dev->params.gpu_generation >= 15) {
-      struct agx_esl_code code = {
-         .va = shader->ptr,
-         .cpu = (uint8_t *)agx_bo_map(shader->bo) +
-                (shader->ptr - shader->bo->va->addr),
-         .size = shader->info.binary_size,
-         .preamble_offset = shader->info.preamble_offset,
-         .preamble_size = shader->info.preamble_size,
-         .main_size = shader->info.main_size,
-         .stack_size = shader->info.stack_size,
-         .cr_count = shader->info.cr_count,
-      };
+      uint8_t *map = agx_bo_map(shader->bo);
+      struct agx_esl_code code = agx_esl_code_for_shader(
+         shader->ptr, map + (shader->ptr - shader->bo->va->addr), &shader->info,
+         NULL);
 
       ret.usc = agx_upload_esl(
          batch, t.cpu, &code, store ? AGX_ESL_END_OF_TILE : AGX_ESL_BACKGROUND);

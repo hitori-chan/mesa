@@ -1533,7 +1533,7 @@ lower_tex_min_lod_g15(nir_builder *b, nir_tex_instr *tex, void *data)
  * (lower_cube_g15): its footprint is that of the face coordinates, the quotient
  * rule's derivatives as nir_lower_tex's lower_gradient_cube_map takes them
  * (dEQP-VK textureQueryLod cubes read the direction's x and y as a 2D
- * coordinate). A null descriptor (agx_set_null_texture_g15, at the zero page)
+ * coordinate). A null descriptor (agx_set_null_texture, at the zero page)
  * queries 0, as G13's hardware query of it: its 1x1x1 size gave a fragment's 3D
  * query of gl_FragCoord.xyz, whose z slopes, a small positive LOD (dEQP-VK
  * robustness2's null_descriptor 3D fragment cases). Not verified on the
@@ -1673,8 +1673,11 @@ lower_tex_lod_g15(nir_builder *b, nir_tex_instr *tex, void *data)
  * address summed with a 32-bit register index. We model in NIR with the
  * bindless_image_agx intrinsic.
  */
+/* The index a bindless handle's source idx names in its table, and the table's
+ * base in *base */
 static agx_index
-agx_translate_bindless_handle(agx_builder *b, nir_src *handle, agx_index *base)
+agx_translate_bindless_index(agx_builder *b, nir_src *handle, agx_index *base,
+                             unsigned idx)
 {
    nir_intrinsic_instr *intr = nir_src_as_intrinsic(*handle);
 
@@ -1694,35 +1697,25 @@ agx_translate_bindless_handle(agx_builder *b, nir_src *handle, agx_index *base)
     * instructions index the table by an 8-bit immediate in their short form);
     * a larger one goes in a register, whose low half the instruction reads */
    if (b->shader->key->dev.gpu_generation >= 15 &&
-       nir_src_is_const(intr->src[0]) && nir_src_as_uint(intr->src[0]) < 256)
-      return agx_immediate(nir_src_as_uint(intr->src[0]));
+       nir_src_is_const(intr->src[idx]) &&
+       nir_src_as_uint(intr->src[idx]) < 256)
+      return agx_immediate(nir_src_as_uint(intr->src[idx]));
 
-   return agx_src_index(&intr->src[0]);
+   return agx_src_index(&intr->src[idx]);
+}
+
+static agx_index
+agx_translate_bindless_handle(agx_builder *b, nir_src *handle, agx_index *base)
+{
+   return agx_translate_bindless_index(b, handle, base, 0);
 }
 
 /* G15: a sampler handle (bindless_sampler_agx) as an index into the sampler
- * table at the "descriptor set" uniform pair, a constant below 256 as an
- * immediate */
+ * table at the "descriptor set" uniform pair */
 static agx_index
 agx_translate_sampler_g15(agx_builder *b, nir_src *handle, agx_index *base)
 {
-   nir_intrinsic_instr *intr = nir_src_as_intrinsic(*handle);
-
-   /* a table base in registers (lower_wide_texture_index_g15) */
-   if (intr->intrinsic == nir_intrinsic_bindless_image_base_agx) {
-      b->shader->g15_tex_base = true;
-      *base = agx_src_index(&intr->src[1]);
-      return agx_src_index(&intr->src[0]);
-   }
-
-   assert(intr->intrinsic == nir_intrinsic_bindless_sampler_agx);
-
-   *base = agx_uniform(nir_intrinsic_desc_set(intr), AGX_SIZE_64);
-
-   if (nir_src_is_const(intr->src[1]) && nir_src_as_uint(intr->src[1]) < 256)
-      return agx_immediate(nir_src_as_uint(intr->src[1]));
-
-   return agx_src_index(&intr->src[1]);
+   return agx_translate_bindless_index(b, handle, base, 1);
 }
 
 /* G15: a texture or sampler table base in registers, or in a uniform pair the

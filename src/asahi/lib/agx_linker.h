@@ -7,6 +7,7 @@
 
 #include "agx_bo.h"
 #include "agx_compile.h"
+#include "agx_esl.h"
 #include "agx_nir_lower_vbo.h"
 #include "agx_pack.h"
 #include "nir_lower_blend.h"
@@ -62,6 +63,56 @@ void agx_fast_link(struct agx_linked_shader *linked, struct agx_device *dev,
                    bool fragment, struct agx_shader_part *main,
                    struct agx_shader_part *prolog,
                    struct agx_shader_part *epilog, unsigned nr_samples_shaded);
+
+/* The code of a shader at va, its binary at cpu. A shader linked into a
+ * program (linked, NULL for none) loads the program's main part. */
+static inline struct agx_esl_code
+agx_esl_code_for_shader(uint64_t va, const uint8_t *cpu,
+                        const struct agx_shader_info *info,
+                        const struct agx_linked_shader *linked)
+{
+   bool l = linked && linked->bo;
+
+   return (struct agx_esl_code){
+      .va = va,
+      .cpu = cpu,
+      .size = info->binary_size,
+      .preamble_offset = info->preamble_offset,
+      .preamble_size = info->preamble_size,
+      .main_size = l ? linked->main_size : info->main_size,
+      .stack_size = info->stack_size,
+      .cr_count = l ? MAX2(linked->cr_count, info->cr_count) : info->cr_count,
+      .pix_wait_mask = linked ? linked->pix_wait_mask : 0,
+   };
+}
+
+/* The code of a libagx kernel at va, bin as asahi_clc stores it */
+static inline struct agx_esl_code
+agx_esl_code_for_precomp(uint64_t va, const uint32_t *bin)
+{
+   const struct agx_precompiled_kernel_info *info = (const void *)bin;
+
+   return (struct agx_esl_code){
+      .va = va,
+      .cpu = (const uint8_t *)(info + 1),
+      .size = info->binary_size,
+      .preamble_offset = info->preamble_offset,
+      .preamble_size = info->preamble_size,
+      .main_size = info->main_size,
+      .stack_size = info->stack_size,
+      .cr_count = info->cr_count,
+   };
+}
+
+/* The hardware stage of a shader: geometry and tessellation run as compute
+ * kernels and a hardware vertex shader */
+static inline enum agx_esl_stage
+agx_esl_stage_for(mesa_shader_stage stage)
+{
+   return stage == MESA_SHADER_FRAGMENT ? AGX_ESL_FRAGMENT
+          : stage == MESA_SHADER_VERTEX ? AGX_ESL_VERTEX
+                                        : AGX_ESL_COMPUTE;
+}
 
 /* These parts of the vertex element affect the generated code */
 struct agx_velem_key {

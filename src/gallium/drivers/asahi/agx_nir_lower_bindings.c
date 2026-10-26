@@ -21,42 +21,27 @@
  *    2. Images (read/write interleaved)
  */
 
-static bool
-lower_sampler(nir_builder *b, nir_tex_instr *tex)
-{
-   if (!nir_tex_instr_need_sampler(tex))
-      return false;
-
-   nir_def *index = nir_steal_tex_src(tex, nir_tex_src_sampler_offset);
-   if (!index)
-      index = nir_imm_int(b, tex->sampler_index);
-
-   nir_tex_instr_add_src(tex, nir_tex_src_sampler_handle,
-                         nir_load_sampler_handle_agx(b, index));
-   return true;
-}
-
 /*
  * G15 has no sampler state registers: a texture instruction names its sampler
  * by index into the stage's sampler table (entry 0 the txf sampler, API
  * sampler i at i + 1), whose base the instruction takes from a uniform pair.
  */
 static bool
-lower_sampler_g15(nir_builder *b, nir_tex_instr *tex)
+lower_sampler(nir_builder *b, nir_tex_instr *tex, bool g15)
 {
    bool txf = tex->op == nir_texop_txf || tex->op == nir_texop_txf_ms;
 
    if (nir_tex_instr_src_index(tex, nir_tex_src_sampler_handle) >= 0 ||
-       !(nir_tex_instr_need_sampler(tex) || txf))
+       !(nir_tex_instr_need_sampler(tex) || (g15 && txf)))
       return false;
 
    nir_def *index = nir_steal_tex_src(tex, nir_tex_src_sampler_offset);
    if (!nir_tex_instr_need_sampler(tex))
       index = nir_imm_int(b, 0);
    else if (!index)
-      index = nir_imm_int(b, tex->sampler_index + 1);
+      index = nir_imm_int(b, tex->sampler_index + g15);
    else
-      index = nir_iadd_imm(b, index, 1);
+      index = nir_iadd_imm(b, index, g15);
 
    nir_tex_instr_add_src(tex, nir_tex_src_sampler_handle,
                          nir_load_sampler_handle_agx(b, index));
@@ -141,12 +126,12 @@ lower(nir_builder *b, nir_instr *instr, void *data)
       nir_tex_instr *tex = nir_instr_as_tex(instr);
 
       if (state->g15) {
-         progress |= lower_sampler_g15(b, tex);
+         progress |= lower_sampler(b, tex, true);
       } else if (((BITSET_COUNT(b->shader->info.samplers_used) > 16) &&
                   (nir_tex_instr_src_index(tex, nir_tex_src_sampler_offset) >=
                       0 ||
                    tex->sampler_index >= 16)) &&
-                 lower_sampler(b, tex)) {
+                 lower_sampler(b, tex, false)) {
          progress = true;
          *uses_bindless_samplers = true;
       }
@@ -182,7 +167,7 @@ lower(nir_builder *b, nir_instr *instr, void *data)
 
 /*
  * G15 has no image load: an image is read with a txf of its texture descriptor
- * (agx_nir_image_load_to_txf_g15), the layer robust. A txf may be combined
+ * (agx_nir_lower_image_load_g15), the layer robust. A txf may be combined
  * with another or moved past an image write, so only a load that may be
  * reordered becomes one; another keeps its order as an intrinsic, the txf
  * sampler in the sample index's place, or the LOD's for a multisampled image
@@ -194,21 +179,8 @@ lower_image_load_g15(nir_builder *b, nir_intrinsic_instr *intr)
    if (intr->intrinsic != nir_intrinsic_bindless_image_load)
       return false;
 
-   if (nir_intrinsic_image_dim(intr) == GLSL_SAMPLER_DIM_MS) {
-      nir_src_rewrite(&intr->src[3],
-                      nir_load_sampler_handle_agx(b, nir_imm_int(b, 0)));
-      return true;
-   }
-
-   if (!(nir_intrinsic_access(intr) & ACCESS_CAN_REORDER)) {
-      nir_src_rewrite(&intr->src[2],
-                      nir_load_sampler_handle_agx(b, nir_imm_int(b, 0)));
-      return true;
-   }
-
-   nir_tex_instr *tex = agx_nir_image_load_to_txf_g15(b, intr, NULL);
-   b->cursor = nir_before_instr(&tex->instr);
-   lower_sampler_g15(b, tex);
+   agx_nir_lower_image_load_g15(
+      b, intr, nir_load_sampler_handle_agx(b, nir_imm_int(b, 0)));
    return true;
 }
 
@@ -223,7 +195,7 @@ lower_txf_sampler_g15(nir_builder *b, nir_instr *instr, UNUSED void *data)
    if (instr->type != nir_instr_type_tex)
       return false;
 
-   return lower_sampler_g15(b, nir_instr_as_tex(instr));
+   return lower_sampler(b, nir_instr_as_tex(instr), true);
 }
 
 /*

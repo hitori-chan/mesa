@@ -143,10 +143,11 @@ libagx_decompress(constant struct libagx_decompress_images *images,
    }
 }
 
-uint64_t libagx_image_texel_address_g15(
-   constant const struct agx_pbe_packed *ptr, uint4 coord, uint sample_idx,
-   uint bytes_per_sample_B, bool is_1d, bool is_msaa, bool is_layered,
-   bool return_index);
+uint64_t libagx_image_texel_address(constant const struct agx_pbe_packed *ptr,
+                                    uint4 coord, uint sample_idx,
+                                    uint bytes_per_sample_B, bool is_1d,
+                                    bool is_msaa, bool is_layered,
+                                    bool return_index, bool g15);
 
 /*
  * G15: the handles index the table of 32 B entries at the first argument
@@ -154,7 +155,7 @@ uint64_t libagx_image_texel_address_g15(
  * sampler in the sample index's place, or the LOD's for a multisampled image
  * (agx_emit_image_load). A multisampled image is written through the linear
  * 2D view of its samples its uncompressed PBE describes, at the index
- * libagx_image_texel_address_g15 computes from the PBE's software word, as
+ * libagx_image_texel_address computes from the PBE's software word, as
  * agx_nir_lower_multisampled_image_store lowers a store.
  */
 KERNEL(32)
@@ -205,9 +206,10 @@ libagx_decompress_g15(constant struct libagx_decompress_images_g15 *images,
                                   GLSL_SAMPLER_DIM_2D, true, 0,
                                   ACCESS_NON_READABLE, nir_type_uint32);
       } else {
-         uint index_sa = libagx_image_texel_address_g15(
+         uint index_sa = libagx_image_texel_address(
             &images->uncompressed, as_uint4(decompose_px(c_sa, samples)),
-            sample_id(c_sa, samples), blocksize_B, false, true, true, true);
+            sample_id(c_sa, samples), blocksize_B, false, true, true, true,
+            true);
 
          int4 c = (int4)(index_sa % AGX_TEXTURE_BUFFER_WIDTH,
                          index_sa / AGX_TEXTURE_BUFFER_WIDTH, 0, 0);
