@@ -1741,7 +1741,7 @@ a3_tex_has_layer_word(const agx_instr *I)
 /* The cr slot of IR coordinate word c (smp.md, Dimensions and arrays): the
  * spatial coordinates in slots 0-2, the layer word in slot 3 (a 2D array's
  * layer in slot 2 is ignored), but a multisampled read's word (the sample
- * index at bit 12, an array's layer below it, lower_ms_index_g15) right
+ * index at bit 12, an array's layer below it, lower_regular_texture) right
  * after y, in slot 2 (in slot 3 both are ignored) */
 static unsigned
 a3_tex_slot(const agx_instr *I, unsigned c)
@@ -1754,7 +1754,7 @@ a3_tex_slot(const agx_instr *I, unsigned c)
 
 /* The offset of I that is not F42's immediate: the IR's offset word (with a
  * compare, the second word of the reference's pair), in the LOD word's
- * layout (lower_tex_offset_g15) */
+ * layout (lower_regular_texture) */
 static agx_index
 a3_tex_offset_word(const agx_instr *I)
 {
@@ -1942,8 +1942,8 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
     * Apple's for both) or a fetch's 16-bit level (mode 0xe, s16 to q5.6), at
     * bits 16:27; with none, the layer clamped to 0x7ff (mode 4, Apple's code
     * 4 at position 0); its C the offset word or the layer, ORed in. An
-    * array's offset word already holds the layer (lower_tex_offset_g15 in
-    * agx_compile.c), which a LOD and an offset need: C is one register */
+    * array's offset word already holds the layer (lower_regular_texture),
+    * which a LOD and an offset need: C is one register */
    if (word) {
       agx_index pa = lodw ? lod : layer;
       agx_index pc = off_word ? offset : lodw ? layer : agx_null();
