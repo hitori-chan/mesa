@@ -248,7 +248,7 @@ load_memory(nir_builder *b, unsigned bindless_base, unsigned nr_samples,
    if (g15) {
       nir_def *sampler = nir_bindless_sampler_agx(
          b, nir_imm_int(b, 0),
-         nir_imm_intN_t(b, bindless_base + 2 * AGX_MAX_RENDER_TARGETS, 16),
+         nir_imm_intN_t(b, bindless_base + AGX_SPILL_TXF_G15, 16),
          .desc_set = 0);
 
       if (dim == GLSL_SAMPLER_DIM_MS)
