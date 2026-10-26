@@ -241,41 +241,20 @@ load_memory(nir_builder *b, unsigned bindless_base, unsigned nr_samples,
    /* Ensure pixels below this one have written out their results */
    nir_begin_invocation_interlock(b);
 
+   /* G15 reads an image with the txf sampler, after the render targets'
+    * entries in the same table: in the sample's place, or the LOD's for a
+    * multisampled image (lower_image_load_g15). The load stays in order with
+    * the earlier invocations' stores, which a txf does not. */
    if (g15) {
-      /* G15 has no image load: a fetch of the texture descriptor with the
-       * txf sampler after the render targets' entries, in the same table */
       nir_def *sampler = nir_bindless_sampler_agx(
          b, nir_imm_int(b, 0),
          nir_imm_intN_t(b, bindless_base + 2 * AGX_MAX_RENDER_TARGETS, 16),
          .desc_set = 0);
-      bool ms = dim == GLSL_SAMPLER_DIM_MS;
-      nir_alu_type T = util_format_is_pure_sint(format)   ? nir_type_int32
-                       : util_format_is_pure_uint(format) ? nir_type_uint32
-                                                          : nir_type_float32;
 
-      nir_tex_instr *tex = nir_tex_instr_create(b->shader, ms ? 4 : 3);
-      tex->op = ms ? nir_texop_txf_ms : nir_texop_txf;
-      tex->sampler_dim = dim;
-      tex->is_array = true;
-      tex->coord_components = 3;
-      tex->dest_type = T;
-      tex->src[0] =
-         nir_tex_src_for_ssa(nir_tex_src_coord, nir_trim_vector(b, coords, 3));
-      tex->src[1] = nir_tex_src_for_ssa(nir_tex_src_texture_handle, image);
-      tex->src[2] = nir_tex_src_for_ssa(nir_tex_src_sampler_handle, sampler);
-      if (ms) {
-         tex->src[3] =
-            nir_tex_src_for_ssa(nir_tex_src_ms_index, nir_u2u32(b, sample));
-      }
-
-      nir_def_init(&tex->instr, &tex->def, 4, 32);
-      nir_builder_instr_insert(b, &tex->instr);
-
-      nir_def *v = nir_trim_vector(b, &tex->def, comps);
-      if (bit_size == 32)
-         return v;
-      return T == nir_type_float32 ? nir_f2fN(b, v, bit_size)
-                                   : nir_u2uN(b, v, bit_size);
+      if (dim == GLSL_SAMPLER_DIM_MS)
+         lod = sampler;
+      else
+         sample = sampler;
    }
 
    return nir_bindless_image_load(b, comps, bit_size, image, coords, sample,
