@@ -1815,15 +1815,22 @@ agx_invalidate_resource(struct pipe_context *pctx,
    struct agx_resource *rsrc = agx_resource(resource);
    struct agx_batch *batch = agx_get_batch(ctx);
 
-   /* Handle the glInvalidateFramebuffer case */
-   if (batch->key.zsbuf.texture == resource)
+   /* Handle the glInvalidateFramebuffer case: the batch, initialized when it
+    * was bound, need neither load nor store the target. A partial render's
+    * background program loads regardless.
+    */
+   if (batch->key.zsbuf.texture == resource) {
       batch->resolve &= ~PIPE_CLEAR_DEPTHSTENCIL;
+      batch->load &= ~PIPE_CLEAR_DEPTHSTENCIL;
+   }
 
    for (unsigned i = 0; i < batch->key.nr_cbufs; ++i) {
       const struct pipe_surface *surf = &batch->key.cbufs[i];
 
-      if (surf->texture == resource)
+      if (surf->texture == resource) {
          batch->resolve &= ~(PIPE_CLEAR_COLOR0 << i);
+         batch->load &= ~(PIPE_CLEAR_COLOR0 << i);
+      }
    }
 
    /* The next draw stores what it renders again */
