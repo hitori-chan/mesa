@@ -6,6 +6,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include "asahi/layout/layout.h"
 
 struct nir_shader;
 struct nir_instr;
@@ -28,6 +29,10 @@ bool agx_nir_lower_subgroups(struct nir_shader *s, bool g15);
 bool agx_nir_lower_fminmax(struct nir_shader *s);
 bool agx_nir_lower_tile_raw(struct nir_shader *s, unsigned nr_samples,
                             bool mask_coverage);
+struct nir_def *agx_nir_unpack_isa_format(struct nir_builder *b,
+                                          struct nir_def *raw,
+                                          enum ail_isa_format format,
+                                          unsigned n);
 
 bool agx_nir_lower_texture_early(struct nir_shader *s, bool support_lod_bias);
 bool agx_nir_lower_texture(struct nir_shader *s);
