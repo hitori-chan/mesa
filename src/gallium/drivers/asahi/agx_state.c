@@ -3463,27 +3463,12 @@ agx_build_pipeline(struct agx_batch *batch, struct agx_compiled_shader *cs,
    }
 
    if (dev->params.gpu_generation >= 15) {
-      struct agx_esl_code code = {
-         .va = cs->bo ? cs->bo->va->addr : 0,
-         .cpu = cs->bo ? agx_bo_map(cs->bo) : NULL,
-         .size = cs->b.info.binary_size,
-         .preamble_offset = cs->b.info.preamble_offset,
-         .preamble_size = cs->b.info.preamble_size,
-         .main_size = linked ? linked->main_size : cs->b.info.main_size,
-         .stack_size = cs->b.info.stack_size,
-         .cr_count = linked ? MAX2(linked->cr_count, cs->b.info.cr_count)
-                            : cs->b.info.cr_count,
-         .pix_wait_mask = linked ? linked->pix_wait_mask : 0,
-      };
+      struct agx_esl_code code = agx_esl_code_for_shader(
+         cs->bo ? cs->bo->va->addr : 0, cs->bo ? agx_bo_map(cs->bo) : NULL,
+         &cs->b.info, linked);
 
-      /* The hardware stage: geometry and tessellation run as compute kernels
-       * and a hardware vertex shader */
-      enum agx_esl_stage esl_stage =
-         phys_stage == MESA_SHADER_FRAGMENT ? AGX_ESL_FRAGMENT
-         : phys_stage == MESA_SHADER_VERTEX ? AGX_ESL_VERTEX
-                                            : AGX_ESL_COMPUTE;
-
-      uint64_t esl = agx_upload_esl(batch, t.cpu, &code, esl_stage);
+      uint64_t esl =
+         agx_upload_esl(batch, t.cpu, &code, agx_esl_stage_for(phys_stage));
       return esl ? agx_usc_addr(dev, esl) : 0;
    }
 
@@ -3555,18 +3540,8 @@ agx_launch_precomp(struct agx_batch *batch, struct agx_grid grid,
 
    /* G15 launches the kernel's entry program, built from the words */
    if (dev->params.gpu_generation >= 15) {
-      const uint32_t *bin = dev->libagx_programs[program];
-      const struct agx_precompiled_kernel_info *info = (const void *)bin;
-      struct agx_esl_code code = {
-         .va = cs->ptr,
-         .cpu = (const uint8_t *)bin + sizeof(*info),
-         .size = info->binary_size,
-         .preamble_offset = info->preamble_offset,
-         .preamble_size = info->preamble_size,
-         .main_size = info->main_size,
-         .stack_size = info->stack_size,
-         .cr_count = info->cr_count,
-      };
+      struct agx_esl_code code =
+         agx_esl_code_for_precomp(cs->ptr, dev->libagx_programs[program]);
 
       uint64_t esl = agx_upload_esl(batch, t.cpu, &code, AGX_ESL_COMPUTE);
       usc = esl ? agx_usc_addr(dev, esl) : 0;
@@ -3838,17 +3813,10 @@ agx_build_bg_eot(struct agx_batch *batch, bool store, bool partial_render)
 
    /* G15 runs an entry program; usc is its VA */
    if (dev->params.gpu_generation >= 15) {
-      struct agx_esl_code code = {
-         .va = shader->ptr,
-         .cpu = (uint8_t *)agx_bo_map(shader->bo) +
-                (shader->ptr - shader->bo->va->addr),
-         .size = shader->info.binary_size,
-         .preamble_offset = shader->info.preamble_offset,
-         .preamble_size = shader->info.preamble_size,
-         .main_size = shader->info.main_size,
-         .stack_size = shader->info.stack_size,
-         .cr_count = shader->info.cr_count,
-      };
+      uint8_t *map = agx_bo_map(shader->bo);
+      struct agx_esl_code code = agx_esl_code_for_shader(
+         shader->ptr, map + (shader->ptr - shader->bo->va->addr), &shader->info,
+         NULL);
 
       ret.usc = agx_upload_esl(
          batch, t.cpu, &code, store ? AGX_ESL_END_OF_TILE : AGX_ESL_BACKGROUND);

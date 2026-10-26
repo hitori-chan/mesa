@@ -273,16 +273,9 @@ hk_bg_eot_esl(struct hk_cmd_buffer *cmd, const uint8_t *usc,
               struct agx_bg_eot_shader *shader, enum agx_esl_stage stage)
 {
    uint8_t *map = agx_bo_map(shader->bo);
-   struct agx_esl_code code = {
-      .va = shader->ptr,
-      .cpu = map + (shader->ptr - shader->bo->va->addr),
-      .size = shader->info.binary_size,
-      .preamble_offset = shader->info.preamble_offset,
-      .preamble_size = shader->info.preamble_size,
-      .main_size = shader->info.main_size,
-      .stack_size = shader->info.stack_size,
-      .cr_count = shader->info.cr_count,
-   };
+   struct agx_esl_code code = agx_esl_code_for_shader(
+      shader->ptr, map + (shader->ptr - shader->bo->va->addr), &shader->info,
+      NULL);
 
    return hk_upload_esl_va(cmd, &code, stage, usc);
 }
