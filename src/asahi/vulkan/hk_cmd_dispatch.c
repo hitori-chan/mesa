@@ -64,18 +64,13 @@ hk_dispatch_with_usc_launch(struct hk_device *dev, struct hk_cs *cs,
    hk_ensure_cs_has_space(cs->cmd, cs, 0x2000 /* TODO */);
    cs->stats.cmds++;
 
-   if (dev->dev.params.gpu_generation >= 15) {
-      if (!usc) {
-         fprintf(stderr, "G15: dispatch skipped (no entry program)\n");
-         return;
-      }
-
-      cs->current =
-         agx_cdm_launch_g15(cs->current, grid, wg, dev->dev.shader_base + usc);
-   } else {
-      cs->current =
-         agx_cdm_launch(cs->current, dev->dev.chip, grid, wg, launch, usc);
+   if (dev->dev.params.gpu_generation >= 15 && !usc) {
+      fprintf(stderr, "G15: dispatch skipped (no entry program)\n");
+      return;
    }
+
+   cs->current = agx_cdm_launch(cs->current, dev->dev.chip, grid, wg, launch,
+                                dev->dev.shader_base, usc);
 
    hk_cdm_cache_flush(dev, cs);
 }
