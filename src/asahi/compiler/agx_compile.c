@@ -1533,7 +1533,7 @@ lower_tex_min_lod_g15(nir_builder *b, nir_tex_instr *tex, void *data)
  * (lower_cube_g15): its footprint is that of the face coordinates, the quotient
  * rule's derivatives as nir_lower_tex's lower_gradient_cube_map takes them
  * (dEQP-VK textureQueryLod cubes read the direction's x and y as a 2D
- * coordinate). A null descriptor (agx_set_null_texture_g15, at the zero page)
+ * coordinate). A null descriptor (agx_set_null_texture, at the zero page)
  * queries 0, as G13's hardware query of it: its 1x1x1 size gave a fragment's 3D
  * query of gl_FragCoord.xyz, whose z slopes, a small positive LOD (dEQP-VK
  * robustness2's null_descriptor 3D fragment cases). Not verified on the
