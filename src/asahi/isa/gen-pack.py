@@ -18,9 +18,8 @@
 # assembles the operand value with agx3_case_value; agx3_pack then
 # deposits the value into the instruction.
 #
-# The logic is verified by the round-trip against cases-agx3.txt, the A1
-# corpus checked against applegpu (work/scratch/agx3/test-pack.py runs
-# the same operations in Python; the C test runs this header): every
+# The logic is verified by the round-trip against cases-agx3.txt, a
+# corpus checked against applegpu (the C test runs this header): every
 # corpus encoding must round-trip, and every operand value must
 # decompose to exactly one case.
 
