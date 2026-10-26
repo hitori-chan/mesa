@@ -101,8 +101,7 @@ agx_g15_stale_uniform_base(agx_context *ctx, agx_instr *I, unsigned s)
       return false;
    }
 
-   return s == base_src && I->src[s].type == AGX_INDEX_UNIFORM &&
-          I->src[s].value >= ctx->key->reserved_preamble;
+   return s == base_src && I->src[s].value >= ctx->key->reserved_preamble;
 }
 
 /*
@@ -116,7 +115,7 @@ agx_g15_stale_uniform_base(agx_context *ctx, agx_instr *I, unsigned s)
 static bool
 agx_g15_register_only(agx_context *ctx, agx_instr *I, unsigned s)
 {
-   if (ctx->key->dev.gpu_generation < 15 || I->src[s].type != AGX_INDEX_UNIFORM)
+   if (ctx->key->dev.gpu_generation < 15)
       return false;
 
    switch (I->op) {
@@ -148,14 +147,6 @@ agx_lower_uniform_sources(agx_context *ctx)
       agx_builder b = agx_init_builder(ctx, agx_before_instr(I));
 
       agx_foreach_src(I, s) {
-         if (agx_g15_stale_uniform_base(ctx, I, s) ||
-             agx_g15_register_only(ctx, I, s)) {
-            agx_index idx = I->src[s];
-            idx.abs = idx.neg = false;
-            agx_replace_src(I, s, agx_mov(&b, idx));
-            continue;
-         }
-
          /* G15's block write takes its descriptor's address in a uniform
           * pair (its 7-bit field reaches the low half only) */
          if (I->op == AGX_OPCODE_BLOCK_IMAGE_STORE && s == 0 &&
@@ -165,8 +156,10 @@ agx_lower_uniform_sources(agx_context *ctx)
             continue;
 
          if (I->src[s].type == AGX_INDEX_UNIFORM &&
-             !agx_instr_accepts_uniform(I->op, s, I->src[s].value,
-                                        I->src[s].size)) {
+             (!agx_instr_accepts_uniform(I->op, s, I->src[s].value,
+                                         I->src[s].size) ||
+              agx_g15_stale_uniform_base(ctx, I, s) ||
+              agx_g15_register_only(ctx, I, s))) {
 
             agx_index idx = I->src[s];
             idx.abs = idx.neg = false;
