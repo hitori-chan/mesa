@@ -20,13 +20,6 @@
  * barriers. It also minimizes launched threads, accelerating the early exit.
  */
 
-/* Our compiler represents a bindless handle as a uint2 of a uniform base and an
- * offset in bytes. Since the descriptors are all in the u0_u1 push, the former
- * is hardcoded and the latter is an offsetof.
- */
-#define HANDLE(field)                                                          \
-   nir_bindless_image_agx(offsetof(struct libagx_decompress_images, field), 0)
-
 /*
  * The metadata buffer is fully twiddled, so interleave the X/Y coordinate bits.
  * While dimensions are padded to powers-of-two, they are not padded to a
@@ -73,15 +66,32 @@ sample_id(int4 c, uint samples)
       return c.y & 1;
 }
 
-KERNEL(32)
-libagx_decompress(constant struct libagx_decompress_images *images,
-                  global uint64_t *metadata, uint64_t tile_uncompressed,
-                  uint32_t metadata_layer_stride_tl, uint16_t metadata_width_tl,
-                  uint16_t metadata_height_tl,
-                  uint log2_samples__3 /* 1x, 2x, 4x */)
-{
-   uint samples = 1 << log2_samples__3;
+uint64_t libagx_image_texel_address(constant const struct agx_pbe_packed *ptr,
+                                    uint4 coord, uint sample_idx,
+                                    uint bytes_per_sample_B, bool is_1d,
+                                    bool is_msaa, bool is_layered,
+                                    bool return_index, bool g15);
 
+/*
+ * One tile, both generations' kernels. Our compiler represents a bindless
+ * handle as a uint2 of a uniform base and an offset. Since the descriptors are
+ * all in the u0_u1 push, the former is hardcoded and the latter is
+ * compressed_h or uncompressed_h: an offsetof on G13, an index of 32 B entries
+ * on G15. G15 names the txf sampler in an image load: in the sample index's
+ * place, or the LOD's for a multisampled image (agx_emit_image_load). G15 has
+ * no multisampled image write: it writes the linear 2D view of the samples
+ * its uncompressed PBE (pbe_g15) describes, at the index
+ * libagx_image_texel_address computes from the PBE's software word, as
+ * agx_nir_lower_multisampled_image_store lowers a store.
+ */
+static void
+decompress_tile(uint compressed_h, uint uncompressed_h,
+                constant struct agx_pbe_packed *pbe_g15,
+                global uint64_t *metadata, uint64_t tile_uncompressed,
+                uint32_t metadata_layer_stride_tl, uint16_t metadata_width_tl,
+                uint16_t metadata_height_tl, uint blocksize_B, uint samples,
+                bool g15)
+{
    /* Index into the metadata buffer */
    uint index_tl = index_metadata(cl_group_id, metadata_width_tl,
                                   metadata_height_tl, metadata_layer_stride_tl);
@@ -89,6 +99,10 @@ libagx_decompress(constant struct libagx_decompress_images *images,
    /* If the tile is already uncompressed, there's nothing to do. */
    if (metadata[index_tl] == tile_uncompressed)
       return;
+
+   uint compressed = nir_bindless_image_agx(compressed_h, 0);
+   uint uncompressed = nir_bindless_image_agx(uncompressed_h, 0);
+   uint txf = g15 ? nir_bindless_sampler_agx(2 * 32, 2, 0) : 0;
 
    /* Tiles are 16x16 */
    uint2 coord_sa = (cl_group_id.xy * 16);
@@ -106,15 +120,14 @@ libagx_decompress(constant struct libagx_decompress_images *images,
    for (uint i = 0; i < 8; ++i) {
       int4 c_sa = img_coord_sa + (int4)(i, 0, 0, 0);
       if (samples == 1) {
-         texels[i] = nir_bindless_image_load(
-            HANDLE(compressed), c_sa, 0, 0, GLSL_SAMPLER_DIM_2D, true, 0,
-            ACCESS_IN_BOUNDS, nir_type_uint32);
+         texels[i] = nir_bindless_image_load(compressed, c_sa, txf, 0,
+                                             GLSL_SAMPLER_DIM_2D, true, 0,
+                                             ACCESS_IN_BOUNDS, nir_type_uint32);
       } else {
          int4 dec_px = decompose_px(c_sa, samples);
          texels[i] = nir_bindless_image_load(
-            HANDLE(compressed), dec_px, sample_id(c_sa, samples), 0,
-            GLSL_SAMPLER_DIM_MS, true, 0, ACCESS_IN_BOUNDS,
-            nir_type_uint32);
+            compressed, dec_px, sample_id(c_sa, samples), txf,
+            GLSL_SAMPLER_DIM_MS, true, 0, ACCESS_IN_BOUNDS, nir_type_uint32);
       }
    }
 
@@ -124,90 +137,12 @@ libagx_decompress(constant struct libagx_decompress_images *images,
    for (uint i = 0; i < 8; ++i) {
       int4 c_sa = img_coord_sa + (int4)(i, 0, 0, 0);
       if (samples == 1) {
-         nir_bindless_image_store(HANDLE(uncompressed), c_sa, 0, texels[i], 0,
-                                  GLSL_SAMPLER_DIM_2D, true, 0,
-                                  ACCESS_NON_READABLE, nir_type_uint32);
-      } else {
-         int4 dec_px = decompose_px(c_sa, samples);
-
-         nir_bindless_image_store(HANDLE(uncompressed), dec_px,
-                                  sample_id(c_sa, samples), texels[i], 0,
-                                  GLSL_SAMPLER_DIM_MS, true, 0,
-                                  ACCESS_NON_READABLE, nir_type_uint32);
-      }
-   }
-
-   /* We've replaced the body buffer. Mark the tile as uncompressed. */
-   if (cl_local_id.x == 0) {
-      metadata[index_tl] = tile_uncompressed;
-   }
-}
-
-uint64_t libagx_image_texel_address(constant const struct agx_pbe_packed *ptr,
-                                    uint4 coord, uint sample_idx,
-                                    uint bytes_per_sample_B, bool is_1d,
-                                    bool is_msaa, bool is_layered,
-                                    bool return_index, bool g15);
-
-/*
- * G15: the handles index the table of 32 B entries at the first argument
- * (struct libagx_decompress_images_g15), and an image load names the txf
- * sampler in the sample index's place, or the LOD's for a multisampled image
- * (agx_emit_image_load). A multisampled image is written through the linear
- * 2D view of its samples its uncompressed PBE describes, at the index
- * libagx_image_texel_address computes from the PBE's software word, as
- * agx_nir_lower_multisampled_image_store lowers a store.
- */
-KERNEL(32)
-libagx_decompress_g15(constant struct libagx_decompress_images_g15 *images,
-                      global uint64_t *metadata, uint64_t tile_uncompressed,
-                      uint32_t metadata_layer_stride_tl,
-                      uint16_t metadata_width_tl, uint16_t metadata_height_tl,
-                      uint blocksize_B, uint log2_samples__3)
-{
-   uint samples = 1 << log2_samples__3;
-   uint index_tl = index_metadata(cl_group_id, metadata_width_tl,
-                                  metadata_height_tl, metadata_layer_stride_tl);
-
-   if (metadata[index_tl] == tile_uncompressed)
-      return;
-
-   uint2 coord_sa = (cl_group_id.xy * 16);
-   uint offs_y_sa = cl_local_id.x >> 1;
-   uint offs_x_sa = (cl_local_id.x & 1) ? 8 : 0;
-   int4 img_coord_sa =
-      (int4)(coord_sa.x + offs_x_sa, coord_sa.y + offs_y_sa, cl_group_id.z, 0);
-
-   uint compressed = nir_bindless_image_agx(0, 0);
-   uint uncompressed = nir_bindless_image_agx(1, 0);
-   uint16_t txf = nir_bindless_sampler_agx(2 * 32, 2, 0);
-
-   uint4 texels[8];
-   for (uint i = 0; i < 8; ++i) {
-      int4 c_sa = img_coord_sa + (int4)(i, 0, 0, 0);
-      if (samples == 1) {
-         texels[i] = nir_bindless_image_load(compressed, c_sa, txf, 0,
-                                             GLSL_SAMPLER_DIM_2D, true, 0,
-                                             ACCESS_IN_BOUNDS, nir_type_uint32);
-      } else {
-         texels[i] = nir_bindless_image_load(
-            compressed, decompose_px(c_sa, samples), sample_id(c_sa, samples),
-            txf, GLSL_SAMPLER_DIM_MS, true, 0, ACCESS_IN_BOUNDS,
-            nir_type_uint32);
-      }
-   }
-
-   sub_group_barrier(CLK_LOCAL_MEM_FENCE);
-
-   for (uint i = 0; i < 8; ++i) {
-      int4 c_sa = img_coord_sa + (int4)(i, 0, 0, 0);
-      if (samples == 1) {
          nir_bindless_image_store(uncompressed, c_sa, 0, texels[i], 0,
                                   GLSL_SAMPLER_DIM_2D, true, 0,
                                   ACCESS_NON_READABLE, nir_type_uint32);
-      } else {
+      } else if (g15) {
          uint index_sa = libagx_image_texel_address(
-            &images->uncompressed, as_uint4(decompose_px(c_sa, samples)),
+            pbe_g15, as_uint4(decompose_px(c_sa, samples)),
             sample_id(c_sa, samples), blocksize_B, false, true, true, true,
             true);
 
@@ -217,12 +152,47 @@ libagx_decompress_g15(constant struct libagx_decompress_images_g15 *images,
          nir_bindless_image_store(uncompressed, c, 0, texels[i], 0,
                                   GLSL_SAMPLER_DIM_2D, false, 0,
                                   ACCESS_NON_READABLE, nir_type_uint32);
+      } else {
+         int4 dec_px = decompose_px(c_sa, samples);
+
+         nir_bindless_image_store(
+            uncompressed, dec_px, sample_id(c_sa, samples), texels[i], 0,
+            GLSL_SAMPLER_DIM_MS, true, 0, ACCESS_NON_READABLE, nir_type_uint32);
       }
    }
 
+   /* We've replaced the body buffer. Mark the tile as uncompressed. */
    if (cl_local_id.x == 0) {
       metadata[index_tl] = tile_uncompressed;
    }
+}
+
+KERNEL(32)
+libagx_decompress(constant struct libagx_decompress_images *images,
+                  global uint64_t *metadata, uint64_t tile_uncompressed,
+                  uint32_t metadata_layer_stride_tl, uint16_t metadata_width_tl,
+                  uint16_t metadata_height_tl,
+                  uint log2_samples__3 /* 1x, 2x, 4x */)
+{
+   decompress_tile(offsetof(struct libagx_decompress_images, compressed),
+                   offsetof(struct libagx_decompress_images, uncompressed),
+                   NULL, metadata, tile_uncompressed, metadata_layer_stride_tl,
+                   metadata_width_tl, metadata_height_tl, 0,
+                   1 << log2_samples__3, false);
+}
+
+/* G15: the handles index the table of 32 B entries at the first argument
+ * (struct libagx_decompress_images_g15), the txf sampler its third */
+KERNEL(32)
+libagx_decompress_g15(constant struct libagx_decompress_images_g15 *images,
+                      global uint64_t *metadata, uint64_t tile_uncompressed,
+                      uint32_t metadata_layer_stride_tl,
+                      uint16_t metadata_width_tl, uint16_t metadata_height_tl,
+                      uint blocksize_B, uint log2_samples__3)
+{
+   decompress_tile(0, 1, &images->uncompressed, metadata, tile_uncompressed,
+                   metadata_layer_stride_tl, metadata_width_tl,
+                   metadata_height_tl, blocksize_B, 1 << log2_samples__3, true);
 }
 
 static ushort2
