@@ -113,7 +113,7 @@ write_sampled_image_view_desc_g15(struct hk_descriptor_set *set,
    struct hk_sampled_image_descriptor_g15 desc[3] = {};
 
    for (unsigned i = 0; i < 3; ++i) {
-      agx_set_null_texture_g15(&desc[i].tex);
+      agx_set_null_texture(&desc[i].tex, true);
       desc[i].clamp_0_sampler_index_or_negative = -1;
    }
 
@@ -192,7 +192,7 @@ write_sampled_image_view_desc(struct hk_descriptor_set *set,
 
    /* "Zero" initialize */
    for (unsigned i = 0; i < 3; ++i) {
-      agx_set_null_texture(&desc[i].tex);
+      agx_set_null_texture(&desc[i].tex, false);
    }
 
    uint8_t plane_count = 1;
@@ -291,8 +291,8 @@ write_storage_desc_g15(struct hk_descriptor_set *set, uint32_t binding,
       if (sw)
          memcpy(desc.pbe_pad, sw, sizeof(desc.pbe_pad));
    } else {
-      agx_set_null_texture_g15(&desc.tex);
-      agx_set_null_pbe_g15(&desc.pbe);
+      agx_set_null_texture(&desc.tex, true);
+      agx_set_null_pbe(&desc.pbe, true);
    }
 
    agx_pack_txf_sampler(&desc.txf_sampler);
@@ -329,8 +329,8 @@ write_storage_image_view_desc(struct hk_descriptor_set *set,
       desc.tex = view->planes[plane].ro_storage;
       desc.pbe = view->planes[plane].storage;
    } else {
-      agx_set_null_texture(&desc.tex);
-      agx_set_null_pbe(&desc.pbe);
+      agx_set_null_texture(&desc.tex, false);
+      agx_set_null_pbe(&desc.pbe, false);
    }
 
    write_desc(set, binding, elem, &desc, sizeof(desc));
@@ -398,8 +398,8 @@ write_buffer_view_desc(struct hk_descriptor_set *set,
       desc.tex = view->tex;
       desc.pbe = view->pbe;
    } else {
-      agx_set_null_texture(&desc.tex);
-      agx_set_null_pbe(&desc.pbe);
+      agx_set_null_texture(&desc.tex, false);
+      agx_set_null_pbe(&desc.pbe, false);
    }
 
    write_desc(set, binding, elem, &desc, sizeof(desc));
