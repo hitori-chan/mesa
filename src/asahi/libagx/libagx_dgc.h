@@ -222,55 +222,6 @@ enum agx_chip {
    AGX_CHIP_G15X,
 };
 
-static inline GLOBAL uint32_t *
-agx_cdm_launch(GLOBAL uint32_t *out, enum agx_chip chip, struct agx_grid grid,
-               struct agx_workgroup wg,
-               struct agx_cdm_launch_word_0_packed launch, uint32_t usc)
-{
-#ifndef __OPENCL_VERSION__
-   struct agx_cdm_launch_word_0_packed mode;
-   agx_pack(&mode, CDM_LAUNCH_WORD_0, cfg) {
-      cfg.mode = grid.mode;
-   }
-
-   agx_merge(launch, mode, CDM_LAUNCH_WORD_0);
-#endif
-
-   agx_push_packed(out, launch, CDM_LAUNCH_WORD_0);
-
-   agx_push(out, CDM_LAUNCH_WORD_1, cfg) {
-      cfg.pipeline = usc;
-   }
-
-   if (chip == AGX_CHIP_G14X) {
-      agx_push(out, CDM_UNK_G14X, cfg)
-         ;
-   }
-
-   if (agx_is_indirect(grid)) {
-      agx_push(out, CDM_INDIRECT, cfg) {
-         cfg.address_hi = grid.ptr >> 32;
-         cfg.address_lo = grid.ptr;
-      }
-   } else {
-      agx_push(out, CDM_GLOBAL_SIZE, cfg) {
-         cfg.x = grid.count[0];
-         cfg.y = grid.count[1];
-         cfg.z = grid.count[2];
-      }
-   }
-
-   if (grid.mode != AGX_CDM_MODE_INDIRECT_LOCAL) {
-      agx_push(out, CDM_LOCAL_SIZE, cfg) {
-         cfg.x = wg.x;
-         cfg.y = wg.y;
-         cfg.z = wg.z;
-      }
-   }
-
-   return out;
-}
-
 /* G15: an entry program's VA as its pipeline words split it (cmdbuf.xml) */
 static inline uint32_t
 agx_g15_pipeline_hi(uint64_t va)
@@ -296,26 +247,55 @@ agx_g15_pipeline_va(uint32_t hi, uint32_t lo)
  * on the hardware.
  */
 static inline GLOBAL uint32_t *
-agx_cdm_launch_g15(GLOBAL uint32_t *out, struct agx_grid grid,
-                   struct agx_workgroup wg, uint64_t va)
+agx_cdm_launch(GLOBAL uint32_t *out, enum agx_chip chip, struct agx_grid grid,
+               struct agx_workgroup wg,
+               struct agx_cdm_launch_word_0_packed launch, uint64_t shader_base,
+               uint32_t usc)
 {
-   agx_push(out, CDM_LAUNCH_G15, cfg) {
-      cfg.mode = grid.mode;
-      cfg.multidimensional =
-         agx_is_indirect(grid) || grid.count[1] > 1 || grid.count[2] > 1;
-      cfg.pipeline_hi = agx_g15_pipeline_hi(va);
-      cfg.pipeline_lo = agx_g15_pipeline_lo(va);
+   if (chip >= AGX_CHIP_G15G) {
+      agx_push(out, CDM_LAUNCH_G15, cfg) {
+         cfg.mode = grid.mode;
+         cfg.multidimensional =
+            agx_is_indirect(grid) || grid.count[1] > 1 || grid.count[2] > 1;
+         cfg.pipeline_hi = agx_g15_pipeline_hi(shader_base + usc);
+         cfg.pipeline_lo = agx_g15_pipeline_lo(shader_base + usc);
+      }
+
+      agx_push(out, CDM_DISTRIBUTION_G15, cfg) {
+         cfg.cluster_group = 1;
+         cfg.unknown_30 = true;
+      }
+   } else {
+#ifndef __OPENCL_VERSION__
+      struct agx_cdm_launch_word_0_packed mode;
+      agx_pack(&mode, CDM_LAUNCH_WORD_0, cfg) {
+         cfg.mode = grid.mode;
+      }
+
+      agx_merge(launch, mode, CDM_LAUNCH_WORD_0);
+#endif
+
+      agx_push_packed(out, launch, CDM_LAUNCH_WORD_0);
+
+      agx_push(out, CDM_LAUNCH_WORD_1, cfg) {
+         cfg.pipeline = usc;
+      }
+
+      if (chip == AGX_CHIP_G14X) {
+         agx_push(out, CDM_UNK_G14X, cfg)
+            ;
+      }
    }
 
-   agx_push(out, CDM_DISTRIBUTION_G15, cfg) {
-      cfg.cluster_group = 1;
-      cfg.unknown_30 = true;
-   }
-
-   if (agx_is_indirect(grid)) {
+   if (agx_is_indirect(grid) && chip >= AGX_CHIP_G15G) {
       agx_push(out, CDM_INDIRECT_G15, cfg) {
          cfg.address_hi = grid.ptr >> 32;
          cfg.address_lo = grid.ptr & BITFIELD_MASK(32);
+      }
+   } else if (agx_is_indirect(grid)) {
+      agx_push(out, CDM_INDIRECT, cfg) {
+         cfg.address_hi = grid.ptr >> 32;
+         cfg.address_lo = grid.ptr;
       }
    } else {
       agx_push(out, CDM_GLOBAL_SIZE, cfg) {
