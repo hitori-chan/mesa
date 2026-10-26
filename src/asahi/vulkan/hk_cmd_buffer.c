@@ -738,28 +738,11 @@ static uint32_t
 hk_upload_esl(struct hk_cmd_buffer *cmd, struct hk_shader *s,
               struct hk_linked_shader *linked, const uint8_t *usc)
 {
-   struct agx_esl_code code = {
-      .va = s->bo ? s->bo->va->addr : 0,
-      .cpu = s->b.binary,
-      .size = s->b.info.binary_size,
-      .preamble_offset = s->b.info.preamble_offset,
-      .preamble_size = s->b.info.preamble_size,
-      .main_size = linked->b.bo ? linked->b.bo->size : s->b.info.main_size,
-      .stack_size = s->b.info.stack_size,
-      .cr_count = linked->b.bo ? MAX2(linked->b.cr_count, s->b.info.cr_count)
-                               : s->b.info.cr_count,
-      .pix_wait_mask = linked->b.pix_wait_mask,
-   };
+   struct agx_esl_code code = agx_esl_code_for_shader(
+      s->bo ? s->bo->va->addr : 0, s->b.binary, &s->b.info, &linked->b);
 
-   /* The hardware stage, as Gallium's: geometry and tessellation run as
-    * compute kernels (the software vertex and evaluation shaders, the
-    * control shader, the geometry kernels) and a hardware vertex shader */
-   enum agx_esl_stage stage =
-      s->b.info.stage == MESA_SHADER_FRAGMENT ? AGX_ESL_FRAGMENT
-      : s->b.info.stage == MESA_SHADER_VERTEX ? AGX_ESL_VERTEX
-                                              : AGX_ESL_COMPUTE;
-
-   return hk_upload_esl_code(cmd, &code, stage, usc);
+   return hk_upload_esl_code(cmd, &code, agx_esl_stage_for(s->b.info.stage),
+                             usc);
 }
 
 uint32_t
@@ -886,18 +869,8 @@ hk_dispatch_precomp(struct hk_cmd_buffer *cmd, struct agx_grid grid,
 
    /* G15 launches the kernel's entry program, built from the words */
    if (dev->dev.params.gpu_generation >= 15) {
-      const uint32_t *bin = dev->dev.libagx_programs[idx];
-      const struct agx_precompiled_kernel_info *info = (const void *)bin;
-      struct agx_esl_code code = {
-         .va = prog->ptr,
-         .cpu = (const uint8_t *)bin + sizeof(*info),
-         .size = info->binary_size,
-         .preamble_offset = info->preamble_offset,
-         .preamble_size = info->preamble_size,
-         .main_size = info->main_size,
-         .stack_size = info->stack_size,
-         .cr_count = info->cr_count,
-      };
+      struct agx_esl_code code =
+         agx_esl_code_for_precomp(prog->ptr, dev->dev.libagx_programs[idx]);
 
       usc = hk_upload_esl_code(cmd, &code, AGX_ESL_COMPUTE, t.cpu);
    }
