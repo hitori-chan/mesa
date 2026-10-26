@@ -3501,15 +3501,11 @@ agx_launch_internal(struct agx_batch *batch, struct agx_grid grid,
 
    uint32_t *out = (uint32_t *)batch->cdm.current;
 
-   if (dev->params.gpu_generation >= 15) {
-      if (!usc) {
-         fprintf(stderr, "G15: dispatch skipped (no entry program)\n");
-      } else {
-         out = agx_cdm_launch_g15(out, grid, wg, dev->shader_base + usc);
-         out = agx_cdm_barrier(out, dev->chip);
-      }
+   if (dev->params.gpu_generation >= 15 && !usc) {
+      fprintf(stderr, "G15: dispatch skipped (no entry program)\n");
    } else {
-      out = agx_cdm_launch(out, dev->chip, grid, wg, launch, usc);
+      out = agx_cdm_launch(out, dev->chip, grid, wg, launch, dev->shader_base,
+                           usc);
       out = agx_cdm_barrier(out, dev->chip);
    }
 
