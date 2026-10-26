@@ -41,18 +41,6 @@ struct esl_range {
    uint64_t buffer;
 };
 
-static void
-esl_u64(struct util_dynarray *out, uint64_t v)
-{
-   util_dynarray_append(out, v);
-}
-
-static void
-esl_u16(struct util_dynarray *out, uint16_t v)
-{
-   util_dynarray_append(out, v);
-}
-
 /* Load a range's 16-bit uniforms from its buffer into the uniforms from
  * start_halfs on, the words out of reach of the push registers: through r2
  * up, free until the push registers are loaded, a batch's loads out before
@@ -150,59 +138,39 @@ esl_uniforms_reach(struct util_dynarray *out, const struct esl_range *ranges,
    }
 }
 
-/* specLM: threadgroup memory, 64 B units */
-static void
-esl_speclm(struct util_dynarray *out, unsigned bytes)
-{
-   uint64_t v = 0x412A0077;
-
-   if (bytes) {
-      unsigned units = DIV_ROUND_UP(bytes, 64);
-      assert(units < (1 << 10));
-      v |= BITFIELD64_BIT(39) | ((uint64_t)(units & 0xff) << 40) |
-           ((uint64_t)(units >> 8) << 48);
-   }
-
-   esl_u64(out, v);
-}
-
 /* ldshdr: the shader, 64 B aligned; the size class from its size */
 static void
 esl_ldshdr(struct util_dynarray *out, uint64_t va, unsigned size)
 {
    static const uint8_t size_class[4] = {2, 0, 1, 3};
-   assert((va & 63) == 0 && va < BITFIELD64_BIT(48));
 
-   esl_u64(out, AGX_ESL_LDSHDR | ((va >> 6) << 23));
-   esl_u16(out, ((va >> 47) & 1) | (size_class[MIN2(size >> 7, 3)] << 1));
+   agx3_emit_ldshdr(out, va, size_class[MIN2(size >> 7, 3)]);
 }
 
 /* specTPR: the per-thread memory (metal-compute.md, from Apple's kernels and
- * render programs): the coordinate registers the shader writes at 41:31 (the
- * highest plus one, 8 B each), and the private (st) stack in words at 57:42
- * (its low 12 bits) and 73:58, both the same count: the shader's stack plus 4
- * words, as Apple's kernels have it. Without these the texture instructions
- * read no coordinates and get_stack is never written. */
+ * render programs): the coordinate registers the shader writes (the highest
+ * plus one, 8 B each), and the private (st) stack in words in both stack
+ * fields: the shader's stack plus 4 words, as Apple's kernels have it.
+ * Without these the texture instructions read no coordinates and get_stack is
+ * never written. */
 static void
 esl_spectpr(struct util_dynarray *out, unsigned stack_bytes, unsigned crs)
 {
    unsigned words = stack_bytes ? DIV_ROUND_UP(stack_bytes, 4) + 4 : 0;
-   assert(crs < (1 << 11) && words < (1 << 12));
+   assert(words < (1 << 12));
 
-   esl_u64(out, 0x2A00F7 | ((uint64_t)crs << 31) | ((uint64_t)words << 42) |
-                   ((uint64_t)(words & 0x3F) << 58));
-   esl_u16(out, words >> 6);
+   agx3_emit_spectpr(out, crs, words);
 }
 
-/* specLM of the render stages (demo15's programs: 0x4B432A0077), from the
- * imageblock the USC SHARED word describes. Apple's encoder (libLLVM 32023)
- * takes, besides the imageblock flag (bit 38), the tile's shape as a pair
- * (f19, f20) of which exactly the pairs with f19 + f20 <= 10 are legal (a
- * tile of at most 1024 threads: the log2 of its width and height; Apple's
- * driver passes the tile width as f19), the sample count as its log2 (f21,
- * bits 23:24, 0-2) and the sample stride in bytes (f22, bits 25:29 in 8-byte
- * units). The shape goes to bits 30:37 through this table (f19 rows, f20
- * columns, from the encoder). */
+/* specLM: the threadgroup memory in 64 B units, and for the render stages
+ * (demo15's programs: 0x4B432A0077) the imageblock the USC SHARED word
+ * describes. Apple's encoder (libLLVM 32023) takes, besides the imageblock
+ * flag (bit 38), the tile's shape as a pair (f19, f20) of which exactly the
+ * pairs with f19 + f20 <= 10 are legal (a tile of at most 1024 threads: the
+ * log2 of its width and height; Apple's driver passes the tile width as
+ * f19), the sample count as its log2 (f21, bits 23:24, 0-2) and the sample
+ * stride in bytes (f22, bits 25:29 in 8-byte units). The shape goes to bits
+ * 30:37 through this table (f19 rows, f20 columns, from the encoder). */
 static const uint8_t speclm_shape[11][11] = {
    {0x01, 0x47, 0x67, 0xa6, 0x26, 0x66, 0x87, 0x07, 0x46, 0x86, 0x06},
    {0x2a, 0x4a, 0x6a, 0x8b, 0x0b, 0x4b, 0x8a, 0x0a, 0x2b, 0x6b, 0},
@@ -217,6 +185,17 @@ static const uint8_t speclm_shape[11][11] = {
    {0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
 };
 
+/* f21's code for each sample count's log2 */
+static const uint8_t speclm_samples[3] = {2, 0, 1};
+
+/* A compute program's: no imageblock, a 1x1 tile of one sample */
+static void
+esl_speclm(struct util_dynarray *out, unsigned bytes)
+{
+   agx3_emit_speclm(out, speclm_samples[0], 0, speclm_shape[0][0], false,
+                    DIV_ROUND_UP(bytes, 64));
+}
+
 static void
 esl_speclm_imageblock(struct util_dynarray *out, const struct esl_tile *tile)
 {
@@ -225,19 +204,8 @@ esl_speclm_imageblock(struct util_dynarray *out, const struct esl_tile *tile)
    unsigned w = tile->width_log2, h = tile->height_log2;
 
    assert(w <= 10 && h <= 10 && w + h <= 10 && samples_log2 <= 2);
-
-   /* demo15's with the fields replaced */
-   uint64_t v = 0x0000004B432A0077ull;
-   v &= ~(BITFIELD64_MASK(2) << 23);
-   v &= ~(BITFIELD64_MASK(5) << 25);
-   v &= ~(BITFIELD64_MASK(8) << 30);
-
-   static const uint8_t samples_code[3] = {2, 0, 1};
-   v |= (uint64_t)samples_code[samples_log2] << 23;
-   v |= (uint64_t)stride << 25;
-   v |= (uint64_t)speclm_shape[w][h] << 30;
-
-   esl_u64(out, v);
+   agx3_emit_speclm(out, speclm_samples[samples_log2], stride,
+                    speclm_shape[w][h], true, 0);
 }
 
 /* G15's pixel fences: demo15's fragment shader waits on 0x200 and then 0xC
