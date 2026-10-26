@@ -509,8 +509,6 @@ pack_pbe_g15(struct hk_device *dev, struct hk_image_view *view,
    unsigned layer = view->vk.base_array_layer;
 
    enum pipe_format p_format = hk_image_view_plane_format(view, view_plane);
-   const struct util_format_description *desc =
-      util_format_description(p_format);
 
    bool eot =
       usage == HK_DESC_USAGE_BG_EOT || usage == HK_DESC_USAGE_LAYERED_BG_EOT;
@@ -547,27 +545,7 @@ pack_pbe_g15(struct hk_device *dev, struct hk_image_view *view,
       cfg.dimension =
          translate_image_view_type(view->vk.view_type, msaa, layers > 1, usage);
       cfg.layout = agx_translate_layout(layout->tiling);
-      cfg.channels = ail_pixel_format[p_format].channels;
-      cfg.type = ail_pixel_format[p_format].type;
-      cfg.srgb = util_format_is_srgb(p_format);
-
-      assert(desc->nr_channels >= 1 && desc->nr_channels <= 4);
-
-      for (unsigned i = 0; i < desc->nr_channels; ++i) {
-         if (desc->swizzle[i] == 0)
-            cfg.swizzle_r = i;
-         else if (desc->swizzle[i] == 1)
-            cfg.swizzle_g = i;
-         else if (desc->swizzle[i] == 2)
-            cfg.swizzle_b = i;
-         else if (desc->swizzle[i] == 3)
-            cfg.swizzle_a = i;
-      }
-
-      /* An X channel takes the alpha, which the tilebuffer store sets to 1 */
-      if (desc->nr_channels == 4 &&
-          desc->channel[3].type == UTIL_FORMAT_TYPE_VOID)
-         cfg.swizzle_a = AGX_CHANNEL_A;
+      agx_pbe_g15_format(&cfg, p_format);
 
       /* An uncompressed view of a block-compressed image, as G13 packs it:
        * the level's own address and size in blocks, at level 0 */
@@ -592,17 +570,7 @@ pack_pbe_g15(struct hk_device *dev, struct hk_image_view *view,
          cfg.samples = agx_translate_sample_count(view->vk.image->samples);
 
       if (msaa_view) {
-         unsigned blocksize_B = util_format_get_blocksize(p_format);
-         unsigned size_px =
-            (layout->size_B - layout->layer_stride_B * layer) / blocksize_B;
-
-         cfg.dimension = AGX_TEXTURE_DIMENSION_2D;
-         cfg.layout = AGX_LAYOUT_LINEAR;
-         cfg.width = AGX_TEXTURE_BUFFER_WIDTH;
-         cfg.height = DIV_ROUND_UP(size_px, cfg.width);
-         cfg.stride = ((cfg.width * blocksize_B) >> 4) - 1;
-         cfg.buffer += layout->level_offsets_B[level];
-         cfg.mipmapped = false;
+         agx_pbe_g15_ms_view(&cfg, layout, layer, level, p_format);
       } else if (layout->tiling == AIL_TILING_LINEAR) {
          /* In 16-byte units, minus 1 (demo15's 0xF for a 256 B stride; the
           * rows' pitch is a multiple of 16 B) */
@@ -635,29 +603,11 @@ pack_pbe_g15(struct hk_device *dev, struct hk_image_view *view,
    if (eot)
       return;
 
-   struct ail_tile tile = {1, 1};
-   if (layout->tiling != AIL_TILING_LINEAR)
-      tile = layout->tilesize_el[view->vk.base_mip_level];
-
-   if (msaa_view) {
-      agx_pack(sw, PBE_G15_SOFTWARE_MSAA, cfg) {
-         cfg.aligned_width = align(
-            u_minify(layout->width_px, view->vk.base_mip_level), tile.width_el);
-         cfg.tile_width = tile.width_el;
-         cfg.tile_height = tile.height_el;
-         cfg.layer_stride = layout->layer_stride_B;
-         cfg.sample_count_log2 = util_logbase2(view->vk.image->samples);
-         cfg.sample_size_log2 =
-            util_logbase2(util_format_get_blocksize(p_format));
-      }
-   } else {
-      agx_pack(sw, PBE_G15_SOFTWARE, cfg) {
-         cfg.level_offset = ail_get_level_offset_B(layout, level);
-         cfg.tile_width = tile.width_el;
-         cfg.tile_height = tile.height_el;
-         cfg.layer_stride = layout->layer_stride_B;
-      }
-   }
+   /* level is 0 for a block-compressed image's view, whose PBE has the
+    * level's address */
+   agx_pack_pbe_g15_software(sw, layout, view->vk.base_mip_level,
+                             ail_get_level_offset_B(layout, level),
+                             view->vk.image->samples, p_format);
 }
 
 static void
@@ -706,18 +656,10 @@ pack_pbe(struct hk_device *dev, struct hk_image_view *view, unsigned view_plane,
       cfg.type = ail_pixel_format[p_format].type;
       cfg.srgb = util_format_is_srgb(p_format);
 
-      assert(desc->nr_channels >= 1 && desc->nr_channels <= 4);
-
-      for (unsigned i = 0; i < desc->nr_channels; ++i) {
-         if (desc->swizzle[i] == 0)
-            cfg.swizzle_r = i;
-         else if (desc->swizzle[i] == 1)
-            cfg.swizzle_g = i;
-         else if (desc->swizzle[i] == 2)
-            cfg.swizzle_b = i;
-         else if (desc->swizzle[i] == 3)
-            cfg.swizzle_a = i;
-      }
+      cfg.swizzle_r = agx_pbe_swizzle(desc, 0);
+      cfg.swizzle_g = agx_pbe_swizzle(desc, 1);
+      cfg.swizzle_b = agx_pbe_swizzle(desc, 2);
+      cfg.swizzle_a = agx_pbe_swizzle(desc, 3);
 
       cfg.buffer = base_addr + ail_get_layer_offset_B(layout, layer);
       cfg.unk_mipmapped = layout->levels > 1;
