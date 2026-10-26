@@ -198,12 +198,11 @@ esl_spectpr(struct util_dynarray *out, unsigned stack_bytes, unsigned crs)
  * imageblock the USC SHARED word describes. Apple's encoder (libLLVM 32023)
  * takes, besides the imageblock flag (bit 38), the tile's shape as a pair
  * (f19, f20) of which exactly the pairs with f19 + f20 <= 10 are legal (a
- * tile of at most 1024 threads: the log2 of its width and height, f19 the
- * width is a guess), the sample count as its log2 (f21, bits 23:24, 0-2) and
- * the sample stride in bytes (f22, bits 25:29 in 8-byte units). The shape
- * goes to bits 30:37 through this table (f19 rows, f20 columns, from the
- * encoder). Only demo15's configuration has run on the hardware: 32x32, one
- * sample, a stride of 8. */
+ * tile of at most 1024 threads: the log2 of its width and height; Apple's
+ * driver passes the tile width as f19), the sample count as its log2 (f21,
+ * bits 23:24, 0-2) and the sample stride in bytes (f22, bits 25:29 in 8-byte
+ * units). The shape goes to bits 30:37 through this table (f19 rows, f20
+ * columns, from the encoder). */
 static const uint8_t speclm_shape[11][11] = {
    {0x01, 0x47, 0x67, 0xa6, 0x26, 0x66, 0x87, 0x07, 0x46, 0x86, 0x06},
    {0x2a, 0x4a, 0x6a, 0x8b, 0x0b, 0x4b, 0x8a, 0x0a, 0x2b, 0x6b, 0},
