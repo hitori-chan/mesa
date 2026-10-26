@@ -5,13 +5,13 @@
 
 #pragma once
 
+#include "util/macros.h"
 #include "agx_bo.h"
 #include "agx_compile.h"
 #include "agx_esl.h"
 #include "agx_nir_lower_vbo.h"
 #include "agx_pack.h"
 #include "nir_lower_blend.h"
-#include "util/macros.h"
 
 struct agx_linked_shader {
    /* Mapped executable memory */
