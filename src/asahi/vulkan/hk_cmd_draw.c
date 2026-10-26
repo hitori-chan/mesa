@@ -396,7 +396,7 @@ hk_build_bg_eot(struct hk_cmd_buffer *cmd, const VkRenderingInfo *info,
     * spilled target's store takes its PBE at 2 * rt + 1). A spilled target
     * is loaded too, with VK_ATTACHMENT_STORE_OP_NONE (no_store_wa above). */
    if (g15 && needs_textures_for_spilled_rts) {
-      g15_tex = hk_pool_alloc(cmd, HK_SPILL_TABLE_G15_B, 64);
+      g15_tex = hk_pool_alloc(cmd, AGX_SPILL_TABLE_G15_B, 64);
       if (!g15_tex.cpu)
          return (struct hk_bg_eot){.usc = 0};
 
@@ -419,7 +419,8 @@ hk_build_bg_eot(struct hk_cmd_buffer *cmd, const VkRenderingInfo *info,
                             : &iview->planes[0].background;
 
          if (g15) {
-            const unsigned size_B = 2 * 32 * HK_MAX_RTS;
+            const unsigned entry_B = AGX_SPILL_ENTRY_G15_B;
+            const unsigned size_B = 2 * entry_B * HK_MAX_RTS;
 
             if (!g15_tex.cpu) {
                g15_tex = hk_pool_alloc(cmd, size_B, 64);
@@ -428,7 +429,8 @@ hk_build_bg_eot(struct hk_cmd_buffer *cmd, const VkRenderingInfo *info,
                memset(g15_tex.cpu, 0, size_B);
             }
 
-            memcpy((uint8_t *)g15_tex.cpu + 2 * 32 * rt, desc, sizeof(*desc));
+            memcpy((uint8_t *)g15_tex.cpu + 2 * entry_B * rt, desc,
+                   sizeof(*desc));
             continue;
          }
 
@@ -2128,12 +2130,9 @@ hk_ppp_push_stencil_face(struct agx_ppp_update *ppp,
                          bool g15_always)
 {
    if (g15_always) {
-      agx_ppp_push(ppp, FRAGMENT_STENCIL, cfg) {
-         cfg.compare = AGX_ZS_FUNC_ALWAYS;
-         cfg.depth_pass = AGX_STENCIL_OP_KEEP;
-         cfg.depth_fail = AGX_STENCIL_OP_KEEP;
-         cfg.stencil_fail = AGX_STENCIL_OP_KEEP;
-      }
+      struct agx_fragment_stencil_packed always;
+      agx_pack_stencil_always_g15(&always);
+      agx_ppp_push_packed(ppp, &always, FRAGMENT_STENCIL);
    } else if (enabled) {
       agx_ppp_push(ppp, FRAGMENT_STENCIL, cfg) {
          cfg.compare = translate_compare_op(s.op.compare);
@@ -2167,10 +2166,7 @@ hk_stencil_test_enabled(struct hk_cmd_buffer *cmd)
           render->stencil_att.vk_format != VK_FORMAT_UNDEFINED;
 }
 
-/* G15: with neither depth writes nor a stencil test, a stencil test that
- * always passes and masks nothing, as Apple's Metal driver enables for a pass
- * without a depth attachment (without it nothing is drawn).
- */
+/* G15: whether to enable agx_pack_stencil_always_g15's test */
 static bool
 hk_g15_stencil_always(struct hk_cmd_buffer *cmd)
 {
@@ -3307,19 +3303,8 @@ hk_flush_dynamic_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
 
       uint32_t pipeline = hk_upload_usc_words(cmd, hw_vs, linked_hw_vs);
 
-      if (dev->dev.params.gpu_generation >= 15) {
-         uint64_t va = dev->dev.shader_base + pipeline;
-
-         agx_push(out, VDM_STATE_VERTEX_SHADER_WORD_1_G15, cfg) {
-            cfg.pipeline_hi = agx_g15_pipeline_hi(va);
-            cfg.pipeline_lo = agx_g15_pipeline_lo(va);
-         }
-      } else {
-         agx_push(out, VDM_STATE_VERTEX_SHADER_WORD_1, cfg) {
-            cfg.pipeline = pipeline;
-         }
-      }
-
+      out = agx_push_vertex_shader_word_1(out, dev->dev.params.gpu_generation,
+                                          dev->dev.shader_base, pipeline);
       agx_push_packed(out, hw_vs->info.uvs.vdm, VDM_STATE_VERTEX_OUTPUTS);
 
       agx_push(out, VDM_STATE_VERTEX_UNKNOWN, cfg) {

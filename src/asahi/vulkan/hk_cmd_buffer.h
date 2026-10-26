@@ -852,7 +852,6 @@ uint64_t hk_upload_esl_va(struct hk_cmd_buffer *cmd,
                           const struct agx_esl_code *code,
                           enum agx_esl_stage stage, const uint8_t *usc);
 
-#define HK_SPILL_TABLE_G15_B ((2 * HK_MAX_RTS + 1) * 32)
 void hk_spilled_rt_descs_g15(struct hk_cmd_buffer *cmd, uint8_t *dst);
 void hk_usc_upload_spilled_rt_descs(struct agx_usc_builder *b,
                                     struct hk_cmd_buffer *cmd);

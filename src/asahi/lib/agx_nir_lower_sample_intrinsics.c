@@ -207,3 +207,11 @@ agx_nir_lower_sample_intrinsics(nir_shader *shader,
    return nir_shader_intrinsics_pass(shader, lower, nir_metadata_control_flow,
                                      &ignore_sample_mask_without_msaa);
 }
+
+/* 1, 2 and 4 samples are told apart by the size of the word */
+nir_def *
+agx_nir_samples_log2_g15(nir_builder *b, nir_def *ctl)
+{
+   return nir_iadd(b, nir_b2i32(b, nir_uge_imm(b, ctl, 0x100)),
+                   nir_b2i32(b, nir_uge_imm(b, ctl, 0x10000)));
+}
