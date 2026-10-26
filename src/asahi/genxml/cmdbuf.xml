@@ -335,7 +335,7 @@
 
   <!--
    For software: what an image atomic's texel address needs of a G15 image
-   (libagx_image_texel_address_g15), in the fourth word of its PBE's 32-byte
+   (libagx_image_texel_address), in the fourth word of its PBE's 32-byte
    slot, which the hardware reads only for multisampled and compressed images.
    G13 keeps these in its PBE's third word, which G15 reads for mip levels.
   -->
