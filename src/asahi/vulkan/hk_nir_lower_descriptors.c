@@ -38,6 +38,10 @@ struct lower_descriptors_ctx {
    ((ctx)->g15 ? offsetof(struct hk_sampled_image_descriptor_g15, field)       \
                : offsetof(struct hk_sampled_image_descriptor, field))
 
+#define STORAGE_OFFS(ctx, field)                                               \
+   ((ctx)->g15 ? offsetof(struct hk_storage_image_descriptor_g15, field)       \
+               : offsetof(struct hk_storage_image_descriptor, field))
+
 static const struct hk_descriptor_set_binding_layout *
 get_binding_layout(uint32_t set, uint32_t binding,
                    const struct lower_descriptors_ctx *ctx)
@@ -314,35 +318,12 @@ load_resource_deref_desc(nir_builder *b, unsigned num_components,
                           offset_B, ctx);
 }
 
-static nir_def *
-load_image_handle(nir_builder *b, const struct lower_descriptors_ctx *ctx,
-                  nir_src src, unsigned offset_B)
-
-{
-   uint32_t set, binding;
-   nir_def *index;
-   get_resource_deref_binding(b, nir_src_as_deref(src), &set, &binding, &index);
-
-   const struct hk_descriptor_set_binding_layout *binding_layout =
-      get_binding_layout(set, binding, ctx);
-
-   if (ctx->clamp_desc_array_bounds)
-      index =
-         nir_umin(b, index, nir_imm_int(b, binding_layout->array_size - 1));
-
-   assert(binding_layout->stride > 0);
-   nir_def *desc_offs_B =
-      nir_iadd_imm(b, nir_amul_imm(b, index, binding_layout->stride),
-                   binding_layout->offset + offset_B);
-
-   return nir_bindless_image_agx(b, desc_offs_B, .desc_set = set);
-}
-
 /* G15: the texture handle is an index into the set seen as a table of 32 B
  * entries, and the sampler of a combined descriptor the entry after it */
 static nir_def *
-load_texture_index_g15(nir_builder *b, const struct lower_descriptors_ctx *ctx,
-                       nir_src src, unsigned offset_B, bool sampler)
+load_image_handle(nir_builder *b, const struct lower_descriptors_ctx *ctx,
+                  nir_src src, unsigned offset_B, bool sampler)
+
 {
    uint32_t set, binding;
    nir_def *index;
@@ -354,6 +335,15 @@ load_texture_index_g15(nir_builder *b, const struct lower_descriptors_ctx *ctx,
    if (ctx->clamp_desc_array_bounds)
       index =
          nir_umin(b, index, nir_imm_int(b, binding_layout->array_size - 1));
+
+   if (!ctx->g15) {
+      assert(binding_layout->stride > 0 && !sampler);
+      nir_def *desc_offs_B =
+         nir_iadd_imm(b, nir_amul_imm(b, index, binding_layout->stride),
+                      binding_layout->offset + offset_B);
+
+      return nir_bindless_image_agx(b, desc_offs_B, .desc_set = set);
+   }
 
    assert(binding_layout->stride > 0 && binding_layout->stride % 32 == 0);
    assert(binding_layout->offset % 32 == 0 && offset_B % 32 == 0);
@@ -384,32 +374,24 @@ lower_image_intrin(nir_builder *b, nir_intrinsic_instr *intr,
 {
    b->cursor = nir_before_instr(&intr->instr);
 
-   /* Reads and queries use the texture descriptor; writes and atomics PBE. */
-   bool pbe = intr->intrinsic != nir_intrinsic_image_deref_load &&
-              intr->intrinsic != nir_intrinsic_image_deref_sparse_load &&
-              intr->intrinsic != nir_intrinsic_image_deref_size &&
-              intr->intrinsic != nir_intrinsic_image_deref_samples;
-
-   /* G15: the entry of the texture or the PBE (hk_descriptor_set.h); a read
-    * becomes a fetch with the sampler in the entry after the texture
+   /* Reads and queries use the texture descriptor; writes and atomics PBE.
+    * G15's are entries of their own (hk_descriptor_set.h); a read becomes a
+    * fetch with the sampler in the entry after the texture
     * (hk_nir_lower_image_loads_g15) */
-   if (ctx->g15) {
-      unsigned offs =
-         pbe ? offsetof(struct hk_storage_image_descriptor_g15, pbe)
-             : offsetof(struct hk_storage_image_descriptor_g15, tex);
+   unsigned offs;
+   if (intr->intrinsic != nir_intrinsic_image_deref_load &&
+       intr->intrinsic != nir_intrinsic_image_deref_sparse_load &&
+       intr->intrinsic != nir_intrinsic_image_deref_size &&
+       intr->intrinsic != nir_intrinsic_image_deref_samples) {
 
-      nir_rewrite_image_intrinsic(
-         intr, load_texture_index_g15(b, ctx, intr->src[0], offs, false),
-         nir_image_intrinsic_type_bindless);
-      return true;
+      offs = STORAGE_OFFS(ctx, pbe);
+   } else {
+      offs = STORAGE_OFFS(ctx, tex);
    }
 
-   unsigned offs = pbe ? offsetof(struct hk_storage_image_descriptor, pbe)
-                       : offsetof(struct hk_storage_image_descriptor, tex);
-
-   nir_rewrite_image_intrinsic(intr,
-                               load_image_handle(b, ctx, intr->src[0], offs),
-                               nir_image_intrinsic_type_bindless);
+   nir_rewrite_image_intrinsic(
+      intr, load_image_handle(b, ctx, intr->src[0], offs, false),
+      nir_image_intrinsic_type_bindless);
 
    return true;
 }
@@ -757,33 +739,27 @@ lower_tex(nir_builder *b, nir_tex_instr *tex,
       return true;
    }
 
-   if (ctx->g15) {
+   {
       unsigned offset_B = plane_offset_B + SAMPLED_OFFS(ctx, tex);
-      nir_def *handle = load_texture_index_g15(b, ctx, nir_src_for_ssa(texture),
-                                               offset_B, false);
-      nir_tex_instr_add_src(tex, nir_tex_src_texture_handle, handle);
 
-      /* The sampler (a texture without one, for txf: the entry's zero
-       * sampler; the LOD query reads its LOD range and mip filter), a custom
-       * border colour in its entry (hk_descriptor_set.h) */
+      nir_def *handle =
+         load_image_handle(b, ctx, nir_src_for_ssa(texture), offset_B, false);
+
+      nir_tex_instr_add_src(tex, nir_tex_src_texture_handle, handle);
+   }
+
+   /* G15: the sampler (a texture without one, for txf: the entry's zero
+    * sampler; the LOD query reads its LOD range and mip filter), a custom
+    * border colour in its entry (hk_descriptor_set.h) */
+   if (ctx->g15) {
       if (!nir_tex_instr_is_query(tex) || tex->op == nir_texop_lod) {
-         offset_B = plane_offset_B + SAMPLED_OFFS(ctx, sampler);
-         nir_def *s = load_texture_index_g15(
+         unsigned offset_B = plane_offset_B + SAMPLED_OFFS(ctx, sampler);
+         nir_def *s = load_image_handle(
             b, ctx, nir_src_for_ssa(sampler ? sampler : texture), offset_B,
             true);
          nir_tex_instr_add_src(tex, nir_tex_src_sampler_handle, s);
       }
       return true;
-   }
-
-   {
-      unsigned offset_B =
-         plane_offset_B + offsetof(struct hk_sampled_image_descriptor, tex);
-
-      nir_def *handle =
-         load_image_handle(b, ctx, nir_src_for_ssa(texture), offset_B);
-
-      nir_tex_instr_add_src(tex, nir_tex_src_texture_handle, handle);
    }
 
    if (sampler != NULL) {
@@ -1060,7 +1036,7 @@ sampler_after_texture_g15(nir_builder *b, nir_def *handle)
    nir_def *entry = nir_iadd_imm(b, intr->src[0].ssa, 1);
 
    /* in the same binding, so below 65536 too when the texture's is
-    * (load_texture_index_g15) */
+    * (load_image_handle) */
    nir_scalar index = nir_get_scalar(intr->src[0].ssa, 0);
    if (nir_scalar_is_alu(index) && nir_scalar_alu_op(index) == nir_op_iand &&
        nir_scalar_is_const(nir_scalar_chase_alu_src(index, 1)) &&
