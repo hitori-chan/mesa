@@ -75,13 +75,13 @@ agx_compile_bg_eot_shader(struct agx_bg_eot_cache *cache, nir_shader *shader,
                           struct agx_tilebuffer_layout *tib,
                           unsigned g15_sampler_uniform)
 {
-   agx_nir_lower_texture(shader);
+   bool g15 = cache->dev->params.gpu_generation >= 15;
+   agx_nir_lower_texture_gen(shader, g15);
    agx_preprocess_nir(shader);
    if (tib) {
       unsigned bindless_base = 0;
       NIR_PASS(_, shader, agx_nir_lower_tilebuffer, tib, NULL, &bindless_base,
                NULL, NULL);
-      bool g15 = cache->dev->params.gpu_generation >= 15;
       NIR_PASS(_, shader, agx_nir_lower_monolithic_msaa, tib->nr_samples);
       NIR_PASS(_, shader, agx_nir_lower_multisampled_image_store, g15);
       NIR_PASS(_, shader, agx_nir_lower_texture_gen, g15);

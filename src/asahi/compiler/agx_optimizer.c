@@ -152,7 +152,7 @@ agx_optimizer_inline_imm(agx_instr **defs, agx_instr *I, bool g15)
 
       /* G15 takes a constant texel offset as F42's 12-bit immediate, x, y
        * and z as nibbles at bits 0, 4 and 8; the IR's offset is in the LOD
-       * word's layout (x at 12, y at 28, z at 0: lower_tex_offset_g15) */
+       * word's layout (x at 12, y at 28, z at 0: lower_regular_texture) */
       if (g15 && s == 5 &&
           (I->op == AGX_OPCODE_TEXTURE_SAMPLE ||
            I->op == AGX_OPCODE_TEXTURE_LOAD)) {
