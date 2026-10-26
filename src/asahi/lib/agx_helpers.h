@@ -257,6 +257,43 @@ agx_ppp_fragment_shader_g15(struct agx_ppp_update *ppp, uint64_t shader_base,
    }
 }
 
+/* The vertex shader's pipeline word: G15's names the entry program by its VA */
+static inline uint8_t *
+agx_push_vertex_shader_word_1(uint8_t *out, unsigned gpu_generation,
+                              uint64_t shader_base, uint32_t pipeline)
+{
+   if (gpu_generation >= 15) {
+      uint64_t va = shader_base + pipeline;
+
+      agx_push(out, VDM_STATE_VERTEX_SHADER_WORD_1_G15, cfg) {
+         cfg.pipeline_hi = agx_g15_pipeline_hi(va);
+         cfg.pipeline_lo = agx_g15_pipeline_lo(va);
+      }
+   } else {
+      agx_push(out, VDM_STATE_VERTEX_SHADER_WORD_1, cfg) {
+         cfg.pipeline = pipeline;
+      }
+   }
+
+   return out;
+}
+
+/*
+ * G15: with neither depth writes nor a stencil test, a stencil test that
+ * always passes and masks nothing, as Apple's Metal driver enables for a pass
+ * without a depth attachment (without it nothing is drawn).
+ */
+static inline void
+agx_pack_stencil_always_g15(struct agx_fragment_stencil_packed *out)
+{
+   agx_pack(out, FRAGMENT_STENCIL, cfg) {
+      cfg.compare = AGX_ZS_FUNC_ALWAYS;
+      cfg.depth_pass = AGX_STENCIL_OP_KEEP;
+      cfg.depth_fail = AGX_STENCIL_OP_KEEP;
+      cfg.stencil_fail = AGX_STENCIL_OP_KEEP;
+   }
+}
+
 static inline uint32_t
 agx_pack_line_width(float line_width)
 {
