@@ -3117,10 +3117,7 @@ agx_upload_textures(struct agx_batch *batch, struct agx_compiled_shader *cs,
       struct agx_sampler_view *tex = ctx->stage[stage].textures[i];
 
       if (tex == NULL) {
-         if (g15)
-            agx_set_null_texture_g15(TEX_DESC(i));
-         else
-            agx_set_null_texture(TEX_DESC(i));
+         agx_set_null_texture(TEX_DESC(i), g15);
          continue;
       }
 
@@ -3135,12 +3132,8 @@ agx_upload_textures(struct agx_batch *batch, struct agx_compiled_shader *cs,
       *TEX_DESC(i) = tex->desc;
    }
 
-   for (unsigned i = nr_active_textures; i < nr_textures; ++i) {
-      if (g15)
-         agx_set_null_texture_g15(TEX_DESC(i));
-      else
-         agx_set_null_texture(TEX_DESC(i));
-   }
+   for (unsigned i = nr_active_textures; i < nr_textures; ++i)
+      agx_set_null_texture(TEX_DESC(i), g15);
 
    for (unsigned i = 0; i < nr_images; ++i) {
       /* Image descriptors come in pairs after the textures */
@@ -3149,11 +3142,8 @@ agx_upload_textures(struct agx_batch *batch, struct agx_compiled_shader *cs,
          (struct agx_pbe_packed *)TEX_DESC(nr_textures + (2 * i) + 1);
 
       if (!(ctx->stage[stage].image_mask & BITFIELD_BIT(i))) {
-         if (g15)
-            agx_set_null_texture_g15(texture);
-         else
-            agx_set_null_texture(texture);
-         agx_set_null_pbe(pbe);
+         agx_set_null_texture(texture, g15);
+         agx_set_null_pbe(pbe, g15);
          continue;
       }
 
@@ -3180,7 +3170,7 @@ agx_upload_textures(struct agx_batch *batch, struct agx_compiled_shader *cs,
        */
       if (g15 && !(view->shader_access & PIPE_IMAGE_ACCESS_WRITE) &&
           rsrc->layout.compressed && util_res_sample_count(&rsrc->base) > 1)
-         agx_set_null_pbe(pbe);
+         agx_set_null_pbe(pbe, true);
       else
          agx_batch_upload_pbe(batch, pbe, view, false, false, false, false);
 
