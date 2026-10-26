@@ -671,43 +671,11 @@ agx_pack_texture_g15(void *out, struct agx_resource *rsrc,
       assert(0);
    }
 
-   /* A buffer is a linear 2D texture AGX_TEXTURE_BUFFER_WIDTH texels wide, as
-    * on G13 (not verified on G15) */
    if (is_buffer) {
-      unsigned size_el = agx_texture_buffer_size_el(format, state->u.buf.size);
-      uint64_t address = agx_map_texture_gpu(rsrc, 0) + state->u.buf.offset;
-
-      agx_pack(out, TEXTURE_G15, cfg) {
-         cfg.dimension = AGX_TEXTURE_DIMENSION_2D;
-         cfg.layout = AGX_LAYOUT_LINEAR;
-         cfg.channels = ail_pixel_format[format].channels;
-         cfg.type = ail_pixel_format[format].type;
-         cfg.swizzle_r = agx_channel_from_pipe(swizzle[0]);
-         cfg.swizzle_g = agx_channel_from_pipe(swizzle[1]);
-         cfg.swizzle_b = agx_channel_from_pipe(swizzle[2]);
-         cfg.swizzle_a = agx_channel_from_pipe(swizzle[3]);
-         cfg.width = AGX_TEXTURE_BUFFER_WIDTH;
-         cfg.height = MAX2(DIV_ROUND_UP(size_el, cfg.width), 1);
-         cfg.srgb = (desc->colorspace == UTIL_FORMAT_COLORSPACE_SRGB);
-         cfg.address = address;
-         cfg.stride = (cfg.width * util_format_get_blocksize(format)) - 16;
-      }
-
-      /* libagx's buffer lowering reads G13's layout: the size and offset in
-       * the software words 4 and 5, which G15 reads only when extended, and
-       * the address of an emulated RGB32 buffer in G13's address field (the
-       * hardware fetches such a texture only out of bounds) */
-      uint32_t *w = out;
-      w[4] = size_el;
-      w[5] = 0;
-
-      if (ail_pixel_format[format].channels ==
-          AGX_CHANNELS_R32G32B32_EMULATED) {
-         uint64_t *q = out;
-         q[1] &= ~BITFIELD64_RANGE(2, 36);
-         q[1] |= ((address >> 4) & BITFIELD64_MASK(36)) << 2;
-      }
-
+      agx_pack_buffer_texture_g15(
+         out, format, swizzle,
+         agx_map_texture_gpu(rsrc, 0) + state->u.buf.offset,
+         agx_texture_buffer_size_el(format, state->u.buf.size), 0);
       return;
    }
 
@@ -1284,8 +1252,6 @@ agx_pack_pbe_g15(struct agx_pbe_packed *out, struct agx_resource *tex,
                  enum pipe_texture_target target, unsigned level,
                  unsigned layer, bool block_access, bool emrt)
 {
-   const struct util_format_description *desc =
-      util_format_description(view->format);
    bool is_buffer = (tex->base.target == PIPE_BUFFER);
    unsigned layers = is_buffer ? 1 : view->u.tex.last_layer - layer + 1;
    bool ms = util_res_sample_count(&tex->base) > 1;
@@ -1303,33 +1269,20 @@ agx_pack_pbe_g15(struct agx_pbe_packed *out, struct agx_resource *tex,
       assert(0);
    }
 
+   /* The offset is aligned to 64 B (texture_buffer_offset_alignment);
+    * libagx_buffer_image_offset adds word 4, left 0 */
+   if (is_buffer) {
+      agx_pack_buffer_pbe_g15(
+         out, view->format, agx_map_texture_gpu(tex, 0) + view->u.buf.offset,
+         agx_texture_buffer_size_el(view->format, view->u.buf.size), 0);
+      return;
+   }
+
    agx_pack(out, PBE_G15, cfg) {
-      cfg.dimension = is_buffer ? AGX_TEXTURE_DIMENSION_2D
-                                : agx_translate_tex_dim(
-                                     target, util_res_sample_count(&tex->base));
-      cfg.layout = is_buffer ? AGX_LAYOUT_LINEAR
-                             : agx_translate_layout(tex->layout.tiling);
-      cfg.channels = ail_pixel_format[view->format].channels;
-      cfg.type = ail_pixel_format[view->format].type;
-      cfg.srgb = util_format_is_srgb(view->format);
-
-      assert(desc->nr_channels >= 1 && desc->nr_channels <= 4);
-
-      for (unsigned i = 0; i < desc->nr_channels; ++i) {
-         if (desc->swizzle[i] == 0)
-            cfg.swizzle_r = i;
-         else if (desc->swizzle[i] == 1)
-            cfg.swizzle_g = i;
-         else if (desc->swizzle[i] == 2)
-            cfg.swizzle_b = i;
-         else if (desc->swizzle[i] == 3)
-            cfg.swizzle_a = i;
-      }
-
-      /* An X channel takes the alpha, which the tilebuffer store sets to 1 */
-      if (desc->nr_channels == 4 &&
-          desc->channel[3].type == UTIL_FORMAT_TYPE_VOID)
-         cfg.swizzle_a = AGX_CHANNEL_A;
+      cfg.dimension =
+         agx_translate_tex_dim(target, util_res_sample_count(&tex->base));
+      cfg.layout = agx_translate_layout(tex->layout.tiling);
+      agx_pbe_g15_format(&cfg, view->format);
 
       /* The VA the texture descriptor holds: the same memory through another
        * VA (an alias) is not coherent with it within a launch, so a fetch
@@ -1339,31 +1292,8 @@ agx_pack_pbe_g15(struct agx_pbe_packed *out, struct agx_resource *tex,
       cfg.height = view->resource->height0;
       cfg.mipmapped = tex->mipmapped;
 
-      if (is_buffer) {
-         unsigned size_el =
-            agx_texture_buffer_size_el(view->format, view->u.buf.size);
-         unsigned stride_B =
-            AGX_TEXTURE_BUFFER_WIDTH * util_format_get_blocksize(view->format);
-
-         /* The offset is aligned to 64 B (texture_buffer_offset_alignment);
-          * libagx_buffer_image_offset adds word 4, left 0 */
-         cfg.buffer = agx_map_texture_gpu(tex, 0) + view->u.buf.offset;
-         cfg.width = AGX_TEXTURE_BUFFER_WIDTH;
-         cfg.height = MAX2(DIV_ROUND_UP(size_el, cfg.width), 1);
-         cfg.stride = (stride_B >> 4) - 1;
-      } else if (ms_view) {
-         unsigned blocksize_B = util_format_get_blocksize(view->format);
-         unsigned size_px =
-            (tex->layout.size_B - tex->layout.layer_stride_B * layer) /
-            blocksize_B;
-
-         cfg.dimension = AGX_TEXTURE_DIMENSION_2D;
-         cfg.layout = AGX_LAYOUT_LINEAR;
-         cfg.width = AGX_TEXTURE_BUFFER_WIDTH;
-         cfg.height = DIV_ROUND_UP(size_px, cfg.width);
-         cfg.stride = ((cfg.width * blocksize_B) >> 4) - 1;
-         cfg.buffer += tex->layout.level_offsets_B[level];
-         cfg.mipmapped = false;
+      if (ms_view) {
+         agx_pbe_g15_ms_view(&cfg, &tex->layout, layer, level, view->format);
       } else if (tex->layout.tiling == AIL_TILING_LINEAR) {
          /* In 16-byte units, minus 1 (demo15's 0xF for a 256 B stride) */
          assert((ail_get_linear_stride_B(&tex->layout, level) & 15) == 0);
@@ -1409,44 +1339,17 @@ agx_pack_pbe_g15(struct agx_pbe_packed *out, struct agx_resource *tex,
  * in the PBE's address.
  */
 static void
-agx_pack_pbe_g15_software(uint8_t *out, const struct pipe_image_view *view)
+agx_pack_view_pbe_g15_software(uint8_t *out, const struct pipe_image_view *view)
 {
    struct agx_resource *tex = agx_resource(view->resource);
+   unsigned level = view->u.tex.level;
 
    if (tex->base.target == PIPE_BUFFER)
       return;
 
-   unsigned level = view->u.tex.level;
-
-   if (util_res_sample_count(&tex->base) > 1) {
-      struct ail_tile tile_size = tex->layout.tilesize_el[level];
-
-      agx_pack(out, PBE_G15_SOFTWARE_MSAA, cfg) {
-         cfg.aligned_width =
-            align(u_minify(tex->base.width0, level), tile_size.width_el);
-         cfg.tile_width = tile_size.width_el;
-         cfg.tile_height = tile_size.height_el;
-         cfg.layer_stride = tex->layout.layer_stride_B;
-         cfg.sample_count_log2 = util_logbase2(tex->base.nr_samples);
-         cfg.sample_size_log2 =
-            util_logbase2(util_format_get_blocksize(view->format));
-      }
-      return;
-   }
-
-   agx_pack(out, PBE_G15_SOFTWARE, cfg) {
-      cfg.level_offset = ail_get_level_offset_B(&tex->layout, level);
-      cfg.layer_stride = tex->layout.layer_stride_B;
-
-      if (tex->layout.tiling != AIL_TILING_LINEAR) {
-         struct ail_tile tile_size = tex->layout.tilesize_el[level];
-         cfg.tile_width = tile_size.width_el;
-         cfg.tile_height = tile_size.height_el;
-      } else {
-         cfg.tile_width = 1;
-         cfg.tile_height = 1;
-      }
-   }
+   agx_pack_pbe_g15_software(out, &tex->layout, level,
+                             ail_get_level_offset_B(&tex->layout, level),
+                             util_res_sample_count(&tex->base), view->format);
 }
 
 static void
@@ -1491,18 +1394,10 @@ agx_batch_upload_pbe(struct agx_batch *batch, struct agx_pbe_packed *out,
       cfg.type = ail_pixel_format[view->format].type;
       cfg.srgb = util_format_is_srgb(view->format);
 
-      assert(desc->nr_channels >= 1 && desc->nr_channels <= 4);
-
-      for (unsigned i = 0; i < desc->nr_channels; ++i) {
-         if (desc->swizzle[i] == 0)
-            cfg.swizzle_r = i;
-         else if (desc->swizzle[i] == 1)
-            cfg.swizzle_g = i;
-         else if (desc->swizzle[i] == 2)
-            cfg.swizzle_b = i;
-         else if (desc->swizzle[i] == 3)
-            cfg.swizzle_a = i;
-      }
+      cfg.swizzle_r = agx_pbe_swizzle(desc, 0);
+      cfg.swizzle_g = agx_pbe_swizzle(desc, 1);
+      cfg.swizzle_b = agx_pbe_swizzle(desc, 2);
+      cfg.swizzle_a = agx_pbe_swizzle(desc, 3);
 
       cfg.buffer = agx_map_texture_gpu(tex, layer);
       cfg.unk_mipmapped = tex->mipmapped;
@@ -3066,7 +2961,7 @@ agx_upload_spilled_rt_descriptors(uint8_t *out, struct agx_batch *batch)
 
       /* A multisampled target's store addresses its samples by them */
       if (batch->tilebuffer_layout.g15)
-         agx_pack_pbe_g15_software((uint8_t *)pbe + AGX_PBE_LENGTH, &view);
+         agx_pack_view_pbe_g15_software((uint8_t *)pbe + AGX_PBE_LENGTH, &view);
    }
 
    if (batch->tilebuffer_layout.g15) {
@@ -3168,7 +3063,7 @@ agx_upload_textures(struct agx_batch *batch, struct agx_compiled_shader *cs,
          agx_batch_upload_pbe(batch, pbe, view, false, false, false, false);
 
       if (g15)
-         agx_pack_pbe_g15_software((uint8_t *)pbe + AGX_PBE_LENGTH, view);
+         agx_pack_view_pbe_g15_software((uint8_t *)pbe + AGX_PBE_LENGTH, view);
    }
 
    if (stage == MESA_SHADER_FRAGMENT &&
@@ -6101,7 +5996,7 @@ agx_decompress_inplace(struct agx_batch *batch, struct pipe_surface *surf,
       agx_pack_texture(&img->compressed, rsrc, surf->format, &sampler_view);
       agx_batch_upload_pbe(batch, &img->uncompressed, &view, false, true, true,
                            true);
-      agx_pack_pbe_g15_software((uint8_t *)img->uncompressed_sw, &view);
+      agx_pack_view_pbe_g15_software((uint8_t *)img->uncompressed_sw, &view);
       agx_pack_txf_sampler(&img->txf);
 
       libagx_decompress_g15(batch, grid, AGX_BARRIER_ALL, layout,
