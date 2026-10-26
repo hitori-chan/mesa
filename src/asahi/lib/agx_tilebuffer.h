@@ -21,6 +21,14 @@ extern "C" {
  */
 #define AGX_MAX_RENDER_TARGETS (8)
 
+/* G15's table of the spilled render targets' descriptors, which G15 indexes
+ * in 32 B entries (the 24 B descriptors zero-padded): render target i's
+ * texture at entry 2 * i, its PBE and the PBE's software word at 2 * i + 1,
+ * then the txf sampler a spilled target's read fetches with */
+#define AGX_SPILL_ENTRY_G15_B 32
+#define AGX_SPILL_TXF_G15     (2 * AGX_MAX_RENDER_TARGETS)
+#define AGX_SPILL_TABLE_G15_B ((AGX_SPILL_TXF_G15 + 1) * AGX_SPILL_ENTRY_G15_B)
+
 /* Forward declarations to keep the header lean */
 struct nir_shader;
 struct nir_def;
@@ -52,8 +60,8 @@ struct agx_tilebuffer_layout {
    bool layered;
 
    /* G15: tiles of up to 32 KiB, and a spilled render target is read by a
-    * fetch with the txf sampler at entry 2 * AGX_MAX_RENDER_TARGETS of the
-    * spill table, which G15 indexes in 32 B entries; it has no image load */
+    * fetch with the spill table's txf sampler (AGX_SPILL_TXF_G15); it has no
+    * image load */
    bool g15;
 
    /* Selected tile size in pixels. Either 32*32, 32*16, or 16*16. */
@@ -114,6 +122,11 @@ bool agx_nir_lower_monolithic_msaa(struct nir_shader *shader,
 
 bool agx_nir_lower_sample_intrinsics(struct nir_shader *shader,
                                      bool ignore_sample_mask_without_msaa);
+
+/* G15 has no readable sample count (draws.md, Multisampling): its log2 from
+ * PPP_MULTISAMPLECTL, which holds one nonzero byte per sample from sample 0 */
+struct nir_def *agx_nir_samples_log2_g15(struct nir_builder *b,
+                                         struct nir_def *ppp_multisamplectl);
 
 uint32_t agx_tilebuffer_total_size(struct agx_tilebuffer_layout *tib);
 

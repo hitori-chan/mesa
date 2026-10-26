@@ -325,13 +325,7 @@ agx_create_zsa_state(struct pipe_context *ctx,
       !state->stencil[0].enabled && !state->depth_writemask;
 
    if (so->g15_stencil_always) {
-      agx_pack(&so->front_stencil, FRAGMENT_STENCIL, cfg) {
-         cfg.compare = AGX_ZS_FUNC_ALWAYS;
-         cfg.depth_pass = AGX_STENCIL_OP_KEEP;
-         cfg.depth_fail = AGX_STENCIL_OP_KEEP;
-         cfg.stencil_fail = AGX_STENCIL_OP_KEEP;
-      }
-
+      agx_pack_stencil_always_g15(&so->front_stencil);
       so->back_stencil = so->front_stencil;
    }
 
@@ -3077,8 +3071,7 @@ agx_upload_spilled_rt_descriptors(uint8_t *out, struct agx_batch *batch)
 
    if (batch->tilebuffer_layout.g15) {
       agx_pack_txf_sampler(
-         (struct agx_sampler_packed *)(out +
-                                       (2 * AGX_MAX_RENDER_TARGETS) * stride));
+         (struct agx_sampler_packed *)(out + AGX_SPILL_TXF_G15 * stride));
    }
 }
 
@@ -3707,9 +3700,8 @@ agx_build_bg_eot(struct agx_batch *batch, bool store, bool partial_render)
       /* Upload texture/PBE descriptors for each render target so we can clear
        * spilled render targets.
        */
-      size_t size =
-         g15 ? agx_tex_desc_stride(batch) * ((2 * AGX_MAX_RENDER_TARGETS) + 1)
-             : AGX_TEXTURE_LENGTH * 2 * batch->key.nr_cbufs;
+      size_t size = g15 ? AGX_SPILL_TABLE_G15_B
+                        : AGX_TEXTURE_LENGTH * 2 * batch->key.nr_cbufs;
       struct agx_ptr descs = agx_pool_alloc_aligned(&batch->pool, size, 64);
       if (g15)
          memset(descs.cpu, 0, size);
@@ -4067,19 +4059,8 @@ agx_encode_state(struct agx_batch *batch, uint8_t *out)
       uint32_t pipeline = agx_build_pipeline(
          batch, vs, ctx->gs ? NULL : ctx->linked.vs, MESA_SHADER_VERTEX, 0, 0);
 
-      if (dev->params.gpu_generation >= 15) {
-         uint64_t va = dev->shader_base + pipeline;
-
-         agx_push(out, VDM_STATE_VERTEX_SHADER_WORD_1_G15, cfg) {
-            cfg.pipeline_hi = agx_g15_pipeline_hi(va);
-            cfg.pipeline_lo = agx_g15_pipeline_lo(va);
-         }
-      } else {
-         agx_push(out, VDM_STATE_VERTEX_SHADER_WORD_1, cfg) {
-            cfg.pipeline = pipeline;
-         }
-      }
-
+      out = agx_push_vertex_shader_word_1(out, dev->params.gpu_generation,
+                                          dev->shader_base, pipeline);
       agx_push_packed(out, vs->uvs.vdm, VDM_STATE_VERTEX_OUTPUTS);
 
       agx_push(out, VDM_STATE_VERTEX_UNKNOWN, cfg) {
