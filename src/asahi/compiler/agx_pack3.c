@@ -2044,6 +2044,17 @@ a3_tex_grad_words(const agx_instr *I)
    return I->lod_mode == AGX_LOD_MODE_LOD_GRAD ? I->src[1].channels_m1 + 1 : 0;
 }
 
+/* The group a texture's result arrives in: the IR's scoreboard slot, or
+ * A3_SYNC_G for a texture the IR waits for at once */
+static unsigned
+a3_tex_group(const agx_instr *I)
+{
+   bool async = agx_opcodes_info[I->op].immediates & AGX_IMMEDIATE_SCOREBOARD;
+
+   return (async && !(agx_compiler_debug & AGX_DBG_SYNCTEX)) ? I->scoreboard
+                                                             : A3_SYNC_G;
+}
+
 /* texture_sample / texture_load (texture.md; boots #252 and #256 run
  * Apple's 2D forms): G15 has no texture state registers. The texture is
  * entry ts of the 32 B state array at a uniform pair (the IR's bindless base,
@@ -2053,8 +2064,10 @@ a3_tex_grad_words(const agx_instr *I)
  * cr0-cr2, a depth reference in cr2, the LOD word in cr3 (an array's layer at
  * bits 0:10, a texel offset's x at 12:15, y at 28:31 and z at 0:3 when it is
  * not F42's immediate, the LOD or bias at 16:27 through pack_smpir), the
- * gradients from cr4; the result arrives in group A3_SYNC_G and
- * is waited for at once. Done: every dimension, automatic LOD (fragment
+ * gradients from cr4; the result arrives in the IR's scoreboard slot, which
+ * its first reader waits for (agx_insert_waits), and the crs stay in use
+ * until then (agx3_assign_crs; AGX_MESA_DEBUG=synctex: in group A3_SYNC_G,
+ * waited for at once). Done: every dimension, automatic LOD (fragment
  * shaders) and level 0, a fetch at a constant level, a LOD, bias or fetch
  * level in a register (2D and 2D array samples and 2D fetches run on the
  * hardware), gradients, immediate or register indices, constant offsets and
@@ -2245,8 +2258,8 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
    }
 
    a3_begin(a, I, instr, tmpl);
-   a3_set(a, TEX_G0, A3_SYNC_G);
-   a3_set(a, TEX_G1, A3_SYNC_G);
+   a3_set(a, TEX_G0, a3_tex_group(I));
+   a3_set(a, TEX_G1, a3_tex_group(I));
    /* Bit 64 of a sample (q3) ends the quad's helper lanes: after it,
     * derivatives read 0 across an uncovered pixel, and a later sample's
     * implicit LOD comes out wrong (the last column of an odd-width
@@ -2304,7 +2317,8 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
          out[10] |= BITFIELD_BIT(82 - 80);
    }
 
-   a3_wait(a, I, A3_SYNC_G, emission);
+   if (a3_tex_group(I) == A3_SYNC_G)
+      a3_wait(a, I, A3_SYNC_G, emission);
 }
 
 /* The coordinate registers the packing of I writes, the highest plus one,
@@ -2542,13 +2556,16 @@ a3_mov_cr(struct a3 *a, const agx_instr *I, unsigned cr, agx_index value,
  * branch, one after the other): a wait on one side does not cover the other
  * (dEQP-VK descriptorset_random: a write in one branch, a wait in another,
  * and the write after the join stored zero to texel (0, 0)). A loop's back
- * edge may bring the last iteration's.
+ * edge may bring the last iteration's. A texture is presumed to read its
+ * crs until its result's group completes too (the IR's scoreboard slot,
+ * a3_tex_group; not verified), so the crs still being read are kept per
+ * group: 0 and 1.
  */
 void
 agx3_assign_crs(agx_context *ctx)
 {
    unsigned next_vary = 0, next_imgw = 0;
-   uint64_t *pending_out = calloc(ctx->num_blocks, sizeof(uint64_t));
+   uint64_t (*pending_out)[2] = calloc(ctx->num_blocks, sizeof(*pending_out));
    unsigned *order = calloc(ctx->num_blocks, sizeof(unsigned));
    agx_block *prev = NULL;
    unsigned n = 0;
@@ -2557,17 +2574,22 @@ agx3_assign_crs(agx_context *ctx)
       order[block->index] = n++;
 
    agx_foreach_block(ctx, block) {
-      uint64_t pending = prev ? pending_out[prev->index] : 0;
-      agx_foreach_predecessor(block, pred) {
-         if (order[(*pred)->index] >= order[block->index])
-            pending = ~0ull;
-         else
-            pending |= pending_out[(*pred)->index];
+      uint64_t pending[2] = {0};
+      for (unsigned g = 0; g < 2; g++) {
+         pending[g] = prev ? pending_out[prev->index][g] : 0;
+         agx_foreach_predecessor(block, pred) {
+            if (order[(*pred)->index] >= order[block->index])
+               pending[g] = ~0ull;
+            else
+               pending[g] |= pending_out[(*pred)->index][g];
+         }
       }
 
       agx_foreach_instr_in_block(block, I) {
-         if (I->op == AGX_OPCODE_WAIT && I->scoreboard == 0)
-            pending = 0;
+         if (I->op == AGX_OPCODE_WAIT && I->scoreboard < 2)
+            pending[I->scoreboard] = 0;
+
+         uint64_t all = pending[0] | pending[1];
 
          uint64_t crs;
          if (I->op == AGX_OPCODE_ST_VARY) {
@@ -2577,7 +2599,7 @@ agx3_assign_crs(agx_context *ctx)
             unsigned t = next_imgw++;
             for (unsigned i = 0; i < A3_IMGW_TUPLES; ++i) {
                unsigned cr = 8 * (1 + (t + i) % A3_IMGW_TUPLES);
-               if (!(pending & BITFIELD64_RANGE(cr, 8))) {
+               if (!(all & BITFIELD64_RANGE(cr, 8))) {
                   t += i;
                   break;
                }
@@ -2590,17 +2612,24 @@ agx3_assign_crs(agx_context *ctx)
             crs = BITFIELD64_MASK(MIN2(agx3_cr_count(I), 64));
          }
 
-         if (pending & crs) {
-            agx_builder b = agx_init_builder(ctx, agx_before_instr(I));
-            agx_wait(&b, 0);
-            pending = 0;
+         for (unsigned g = 0; g < 2; g++) {
+            if (pending[g] & crs) {
+               agx_builder b = agx_init_builder(ctx, agx_before_instr(I));
+               agx_wait(&b, g);
+               pending[g] = 0;
+            }
          }
 
          if (I->op == AGX_OPCODE_ST_VARY || I->op == AGX_OPCODE_IMAGE_WRITE)
-            pending |= crs;
+            pending[0] |= crs;
+         else if (agx3_cr_count(I) && a3_tex_group(I) < 2 &&
+                  (I->op == AGX_OPCODE_TEXTURE_SAMPLE ||
+                   I->op == AGX_OPCODE_TEXTURE_LOAD ||
+                   I->op == AGX_OPCODE_IMAGE_LOAD))
+            pending[a3_tex_group(I)] |= crs;
       }
 
-      pending_out[block->index] = pending;
+      memcpy(pending_out[block->index], pending, sizeof(pending));
       prev = block;
    }
 
