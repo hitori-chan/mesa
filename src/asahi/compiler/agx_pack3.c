@@ -69,6 +69,9 @@ struct a3 {
     * the count of instructions emitted */
    uint32_t hints;
    unsigned *emitted;
+
+   /* While a shorter form is tried, a3_fail returns here */
+   jmp_buf *trial;
 };
 
 static unsigned
@@ -284,6 +287,9 @@ a3_survey_print(void)
 static void NORETURN
 a3_fail(const struct a3 *a, const char *what)
 {
+   if (a->trial)
+      longjmp(*a->trial, 1);
+
    if (a3_survey_on) {
       unsigned w = 0;
       while (w < ARRAY_SIZE(a3_survey_what) - 1 && a3_survey_what[w] &&
@@ -554,7 +560,8 @@ a3_check(const struct a3 *a, uint8_t *out)
       uint64_t pad = a->spec->op_pad ? a->spec->op_pad[op] : 0;
 
       if (back[op] != (a->want[op] | pad)) {
-         if (a3_debug)
+         /* a shorter form's failure is expected */
+         if (a3_debug && !a->trial)
             fprintf(stderr,
                     "AGX3: %s operand %u: set 0x%" PRIx64 ", reads 0x%" PRIx64
                     "\n",
@@ -564,6 +571,14 @@ a3_check(const struct a3 *a, uint8_t *out)
    }
 
    return agx3_instr_length(out, AGX3_MAX_BYTES) == a->length;
+}
+
+static void
+a3_put(struct a3 *a, const uint8_t *out, struct util_dynarray *emission)
+{
+   memcpy(util_dynarray_grow_bytes(emission, 1, a->length), out, a->length);
+   if (a->emitted)
+      (*a->emitted)++;
 }
 
 static void
@@ -586,9 +601,7 @@ a3_emit(struct a3 *a, struct util_dynarray *emission)
    if (!ok)
       a3_fail(a, "the operands do not fit the encoding");
 
-   memcpy(util_dynarray_grow_bytes(emission, 1, a->length), out, a->length);
-   if (a->emitted)
-      (*a->emitted)++;
+   a3_put(a, out, emission);
 }
 
 /* G13 special registers to G15 (AGX3.xml's sr names) */
@@ -777,6 +790,9 @@ a3_memshift(const struct a3 *a, unsigned bytes)
 #define T_FUNOP    "2f005400020490400200"     /* floor r0, r1 */
 #define T_FADD     "01000400020000000000"     /* fadd (10 B) */
 #define T_FFMA     "01000600020000000000"     /* ffma (10 B) */
+#define T_ZERO4    "00000000"
+#define T_ZERO6    "000000000000"
+#define T_ZERO8    "0000000000000000"
 #define T_ZERO10   "00000000000000000000"
 #define T_ICMP_BAL "1707540002041038a202"     /* icmp_ballot ieq */
 #define T_FCMP_BAL "97075400020410a888840000" /* fcmp_ballot flt */
@@ -862,6 +878,7 @@ enum {
    WAIT_MASK = 0,
    BITOP_TT = 0,
    CMPSEL_CC = 0,
+   MINMAX_SEL_INT = 5,
    VT = 1,
    IADD_WT = 2,
    IADD_SHIFT = 5,
@@ -1002,8 +1019,8 @@ struct a3_alu {
 };
 
 static void
-a3_alu(struct a3 *a, const agx_instr *I, const struct a3_alu *d,
-       const agx_index *srcs, struct util_dynarray *emission)
+a3_alu_set(struct a3 *a, const agx_instr *I, const struct a3_alu *d,
+           const agx_index *srcs)
 {
    unsigned nsrcs = agx_opcodes_info[I->op].nr_srcs;
 
@@ -1025,8 +1042,62 @@ a3_alu(struct a3 *a, const agx_instr *I, const struct a3_alu *d,
       a3_vt(a, d->vt);
    if (d->wt >= 0)
       a3_vt(a, d->wt);
+}
 
+static void
+a3_alu(struct a3 *a, const agx_instr *I, const struct a3_alu *d,
+       const agx_index *srcs, struct util_dynarray *emission)
+{
+   a3_alu_set(a, I, d, srcs);
    a3_emit(a, emission);
+}
+
+/* Whether the ALU instruction packs in form d, into out */
+static bool
+a3_alu_fits(struct a3 *a, const agx_instr *I, const struct a3_alu *d,
+            const agx_index *srcs, uint8_t *out)
+{
+   jmp_buf *outer = a->trial, trial;
+
+   if (setjmp(trial)) {
+      a->trial = outer;
+      return false;
+   }
+
+   a->trial = &trial;
+   a3_alu_set(a, I, d, srcs);
+   bool fits = a3_check(a, out);
+   a->trial = outer;
+   return fits;
+}
+
+/* An ALU instruction in the first of its forms that holds it, with its
+ * first two sources in either order (they multiply or add), the last form
+ * always */
+static void
+a3_alu_forms(struct a3 *a, const agx_instr *I, const struct a3_alu *forms,
+             unsigned nforms, struct util_dynarray *emission)
+{
+   unsigned nsrcs = agx_opcodes_info[I->op].nr_srcs;
+   agx_index swap[3];
+   uint8_t out[AGX3_MAX_BYTES];
+
+   assert(nsrcs >= 2 && nsrcs <= ARRAY_SIZE(swap));
+   memcpy(swap, I->src, nsrcs * sizeof(*swap));
+   SWAP(swap[0], swap[1]);
+
+   for (unsigned i = 0; i + 1 < nforms; i++) {
+      if (agx_compiler_debug & AGX_DBG_LONGALU)
+         break;
+
+      if (a3_alu_fits(a, I, &forms[i], I->src, out) ||
+          a3_alu_fits(a, I, &forms[i], swap, out)) {
+         a3_put(a, out, emission);
+         return;
+      }
+   }
+
+   a3_alu(a, I, &forms[nforms - 1], I->src, emission);
 }
 
 static const struct a3_alu a3_imadd = {AGX3_IMADD, T_IMADD, {2, 3, 4}, 1,
@@ -1057,18 +1128,50 @@ static const struct a3_alu a3_bitrev = {AGX3_BITREV, T_IUNOP, {2}, 1,
 static const struct a3_alu a3_popcount = {
    AGX3_POPCOUNT, T_IUNOP, {2}, 1, -1, -1, true};
 static const struct a3_alu a3_ffs = {AGX3_FFS, T_IUNOP, {2}, 1, -1, -1, true};
-static const struct a3_alu a3_fadd = {AGX3_FADD10, T_FADD, {1, 2}, -1,
-                                      -1,          5,      false};
-static const struct a3_alu a3_fmul = {AGX3_FMUL12, T_ZERO12, {1, 2}, -1,
-                                      -1,          5,        false};
-static const struct a3_alu a3_ffma = {AGX3_FFMA10, T_FFMA, {1, 2, 3}, -1,
-                                      -1,          6,      false};
-static const struct a3_alu a3_hadd = {AGX3_HADD10, T_ZERO10, {1, 2}, -1,
-                                      -1,          4,        false};
-static const struct a3_alu a3_hmul = {AGX3_HMUL10, T_ZERO10, {1, 2}, -1,
-                                      -1,          4,        false};
-static const struct a3_alu a3_hfma = {AGX3_HFMA10, T_FFMA, {1, 2, 3}, -1,
-                                      -1,          5,      false};
+/* The float arithmetic in its forms, shortest first, as Apple's B1 code
+ * uses them all: 4 bytes reach r0-r63 without uniforms, immediates or
+ * modifiers, 6 add those but neg on the first source (the second's in fmul
+ * and fadd), 8 neg on all and saturate, and the longest abs. ffma's and
+ * hfma's 4-byte forms add into their destination (z0) or multiply it (z1),
+ * ffma4_z1 with bit 24 clear as in all of Apple's. */
+static const struct a3_alu a3_fadd[] = {
+   {AGX3_FADD4, T_ZERO4, {1, 2}, -1, -1, -1},
+   {AGX3_FADD6, T_ZERO6, {1, 2}, -1, -1, -1},
+   {AGX3_FADD8, T_ZERO8, {1, 2}, -1, -1, 5},
+   {AGX3_FADD10, T_FADD, {1, 2}, -1, -1, 5},
+};
+static const struct a3_alu a3_fmul[] = {
+   {AGX3_FMUL4, T_ZERO4, {1, 2}, -1, -1, -1},
+   {AGX3_FMUL6, T_ZERO6, {1, 2}, -1, -1, -1},
+   {AGX3_FMUL8, T_ZERO8, {1, 2}, -1, -1, 5},
+   {AGX3_FMUL12, T_ZERO12, {1, 2}, -1, -1, 5},
+};
+static const struct a3_alu a3_ffma[] = {
+   {AGX3_FFMA4_Z0, T_ZERO4, {1, 2, 3}, -1, -1, -1},
+   {AGX3_FFMA4_Z1, T_ZERO4, {1, 2, 3}, -1, -1, -1},
+   {AGX3_FFMA6, T_ZERO6, {1, 2, 3}, -1, -1, -1},
+   {AGX3_FFMA8, T_ZERO8, {1, 2, 3}, -1, -1, -1},
+   {AGX3_FFMA10, T_FFMA, {1, 2, 3}, -1, -1, 6},
+};
+static const struct a3_alu a3_hadd[] = {
+   {AGX3_HADD4, T_ZERO4, {1, 2}, -1, -1, -1},
+   {AGX3_HADD6, T_ZERO6, {1, 2}, -1, -1, -1},
+   {AGX3_HADD8, T_ZERO8, {1, 2}, -1, -1, 4},
+   {AGX3_HADD10, T_ZERO10, {1, 2}, -1, -1, 4},
+};
+static const struct a3_alu a3_hmul[] = {
+   {AGX3_HMUL4, T_ZERO4, {1, 2}, -1, -1, -1},
+   {AGX3_HMUL6, T_ZERO6, {1, 2}, -1, -1, -1},
+   {AGX3_HMUL8, T_ZERO8, {1, 2}, -1, -1, 4},
+   {AGX3_HMUL10, T_ZERO10, {1, 2}, -1, -1, 4},
+};
+static const struct a3_alu a3_hfma[] = {
+   {AGX3_HFMA4_Z0, T_ZERO4, {1, 2, 3}, -1, -1, -1},
+   {AGX3_HFMA4_Z1, T_ZERO4, {1, 2, 3}, -1, -1, -1},
+   {AGX3_HFMA6, T_ZERO6, {1, 2, 3}, -1, -1, -1},
+   {AGX3_HFMA8, T_ZERO8, {1, 2, 3}, -1, -1, -1},
+   {AGX3_HFMA10, T_FFMA, {1, 2, 3}, -1, -1, 5},
+};
 
 /* The float unary operations: dest, t/v, source */
 static enum agx3_instr
@@ -1115,12 +1218,84 @@ a3_bitop(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
       y = I->src[0];
    }
 
+   /* and, xor and or have 4-byte forms for r0-r63, as fadd4 */
+   static const struct a3_alu bitop4[] = {
+      [0x8] = {AGX3_AND4, T_ZERO4, {1, 2}, -1, -1, -1, true},
+      [0x6] = {AGX3_XOR4, T_ZERO4, {1, 2}, -1, -1, -1, true},
+      [0xe] = {AGX3_OR4, T_ZERO4, {1, 2}, -1, -1, -1, true},
+   };
+   if (tt < ARRAY_SIZE(bitop4) && bitop4[tt].tmpl &&
+       !(agx_compiler_debug & AGX_DBG_LONGALU)) {
+      const agx_index swap[2] = {I->src[1], I->src[0]};
+      uint8_t out[AGX3_MAX_BYTES];
+
+      if (a3_alu_fits(a, I, &bitop4[tt], I->src, out) ||
+          a3_alu_fits(a, I, &bitop4[tt], swap, out)) {
+         a3_put(a, out, emission);
+         return;
+      }
+   }
+
    a3_begin(a, I, AGX3_BITOP10, T_BITOP);
    a3_set(a, BITOP_TT, tt);
    a3_set(a, 1, a3_reg(a, 1, I->dest[0], 0, 0, 0));
    a3_set(a, 2, a3_src(a, 2, x, true));
    a3_set(a, 3, a3_src(a, 3, y, true));
    a3_emit(a, emission);
+}
+
+/* min and max, D = A cc B ? A : B: 6 bytes for the first eight conditions
+ * (the variant is cc), as Apple's fmax and fmin, when neither value is
+ * modified. Bit 18 is the selected value's integer flag (cmpsel6's), clear
+ * only beside a float immediate as in all of Apple's. */
+static bool
+a3_minmax(struct a3 *a, const agx_instr *I, unsigned cc, bool integer,
+          struct util_dynarray *emission)
+{
+   static const enum agx3_instr minmax[] = {
+      AGX3_FMAX, AGX3_FMIN, AGX3_FMAXSSE, AGX3_FMINSSE,
+      AGX3_UMAX, AGX3_UMIN, AGX3_SMAX,    AGX3_SMIN,
+   };
+   agx_index x = I->src[0], y = I->src[1];
+   uint8_t out[AGX3_MAX_BYTES];
+   jmp_buf *outer = a->trial, trial;
+
+   if (cc >= ARRAY_SIZE(minmax) || (agx_compiler_debug & AGX_DBG_LONGALU))
+      return false;
+
+   for (unsigned i = 0; i < 2; i++) {
+      agx_index v = I->src[i], sel = I->src[2 + i];
+
+      if (v.type != sel.type || v.value != sel.value || v.size != sel.size ||
+          v.abs || v.neg || sel.abs || sel.neg)
+         return false;
+   }
+
+   /* one read for both: the last use is either's */
+   x.discard |= I->src[2].discard;
+   y.discard |= I->src[3].discard;
+
+   if (setjmp(trial)) {
+      a->trial = outer;
+      return false;
+   }
+
+   a->trial = &trial;
+   a3_begin(a, I, minmax[cc], T_ZERO6);
+   a3_set(a, 0, a3_reg(a, 0, I->dest[0], 0, 0, 0));
+   a3_set(a, 1, a3_cmp_src(a, 1, x, integer, I->icond));
+   a3_set(a, 2, a3_cmp_src(a, 2, y, integer, I->icond));
+   a3_set(a, MINMAX_SEL_INT,
+          integer ||
+             (x.type != AGX_INDEX_IMMEDIATE && y.type != AGX_INDEX_IMMEDIATE));
+   bool fits = a3_check(a, out);
+   a->trial = outer;
+
+   if (!fits)
+      return false;
+
+   a3_put(a, out, emission);
+   return true;
 }
 
 /* icmpsel/fcmpsel: D = A cc B ? X : Y. The selected values are moved as
@@ -1143,6 +1318,9 @@ a3_cmpsel(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
 
    for (unsigned i = 2; i < 4; i++)
       sel_int &= !I->src[i].abs && !I->src[i].neg;
+
+   if (a3_minmax(a, I, cc, integer, emission))
+      return;
 
    /* The 10-byte form lacks abs on the compared values and the high
     * destination bits; the 14-byte form has them */
@@ -3297,27 +3475,27 @@ a3_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
       return;
 
    case AGX_OPCODE_FADD:
-      a3_alu(&a, I, &a3_fadd, I->src, emission);
+      a3_alu_forms(&a, I, a3_fadd, ARRAY_SIZE(a3_fadd), emission);
       return;
 
    case AGX_OPCODE_FMUL:
-      a3_alu(&a, I, &a3_fmul, I->src, emission);
+      a3_alu_forms(&a, I, a3_fmul, ARRAY_SIZE(a3_fmul), emission);
       return;
 
    case AGX_OPCODE_FFMA:
-      a3_alu(&a, I, &a3_ffma, I->src, emission);
+      a3_alu_forms(&a, I, a3_ffma, ARRAY_SIZE(a3_ffma), emission);
       return;
 
    case AGX_OPCODE_HADD:
-      a3_alu(&a, I, &a3_hadd, I->src, emission);
+      a3_alu_forms(&a, I, a3_hadd, ARRAY_SIZE(a3_hadd), emission);
       return;
 
    case AGX_OPCODE_HMUL:
-      a3_alu(&a, I, &a3_hmul, I->src, emission);
+      a3_alu_forms(&a, I, a3_hmul, ARRAY_SIZE(a3_hmul), emission);
       return;
 
    case AGX_OPCODE_HFMA:
-      a3_alu(&a, I, &a3_hfma, I->src, emission);
+      a3_alu_forms(&a, I, a3_hfma, ARRAY_SIZE(a3_hfma), emission);
       return;
 
    case AGX_OPCODE_FLOOR:

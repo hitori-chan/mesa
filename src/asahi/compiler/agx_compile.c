@@ -49,6 +49,7 @@ static const struct debug_named_value agx_debug_options[] = {
    {"spill",     AGX_DBG_SPILL,     "Spill (almost) everything"},
    {"nopromote", AGX_DBG_NOPROMOTE, "Do not promote constants to uniforms"},
    {"nohints",   AGX_DBG_NOHINTS,   "G15: pack no register-cache hints"},
+   {"longalu",   AGX_DBG_LONGALU,   "G15: pack the float arithmetic in its longest forms"},
    DEBUG_NAMED_VALUE_END
 };
 /* clang-format on */
