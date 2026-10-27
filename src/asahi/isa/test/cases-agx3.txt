@@ -157,6 +157,10 @@ a705540002044c04     ffs      r0, r1
 0a0322050600         cmp      sgt, cc0, r1, r2
 2a0322050300         cmp      flt, cc1, r1, r2
 af005400020400482000 rcp      r0, r1
+39172fed00030000     fmul     $r3, ^r11, $r54, cf0, cf3
+31112fed000b0400     fmul     $r3h, ^r8, $r54, cf0, cf11
+09032f8b00014000     fmul     cr0, ^r1, $r5, cf0, cf1
+af00546c020c00482001 rcp      r54, r3, cf0
 af015400020490400000 rsqrt    r0, r1
 2f025400020490400000 log2     r0, r1
 af025400020490400000 exp2     r0, r1
