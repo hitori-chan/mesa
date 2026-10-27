@@ -32,6 +32,7 @@ enum agx_compiler_dbg {
    AGX_DBG_WAITS       = BITFIELD_BIT(15),
    AGX_DBG_SYNCTEX     = BITFIELD_BIT(16),
    AGX_DBG_NOLATENCY   = BITFIELD_BIT(17),
+   AGX_DBG_HELPERS     = BITFIELD_BIT(18),
 };
 /* clang-format on */
 
