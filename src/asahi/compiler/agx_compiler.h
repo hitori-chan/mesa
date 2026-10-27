@@ -439,7 +439,11 @@ typedef struct {
    bool saturate : 1;
    unsigned mask : 4;
 
-   unsigned padding : 6;
+   /* G15: the scoreboard slots the instruction waits for before it issues, a
+    * wait folded into it (agx3_fold_waits) */
+   unsigned g15_wait : 2;
+
+   unsigned padding : 4;
 } agx_instr;
 
 static inline void
@@ -1076,6 +1080,7 @@ void agx3_fixup_branches(struct util_dynarray *emission,
 unsigned agx3_stack_size(const agx_instr *I, unsigned scratch_B);
 unsigned agx3_cr_count(const agx_instr *I);
 void agx3_assign_crs(agx_context *ctx);
+void agx3_fold_waits(agx_context *ctx);
 
 #ifndef NDEBUG
 void agx_validate(agx_context *ctx, const char *after_str);
