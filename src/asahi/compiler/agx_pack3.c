@@ -2275,17 +2275,12 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
    a3_begin(a, I, instr, tmpl);
    a3_set(a, TEX_G0, a3_tex_group(I));
    a3_set(a, TEX_G1, a3_tex_group(I));
-   /* Bit 64 of a sample (q3) ends the quad's helper lanes: after it,
-    * derivatives read 0 across an uncovered pixel, and a later sample's
-    * implicit LOD comes out wrong (the last column of an odd-width
-    * viewport). Apple sets it only on a fragment shader's last sample when
-    * no sample or derivative follows (the QuartzCore corpus: 222 of 222
-    * flagged samples, none on an earlier one); T_TEX_AUTO is such a sample.
-    * Keep the helpers to the end. */
+   /* Bit 64 (q3) ends the quad's helper lanes (agx3_end_helpers); T_TEX_AUTO,
+    * Apple's last sample, has it set */
    if (!load) {
       int q3 = a3_op_at_bit(a, 64);
       if (q3 >= 0)
-         a3_set(a, q3, 0);
+         a3_set(a, q3, I->g15_end_helpers);
    }
    if (gather) {
       /* four values of one component (AGX_GATHER_R, _G, _B, _A) */
@@ -2554,6 +2549,88 @@ a3_mov_cr(struct a3 *a, const agx_instr *I, unsigned cr, agx_index value,
  * synchronous loads' (A3_SYNC_G). From here on I->scoreboard is the group;
  * the entry program's loads and waits (agx3_emit_load) name theirs. */
 #define A3_SLOT_G 3
+
+/* A sample's bit 64 ends the quad's helper lanes: after it, derivatives read 0
+ * across an uncovered pixel, and a later sample's implicit LOD comes out wrong
+ * (the last column of an odd-width viewport). Apple sets it on a fragment
+ * shader's last sample when no sample or derivative follows (the QuartzCore
+ * corpus: 222 of 222 flagged samples, none on an earlier one), so the helpers
+ * run no further. Likewise here: on the last sample in program order, when
+ * nothing after it reads another lane (a sample, a derivative, a quad or
+ * subgroup operation, a register of the active lanes) and no loop runs it
+ * again. AGX_MESA_DEBUG=helpers keeps the helpers to the end. */
+static bool
+a3_reads_lanes(const agx_instr *I)
+{
+   switch (I->op) {
+   case AGX_OPCODE_TEXTURE_SAMPLE:
+   case AGX_OPCODE_DFDX:
+   case AGX_OPCODE_DFDY:
+   case AGX_OPCODE_QUAD_REDUCE:
+   case AGX_OPCODE_SIMD_REDUCE:
+   case AGX_OPCODE_QUAD_PREFIX:
+   case AGX_OPCODE_SIMD_PREFIX:
+   case AGX_OPCODE_SHUFFLE:
+   case AGX_OPCODE_SHUFFLE_XOR:
+   case AGX_OPCODE_SHUFFLE_UP:
+   case AGX_OPCODE_SHUFFLE_DOWN:
+   case AGX_OPCODE_QUAD_SHUFFLE:
+   case AGX_OPCODE_QUAD_SHUFFLE_XOR:
+   case AGX_OPCODE_QUAD_SHUFFLE_UP:
+   case AGX_OPCODE_QUAD_SHUFFLE_DOWN:
+   case AGX_OPCODE_BALLOT:
+   case AGX_OPCODE_QUAD_BALLOT:
+   case AGX_OPCODE_ICMP_BALLOT:
+   case AGX_OPCODE_FCMP_BALLOT:
+   case AGX_OPCODE_ICMP_QUAD_BALLOT:
+   case AGX_OPCODE_FCMP_QUAD_BALLOT:
+      return true;
+   case AGX_OPCODE_GET_SR:
+   case AGX_OPCODE_GET_SR_BARRIER:
+   case AGX_OPCODE_GET_SR_COVERAGE:
+      return (I->sr >= AGX_SR_ACTIVE_THREAD_INDEX_IN_QUAD &&
+              I->sr <= AGX_SR_COVERAGE_MASK) ||
+             I->sr == AGX_SR_IS_ACTIVE_THREAD;
+   default:
+      return false;
+   }
+}
+
+void
+agx3_end_helpers(agx_context *ctx)
+{
+   /* A prolog runs before the main program, whose own samples follow it */
+   if (ctx->stage != MESA_SHADER_FRAGMENT || ctx->is_preamble ||
+       ctx->key->secondary || (agx_compiler_debug & AGX_DBG_HELPERS))
+      return;
+
+   agx_instr *last = NULL;
+   agx_block *last_block = NULL;
+
+   agx_foreach_block(ctx, block) {
+      agx_foreach_instr_in_block(block, I) {
+         if (I->op == AGX_OPCODE_TEXTURE_SAMPLE) {
+            last = I;
+            last_block = block;
+         } else if (a3_reads_lanes(I)) {
+            last = NULL;
+         }
+      }
+   }
+
+   if (!last)
+      return;
+
+   /* A branch back to the sample's block or before it runs the sample again */
+   agx_foreach_block_from(ctx, last_block, block) {
+      agx_foreach_successor(block, succ) {
+         if (succ->index <= last_block->index)
+            return;
+      }
+   }
+
+   last->g15_end_helpers = true;
+}
 
 void
 agx3_assign_groups(agx_context *ctx)

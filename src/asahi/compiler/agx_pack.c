@@ -1214,6 +1214,7 @@ agx_pack_binary(agx_context *ctx, struct util_dynarray *emission)
       agx3_assign_groups(ctx);
       agx3_assign_crs(ctx);
       agx3_fold_waits(ctx);
+      agx3_end_helpers(ctx);
    }
 
    agx_foreach_block(ctx, block) {
