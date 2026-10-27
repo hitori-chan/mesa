@@ -1420,6 +1420,20 @@ lower_exports(agx_context *ctx)
  * (reg_file_alignment in agx_ra) */
 DEBUG_GET_ONCE_NUM_OPTION(agx_g15_max_reg, "AGX_G15_MAX_REG", 0)
 
+/* G15's register file holds 1024 threads at 96 registers (0x60000 B, by its
+ * driver's OMU cost): Apple's compiler bounds a program at 96 registers
+ * whatever its threadgroup size, and where G13's driver derives a kernel's
+ * thread limit from its registers (the occupancy table), G15's takes 1024.
+ * AGX_G15_WG_CAP=0 drops G13's bound by the workgroup size likewise (not
+ * verified on the hardware). */
+DEBUG_GET_ONCE_BOOL_OPTION(agx_g15_wg_cap, "AGX_G15_WG_CAP", true)
+
+bool
+agx_g15_wg_cap(void)
+{
+   return debug_get_option_agx_g15_wg_cap();
+}
+
 static unsigned
 agx_g15_max_regs(agx_context *ctx)
 {
@@ -1471,7 +1485,8 @@ agx_ra(agx_context *ctx)
    /* Compute shaders need to have their entire workgroup together, so our
     * register usage is bounded by the workgroup size.
     */
-   if (mesa_shader_stage_is_compute(ctx->stage)) {
+   if (mesa_shader_stage_is_compute(ctx->stage) &&
+       (!g15 || agx_g15_wg_cap())) {
       unsigned threads_per_workgroup;
 
       /* If we don't know the workgroup size, worst case it. TODO: Optimize

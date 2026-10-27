@@ -448,6 +448,10 @@ struct agx_occupancy {
 struct agx_occupancy agx_occupancy_for_register_count(unsigned halfregs);
 unsigned agx_max_registers_for_occupancy(unsigned occupancy);
 
+/* G15: whether G13's occupancy table bounds a compute program's registers by
+ * its workgroup size, and its threads by its registers (AGX_G15_WG_CAP) */
+bool agx_g15_wg_cap(void);
+
 static inline unsigned
 agx_round_registers(unsigned halfregs)
 {
