@@ -24,6 +24,7 @@
 #include "agx3_pack.h"
 #include "agx_builder.h"
 #include "agx_compiler.h"
+#include "agx_debug.h"
 
 /* agx3_kind_names' order */
 enum a3_kind {
@@ -63,6 +64,11 @@ struct a3 {
 
    /* The shader's scratch in bytes: the thread-private stack below it */
    unsigned scratch_B;
+
+   /* The register-cache hints the operands may carry (A3_CACHE, A3_LU), and
+    * the count of instructions emitted */
+   uint32_t hints;
+   unsigned *emitted;
 };
 
 static unsigned
@@ -293,7 +299,40 @@ a3_fail(const struct a3 *a, const char *what)
    UNREACHABLE("AGX3 packing failed");
 }
 
-/* A register or uniform operand */
+/* Whether the instruction, at its length, holds the value bits of case c's
+ * modifiers mods for operand op (some instructions give an operand's bits
+ * other uses: fmul_cf's sources have no high register bits) */
+static bool
+a3_holds(const struct a3 *a, unsigned op, const struct agx3_case *c,
+         uint32_t mods)
+{
+   const struct agx3_pack_spec *s = a->spec;
+
+   for (unsigned k = c->nkind; k < c->nfields; k++) {
+      if (!(mods & BITFIELD_BIT(c->mod[k])))
+         continue;
+
+      for (unsigned p = c->f[k].start; p < c->f[k].start + c->f[k].size; p++) {
+         bool held = false;
+
+         for (unsigned f = s->op_start[op]; f < s->op_start[op + 1]; f++) {
+            const struct agx3_field *fl = &s->fields[f];
+
+            held |= p >= fl->vpos && p < fl->vpos + fl->size &&
+                    fl->start + (p - fl->vpos) < a->length * 8;
+         }
+
+         if (!held)
+            return false;
+      }
+   }
+
+   return true;
+}
+
+/* A register or uniform operand. A register takes the cache and last-use
+ * hints agx_opt_register_cache gave it where the instruction allows them
+ * (a->hints) and its encoding holds them. */
 static uint64_t
 a3_reg(struct a3 *a, unsigned op, agx_index idx, uint32_t mods, uint32_t prefer,
        unsigned count_field)
@@ -307,8 +346,23 @@ a3_reg(struct a3 *a, unsigned op, agx_index idx, uint32_t mods, uint32_t prefer,
    else
       a3_fail(a, "operand is not a register or uniform");
 
-   const struct agx3_case *c =
-      a3_case(a, op, kind, a3_size(idx.size), mods, prefer);
+   uint32_t hints = 0;
+   if (kind == A3_REG && idx.cache)
+      hints |= a->hints & BITFIELD_BIT(A3_CACHE);
+   if (kind == A3_REG && idx.discard)
+      hints |= a->hints & BITFIELD_BIT(A3_LU);
+
+   const struct agx3_case *c = NULL;
+   if (hints) {
+      c = a3_case(a, op, kind, a3_size(idx.size), mods | hints, prefer);
+      if (c && a3_holds(a, op, c, hints))
+         mods |= hints;
+      else
+         c = NULL;
+   }
+
+   if (!c)
+      c = a3_case(a, op, kind, a3_size(idx.size), mods, prefer);
    if (!c)
       a3_fail(a, "no case for an operand");
 
@@ -533,6 +587,8 @@ a3_emit(struct a3 *a, struct util_dynarray *emission)
       a3_fail(a, "the operands do not fit the encoding");
 
    memcpy(util_dynarray_grow_bytes(emission, 1, a->length), out, a->length);
+   if (a->emitted)
+      (*a->emitted)++;
 }
 
 /* G13 special registers to G15 (AGX3.xml's sr names) */
@@ -3050,11 +3106,86 @@ agx3_fixup_branches(struct util_dynarray *emission,
    }
 }
 
+/* The instructions whose register operands take the register-cache hints, as
+ * Apple's compiler sets them on G15: its QuartzCore corpus marks about two in
+ * three ALU operands ($ cache, ^ last use; a half of a register is freed while
+ * the other is read on) and no texture or memory operand. */
+static uint32_t
+a3_hints(const agx_instr *I)
+{
+   if (agx_compiler_debug & AGX_DBG_NOHINTS)
+      return 0;
+
+   switch (I->op) {
+   case AGX_OPCODE_MOV:
+   case AGX_OPCODE_MOV_IMM:
+   case AGX_OPCODE_IADD:
+   case AGX_OPCODE_IMAD:
+   case AGX_OPCODE_BFI:
+   case AGX_OPCODE_BFEIL:
+   case AGX_OPCODE_EXTR:
+   case AGX_OPCODE_ASR:
+   case AGX_OPCODE_BITREV:
+   case AGX_OPCODE_POPCOUNT:
+   case AGX_OPCODE_FFS:
+   case AGX_OPCODE_BITOP:
+   case AGX_OPCODE_ICMPSEL:
+   case AGX_OPCODE_FCMPSEL:
+   case AGX_OPCODE_CONVERT:
+   case AGX_OPCODE_FADD:
+   case AGX_OPCODE_FMUL:
+   case AGX_OPCODE_FFMA:
+   case AGX_OPCODE_HADD:
+   case AGX_OPCODE_HMUL:
+   case AGX_OPCODE_HFMA:
+   case AGX_OPCODE_FLOOR:
+   case AGX_OPCODE_CEIL:
+   case AGX_OPCODE_TRUNC:
+   case AGX_OPCODE_ROUNDEVEN:
+   case AGX_OPCODE_RCP:
+   case AGX_OPCODE_RSQRT:
+   case AGX_OPCODE_SRSQRT:
+   case AGX_OPCODE_LOG2:
+   case AGX_OPCODE_EXP2:
+   case AGX_OPCODE_SIN_PT_2:
+   case AGX_OPCODE_ITER:
+      return BITFIELD_BIT(A3_CACHE) | BITFIELD_BIT(A3_LU);
+   default:
+      return 0;
+   }
+}
+
+static void a3_pack_instr(struct util_dynarray *emission,
+                          struct util_dynarray *fixups, const agx_instr *I,
+                          unsigned scratch_B, uint32_t hints,
+                          unsigned *emitted);
+
+/* An instruction the packer splits reads a source more than once (iter's
+ * channels its coordinates), so a last use there frees it before the last
+ * read: such an instruction is packed again without them. */
 void
 agx3_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
                 const agx_instr *I, unsigned scratch_B)
 {
-   struct a3 a = {.I = I, .scratch_B = scratch_B};
+   uint32_t hints = a3_hints(I);
+   unsigned start = emission->size, emitted = 0;
+
+   a3_pack_instr(emission, fixups, I, scratch_B, hints, &emitted);
+
+   if (emitted > 1 && (hints & BITFIELD_BIT(A3_LU))) {
+      emission->size = start;
+      a3_pack_instr(emission, fixups, I, scratch_B,
+                    hints & ~BITFIELD_BIT(A3_LU), &emitted);
+   }
+}
+
+static void
+a3_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
+              const agx_instr *I, unsigned scratch_B, uint32_t hints,
+              unsigned *emitted)
+{
+   struct a3 a = {
+      .I = I, .scratch_B = scratch_B, .hints = hints, .emitted = emitted};
 
    static bool once;
    if (!once) {
