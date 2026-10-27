@@ -114,8 +114,9 @@ struct ra_ctx {
    /* Maximum number of registers that RA is allowed to use */
    unsigned bound[RA_CLASSES];
 
-   /* G15: the SSA values read as a texture or sampler index, which must sit
-    * below AGX_G15_TEX_INDEX_REGS, or NULL if the bound is that low anyway
+   /* G15: the SSA values read as a texture or sampler index or by a
+    * coefficient-register form, which must sit below AGX_G15_TEX_INDEX_REGS,
+    * or NULL if the bound is that low anyway
     */
    BITSET_WORD *low_only;
 };
@@ -1686,6 +1687,15 @@ agx_ra(agx_context *ctx)
       low_only = BITSET_CALLOC(ctx->alloc);
 
       agx_foreach_instr_global(ctx, I) {
+         /* rcp_cf and fmul_cf reach r0-r63 (a3_rcp_cf in agx_pack3.c) */
+         if (I->op == AGX_OPCODE_RCP_CF || I->op == AGX_OPCODE_FMUL_CF) {
+            agx_foreach_ssa_src(I, s)
+               BITSET_SET(low_only, I->src[s].value);
+            agx_foreach_ssa_dest(I, d)
+               BITSET_SET(low_only, I->dest[d].value);
+            continue;
+         }
+
          if (I->op != AGX_OPCODE_TEXTURE_SAMPLE &&
              I->op != AGX_OPCODE_TEXTURE_LOAD && I->op != AGX_OPCODE_IMAGE_LOAD)
             continue;

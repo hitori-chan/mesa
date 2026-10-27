@@ -815,6 +815,8 @@ a3_memshift(const struct a3 *a, unsigned bytes)
 #define T_F2I      "27075400020494480300"     /* convert f_to_s32 */
 #define T_I2F      "a707540002048c20"         /* convert u32_to_f */
 #define T_FUNOP    "2f005400020490400200"     /* floor r0, r1 */
+#define T_RCP_CF   "af00546c020c00482001"     /* rcp r54, r3, cf0 (Apple's) */
+#define T_FMUL_CF  "39172fed00030000"         /* fmul r3, r11, r54, cf0, cf3 */
 #define T_FADD     "01000400020000000000"     /* fadd (10 B) */
 #define T_FFMA     "01000600020000000000"     /* ffma (10 B) */
 #define T_ZERO4    "00000000"
@@ -970,6 +972,15 @@ enum {
    ITRCOORDS_SRC = 1,
    ITRCOORDS_SAMPLE = 2,
    ITRCOORDS_DCACHE = 3,
+   RCP_CF_DST = 0,
+   RCP_CF_VT = 1,
+   RCP_CF_SRC = 2,
+   RCP_CF_CF = 6,
+   FMUL_CF_DST = 0,
+   FMUL_CF_A = 1,
+   FMUL_CF_B = 2,
+   FMUL_CF_W = 3,
+   FMUL_CF_N = 4,
    ZS_CR = 0,
    ZS_G = 1,
    ZS_MODE = 2,
@@ -3019,6 +3030,33 @@ a3_itrcoords(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
    a3_emit(a, emission);
 }
 
+/* rcp_cf and fmul_cf: G15's perspective projection as Apple's compiler emits
+ * it, the reciprocal of W's flagged iteration and a varying's iteration times
+ * it, naming W's and the varying's coefficient registers (AGX3.xml). Their
+ * registers are r0-r63 (register allocation's low_only). */
+static void
+a3_rcp_cf(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
+{
+   a3_begin(a, I, AGX3_RCP_CF, T_RCP_CF);
+   a3_set(a, RCP_CF_DST, a3_reg(a, RCP_CF_DST, I->dest[0], 0, 0, 0));
+   a3_set(a, RCP_CF_SRC, a3_src(a, RCP_CF_SRC, I->src[0], false));
+   a3_set(a, RCP_CF_CF, a3_kind_value(a, RCP_CF_CF, A3_CF, I->src[1].value, 0));
+   a3_vt(a, RCP_CF_VT);
+   a3_emit(a, emission);
+}
+
+static void
+a3_fmul_cf(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
+{
+   a3_begin(a, I, AGX3_FMUL_CF, T_FMUL_CF);
+   a3_set(a, FMUL_CF_DST, a3_reg(a, FMUL_CF_DST, I->dest[0], 0, 0, 0));
+   a3_set(a, FMUL_CF_A, a3_src(a, FMUL_CF_A, I->src[0], false));
+   a3_set(a, FMUL_CF_B, a3_src(a, FMUL_CF_B, I->src[1], false));
+   a3_set(a, FMUL_CF_W, a3_kind_value(a, FMUL_CF_W, A3_CF, I->src[2].value, 0));
+   a3_set(a, FMUL_CF_N, a3_kind_value(a, FMUL_CF_N, A3_CF, I->src[3].value, 0));
+   a3_emit(a, emission);
+}
+
 /* zs_emit (depthf) reads movmsk's coverage word and the depth from the
  * coordinate registers Apple's depth-output shader writes before it: its
  * 10-byte mov and cmpsel name cr4096 and cr4097 (the destination's y field,
@@ -3952,6 +3990,14 @@ a3_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
 
    case AGX_OPCODE_ITRCOORDS:
       a3_itrcoords(&a, I, emission);
+      return;
+
+   case AGX_OPCODE_RCP_CF:
+      a3_rcp_cf(&a, I, emission);
+      return;
+
+   case AGX_OPCODE_FMUL_CF:
+      a3_fmul_cf(&a, I, emission);
       return;
 
    case AGX_OPCODE_ZS_EMIT:

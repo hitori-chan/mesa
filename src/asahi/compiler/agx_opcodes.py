@@ -393,6 +393,13 @@ op("iterproj", (0x21, 8, _), srcs = 3, imms = [CHANNELS, INTERPOLATION])
 # index or of the centroid, from a 32-bit register (agx_pack3.c)
 op("itrcoords", _, srcs = 1, imms = [INTERPOLATION])
 
+# G15's perspective projection (Apple's): the reciprocal of W's flagged
+# iteration, and a varying's iteration times it. Sources are the iteration and
+# W's coefficient register; then the iteration, the reciprocal, W's
+# coefficient register and the varying's.
+op("rcp_cf", _, srcs = 2)
+op("fmul_cf", _, srcs = 4)
+
 op("ldcf", (0xA1, 8, _), srcs = 1, imms = [CHANNELS])
 op("st_vary", None, dests = 0, srcs = 2, can_eliminate = False)
 op("no_varyings", (0x80000051, 4, _), dests = 0, can_eliminate = False)
