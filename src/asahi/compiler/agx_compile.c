@@ -51,6 +51,7 @@ static const struct debug_named_value agx_debug_options[] = {
    {"nohints",   AGX_DBG_NOHINTS,   "G15: pack no register-cache hints"},
    {"longalu",   AGX_DBG_LONGALU,   "G15: pack the float arithmetic in its longest forms"},
    {"waits",     AGX_DBG_WAITS,     "G15: keep each wait an instruction of its own"},
+   {"synctex",   AGX_DBG_SYNCTEX,   "G15: wait for each texture's result at once"},
    DEBUG_NAMED_VALUE_END
 };
 /* clang-format on */
