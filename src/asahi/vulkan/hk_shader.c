@@ -1124,7 +1124,8 @@ hk_compile_nir(struct hk_device *dev, const VkAllocationCallbacks *pAllocator,
       }
 
       NIR_PASS(_, nir, agx_nir_lower_fs_active_samples_to_register);
-      NIR_PASS(_, nir, agx_nir_lower_interpolation);
+      NIR_PASS(_, nir, agx_nir_lower_interpolation,
+               dev->dev.params.gpu_generation >= 15);
    } else if (sw_stage == MESA_SHADER_TESS_EVAL ||
               sw_stage == MESA_SHADER_TESS_CTRL) {
 
