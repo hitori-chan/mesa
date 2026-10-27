@@ -52,6 +52,7 @@ static const struct debug_named_value agx_debug_options[] = {
    {"longalu",   AGX_DBG_LONGALU,   "G15: pack the float arithmetic in its longest forms"},
    {"waits",     AGX_DBG_WAITS,     "G15: keep each wait an instruction of its own"},
    {"synctex",   AGX_DBG_SYNCTEX,   "G15: wait for each texture's result at once"},
+   {"nolatency", AGX_DBG_NOLATENCY, "G15: schedule by register pressure alone, not to hide the textures' latency"},
    DEBUG_NAMED_VALUE_END
 };
 /* clang-format on */
