@@ -5,6 +5,7 @@
 
 #include "compiler/shader_enums.h"
 #include "agx_compile.h"
+#include "agx_debug.h"
 #include "nir.h"
 #include "nir_builder.h"
 #include "nir_builder_opcodes.h"
@@ -126,14 +127,22 @@ needs_lower(const nir_instr *instr, const void *data)
    const nir_intrinsic_instr *load = nir_instr_as_intrinsic(instr);
 
    /* at_offset barycentrics need to be lowered, and on G15 every perspective
-    * load
+    * load but those at the pixel centre and a constant offset, which the
+    * backend projects (agx_emit_load_vary; all with AGX_MESA_DEBUG=noperspmul)
     */
    if (load->intrinsic == nir_intrinsic_load_interpolated_input) {
       nir_intrinsic_instr *bary = nir_src_as_intrinsic(load->src[0]);
 
-      return bary->intrinsic == nir_intrinsic_load_barycentric_at_offset ||
-             (*g15 &&
-              nir_intrinsic_interp_mode(bary) != INTERP_MODE_NOPERSPECTIVE);
+      if (bary->intrinsic == nir_intrinsic_load_barycentric_at_offset)
+         return true;
+
+      if (!*g15 || nir_intrinsic_interp_mode(bary) == INTERP_MODE_NOPERSPECTIVE)
+         return false;
+
+      return (agx_get_compiler_debug() & AGX_DBG_NOPERSPMUL) ||
+             bary->intrinsic != nir_intrinsic_load_barycentric_pixel ||
+             !nir_src_is_const(
+                *nir_get_io_offset_src((nir_intrinsic_instr *)load));
    }
 
    /* Flat shading always lowered */
