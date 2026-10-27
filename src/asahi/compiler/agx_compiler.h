@@ -432,19 +432,22 @@ typedef struct {
    unsigned shift : 4;
 
    /* Scoreboard index, 0 or 1. Leave as 0 for instructions that do not require
-    * scoreboarding (everything but memory load/store and texturing). */
-   unsigned scoreboard : 1;
+    * scoreboarding (everything but memory load/store and texturing). On G15,
+    * from agx3_assign_groups on, the group (0-5). */
+   unsigned scoreboard : 3;
 
    /* Output modifiers */
    bool saturate : 1;
    unsigned mask : 4;
 
    /* G15: the groups the instruction waits for before it issues, a wait
-    * folded into it (agx3_fold_waits): the scoreboard slots and the
-    * synchronous instructions' group 2. g15_nosync: the instruction after a
+    * folded into it (agx3_fold_waits). g15_nosync: the instruction after a
     * synchronous one waits for it in its place. */
-   unsigned g15_wait : 3;
+   unsigned g15_wait : 6;
    bool g15_nosync : 1;
+
+   /* G15: a texture's first coordinate register (agx3_assign_crs) */
+   unsigned g15_cr : 5;
 
    unsigned padding : 2;
 } agx_instr;
@@ -1082,6 +1085,7 @@ void agx3_fixup_branches(struct util_dynarray *emission,
                          struct util_dynarray *fixups);
 unsigned agx3_stack_size(const agx_instr *I, unsigned scratch_B);
 unsigned agx3_cr_count(const agx_instr *I);
+void agx3_assign_groups(agx_context *ctx);
 void agx3_assign_crs(agx_context *ctx);
 void agx3_fold_waits(agx_context *ctx);
 

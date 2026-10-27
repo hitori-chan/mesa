@@ -1478,8 +1478,8 @@ a3_mem(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
 }
 
 /* The IR's local_load and local_atomic are synchronous; G15's ldtg and
- * atomictg deliver in a load group. They use group 2 (the scoreboard
- * assigns 0 and 1) and wait for it. */
+ * atomictg deliver in a load group. They use group 2 (the scoreboard slots
+ * are groups 3 and 4, agx3_assign_groups) and wait for it. */
 #define A3_SYNC_G 2
 
 static void
@@ -2044,8 +2044,9 @@ a3_tex_grad_words(const agx_instr *I)
    return I->lod_mode == AGX_LOD_MODE_LOD_GRAD ? I->src[1].channels_m1 + 1 : 0;
 }
 
-/* The group a texture's result arrives in: the IR's scoreboard slot, or
- * A3_SYNC_G for a texture the IR waits for at once */
+/* The group a texture's result arrives in: its scoreboard slot's
+ * (agx3_assign_groups), or A3_SYNC_G for a texture the IR waits for at
+ * once */
 static unsigned
 a3_tex_group(const agx_instr *I)
 {
@@ -2055,17 +2056,29 @@ a3_tex_group(const agx_instr *I)
                                                              : A3_SYNC_G;
 }
 
+/* The coordinate registers a texture reads from its first */
+static unsigned
+a3_tex_crs(const agx_instr *I)
+{
+   unsigned n = MAX2(a3_tex_slot(I, a3_tex_coords(I) - 1) + 1,
+                     (a3_tex_lod_word(I) || a3_tex_offset_in_word(I)) ? 4
+                     : I->shadow                                      ? 3
+                                                                      : 2);
+   return MAX2(n, a3_tex_grad_words(I) ? 4 + a3_tex_grad_words(I) : 0);
+}
+
 /* texture_sample / texture_load (texture.md; boots #252 and #256 run
  * Apple's 2D forms): G15 has no texture state registers. The texture is
  * entry ts of the 32 B state array at a uniform pair (the IR's bindless base,
  * its index counting 32 B descriptors), the sampler entry ss of the 32 B
  * sampler table at another pair (src[6]). The coordinates go to cr slots
- * (smp.md), in group 0, which the instruction waits for: x, y and z in
- * cr0-cr2, a depth reference in cr2, the LOD word in cr3 (an array's layer at
- * bits 0:10, a texel offset's x at 12:15, y at 28:31 and z at 0:3 when it is
- * not F42's immediate, the LOD or bias at 16:27 through pack_smpir), the
- * gradients from cr4; the result arrives in the IR's scoreboard slot, which
- * its first reader waits for (agx_insert_waits), and the crs stay in use
+ * (smp.md), in group 0, which the instruction waits for, from its first cr
+ * (I->g15_cr): x, y and z in slots 0-2, a depth reference in slot 2, the
+ * LOD word in slot 3 (an array's layer at bits 0:10, a texel offset's x at
+ * 12:15, y at 28:31 and z at 0:3 when it is not F42's immediate, the LOD or
+ * bias at 16:27 through pack_smpir), the gradients from slot 4; the result
+ * arrives in its scoreboard slot's group, which its first reader waits for
+ * (agx_insert_waits), and the crs stay in use
  * until then (agx3_assign_crs; AGX_MESA_DEBUG=synctex: in group A3_SYNC_G,
  * waited for at once). Done: every dimension, automatic LOD (fragment
  * shaders) and level 0, a fetch at a constant level, a LOD, bias or fetch
@@ -2198,6 +2211,8 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
       a3_fail(a, "texture form not in the encoder tree for this dimension");
 
    bool has_lod = load && !lodw && a3_tex_load[I->dim] != A3_NONE;
+   /* the first cr, agx3_assign_crs's */
+   unsigned cr = I->g15_cr;
 
    /* The layer word goes into the LOD word when there is one */
    bool word = lodw || off_word;
@@ -2209,7 +2224,7 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
       if (word && a3_tex_slot(I, c) == 3)
          layer = v;
       else
-         a3_mov_cr(a, I, a3_tex_slot(I, c), v, emission);
+         a3_mov_cr(a, I, cr + a3_tex_slot(I, c), v, emission);
    }
 
    /* The LOD word: pack_smpir's A the f16 LOD or bias as q5.6 (mode 0xa,
@@ -2223,11 +2238,11 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
       agx_index pc = off_word ? offset : lodw ? layer : agx_null();
 
       if (agx_is_null(pa)) {
-         a3_mov_cr(a, I, 3, offset, emission);
+         a3_mov_cr(a, I, cr + 3, offset, emission);
       } else {
          a3_begin(a, I, AGX3_PACK_SMPIR, T_PACK_SMPIR);
          a3_set(a, PACK_SMPIR_DST,
-                a3_kind_value(a, PACK_SMPIR_DST, A3_CR, 3, 0));
+                a3_kind_value(a, PACK_SMPIR_DST, A3_CR, cr + 3, 0));
          a3_set(a, PACK_SMPIR_G, 0);
          a3_set(a, PACK_SMPIR_A, a3_src9(a, PACK_SMPIR_A, pa));
          if (!agx_is_null(pc))
@@ -2243,7 +2258,7 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
    if (I->shadow) {
       agx_index ref = I->src[5];
       ref.channels_m1 = 0;
-      a3_mov_cr(a, I, 2, ref, emission);
+      a3_mov_cr(a, I, cr + 2, ref, emission);
    }
 
    /* The gradients from cr4 in the IR's order, dP/dx and dP/dy of each
@@ -2254,7 +2269,7 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
       agx_index v = lod;
       v.value += 2 * i;
       v.channels_m1 = 0;
-      a3_mov_cr(a, I, 4 + i, v, emission);
+      a3_mov_cr(a, I, cr + 4 + i, v, emission);
    }
 
    a3_begin(a, I, instr, tmpl);
@@ -2285,7 +2300,7 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
    if (I->sparse)
       a3_set(a, a3_op_at_bit(a, 81), 1);
    a3_set(a, TEX_TS, a3_tex_index(a, TEX_TS, A3_TS, texture));
-   a3_set(a, TEX_CR, a3_kind_value(a, TEX_CR, A3_CR, 0, 0));
+   a3_set(a, TEX_CR, a3_kind_value(a, TEX_CR, A3_CR, cr, 0));
    a3_set(a, TEX_Q1, 1);
    /* 0 for a fetch and Apple's sample at a level in cr3 (gradients: a
     * guess) */
@@ -2331,13 +2346,8 @@ agx3_cr_count(const agx_instr *I)
    switch (I->op) {
    case AGX_OPCODE_TEXTURE_SAMPLE:
    case AGX_OPCODE_TEXTURE_LOAD:
-   case AGX_OPCODE_IMAGE_LOAD: {
-      unsigned n = MAX2(a3_tex_slot(I, a3_tex_coords(I) - 1) + 1,
-                        (a3_tex_lod_word(I) || a3_tex_offset_in_word(I)) ? 4
-                        : I->shadow                                      ? 3
-                                                                         : 2);
-      return MAX2(n, a3_tex_grad_words(I) ? 4 + a3_tex_grad_words(I) : 0);
-   }
+   case AGX_OPCODE_IMAGE_LOAD:
+      return I->g15_cr + a3_tex_crs(I);
    case AGX_OPCODE_ZS_EMIT:
       /* the coverage word (with the stencil), then the depth (a3_zs_emit) */
       return (I->zs & 1) ? 2 : 1;
@@ -2533,8 +2543,31 @@ a3_mov_cr(struct a3 *a, const agx_instr *I, unsigned cr, agx_index value,
    a3_emit(a, emission);
 }
 
+/* G15's groups: the IR's scoreboard slots 0 and 1 become groups 3 and 4
+ * (A3_SLOT_G), so that group 0 holds only the coordinate registers' writes
+ * (a3_mov_cr) and st_var's and image_write's reads of them. A wait is for a
+ * whole group, and a texture waits for its coordinates in group 0: in group
+ * 0 itself, a texture or load waited for the one before it to complete
+ * before it issued. Apple's textures likewise wait for their coordinates in
+ * groups no texture in flight delivers in (the QuartzCore corpus; that a
+ * wait is for the whole group is inferred from it). Group 2 is the
+ * synchronous loads' (A3_SYNC_G). From here on I->scoreboard is the group;
+ * the entry program's loads and waits (agx3_emit_load) name theirs. */
+#define A3_SLOT_G 3
+
+void
+agx3_assign_groups(agx_context *ctx)
+{
+   agx_foreach_instr_global(ctx, I) {
+      if (agx_opcodes_info[I->op].immediates & AGX_IMMEDIATE_SCOREBOARD)
+         I->scoreboard += A3_SLOT_G;
+   }
+}
+
 #define A3_VARY_CRS    8
 #define A3_IMGW_TUPLES 2
+#define A3_TEX_CRS     32
+#define A3_GROUPS      6
 
 /* G15's st_var and image write read their coordinate registers after they
  * issue, until their group (0) completes, and a later write to those crs does
@@ -2557,15 +2590,17 @@ a3_mov_cr(struct a3 *a, const agx_instr *I, unsigned cr, agx_index value,
  * (dEQP-VK descriptorset_random: a write in one branch, a wait in another,
  * and the write after the join stored zero to texel (0, 0)). A loop's back
  * edge may bring the last iteration's. A texture is presumed to read its
- * crs until its result's group completes too (the IR's scoreboard slot,
- * a3_tex_group; not verified), so the crs still being read are kept per
- * group: 0 and 1.
+ * crs until its result's group completes too (a3_tex_group; not verified),
+ * so the crs still being read are kept per group, and a 1D or 2D texture
+ * takes the next pair of cr0-cr31 that none is reading, so that a texture
+ * need not wait for the one before it.
  */
 void
 agx3_assign_crs(agx_context *ctx)
 {
-   unsigned next_vary = 0, next_imgw = 0;
-   uint64_t (*pending_out)[2] = calloc(ctx->num_blocks, sizeof(*pending_out));
+   unsigned next_vary = 0, next_imgw = 0, next_tex = 0;
+   uint64_t (*pending_out)[A3_GROUPS] =
+      calloc(ctx->num_blocks, sizeof(*pending_out));
    unsigned *order = calloc(ctx->num_blocks, sizeof(unsigned));
    agx_block *prev = NULL;
    unsigned n = 0;
@@ -2574,8 +2609,8 @@ agx3_assign_crs(agx_context *ctx)
       order[block->index] = n++;
 
    agx_foreach_block(ctx, block) {
-      uint64_t pending[2] = {0};
-      for (unsigned g = 0; g < 2; g++) {
+      uint64_t pending[A3_GROUPS] = {0};
+      for (unsigned g = 0; g < A3_GROUPS; g++) {
          pending[g] = prev ? pending_out[prev->index][g] : 0;
          agx_foreach_predecessor(block, pred) {
             if (order[(*pred)->index] >= order[block->index])
@@ -2586,12 +2621,18 @@ agx3_assign_crs(agx_context *ctx)
       }
 
       agx_foreach_instr_in_block(block, I) {
-         if (I->op == AGX_OPCODE_WAIT && I->scoreboard < 2)
+         if (I->op == AGX_OPCODE_WAIT)
             pending[I->scoreboard] = 0;
 
-         uint64_t all = pending[0] | pending[1];
+         uint64_t all = 0;
+         for (unsigned g = 0; g < A3_GROUPS; g++)
+            all |= pending[g];
 
          uint64_t crs;
+         bool tex = I->op == AGX_OPCODE_TEXTURE_SAMPLE ||
+                    I->op == AGX_OPCODE_TEXTURE_LOAD ||
+                    I->op == AGX_OPCODE_IMAGE_LOAD;
+
          if (I->op == AGX_OPCODE_ST_VARY) {
             I->vary_cr = (next_vary++) % A3_VARY_CRS;
             crs = BITFIELD64_BIT(I->vary_cr);
@@ -2606,13 +2647,33 @@ agx3_assign_crs(agx_context *ctx)
             }
             I->vary_cr = 8 * (1 + t % A3_IMGW_TUPLES);
             crs = BITFIELD64_RANGE(I->vary_cr, 8);
+         } else if (tex) {
+            /* A 1D or 2D read takes the next pair still free, as Apple's 2D
+             * reads take cr0-cr31 in turn (even firsts only); the others
+             * keep cr0 (Apple's 3D samples all read from cr0; other firsts
+             * not verified) */
+            unsigned span = a3_tex_crs(I);
+            I->g15_cr = 0;
+            if (span == 2) {
+               unsigned cr = next_tex;
+               for (unsigned i = 0; i < A3_TEX_CRS; i += 2) {
+                  unsigned c = (next_tex + i) % A3_TEX_CRS;
+                  if (!(all & BITFIELD64_RANGE(c, 2))) {
+                     cr = c;
+                     break;
+                  }
+               }
+               I->g15_cr = cr;
+               next_tex = (cr + 2) % A3_TEX_CRS;
+            }
+            crs = BITFIELD64_RANGE(I->g15_cr, span);
          } else {
             /* Another instruction's crs (a vertex shader's texture fetch after
              * the point size's st_var: the fetch read the wrong texel) */
             crs = BITFIELD64_MASK(MIN2(agx3_cr_count(I), 64));
          }
 
-         for (unsigned g = 0; g < 2; g++) {
+         for (unsigned g = 0; g < A3_GROUPS; g++) {
             if (pending[g] & crs) {
                agx_builder b = agx_init_builder(ctx, agx_before_instr(I));
                agx_wait(&b, g);
@@ -2622,10 +2683,7 @@ agx3_assign_crs(agx_context *ctx)
 
          if (I->op == AGX_OPCODE_ST_VARY || I->op == AGX_OPCODE_IMAGE_WRITE)
             pending[0] |= crs;
-         else if (agx3_cr_count(I) && a3_tex_group(I) < 2 &&
-                  (I->op == AGX_OPCODE_TEXTURE_SAMPLE ||
-                   I->op == AGX_OPCODE_TEXTURE_LOAD ||
-                   I->op == AGX_OPCODE_IMAGE_LOAD))
+         else if (tex && agx3_cr_count(I) && a3_tex_group(I) != A3_SYNC_G)
             pending[a3_tex_group(I)] |= crs;
       }
 

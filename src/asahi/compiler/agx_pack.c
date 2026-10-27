@@ -1211,6 +1211,7 @@ agx_pack_binary(agx_context *ctx, struct util_dynarray *emission)
    util_dynarray_init(&fixups3, ctx);
 
    if (ctx->key->dev.gpu_generation >= 15) {
+      agx3_assign_groups(ctx);
       agx3_assign_crs(ctx);
       agx3_fold_waits(ctx);
    }
