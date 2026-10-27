@@ -550,22 +550,49 @@ a3_vt(struct a3 *a, unsigned op)
 static bool
 a3_check(const struct a3 *a, uint8_t *out)
 {
-   uint64_t back[A3_MAX_OPS];
+   uint64_t back[A3_MAX_OPS], ops[A3_MAX_OPS], want[A3_MAX_OPS];
+   uint32_t set = a->set;
+
+   memcpy(ops, a->ops, sizeof(ops));
+   memcpy(want, a->want, sizeof(want));
+
+   /* A wait folded into the instruction (agx3_fold_waits) joins its first
+    * encoding's own (texture_load and st_var wait for group 0): a form
+    * without a wait field, or with one group's and another set, does not
+    * hold it */
+   unsigned wait = (!a->emitted || !*a->emitted) ? a->I->g15_wait : 0;
+   if (wait) {
+      int w = a->spec->wait_op;
+      if (w < 0)
+         return false;
+
+      if (a->spec->wait_one) {
+         if (util_bitcount(wait) != 1 || (ops[w] && ops[w] != ffs(wait)))
+            return false;
+
+         ops[w] = ffs(wait);
+      } else {
+         ops[w] |= wait;
+      }
+
+      want[w] = ops[w];
+      set |= BITFIELD_BIT(w);
+   }
 
    memset(out, 0, AGX3_MAX_BYTES);
-   agx3_pack(out, a->spec, a->length, a->ops);
+   agx3_pack(out, a->spec, a->length, ops);
    agx3_unpack(out, a->spec, a->length, back);
 
-   u_foreach_bit(op, a->set) {
+   u_foreach_bit(op, set) {
       uint64_t pad = a->spec->op_pad ? a->spec->op_pad[op] : 0;
 
-      if (back[op] != (a->want[op] | pad)) {
+      if (back[op] != (want[op] | pad)) {
          /* a shorter form's failure is expected */
          if (a3_debug && !a->trial)
             fprintf(stderr,
                     "AGX3: %s operand %u: set 0x%" PRIx64 ", reads 0x%" PRIx64
                     "\n",
-                    a->spec->name, op, a->want[op], back[op]);
+                    a->spec->name, op, want[op], back[op]);
          return false;
       }
    }
@@ -3335,35 +3362,98 @@ a3_hints(const agx_instr *I)
 
 static void a3_pack_instr(struct util_dynarray *emission,
                           struct util_dynarray *fixups, const agx_instr *I,
-                          unsigned scratch_B, uint32_t hints,
-                          unsigned *emitted);
+                          unsigned scratch_B, uint32_t hints, unsigned *emitted,
+                          jmp_buf *trial);
 
 /* An instruction the packer splits reads a source more than once (iter's
  * channels its coordinates), so a last use there frees it before the last
  * read: such an instruction is packed again without them. */
-void
-agx3_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
-                const agx_instr *I, unsigned scratch_B)
+static unsigned
+a3_pack_hinted(struct util_dynarray *emission, struct util_dynarray *fixups,
+               const agx_instr *I, unsigned scratch_B, jmp_buf *trial)
 {
    uint32_t hints = a3_hints(I);
    unsigned start = emission->size, emitted = 0;
 
-   a3_pack_instr(emission, fixups, I, scratch_B, hints, &emitted);
+   a3_pack_instr(emission, fixups, I, scratch_B, hints, &emitted, trial);
 
    if (emitted > 1 && (hints & BITFIELD_BIT(A3_LU))) {
       emission->size = start;
+      emitted = 0;
       a3_pack_instr(emission, fixups, I, scratch_B,
-                    hints & ~BITFIELD_BIT(A3_LU), &emitted);
+                    hints & ~BITFIELD_BIT(A3_LU), &emitted, trial);
+   }
+
+   return emitted;
+}
+
+void
+agx3_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
+                const agx_instr *I, unsigned scratch_B)
+{
+   a3_pack_hinted(emission, fixups, I, scratch_B, NULL);
+}
+
+/* Whether I packs with a wait for the load groups mask in its first
+ * encoding */
+static bool
+a3_takes_wait(const agx_instr *I, unsigned mask, unsigned scratch_B)
+{
+   agx_instr J = *I;
+   struct util_dynarray emission, fixups;
+   jmp_buf trial;
+   volatile bool ok = false;
+
+   J.g15_wait = mask;
+   util_dynarray_init(&emission, NULL);
+   util_dynarray_init(&fixups, NULL);
+
+   if (!setjmp(trial))
+      ok = a3_pack_hinted(&emission, &fixups, &J, scratch_B, &trial) > 0;
+
+   util_dynarray_fini(&emission);
+   util_dynarray_fini(&fixups);
+   return ok;
+}
+
+/* Fold each wait into the next instruction of its block where that one has
+ * a wait field, as Apple's B1 code does (its only waits of their own come
+ * before an else or a pop_exec, which have none): the instruction waits
+ * before it issues, as after the wait. B0 needs a wait and three nops
+ * before such an instruction (not done). */
+void
+agx3_fold_waits(agx_context *ctx)
+{
+   if (agx_compiler_debug & AGX_DBG_WAITS)
+      return;
+
+   agx_foreach_block(ctx, block) {
+      agx_foreach_instr_in_block_safe(block, I) {
+         if (I->op != AGX_OPCODE_WAIT || I->link.next == &block->instructions)
+            continue;
+
+         agx_instr *next = list_first_entry(&I->link, agx_instr, link);
+         unsigned mask = next->g15_wait | BITFIELD_BIT(I->scoreboard);
+
+         if (next->op != AGX_OPCODE_WAIT &&
+             a3_takes_wait(next, mask, ctx->scratch_size_B)) {
+            next->g15_wait = mask;
+            agx_remove_instruction(I);
+         }
+      }
    }
 }
 
 static void
 a3_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
               const agx_instr *I, unsigned scratch_B, uint32_t hints,
-              unsigned *emitted)
+              unsigned *emitted, jmp_buf *trial)
 {
-   struct a3 a = {
-      .I = I, .scratch_B = scratch_B, .hints = hints, .emitted = emitted};
+   struct a3 a = {.I = I,
+                  .scratch_B = scratch_B,
+                  .hints = hints,
+                  .emitted = emitted,
+                  .trial = trial};
 
    static bool once;
    if (!once) {

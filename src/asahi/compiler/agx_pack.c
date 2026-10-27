@@ -1210,8 +1210,10 @@ agx_pack_binary(agx_context *ctx, struct util_dynarray *emission)
    util_dynarray_init(&fixups, ctx);
    util_dynarray_init(&fixups3, ctx);
 
-   if (ctx->key->dev.gpu_generation >= 15)
+   if (ctx->key->dev.gpu_generation >= 15) {
       agx3_assign_crs(ctx);
+      agx3_fold_waits(ctx);
+   }
 
    agx_foreach_block(ctx, block) {
       /* Relative to the start of the binary, the block begins at the current

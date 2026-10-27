@@ -29,6 +29,7 @@ enum agx_compiler_dbg {
    AGX_DBG_NOPROMOTE   = BITFIELD_BIT(12),
    AGX_DBG_NOHINTS     = BITFIELD_BIT(13),
    AGX_DBG_LONGALU     = BITFIELD_BIT(14),
+   AGX_DBG_WAITS       = BITFIELD_BIT(15),
 };
 /* clang-format on */
 
