@@ -2568,9 +2568,11 @@ agx3_assign_groups(agx_context *ctx)
 #define A3_IMGW_TUPLES 2
 #define A3_TEX_CRS     32
 #define A3_GROUPS      6
+#define A3_VARY_G      1
 
 /* G15's st_var and image write read their coordinate registers after they
- * issue, until their group (0) completes, and a later write to those crs does
+ * issue, until their group (st_var's A3_VARY_G, an image write's 0)
+ * completes, and a later write to those crs does
  * not wait for it: a mov to the cr of the st_var just before stored the new
  * value in both slots (the point size and the first varying of a vertex
  * shader with two varyings, the GS copy shader's st_vars through cr0 with
@@ -2583,7 +2585,7 @@ agx3_assign_groups(agx_context *ctx)
  * take tuples from cr8 in turn, clear of the crs other instructions write
  * from cr0, as Apple's shaders give each write its own tuple, or the next
  * one free when that one is still being read. A cr still being read is
- * reused only after a wait for group 0, as is one another instruction
+ * reused only after a wait for its group, as is one another instruction
  * writes. A block starts with the crs still being read at the end of each
  * predecessor and of the block before it (a SIMD group runs both sides of a
  * branch, one after the other): a wait on one side does not cover the other
@@ -2681,7 +2683,9 @@ agx3_assign_crs(agx_context *ctx)
             }
          }
 
-         if (I->op == AGX_OPCODE_ST_VARY || I->op == AGX_OPCODE_IMAGE_WRITE)
+         if (I->op == AGX_OPCODE_ST_VARY)
+            pending[A3_VARY_G] |= crs;
+         else if (I->op == AGX_OPCODE_IMAGE_WRITE)
             pending[0] |= crs;
          else if (tex && agx3_cr_count(I) && a3_tex_group(I) != A3_SYNC_G)
             pending[a3_tex_group(I)] |= crs;
@@ -2699,8 +2703,11 @@ agx3_assign_crs(agx_context *ctx)
  * instruction wrote in a group (uvsw; demo15's transform writes cr0-cr3
  * in groups 0-3 and each st_var waits for its group). The value goes
  * through cr (agx3_assign_crs) in group 0; st_var waits for group 0
- * and frees the cr. The slot counts 32-bit words, as G13's. G15 has no last
- * flag: the IR's is dropped. */
+ * and frees the cr. It reads the cr in its own group, A3_VARY_G: in group
+ * 0, each st_var's wait for its cr waited for the st_var before it too
+ * (Apple's vertex shaders give each output a group of its own). The slot
+ * counts 32-bit words, as G13's. G15 has no last flag: the IR's is
+ * dropped. */
 static void
 a3_st_vary(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
 {
@@ -2717,7 +2724,7 @@ a3_st_vary(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
    a3_set(a, ST_VAR_CR,
           a3_kind_value(a, ST_VAR_CR, A3_CR, cr, BITFIELD_BIT(A3_LU)));
    a3_set(a, ST_VAR_SLOT, a3_src9(a, ST_VAR_SLOT, slot));
-   a3_set(a, ST_VAR_G, 0);
+   a3_set(a, ST_VAR_G, A3_VARY_G);
    a3_set(a, ST_VAR_WAIT, BITFIELD_BIT(0));
    a3_emit(a, emission);
 }
