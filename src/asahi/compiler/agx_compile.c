@@ -48,6 +48,7 @@ static const struct debug_named_value agx_debug_options[] = {
    {"nosched",   AGX_DBG_NOSCHED,   "Do not schedule the shader"},
    {"spill",     AGX_DBG_SPILL,     "Spill (almost) everything"},
    {"nopromote", AGX_DBG_NOPROMOTE, "Do not promote constants to uniforms"},
+   {"perspmul",  AGX_DBG_PERSPMUL,  "G15: project with the coefficient-register multiply"},
    DEBUG_NAMED_VALUE_END
 };
 /* clang-format on */
@@ -699,9 +700,37 @@ agx_emit_load_vary(agx_builder *b, agx_index dest, nir_intrinsic_instr *instr)
 
    /* For perspective interpolation, we project (multiply by 1/W). G15 has no
     * projected iteration: agx_nir_lower_interpolation divides its iterated
-    * value by the iterated 1/W.
+    * value by the iterated 1/W, or with AGX_MESA_DEBUG=perspmul at the pixel
+    * centre leaves it here for Apple's sequence: W's flagged iteration, its
+    * reciprocal and per channel the iteration times it, the reciprocal and
+    * the multiplies naming the coefficient registers.
     */
-   if (perspective && b->shader->key->dev.gpu_generation < 15) {
+   if (perspective && b->shader->key->dev.gpu_generation >= 15 &&
+       interp == AGX_INTERPOLATION_CENTER &&
+       (agx_compiler_debug & AGX_DBG_PERSPMUL)) {
+      assert(I.type == AGX_INDEX_IMMEDIATE && "a constant offset");
+      agx_index J = agx_get_cf(b->shader, VARYING_SLOT_POS, 3);
+      agx_index w = agx_temp(b->shader, AGX_SIZE_32);
+      agx_iter_to(b, w, J, sample_index, 1, interp, true);
+
+      agx_index rw = agx_temp(b->shader, AGX_SIZE_32);
+      agx_rcp_cf_to(b, rw, w, J);
+
+      agx_index v = agx_vec_temp(b->shader, AGX_SIZE_32, components);
+      agx_iter_to(b, v, I, sample_index, components, interp, false);
+
+      agx_index c[4];
+      agx_emit_split(b, c, v, components);
+
+      for (unsigned i = 0; i < components; ++i) {
+         agx_index d = agx_temp(b->shader, dest.size);
+         agx_fmul_cf_to(b, d, c[i], rw, J, agx_immediate(I.value + i));
+         c[i] = d;
+      }
+
+      agx_emit_collect_to(b, dest, components, c);
+      return;
+   } else if (perspective && b->shader->key->dev.gpu_generation < 15) {
       agx_index J = agx_get_cf(b->shader, VARYING_SLOT_POS, 3);
       agx_iterproj_to(b, dest, I, J, sample_index, components, interp);
    } else {
