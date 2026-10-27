@@ -1529,7 +1529,7 @@ a3_local_mem(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
    a3_set(a, r + 4, 0);
    a3_emit(a, emission);
 
-   if (!store)
+   if (!store && !I->g15_nosync)
       a3_wait(a, I, A3_SYNC_G, emission);
 }
 
@@ -2716,7 +2716,7 @@ a3_tile(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
    a3_set(a, r + 3, a3_imm(a, r + 3, I->pixel_offset, false));
    a3_emit(a, emission);
 
-   if (load)
+   if (load && !I->g15_nosync)
       a3_wait(a, I, A3_SYNC_G, emission);
 }
 
@@ -2776,7 +2776,8 @@ a3_ldcf(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
    a3_set(a, LDCF_CF, a3_src9(a, LDCF_CF, I->src[0]));
    a3_emit(a, emission);
 
-   a3_wait(a, I, A3_SYNC_G, emission);
+   if (!I->g15_nosync)
+      a3_wait(a, I, A3_SYNC_G, emission);
 }
 
 /* iter (f32interp): one instruction per channel, coefficient registers cf,
@@ -3445,11 +3446,31 @@ a3_takes_wait(const agx_instr *I, unsigned mask, unsigned scratch_B)
    return ok;
 }
 
+/* The group a synchronous instruction waits for at once, or -1: ldcf, ldtg
+ * and a tile load deliver in A3_SYNC_G, get_sr in group 0 */
+static int
+a3_sync_group(const agx_instr *I)
+{
+   switch (I->op) {
+   case AGX_OPCODE_LDCF:
+   case AGX_OPCODE_LOCAL_LOAD:
+   case AGX_OPCODE_LD_TILE:
+      return A3_SYNC_G;
+   case AGX_OPCODE_GET_SR:
+   case AGX_OPCODE_GET_SR_COVERAGE:
+   case AGX_OPCODE_GET_SR_BARRIER:
+      return 0;
+   default:
+      return -1;
+   }
+}
+
 /* Fold each wait into the next instruction of its block where that one has
  * a wait field, as Apple's B1 code does (its only waits of their own come
  * before an else or a pop_exec, which have none): the instruction waits
- * before it issues, as after the wait. B0 needs a wait and three nops
- * before such an instruction (not done). */
+ * before it issues, as after the wait; and the waits the synchronous
+ * instructions end with. B0 needs a wait and three nops before such an
+ * instruction (not done). */
 void
 agx3_fold_waits(agx_context *ctx)
 {
@@ -3458,17 +3479,25 @@ agx3_fold_waits(agx_context *ctx)
 
    agx_foreach_block(ctx, block) {
       agx_foreach_instr_in_block_safe(block, I) {
-         if (I->op != AGX_OPCODE_WAIT || I->link.next == &block->instructions)
+         int sync = a3_sync_group(I);
+
+         if ((I->op != AGX_OPCODE_WAIT && sync < 0) ||
+             I->link.next == &block->instructions)
             continue;
 
          agx_instr *next = list_first_entry(&I->link, agx_instr, link);
-         unsigned mask = next->g15_wait | BITFIELD_BIT(I->scoreboard);
+         unsigned g = sync >= 0 ? sync : I->scoreboard;
+         unsigned mask = next->g15_wait | BITFIELD_BIT(g);
 
-         if (next->op != AGX_OPCODE_WAIT &&
-             a3_takes_wait(next, mask, ctx->scratch_size_B)) {
-            next->g15_wait = mask;
+         if (next->op == AGX_OPCODE_WAIT ||
+             !a3_takes_wait(next, mask, ctx->scratch_size_B))
+            continue;
+
+         next->g15_wait = mask;
+         if (sync >= 0)
+            I->g15_nosync = true;
+         else
             agx_remove_instruction(I);
-         }
       }
    }
 }
@@ -3515,9 +3544,8 @@ a3_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
       a3_set(&a, GET_SR_SR, a3_sr(&a, I->sr));
       a3_emit(&a, emission);
 
-      a3_begin(&a, I, AGX3_WAIT, T_WAIT);
-      a3_set(&a, WAIT_MASK, BITFIELD_BIT(0));
-      a3_emit(&a, emission);
+      if (!I->g15_nosync)
+         a3_wait(&a, I, 0, emission);
       return;
 
    case AGX_OPCODE_IADD:
