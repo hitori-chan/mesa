@@ -748,7 +748,8 @@ zink_init_screen_caps(struct zink_screen *screen)
    caps->ignored_output_varyings[MESA_SHADER_GEOMETRY] =
    caps->ignored_output_varyings[MESA_SHADER_MESH] = 0;
 
-   caps->null_textures = screen->info.rb_image_feats.robustImageAccess;
+   /* nullDescriptor is required */
+   caps->null_textures = true;
    /* support OVR_multiview and OVR_multiview2 */
    caps->multiview = screen->info.feats11.multiview * 2;
    caps->texrect = false;
@@ -864,9 +865,8 @@ zink_init_screen_caps(struct zink_screen *screen)
       screen->info.feats.features.pipelineStatisticsQuery;
 
    caps->robust_buffer_access_behavior =
-      screen->info.feats.features.robustBufferAccess &&
-      (screen->info.rb2_feats.robustImageAccess2 ||
-       screen->driver_compiler_workarounds.lower_robustImageAccess2);
+      screen->robustness & ZINK_ROBUSTNESS_BUFFER &&
+      screen->robustness & (ZINK_ROBUSTNESS_IMAGE | ZINK_ROBUSTNESS_IMAGE2);
 
    caps->multi_draw_indirect = screen->info.feats.features.multiDrawIndirect;
 
@@ -3291,9 +3291,7 @@ init_driver_workarounds(struct zink_screen *screen)
 
    /* When robust contexts are advertised but robustImageAccess2 is not available */
    screen->driver_compiler_workarounds.lower_robustImageAccess2 =
-      !screen->info.rb2_feats.robustImageAccess2 &&
-      screen->info.feats.features.robustBufferAccess &&
-      screen->info.rb_image_feats.robustImageAccess;
+      screen->robustness == (ZINK_ROBUSTNESS_BUFFER | ZINK_ROBUSTNESS_IMAGE);
 
    /* once more testing has been done, use the #if 0 block */
    unsigned illegal = ZINK_DEBUG_RP | ZINK_DEBUG_NORP;
@@ -3436,6 +3434,29 @@ disable_features(struct zink_screen *screen)
    screen->info.mesh_feats.primitiveFragmentShadingRateMeshShader = false;
    /* if this is used anywhere it should just be enabled with driconf */
    screen->info.view2d_feats.sampler2DViewOf3D = false;
+
+   if (screen->info.feats.features.robustBufferAccess)
+      screen->robustness |= ZINK_ROBUSTNESS_BUFFER;
+   if (screen->info.rb_image_feats.robustImageAccess)
+      screen->robustness |= ZINK_ROBUSTNESS_IMAGE;
+   if (screen->info.rb2_feats.robustImageAccess2)
+      screen->robustness |= ZINK_ROBUSTNESS_IMAGE2;
+
+   /* GL doesn't require this behavior */
+   screen->info.rb2_feats.robustBufferAccess2 = false;
+   if (screen->info.have_EXT_pipeline_robustness &&
+       (screen->info.pipeline_rb_props.defaultRobustnessStorageBuffers == VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DISABLED ||
+        screen->info.pipeline_rb_props.defaultRobustnessUniformBuffers == VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DISABLED ||
+        screen->info.pipeline_rb_props.defaultRobustnessVertexInputs == VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DISABLED ||
+        screen->info.pipeline_rb_props.defaultRobustnessImages == VK_PIPELINE_ROBUSTNESS_IMAGE_BEHAVIOR_DISABLED)) {
+      /* possibly switch to pipeline robustness here */
+      screen->info.feats.features.robustBufferAccess = false;
+      screen->info.rb_image_feats.robustImageAccess = false;
+      screen->info.rb2_feats.robustImageAccess2 = false;
+      screen->info.feats13.robustImageAccess = false;
+   } else {
+      screen->info.have_EXT_pipeline_robustness = false;
+   }
 }
 
 static void
@@ -3484,9 +3505,12 @@ init_optimal_keys(struct zink_screen *screen)
       if (screen->driver_workarounds.no_linesmooth)
          fprintf(stderr, "driver does not support smooth lines\n");
       CHECK_OR_PRINT(maint5_props.polygonModePointSize);
-      CHECK_OR_PRINT(rb2_feats.robustImageAccess2);
-      CHECK_OR_PRINT(feats.features.robustBufferAccess);
-      CHECK_OR_PRINT(rb_image_feats.robustImageAccess);
+      if (!(screen->robustness & ZINK_ROBUSTNESS_IMAGE2))
+         fprintf(stderr, "zink: driver does not support robustImageAccess2\n");
+      if (!(screen->robustness & ZINK_ROBUSTNESS_BUFFER))
+         fprintf(stderr, "zink: driver does not support robustBufferAccess\n");
+      if (!(screen->robustness & ZINK_ROBUSTNESS_IMAGE))
+         fprintf(stderr, "zink: driver does not support robustImageAccess\n");
       printf("\n");
       mesa_logw("zink: force-enabling optimal_keys despite missing features. Good luck!");
    }
@@ -3532,7 +3556,8 @@ zink_create_semaphore(struct zink_screen *screen)
    return ret == VK_SUCCESS ? sem : VK_NULL_HANDLE;
 }
 
-void
+/* returns false (with the lock released) if the copy context couldn't be created */
+bool
 zink_screen_lock_context(struct zink_screen *screen)
 {
    simple_mtx_lock(&screen->copy_context_lock);
@@ -3541,7 +3566,10 @@ zink_screen_lock_context(struct zink_screen *screen)
    if (!screen->copy_context) {
       mesa_loge("zink: failed to create copy context");
       /* realistically there's nothing that can be done here */
+      simple_mtx_unlock(&screen->copy_context_lock);
+      return false;
    }
+   return true;
 }
 
 void

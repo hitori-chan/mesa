@@ -883,6 +883,7 @@ struct zink_shader {
    bool has_uniforms;
    bool has_edgeflags;
    bool needs_inlining;
+   bool robust; //from a robust context
    struct spirv_shader *spirv;
 
    struct {
@@ -1196,6 +1197,7 @@ struct zink_gfx_program {
    bool needs_inlining; // whether this program requires some uniforms to be inlined
    bool has_edgeflags;
    bool optimal_keys;
+   bool robust;
 
    /* separable */
    struct zink_gfx_program *full_prog;
@@ -1215,6 +1217,7 @@ struct zink_compute_program {
    bool use_local_size;
    bool has_variable_shared_mem;
    bool uses_bindless;
+   bool robust;
 
    unsigned scratch_size;
 
@@ -1418,12 +1421,18 @@ struct zink_transfer {
    unsigned offset;
    unsigned depthPitch;
    bool unsync_upload;
-   uint8_t *clientptr;
-   unsigned clientptr_refcnt;
+   unsigned clientptr_maps;
    struct pipe_transfer *clientptr_upload;
    bool short_lived;
+   bool invalidated;
 };
 
+enum zink_robustness {
+   ZINK_ROBUSTNESS_NONE = 0,
+   ZINK_ROBUSTNESS_BUFFER = (1 << 0),
+   ZINK_ROBUSTNESS_IMAGE = (1 << 1),
+   ZINK_ROBUSTNESS_IMAGE2 = (1 << 2),
+};
 
 /** screen types */
 struct zink_modifier_props {
@@ -1554,6 +1563,8 @@ struct zink_screen {
    struct util_idalloc_mt buffer_ids;
    struct util_vertex_state_cache vertex_state_cache;
 
+   /* supported features */
+   enum zink_robustness robustness;
    struct zink_device_info info;
    struct nir_shader_compiler_options nir_options;
    struct ntv_info ntv_info;
