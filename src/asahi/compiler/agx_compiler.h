@@ -449,7 +449,11 @@ typedef struct {
    /* G15: a texture's first coordinate register (agx3_assign_crs) */
    unsigned g15_cr : 5;
 
-   unsigned padding : 2;
+   /* G15: a fragment shader's last sample, which ends the quad's helper lanes
+    * (agx3_end_helpers) */
+   bool g15_end_helpers : 1;
+
+   unsigned padding : 1;
 } agx_instr;
 
 static inline void
@@ -1088,6 +1092,7 @@ unsigned agx3_cr_count(const agx_instr *I);
 void agx3_assign_groups(agx_context *ctx);
 void agx3_assign_crs(agx_context *ctx);
 void agx3_fold_waits(agx_context *ctx);
+void agx3_end_helpers(agx_context *ctx);
 
 #ifndef NDEBUG
 void agx_validate(agx_context *ctx, const char *after_str);
