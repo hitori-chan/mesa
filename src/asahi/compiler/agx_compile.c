@@ -53,6 +53,7 @@ static const struct debug_named_value agx_debug_options[] = {
    {"waits",     AGX_DBG_WAITS,     "G15: keep each wait an instruction of its own"},
    {"synctex",   AGX_DBG_SYNCTEX,   "G15: wait for each texture's result at once"},
    {"nolatency", AGX_DBG_NOLATENCY, "G15: schedule by register pressure alone, not to hide the textures' latency"},
+   {"helpers",   AGX_DBG_HELPERS,   "G15: keep the quads' helper lanes to a fragment shader's end, not end them at its last sample"},
    DEBUG_NAMED_VALUE_END
 };
 /* clang-format on */
