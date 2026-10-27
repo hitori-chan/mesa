@@ -1486,8 +1486,7 @@ agx_ra(agx_context *ctx)
    /* Compute shaders need to have their entire workgroup together, so our
     * register usage is bounded by the workgroup size.
     */
-   if (mesa_shader_stage_is_compute(ctx->stage) &&
-       (!g15 || agx_g15_wg_cap())) {
+   if (mesa_shader_stage_is_compute(ctx->stage) && (!g15 || agx_g15_wg_cap())) {
       unsigned threads_per_workgroup;
 
       /* If we don't know the workgroup size, worst case it. TODO: Optimize

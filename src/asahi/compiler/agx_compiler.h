@@ -444,7 +444,7 @@ typedef struct {
     * folded into it (agx3_fold_waits). g15_nosync: the instruction after a
     * synchronous one waits for it in its place. */
    unsigned g15_wait : 6;
-   bool g15_nosync : 1;
+   bool g15_nosync   : 1;
 
    /* G15: a texture's first coordinate register (agx3_assign_crs) */
    unsigned g15_cr : 5;
