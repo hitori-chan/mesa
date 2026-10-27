@@ -1680,7 +1680,8 @@ agx_compile_nir(struct agx_device *dev, nir_shader *nir,
    };
 
    if (nir->info.stage == MESA_SHADER_FRAGMENT) {
-      NIR_PASS(_, nir, agx_nir_lower_interpolation);
+      NIR_PASS(_, nir, agx_nir_lower_interpolation,
+               dev->params.gpu_generation >= 15);
    }
 
    /* We always use dynamic sample shading in the GL driver. Indicate that. */
