@@ -439,11 +439,14 @@ typedef struct {
    bool saturate : 1;
    unsigned mask : 4;
 
-   /* G15: the scoreboard slots the instruction waits for before it issues, a
-    * wait folded into it (agx3_fold_waits) */
-   unsigned g15_wait : 2;
+   /* G15: the groups the instruction waits for before it issues, a wait
+    * folded into it (agx3_fold_waits): the scoreboard slots and the
+    * synchronous instructions' group 2. g15_nosync: the instruction after a
+    * synchronous one waits for it in its place. */
+   unsigned g15_wait : 3;
+   bool g15_nosync : 1;
 
-   unsigned padding : 4;
+   unsigned padding : 2;
 } agx_instr;
 
 static inline void
