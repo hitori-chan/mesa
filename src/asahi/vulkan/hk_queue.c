@@ -201,6 +201,10 @@ asahi_fill_vdm_command(struct hk_device *dev, struct hk_cs *cs,
    if (cs->cr.process_empty_tiles)
       c->flags |= DRM_ASAHI_RENDER_PROCESS_EMPTY_TILES;
 
+   /* Only G15's kernel knows the flag; G13's rejects it */
+   if (cs->cr.wait_stores && dev->dev.params.gpu_generation >= 15)
+      c->flags |= DRM_ASAHI_RENDER_WAIT_STORES;
+
    if (cs->scratch.vs.main || cs->scratch.vs.preamble) {
       c->flags |= DRM_ASAHI_RENDER_VERTEX_SCRATCH;
       c->vertex_helper.data = dev->scratch.vs.buf->va->addr;
