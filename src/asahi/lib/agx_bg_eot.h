@@ -60,6 +60,11 @@ struct agx_bg_eot_key {
    enum agx_bg_eot_op op[8];
    unsigned reserved_preamble;
 
+   /* G15, end-of-tile programs: the render targets resolved by a second
+    * block write of their tile into a 1-sample image, whose PBE's pointer is
+    * the 64-bit uniform 4 * (8 + rt) (Metal's resolve slot 8 + rt) */
+   unsigned resolve;
+
    /* G15, loading programs: the uniform (in 16-bit halves) of the sampler
     * table's base */
    unsigned g15_sampler_uniform;
