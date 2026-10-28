@@ -173,6 +173,10 @@ struct hk_render_registers {
    bool process_empty_tiles;
    enum u_tristate dbias_is_int;
 
+   /* G15: the pass reads what the pass before stored (a resolve pass): its
+    * vertex stage waits until those stores are visible */
+   bool wait_stores;
+
    struct {
       uint32_t dimensions;
       uint64_t buffer, meta;
@@ -209,6 +213,10 @@ struct hk_rendering_state {
 
    struct agx_tilebuffer_layout tilebuffer;
    struct hk_render_registers cr;
+
+   /* G15: the colour attachments the end-of-tile program resolves, with no
+    * resolve pass after */
+   uint8_t eot_resolve;
 };
 
 struct hk_index_buffer_state {
@@ -495,6 +503,9 @@ struct hk_cmd_buffer {
       struct hk_compute_state cs;
       struct hk_rt_state rt;
    } state;
+
+   /* Recording a resolve pass (of a render pass or vkCmdResolveImage) */
+   bool resolving;
 
    struct {
       struct hk_uploader main, usc;
