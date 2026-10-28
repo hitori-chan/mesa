@@ -280,6 +280,24 @@ hk_bg_eot_esl(struct hk_cmd_buffer *cmd, const uint8_t *usc,
    return hk_upload_esl_va(cmd, &code, stage, usc);
 }
 
+/* G15's block write takes the descriptor's address in a 64-bit uniform per
+ * render target (the entry program loads it from memory: demo15's
+ * end-of-tile data holds a pointer to the descriptor). There are no texture
+ * state registers. */
+static uint64_t
+hk_upload_pbe_ptr_g15(struct hk_cmd_buffer *cmd,
+                      const struct agx_pbe_packed *desc)
+{
+   uint64_t words[4] = {0};
+   memcpy(words, desc, sizeof(*desc));
+
+   /* Apple's descriptors are 32 bytes: the hardware may read the fourth word
+    * of one, so the padding is zero. It ignores the low 5 bits of the
+    * descriptor's address. */
+   uint64_t desc_va = hk_pool_upload(cmd, words, sizeof(words), 32);
+   return hk_pool_upload(cmd, &desc_va, sizeof(desc_va), 8);
+}
+
 static struct hk_bg_eot
 hk_build_bg_eot(struct hk_cmd_buffer *cmd, const VkRenderingInfo *info,
                 bool store, bool partial_render, bool incomplete_render_area)
@@ -310,6 +328,14 @@ hk_build_bg_eot(struct hk_cmd_buffer *cmd, const VkRenderingInfo *info,
 
       if (store) {
          bool should_store = is_attachment_stored(att_info);
+
+         /* Resolved here, the samples are stored only for their own sake or
+          * for the render pass resuming this one */
+         if (!partial_render && (render->eot_resolve & BITFIELD_BIT(i))) {
+            key.resolve |= BITFIELD_BIT(i);
+            should_store = att_info->storeOp == VK_ATTACHMENT_STORE_OP_STORE ||
+                           (render->flags & VK_RENDERING_SUSPENDING_BIT);
+         }
 
          /* Partial renders always need to flush to memory. */
          should_store |= partial_render;
@@ -381,8 +407,9 @@ hk_build_bg_eot(struct hk_cmd_buffer *cmd, const VkRenderingInfo *info,
    if (g15)
       agx_bg_eot_key_set_g15_sampler(&key);
 
-   /* Begin building the pipeline */
-   size_t usc_size = agx_usc_size(3 + HK_MAX_RTS);
+   /* Begin building the pipeline: a binding per render target and one per
+    * resolved target */
+   size_t usc_size = agx_usc_size(3 + 2 * HK_MAX_RTS);
    struct agx_ptr t = hk_pool_usc_alloc(cmd, usc_size, 64);
    if (!t.cpu)
       return (struct hk_bg_eot){.usc = t.gpu};
@@ -453,21 +480,8 @@ hk_build_bg_eot(struct hk_cmd_buffer *cmd, const VkRenderingInfo *info,
                                                 ? &iview->planes[0].layered_eot
                                                 : &iview->planes[0].eot;
 
-         if (dev->dev.params.gpu_generation >= 15) {
-            /* G15's block write takes the descriptor's address in a 64-bit
-             * uniform per render target (the entry program loads it from
-             * memory: demo15's end-of-tile data holds a pointer to the
-             * descriptor). There are no texture state registers. */
-            uint64_t words[4] = {0};
-            memcpy(words, desc, sizeof(*desc));
-
-            /* Apple's descriptors are 32 bytes: the hardware may read the
-             * fourth word of one, so the padding is zero. It ignores the low
-             * 5 bits of the descriptor's address. */
-            uint64_t desc_va = hk_pool_upload(cmd, words, sizeof(words), 32);
-            uint64_t ptr = hk_pool_upload(cmd, &desc_va, sizeof(desc_va), 8);
-
-            agx_usc_uniform(&b, 4 * rt, 4, ptr);
+         if (g15) {
+            agx_usc_uniform(&b, 4 * rt, 4, hk_upload_pbe_ptr_g15(cmd, desc));
             uniforms = MAX2(uniforms, 4 * rt + 4);
          } else {
             agx_usc_pack(&b, TEXTURE, cfg) {
@@ -478,6 +492,17 @@ hk_build_bg_eot(struct hk_cmd_buffer *cmd, const VkRenderingInfo *info,
 
             nr_tex = rt + 1;
          }
+      }
+
+      if (key.resolve & BITFIELD_BIT(rt)) {
+         struct hk_image_view *res = render->color_att[rt].resolve_iview;
+         const struct agx_pbe_packed *desc = key.tib.layered
+                                                ? &res->planes[0].layered_eot
+                                                : &res->planes[0].eot;
+
+         agx_usc_uniform(&b, 4 * (8 + rt), 4,
+                         hk_upload_pbe_ptr_g15(cmd, desc));
+         uniforms = MAX2(uniforms, 4 * (8 + rt) + 4);
       }
    }
 
@@ -637,6 +662,7 @@ hk_CmdBeginRendering(VkCommandBuffer commandBuffer,
    memset(render, 0, sizeof(*render));
 
    render->flags = pRenderingInfo->flags;
+   render->cr.wait_stores = cmd->resolving;
    render->area = pRenderingInfo->renderArea;
    render->view_mask = pRenderingInfo->viewMask;
    render->layer_count = pRenderingInfo->layerCount;
@@ -715,6 +741,26 @@ hk_CmdBeginRendering(VkCommandBuffer commandBuffer,
               render->tilebuffer.nr_samples,
               render->view_mask ? " multiview" : "",
               incomplete_render_area ? " incomplete" : "");
+
+   /* G15 resolves a full render area's averaged colour attachments in the
+    * end-of-tile program, as Metal does: a block write of the multisampled
+    * tile into the 1-sample image. The block write averages every format
+    * but the 32-bit floats, which Metal cannot resolve either; those and the
+    * integers' sample-zero resolves keep the resolve pass. */
+   if (hk_cmd_buffer_device(cmd)->dev.params.gpu_generation >= 15 &&
+       render->tilebuffer.nr_samples > 1 && !incomplete_render_area &&
+       !(hk_cmd_buffer_device(cmd)->perftest & HK_PERF_NOEOTRESOLVE)) {
+      for (unsigned i = 0; i < render->color_att_count; ++i) {
+         enum pipe_format f =
+            agx_tilebuffer_physical_format(&render->tilebuffer, i);
+
+         if (render->color_att[i].resolve_mode == VK_RESOLVE_MODE_AVERAGE_BIT &&
+             !render->tilebuffer.spilled[i] &&
+             util_format_get_component_bits(f, UTIL_FORMAT_COLORSPACE_RGB, 0) !=
+                32)
+            render->eot_resolve |= BITFIELD_BIT(i);
+      }
+   }
 
    render->cr.bg.main = hk_build_bg_eot(cmd, pRenderingInfo, false, false,
                                         incomplete_render_area);
@@ -1032,6 +1078,13 @@ hk_CmdEndRendering2KHR(VkCommandBuffer commandBuffer,
       cs->cr.eot.main = render->cr.eot.main;
    }
 
+   /* Only that control stream's end-of-tile program resolves, on every tile,
+    * drawn or not: with no control stream (a resumed pass with no draws),
+    * the resolve pass does */
+   uint8_t eot_resolve = cs ? render->eot_resolve : 0;
+   if (eot_resolve)
+      cs->cr.process_empty_tiles = true;
+
    perf_debug(cmd, "End rendering");
    hk_cmd_buffer_end_graphics(cmd);
 
@@ -1041,7 +1094,10 @@ hk_CmdEndRendering2KHR(VkCommandBuffer commandBuffer,
    VkRenderingAttachmentInfo vk_color_att[HK_MAX_RTS];
    VkRenderingAttachmentFlagsInfoKHR vk_color_att_flags[HK_MAX_RTS];
    for (uint32_t i = 0; i < render->color_att_count; i++) {
-      if (render->color_att[i].resolve_mode != VK_RESOLVE_MODE_NONE)
+      VkResolveModeFlagBits resolve_mode =
+         (eot_resolve & BITFIELD_BIT(i)) ? VK_RESOLVE_MODE_NONE
+                                         : render->color_att[i].resolve_mode;
+      if (resolve_mode != VK_RESOLVE_MODE_NONE)
          need_resolve = true;
 
       vk_color_att_flags[i] = (VkRenderingAttachmentFlagsInfoKHR) {
@@ -1053,7 +1109,7 @@ hk_CmdEndRendering2KHR(VkCommandBuffer commandBuffer,
          .pNext = &vk_color_att_flags[i],
          .imageView = hk_image_view_to_handle(render->color_att[i].iview),
          .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
-         .resolveMode = render->color_att[i].resolve_mode,
+         .resolveMode = resolve_mode,
          .resolveImageView =
             hk_image_view_to_handle(render->color_att[i].resolve_iview),
          .resolveImageLayout = VK_IMAGE_LAYOUT_GENERAL,

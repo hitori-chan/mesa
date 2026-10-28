@@ -1411,7 +1411,9 @@ hk_CmdResolveImage2(VkCommandBuffer commandBuffer,
 
    struct hk_meta_save save;
    hk_meta_begin(cmd, &save, VK_PIPELINE_BIND_POINT_GRAPHICS);
+   cmd->resolving = true;
    vk_meta_resolve_image2(&cmd->vk, &dev->meta, pResolveImageInfo);
+   cmd->resolving = false;
    hk_meta_end(cmd, &save, VK_PIPELINE_BIND_POINT_GRAPHICS);
 }
 
@@ -1423,7 +1425,9 @@ hk_meta_resolve_rendering(struct hk_cmd_buffer *cmd,
 
    struct hk_meta_save save;
    hk_meta_begin(cmd, &save, VK_PIPELINE_BIND_POINT_GRAPHICS);
+   cmd->resolving = true;
    vk_meta_resolve_rendering(&cmd->vk, &dev->meta, pRenderingInfo);
+   cmd->resolving = false;
    hk_meta_end(cmd, &save, VK_PIPELINE_BIND_POINT_GRAPHICS);
 }
 

@@ -201,7 +201,9 @@ agx_build_end_of_tile_shader(struct agx_bg_eot_cache *cache,
       (key->tib.nr_samples > 1) ? GLSL_SAMPLER_DIM_MS : GLSL_SAMPLER_DIM_2D;
 
    for (unsigned rt = 0; rt < ARRAY_SIZE(key->op); ++rt) {
-      if (key->op[rt] == AGX_BG_EOT_NONE)
+      bool resolve = key->resolve & BITFIELD_BIT(rt);
+
+      if (key->op[rt] == AGX_BG_EOT_NONE && !resolve)
          continue;
 
       /* The end-of-tile shader is unsuitable to handle spilled render targets.
@@ -211,17 +213,31 @@ agx_build_end_of_tile_shader(struct agx_bg_eot_cache *cache,
       if (key->tib.spilled[rt])
          continue;
 
-      assert(key->op[rt] == AGX_EOT_STORE);
+      assert(key->op[rt] == AGX_EOT_STORE || key->op[rt] == AGX_BG_EOT_NONE);
       unsigned offset_B = agx_tilebuffer_offset_B(&key->tib, rt);
+      enum pipe_format format = agx_tilebuffer_physical_format(&key->tib, rt);
 
       nir_def *layer = nir_undef(&b, 1, 16);
       if (key->tib.layered)
          layer = nir_u2u16(&b, nir_load_layer_id(&b));
 
-      nir_image_store_block_agx(
-         &b, nir_imm_intN_t(&b, rt, 16), nir_imm_int(&b, offset_B), layer,
-         .format = agx_tilebuffer_physical_format(&key->tib, rt),
-         .image_dim = dim, .image_array = key->tib.layered);
+      if (key->op[rt] == AGX_EOT_STORE) {
+         nir_image_store_block_agx(&b, nir_imm_intN_t(&b, rt, 16),
+                                   nir_imm_int(&b, offset_B), layer,
+                                   .format = format, .image_dim = dim,
+                                   .image_array = key->tib.layered);
+      }
+
+      /* The resolve's block write takes the 1-sample image's type, as
+       * Metal's: with the tile's multisampled type the samples are not
+       * averaged */
+      if (resolve) {
+         nir_image_store_block_agx(&b, nir_imm_intN_t(&b, 8 + rt, 16),
+                                   nir_imm_int(&b, offset_B), layer,
+                                   .format = format,
+                                   .image_dim = GLSL_SAMPLER_DIM_2D,
+                                   .image_array = key->tib.layered);
+      }
    }
 
    struct agx_shader_key compiler_key = {
@@ -242,7 +258,7 @@ agx_get_bg_eot_shader(struct agx_bg_eot_cache *cache,
    struct agx_bg_eot_shader *ret = NULL;
 
    for (unsigned rt = 0; rt < ARRAY_SIZE(key->op); ++rt) {
-      if (key->op[rt] == AGX_EOT_STORE) {
+      if (key->op[rt] == AGX_EOT_STORE || key->resolve) {
          ret = agx_build_end_of_tile_shader(cache, key);
          break;
       }
