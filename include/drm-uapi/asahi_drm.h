@@ -790,6 +790,16 @@ enum drm_asahi_render_flags {
 	DRM_ASAHI_RENDER_NO_VERTEX_CLUSTERING = (1U << 2),
 
 	/**
+	 * @DRM_ASAHI_RENDER_WAIT_STORES: The render reads what the queue's
+	 * previous render stored: its vertex stage starts only once that
+	 * render's stores are visible, not once its fragment stage has retired.
+	 * This costs a GPU-bound client some throughput, so set it only for a
+	 * render that reads the previous one's attachments (a resolve). Kernels
+	 * that do not know it ignore it on G15.
+	 */
+	DRM_ASAHI_RENDER_WAIT_STORES = (1U << 3),
+
+	/**
 	 * @DRM_ASAHI_RENDER_DBIAS_IS_INT: Use integer depth bias formula.
 	 *
 	 * Graphics specifications contain two alternate formulas for depth
