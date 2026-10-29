@@ -3568,10 +3568,6 @@ hk_CmdBindIndexBuffer2KHR(VkCommandBuffer commandBuffer, VkBuffer _buffer,
       .buffer = hk_buffer_addr_range(buffer, offset, size, true),
       .size = agx_translate_index_size(vk_index_type_to_bytes(indexType)),
    };
-
-   /* TODO: check if necessary, blob does this */
-   cmd->state.gfx.index.buffer.range =
-      align(cmd->state.gfx.index.buffer.range, 4);
 }
 
 void
@@ -4108,6 +4104,9 @@ hk_begin_end_xfb(VkCommandBuffer commandBuffer, uint32_t firstCounterBuffer,
          params.dest[copies] = gfx->xfb_offsets + copies * sizeof(uint32_t);
       }
    }
+
+   if (pCounterBuffers == NULL)
+      counterBufferCount = 0;
 
    for (unsigned i = 0; i < counterBufferCount; ++i) {
       if (pCounterBuffers[i] == VK_NULL_HANDLE)
