@@ -1,6 +1,8 @@
 # Copyright © 2022 Collabora Ltd. and Red Hat Inc.
 # SPDX-License-Identifier: MIT
 hk_files = files(
+  'bvh/hk_bvh_defines.h',
+  'hk_acceleration_structure.c',
   'hk_buffer.c',
   'hk_buffer.h',
   'hk_buffer_view.c',
@@ -33,6 +35,9 @@ hk_files = files(
   'hk_instance.c',
   'hk_instance.h',
   'hk_nir_lower_descriptors.c',
+  'hk_nir_lower_ray_queries.c',
+  'hk_nir_ray_tracing.c',
+  'hk_nir_ray_tracing.h',
   'hk_physical_device.c',
   'hk_physical_device.h',
   'hk_private.h',
@@ -47,6 +52,8 @@ hk_files = files(
   'hk_wsi.c',
   'hk_wsi.h'
 )
+
+subdir('bvh')
 
 hk_drirc = custom_target(
   'hk_drirc',
@@ -90,6 +97,7 @@ libhk = static_library(
     hk_entrypoints,
     hk_drirc,
     hk_files,
+    hk_bvh_spv,
     sha1_h,
   ],
   include_directories : [

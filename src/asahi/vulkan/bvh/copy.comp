@@ -1,0 +1,101 @@
+/*
+ * SPDX-License-Identifier: GPL-2.0-only
+ */
+
+/* Serializes a structure or deserializes one, a 32-bit word an invocation
+ * over the bytes the source's header gives (the dispatch covers an upper
+ * bound). An instance's bottom-level pointer is the one word in the list on
+ * either side, so a deserialized structure points at the bottom levels the
+ * application wrote into it.
+ */
+
+#version 460
+
+#extension GL_GOOGLE_include_directive : require
+
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int32 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_buffer_reference2 : require
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+#include "hk_bvh_defines.h"
+#define VK_USED_BUILD_FLAGS 0
+#include "vk_bvh_helpers.h"
+
+layout(push_constant) uniform CONSTS {
+   hk_copy_args args;
+};
+
+uint32_t
+word(VOID_REF base, uint64_t offset)
+{
+   return DEREF(REF(uint32_t)(OFFSET(base, offset)));
+}
+
+/* The low or the high word of the 64-bit value at base + offset */
+uint32_t
+half64(VOID_REF base, uint64_t offset, uint32_t hi)
+{
+   return word(base, offset + 4 * hi);
+}
+
+void
+main()
+{
+   uint64_t o = uint64_t(gl_GlobalInvocationID.x) * 4;
+   uint32_t ser_header = SIZEOF(vk_accel_struct_serialization_header);
+   uint32_t value;
+
+   if (args.mode == HK_COPY_MODE_SERIALIZE) {
+      hk_bvh_header header = DEREF(REF(hk_bvh_header)(args.src));
+      uint64_t list = header.instance_count * 8;
+      if (o >= ser_header + list + header.compacted_size)
+         return;
+
+      if (o < ser_header) {
+         uint32_t w = uint32_t(o) / 4;
+         if (w < 8)
+            value = args.uuid[w];
+         else if (w < 10)
+            value = w == 8 ? uint32_t(header.serialization_size)
+                           : uint32_t(header.serialization_size >> 32);
+         else if (w < 12)
+            value = w == 10 ? uint32_t(header.compacted_size)
+                            : uint32_t(header.compacted_size >> 32);
+         else
+            value = w == 12 ? uint32_t(header.instance_count)
+                            : uint32_t(header.instance_count >> 32);
+      } else if (o < ser_header + list) {
+         uint64_t k = (o - ser_header) / 8;
+         value = half64(args.src, header.leaf_nodes_offset + k * SIZEOF(hk_bvh_instance_node),
+                        uint32_t((o - ser_header) / 4) & 1);
+      } else {
+         value = word(args.src, o - ser_header - list);
+      }
+   } else {
+      uint64_t size = uint64_t(word(args.src, 40)) | (uint64_t(word(args.src, 44)) << 32);
+      uint64_t count = uint64_t(word(args.src, 48)) | (uint64_t(word(args.src, 52)) << 32);
+      if (o >= size)
+         return;
+
+      VOID_REF bvh = OFFSET(args.src, ser_header + count * 8);
+      hk_bvh_header header = DEREF(REF(hk_bvh_header)(bvh));
+      uint64_t in_leaves = o - header.leaf_nodes_offset;
+
+      if (o >= header.leaf_nodes_offset && in_leaves < count * SIZEOF(hk_bvh_instance_node) &&
+          in_leaves % SIZEOF(hk_bvh_instance_node) < 8) {
+         uint64_t k = in_leaves / SIZEOF(hk_bvh_instance_node);
+         value = half64(args.src, ser_header + k * 8, uint32_t(in_leaves / 4) & 1);
+      } else {
+         value = word(bvh, o);
+      }
+   }
+
+   DEREF(REF(uint32_t)(OFFSET(args.dst, o))) = value;
+}
