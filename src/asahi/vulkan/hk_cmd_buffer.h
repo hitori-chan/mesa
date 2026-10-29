@@ -836,6 +836,31 @@ hk_get_descriptors_state(struct hk_cmd_buffer *cmd,
 void hk_cmd_buffer_flush_push_descriptors(struct hk_cmd_buffer *cmd,
                                           struct hk_descriptor_state *desc);
 
+struct hk_meta_save {
+   struct vk_vertex_input_state _dynamic_vi;
+   struct vk_sample_locations_state _dynamic_sl;
+   struct vk_dynamic_graphics_state dynamic;
+   struct hk_api_shader *shaders[MESA_SHADER_MESH + 1];
+   struct hk_addr_range vb0;
+   struct hk_descriptor_set *desc0;
+   bool has_push_desc0;
+   enum agx_visibility_mode occlusion;
+   struct hk_push_descriptor_set push_desc0;
+   VkQueryPipelineStatisticFlags pipeline_stats_flags;
+   uint8_t push[HK_MAX_PUSH_SIZE];
+};
+
+void hk_meta_begin(struct hk_cmd_buffer *cmd, struct hk_meta_save *save,
+                   VkPipelineBindPoint bind_point);
+void hk_meta_end(struct hk_cmd_buffer *cmd, struct hk_meta_save *save,
+                 VkPipelineBindPoint bind_point);
+void hk_cmd_copy(struct hk_cmd_buffer *cmd, uint64_t dst, uint64_t src,
+                 size_t size);
+void hk_cmd_fill(struct hk_cmd_buffer *cmd, uint64_t addr, size_t range,
+                 uint32_t data);
+void hk_cmd_dispatch_unaligned(VkCommandBuffer commandBuffer, uint32_t x,
+                               uint32_t y, uint32_t z);
+
 void hk_meta_resolve_rendering(struct hk_cmd_buffer *cmd,
                                const VkRenderingInfo *pRenderingInfo);
 
