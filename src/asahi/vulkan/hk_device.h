@@ -125,6 +125,7 @@ hk_device_physical(struct hk_device *dev)
 }
 
 VkResult hk_device_init_meta(struct hk_device *dev);
+void hk_device_init_accel_struct(struct hk_device *dev);
 void hk_device_finish_meta(struct hk_device *dev);
 
 VkResult hk_sampler_heap_add(struct hk_device *dev,

@@ -1,0 +1,231 @@
+/*
+ * SPDX-License-Identifier: GPL-2.0-only
+ */
+
+/* The common builder's intermediate tree into Honeykrisp's (hk_bvh_defines.h).
+ * Invocation i writes box node i and leaf i: box i is the intermediate tree's
+ * internal node (count - 1 - i), so the root, which the builder writes last,
+ * is box 0, and leaves keep their index, the primitive's (inactive ones
+ * included: the builder does not compact them). No invocation waits on another.
+ */
+
+#version 460
+
+#extension GL_GOOGLE_include_directive : require
+
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int32 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_buffer_reference2 : require
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+#include "hk_bvh_defines.h"
+#define VK_USED_BUILD_FLAGS 0
+#include "vk_bvh_helpers.h"
+
+layout(push_constant) uniform CONSTS {
+   hk_encode_args args;
+};
+
+#define FLT_EPSILON 1.1920928955078125e-7
+
+/* The builder writes no triangle pairs (VK_BUILD_FLAG_HAS_QUADS) for us */
+uint32_t
+ir_leaf_size()
+{
+   switch (args.geometry_type) {
+   case VK_GEOMETRY_TYPE_TRIANGLES_KHR:
+      return SIZEOF(vk_ir_triangle_node);
+   case VK_GEOMETRY_TYPE_AABBS_KHR:
+      return SIZEOF(vk_ir_aabb_node);
+   default:
+      return SIZEOF(vk_ir_instance_node);
+   }
+}
+
+uint32_t
+leaf_size()
+{
+   switch (args.geometry_type) {
+   case VK_GEOMETRY_TYPE_TRIANGLES_KHR:
+      return SIZEOF(hk_bvh_triangle_node);
+   case VK_GEOMETRY_TYPE_AABBS_KHR:
+      return SIZEOF(hk_bvh_aabb_node);
+   default:
+      return SIZEOF(hk_bvh_instance_node);
+   }
+}
+
+uint32_t
+leaf_type()
+{
+   switch (args.geometry_type) {
+   case VK_GEOMETRY_TYPE_TRIANGLES_KHR:
+      return hk_bvh_node_triangle;
+   case VK_GEOMETRY_TYPE_AABBS_KHR:
+      return hk_bvh_node_aabb;
+   default:
+      return hk_bvh_node_instance;
+   }
+}
+
+uint32_t
+pack_sbt_offset_and_flags(uint32_t packed)
+{
+   uint32_t flags = packed >> 24;
+   uint32_t ret = packed & 0xffffff;
+   if ((flags & VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR) != 0)
+      ret |= HK_INSTANCE_FORCE_OPAQUE;
+   if ((flags & VK_GEOMETRY_INSTANCE_FORCE_NO_OPAQUE_BIT_KHR) == 0)
+      ret |= HK_INSTANCE_NO_FORCE_NOT_OPAQUE;
+   if ((flags & VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR) != 0)
+      ret |= HK_INSTANCE_TRIANGLE_FACING_CULL_DISABLE;
+   if ((flags & VK_GEOMETRY_INSTANCE_TRIANGLE_FLIP_FACING_BIT_KHR) != 0)
+      ret |= HK_INSTANCE_TRIANGLE_FLIP_FACING;
+   return ret;
+}
+
+void
+encode_leaf(uint32_t i, uint32_t leaf_nodes_offset)
+{
+   VOID_REF ir_leaf = OFFSET(args.intermediate_bvh, i * ir_leaf_size());
+   VOID_REF dst = OFFSET(args.output_bvh, leaf_nodes_offset + i * leaf_size());
+
+   switch (args.geometry_type) {
+   case VK_GEOMETRY_TYPE_TRIANGLES_KHR: {
+      vk_ir_triangle_node src = DEREF(REF(vk_ir_triangle_node)(ir_leaf));
+      hk_bvh_triangle_node node;
+      node.coords = src.coords;
+      node.padding = 0;
+      node.primitive_id = src.triangle_id;
+      node.geometry_id_and_flags = src.geometry_id_and_flags;
+      DEREF(REF(hk_bvh_triangle_node)(dst)) = node;
+      break;
+   }
+   case VK_GEOMETRY_TYPE_AABBS_KHR: {
+      vk_ir_aabb_node src = DEREF(REF(vk_ir_aabb_node)(ir_leaf));
+      hk_bvh_aabb_node node;
+      node.bounds = src.base.aabb;
+      node.primitive_id = src.primitive_id;
+      node.geometry_id_and_flags = src.geometry_id_and_flags;
+      DEREF(REF(hk_bvh_aabb_node)(dst)) = node;
+      break;
+   }
+   default: {
+      vk_ir_instance_node src = DEREF(REF(vk_ir_instance_node)(ir_leaf));
+      hk_bvh_instance_node node;
+      node.bvh_ptr = src.base_ptr;
+      node.custom_instance_and_mask = src.custom_instance_and_mask;
+      node.sbt_offset_and_flags = pack_sbt_offset_and_flags(src.sbt_offset_and_flags);
+      node.instance_id = src.instance_id;
+      node.padding = 0;
+      node.otw_matrix = src.otw_matrix;
+
+      /* A mat3x4's columns are the transform's rows */
+      mat4 otw = transpose(mat4(src.otw_matrix[0], src.otw_matrix[1], src.otw_matrix[2],
+                                vec4(0.0, 0.0, 0.0, 1.0)));
+      mat4 wto = transpose(inverse(otw));
+      node.wto_matrix = mat3x4(wto[0], wto[1], wto[2]);
+      DEREF(REF(hk_bvh_instance_node)(dst)) = node;
+      break;
+   }
+   }
+}
+
+/* Widens a child's box a little, for watertightness (lavapipe's) */
+vk_aabb
+widen(vk_aabb box)
+{
+   box.min -= max(abs(box.min), vec3(1.0)) * FLT_EPSILON;
+   box.max += max(abs(box.max), vec3(1.0)) * FLT_EPSILON;
+   return box;
+}
+
+void
+encode_box(uint32_t i, uint32_t internal_count, uint32_t leaf_nodes_offset)
+{
+   uint32_t root_offset = args.leaf_node_count * ir_leaf_size();
+   vk_ir_box_node src = DEREF(INDEX(vk_ir_box_node, OFFSET(args.intermediate_bvh, root_offset),
+                                    internal_count - 1 - i));
+   hk_bvh_box_node node;
+
+   for (uint32_t c = 0; c < 2; c++) {
+      uint32_t child = src.children[c];
+      if (child == VK_BVH_INVALID_NODE) {
+         node.bounds[c].min = vec3(NAN);
+         node.bounds[c].max = vec3(NAN);
+         node.children[c] = HK_BVH_INVALID_NODE;
+         continue;
+      }
+
+      uint32_t offset = ir_id_to_offset(child);
+      node.bounds[c] = widen(DEREF(REF(vk_ir_node)(OFFSET(args.intermediate_bvh, offset))).aabb);
+
+      if (offset < root_offset) {
+         uint32_t leaf = offset / ir_leaf_size();
+         node.children[c] = (leaf_nodes_offset + leaf * leaf_size()) | leaf_type();
+      } else {
+         uint32_t box = internal_count - 1 - (offset - root_offset) / SIZEOF(vk_ir_box_node);
+         node.children[c] =
+            (HK_BVH_ROOT_NODE_OFFSET + box * SIZEOF(hk_bvh_box_node)) | hk_bvh_node_internal;
+      }
+   }
+
+   DEREF(INDEX(hk_bvh_box_node, OFFSET(args.output_bvh, HK_BVH_ROOT_NODE_OFFSET), i)) = node;
+}
+
+void
+main()
+{
+   uint32_t i = gl_GlobalInvocationID.x;
+   uint32_t internal_count = DEREF(args.header).ir_internal_node_count;
+
+   /* An empty structure keeps a root box with no child */
+   uint32_t leaf_nodes_offset =
+      HK_BVH_ROOT_NODE_OFFSET + max(internal_count, 1) * SIZEOF(hk_bvh_box_node);
+
+   if (i == 0) {
+      vk_aabb root_bounds;
+      if (internal_count > 0) {
+         uint32_t root_offset = args.leaf_node_count * ir_leaf_size();
+         root_bounds = DEREF(INDEX(vk_ir_box_node, OFFSET(args.intermediate_bvh, root_offset),
+                                   internal_count - 1)).base.aabb;
+      } else {
+         root_bounds.min = vec3(NAN);
+         root_bounds.max = vec3(NAN);
+
+         hk_bvh_box_node root;
+         root.bounds[0] = root_bounds;
+         root.bounds[1] = root_bounds;
+         root.children[0] = HK_BVH_INVALID_NODE;
+         root.children[1] = HK_BVH_INVALID_NODE;
+         DEREF(REF(hk_bvh_box_node)(OFFSET(args.output_bvh, HK_BVH_ROOT_NODE_OFFSET))) = root;
+      }
+
+      uint64_t instance_count =
+         args.geometry_type == VK_GEOMETRY_TYPE_INSTANCES_KHR ? args.leaf_node_count : 0;
+
+      hk_bvh_header header;
+      header.bounds = root_bounds;
+      header.compacted_size = args.size;
+      header.serialization_size =
+         SIZEOF(vk_accel_struct_serialization_header) + instance_count * 8 + args.size;
+      header.instance_count = instance_count;
+      header.leaf_nodes_offset = leaf_nodes_offset;
+      header.padding[0] = 0;
+      header.padding[1] = 0;
+      header.padding[2] = 0;
+      DEREF(REF(hk_bvh_header)(args.output_bvh)) = header;
+   }
+
+   if (i < internal_count)
+      encode_box(i, internal_count, leaf_nodes_offset);
+
+   if (i < args.leaf_node_count)
+      encode_leaf(i, leaf_nodes_offset);
+}
