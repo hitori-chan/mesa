@@ -329,7 +329,7 @@ zink_create_blend_state(struct pipe_context *pctx,
       if (rt->colormask & PIPE_MASK_A)
          att.colorWriteMask |= VK_COLOR_COMPONENT_A_BIT;
 
-      cso->wrmask |= (rt->colormask << i);
+      cso->wrmask |= ((uint32_t)rt->colormask << (4 * i));
       if (rt->blend_enable)
          cso->enables |= BITFIELD_BIT(i);
 
@@ -368,6 +368,10 @@ zink_bind_blend_state(struct pipe_context *pctx, void *cso)
                                     blend && blend->dual_src_blend && state->blend_state->attachments[0].blendEnable;
       if (force_dual_color_blend != zink_get_fs_base_key(ctx)->force_dual_color_blend)
          zink_set_fs_base_key(ctx)->force_dual_color_blend = force_dual_color_blend;
+      /* alpha-to-coverage still needs the alpha output */
+      bool no_color_outputs = screen->optimal_keys && blend && !blend->wrmask && !blend->alpha_to_coverage;
+      if (no_color_outputs != zink_get_fs_base_key(ctx)->no_color_outputs)
+         zink_set_fs_base_key(ctx)->no_color_outputs = no_color_outputs;
       zink_mark_atom_dirty(ctx, ZINK_ATOM_BLEND);
 
       if (cso && screen->have_full_ds3) {
@@ -631,7 +635,8 @@ zink_create_rasterizer_state(struct pipe_context *pctx,
    state->dynamic_line_mode = state->hw_state.line_mode;
    switch (state->hw_state.line_mode) {
    case VK_LINE_RASTERIZATION_MODE_RECTANGULAR:
-      if (!screen->info.line_rast_feats.rectangularLines)
+      if (!screen->info.line_rast_feats.rectangularLines ||
+          (screen->driver_workarounds.no_thin_rectangular_lines && rs_state->line_width <= 2.0f))
          state->dynamic_line_mode = VK_LINE_RASTERIZATION_MODE_DEFAULT;
       break;
    case VK_LINE_RASTERIZATION_MODE_RECTANGULAR_SMOOTH:

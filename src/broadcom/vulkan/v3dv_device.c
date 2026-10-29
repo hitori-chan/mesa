@@ -41,7 +41,6 @@
 #include "v3dv_cmd_buffer.h"
 #include "v3dv_image.h"
 #include "v3dv_entrypoints.h"
-#include "v3dv_utrace.h"
 #include "v3dv_version_dispatch.h"
 
 #include "vk_android.h"
@@ -205,6 +204,7 @@ get_device_extensions(const struct v3dv_physical_device *device,
       .KHR_maintenance5                     = true,
       .KHR_maintenance6                     = true,
       .KHR_maintenance7                     = true,
+      .KHR_maintenance8                     = true,
       .KHR_map_memory2                      = true,
       .KHR_multiview                        = true,
       .KHR_pipeline_executable_properties   = true,
@@ -632,6 +632,9 @@ get_features(const struct v3dv_physical_device *physical_device,
 
       /* VK_KHR_maintenance7 */
       .maintenance7 = true,
+
+      /* VK_KHR_maintenance8 */
+      .maintenance8 = true,
    };
 }
 
@@ -2218,10 +2221,6 @@ v3dv_CreateDevice(VkPhysicalDevice physicalDevice,
       goto fail;
 
    *pDevice = v3dv_device_to_handle(device);
-   v3dv_utrace_context_init(device);
-#ifdef HAVE_PERFETTO
-   v3dv_utrace_perfetto_init(device, V3D_UTRACE_QUEUE_COUNT);
-#endif
 
    return VK_SUCCESS;
 
@@ -2258,7 +2257,6 @@ v3dv_DestroyDevice(VkDevice _device,
 {
    V3DV_FROM_HANDLE(v3dv_device, device, _device);
 
-   v3dv_utrace_context_fini(device);
    device->vk.dispatch_table.DeviceWaitIdle(_device);
    for (uint32_t i = 0; i < device->queue_count; i++)
       queue_finish(&device->queues[i]);
@@ -2403,6 +2401,14 @@ device_import_bo(struct v3dv_device *device,
    ret = drmPrimeFDToHandle(render_fd, fd, &handle);
    if (ret)
       return VK_ERROR_INVALID_EXTERNAL_HANDLE;
+
+#if USE_V3D_SIMULATOR
+   /* A handle we haven't imported yet may come from another DRM file, so
+    * the simulator doesn't know about it.
+    */
+   if (v3dv_device_lookup_bo(device->pdevice, handle)->refcnt == 0)
+      v3d_simulator_open_from_handle(render_fd, handle, real_size);
+#endif
 
    struct drm_v3d_get_bo_offset get_offset = {
       .handle = handle,

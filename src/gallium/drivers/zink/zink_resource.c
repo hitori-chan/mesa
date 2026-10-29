@@ -222,9 +222,212 @@ zink_destroy_resource_surface_cache(struct zink_screen *screen, struct set *ht, 
    }
 }
 
+/* elements per sparse array node */
+#define ZINK_STRUCT_POOL_NODE_SIZE 64
+
+/* never returns NULL: util_sparse_array has no allocation failure path */
+static void *
+struct_pool_alloc(struct zink_struct_pool *pool)
+{
+   uint32_t idx;
+   /* freed structs are reused as is, so everything but the pool fields is zeroed below */
+   void *ptr = util_sparse_array_free_list_pop_elem(&pool->free_list);
+   if (ptr) {
+      idx = *(uint32_t*)((char*)ptr + pool->idx_offset);
+   } else {
+      idx = p_atomic_inc_return(&pool->count) - 1;
+      ptr = util_sparse_array_get(&pool->arr, idx);
+   }
+   memset(ptr, 0, pool->arr.elem_size);
+   *(uint32_t*)((char*)ptr + pool->idx_offset) = idx;
+   return ptr;
+}
+
+static void
+struct_pool_free(struct zink_struct_pool *pool, void *ptr)
+{
+   uint32_t idx = *(uint32_t*)((char*)ptr + pool->idx_offset);
+   /* the struct stays allocated in the array, only its index goes on the free list */
+   util_sparse_array_free_list_push(&pool->free_list, &idx, 1);
+}
+
+static void
+struct_pool_init(struct zink_struct_pool *pool, size_t elem_size, uint32_t idx_offset, uint32_t next_offset)
+{
+   /* cache-line sized elements keep the alignment the structs had with CALLOC_STRUCT_CL */
+   util_sparse_array_init(&pool->arr, align(elem_size, MESA_CACHE_LINE_SIZE), ZINK_STRUCT_POOL_NODE_SIZE);
+   util_sparse_array_free_list_init(&pool->free_list, &pool->arr, UINT32_MAX, next_offset);
+   pool->idx_offset = idx_offset;
+}
+
+void
+zink_resource_struct_pools_init(struct zink_screen *screen)
+{
+   struct_pool_init(&screen->resource_structs, sizeof(struct zink_resource),
+                    offsetof(struct zink_resource, pool_idx), offsetof(struct zink_resource, pool_next));
+}
+
+void
+zink_resource_struct_pools_deinit(struct zink_screen *screen)
+{
+   util_sparse_array_finish(&screen->resource_structs.arr);
+}
+
+/* most idle objects held per screen */
+#define ZINK_OBJ_CACHE_MAX_COUNT 4096
+/* largest buffer worth caching */
+#define ZINK_OBJ_CACHE_MAX_SIZE (1024 * 1024)
+/* idle entries older than this are evicted by a sweep that runs at most this often */
+#define ZINK_OBJ_CACHE_USECS 1000000
+
+static bool
+equals_bufferview_key(const void *a, const void *b);
+
+/* identical buffers share a bucket so lookups only walk a short list */
+static unsigned
+obj_cache_bucket(uint32_t width0, uint32_t bind, uint32_t flags, unsigned usage)
+{
+   /* bind, flags, and usage are shifted above the bits of cached sizes (at most ZINK_OBJ_CACHE_MAX_SIZE, 1MiB);
+    * multiplying by 2^32 / phi spreads every input bit into the high bits which are used as the bucket
+    */
+   return ((width0 ^ (bind << 20) ^ (flags << 24) ^ (usage << 28)) * 0x9e3779b1u) >> (32 - ZINK_OBJ_CACHE_BUCKET_BITS);
+}
+
+static struct zink_resource_object *
+obj_cache_get(struct zink_screen *screen, const struct pipe_resource *templ)
+{
+   struct zink_resource_object *obj = NULL;
+
+   if (!screen->buffer_objs.count)
+      return NULL;
+   struct list_head *bucket = &screen->buffer_objs.buckets[obj_cache_bucket(templ->width0, templ->bind, templ->flags, templ->usage)];
+   simple_mtx_lock(&screen->buffer_objs.lock);
+   /* entries are oldest first, so only the oldest match is likely to be idle and the rest aren't checked */
+   list_for_each_entry(struct zink_resource_object, iter, bucket, cache_link) {
+      if (iter->cache_width0 != templ->width0 || iter->cache_bind != templ->bind ||
+          iter->cache_flags != templ->flags || iter->cache_usage != templ->usage)
+         continue;
+      /* reuse only once the gpu is done with the buffer, without any ioctl */
+      if (!zink_bo_has_usage(iter->bo) ||
+          (zink_screen_usage_check_completion_fast(screen, iter->bo->reads.u) &&
+           zink_screen_usage_check_completion_fast(screen, iter->bo->writes.u))) {
+         list_del(&iter->cache_link);
+         screen->buffer_objs.count--;
+         screen->buffer_objs.bytes -= iter->bo->base.size;
+         obj = iter;
+      }
+      break;
+   }
+   simple_mtx_unlock(&screen->buffer_objs.lock);
+   if (!obj)
+      return NULL;
+
+   /* back to the state of a new object, usage is reset like the slab allocator does on reuse */
+   memset(&obj->bo->reads, 0, sizeof(obj->bo->reads));
+   memset(&obj->bo->writes, 0, sizeof(obj->bo->writes));
+   pipe_reference_init(&obj->reference, 1);
+   obj->access_stage = 0;
+   obj->access = 0;
+   obj->unordered_access_stage = 0;
+   obj->unordered_access = 0;
+   obj->last_write = 0;
+   obj->transfer_rp = 0;
+   obj->ordered_access_is_copied = false;
+   obj->unordered_read = true;
+   obj->unordered_write = true;
+   obj->unsync_access = true;
+   obj->copies_valid = false;
+   obj->copies_need_reset = false;
+   obj->storage_init = false;
+   return obj;
+}
+
+static bool
+obj_cache_add(struct zink_screen *screen, struct zink_resource_object *obj)
+{
+   struct list_head expired;
+
+   /* anything another process or the debug tracking could still see isn't cached */
+   if (obj->exportable || obj->exportable_dmabuf || (zink_debug & ZINK_DEBUG_MEM) ||
+       !p_atomic_read_relaxed(&screen->base.num_contexts))
+      return false;
+
+   /* bufferviews belong to the old buffer's contents and users */
+   if (obj->surface_cache.entries) {
+      zink_destroy_resource_surface_cache(screen, &obj->surface_cache, true);
+      _mesa_set_init(&obj->surface_cache, NULL, NULL, equals_bufferview_key);
+   }
+   util_dynarray_clear(&obj->copies[0]);
+
+   int64_t now = os_time_get();
+   struct list_head *bucket = &screen->buffer_objs.buckets[obj_cache_bucket(obj->cache_width0, obj->cache_bind, obj->cache_flags, obj->cache_usage)];
+   simple_mtx_lock(&screen->buffer_objs.lock);
+   if (screen->buffer_objs.count >= ZINK_OBJ_CACHE_MAX_COUNT ||
+       screen->buffer_objs.bytes + obj->bo->base.size > screen->buffer_objs.max_bytes) {
+      simple_mtx_unlock(&screen->buffer_objs.lock);
+      return false;
+   }
+   list_inithead(&expired);
+   /* evict expired entries here since nothing else runs periodically */
+   if (now - screen->buffer_objs.last_sweep > ZINK_OBJ_CACHE_USECS) {
+      screen->buffer_objs.last_sweep = now;
+      for (unsigned i = 0; i < ARRAY_SIZE(screen->buffer_objs.buckets); i++) {
+         list_for_each_entry_safe(struct zink_resource_object, iter, &screen->buffer_objs.buckets[i], cache_link) {
+            if (now - iter->cache_time <= ZINK_OBJ_CACHE_USECS)
+               break;
+            list_del(&iter->cache_link);
+            list_addtail(&iter->cache_link, &expired);
+            screen->buffer_objs.count--;
+            screen->buffer_objs.bytes -= iter->bo->base.size;
+         }
+      }
+   }
+   obj->cache_time = now;
+   list_addtail(&obj->cache_link, bucket);
+   screen->buffer_objs.count++;
+   screen->buffer_objs.bytes += obj->bo->base.size;
+   simple_mtx_unlock(&screen->buffer_objs.lock);
+
+   list_for_each_entry_safe(struct zink_resource_object, iter, &expired, cache_link) {
+      list_del(&iter->cache_link);
+      iter->cacheable = false;
+      zink_destroy_resource_object(screen, iter);
+   }
+   return true;
+}
+
+/* destroy every cached object, returns how many */
+unsigned
+zink_resource_object_cache_release(struct zink_screen *screen)
+{
+   struct list_head objs;
+   unsigned count = 0;
+
+   if (!screen->buffer_objs.count)
+      return 0;
+   list_inithead(&objs);
+   simple_mtx_lock(&screen->buffer_objs.lock);
+   for (unsigned i = 0; i < ARRAY_SIZE(screen->buffer_objs.buckets); i++) {
+      list_splicetail(&screen->buffer_objs.buckets[i], &objs);
+      list_inithead(&screen->buffer_objs.buckets[i]);
+   }
+   screen->buffer_objs.count = 0;
+   screen->buffer_objs.bytes = 0;
+   simple_mtx_unlock(&screen->buffer_objs.lock);
+   list_for_each_entry_safe(struct zink_resource_object, obj, &objs, cache_link) {
+      list_del(&obj->cache_link);
+      obj->cacheable = false;
+      zink_destroy_resource_object(screen, obj);
+      count++;
+   }
+   return count;
+}
+
 void
 zink_destroy_resource_object(struct zink_screen *screen, struct zink_resource_object *obj)
 {
+   if (obj->cacheable && obj_cache_add(screen, obj))
+      return;
    if (!obj->dt)
       zink_destroy_resource_surface_cache(screen, &obj->surface_cache, obj->is_buffer);
    VKSCR(DestroyImageView)(screen->dev, obj->video_view, NULL);
@@ -284,7 +487,7 @@ zink_resource_destroy(struct pipe_screen *pscreen,
       pipe_clientptr_heap_reference(pscreen, &res->base.b.clientptr_heap, NULL);
    }
 
-   FREE_CL(res);
+   struct_pool_free(&screen->resource_structs, res);
 }
 
 static VkImageAspectFlags
@@ -1184,6 +1387,13 @@ enum resource_object_create_result {
    roc_fail_and_cleanup_all
 };
 
+/* without resizable BAR, large buffers are uploaded through staging instead of mapped */
+static inline bool
+is_indirect_map_buffer(const struct zink_screen *screen, const struct pipe_resource *templ)
+{
+   return !screen->resizable_bar && templ->target == PIPE_BUFFER && templ->width0 >= 8196;
+}
+
 static inline enum resource_object_create_result
 allocate_bo(struct zink_screen *screen, const struct pipe_resource *templ,
             VkMemoryRequirements *reqs, struct zink_resource_object *obj,
@@ -1301,11 +1511,10 @@ allocate_bo(struct zink_screen *screen, const struct pipe_resource *templ,
       assert(zink_mem_type_idx_from_types(screen, heap, reqs->memoryTypeBits) != UINT32_MAX);
    }
 
+   bool host_fallback = false;
    while (1) {
-      bool small_bar = heap == ZINK_HEAP_DEVICE_LOCAL_VISIBLE && !screen->resizable_bar;
-      bool skip = small_bar && screen->vis_vram_full;
       /* iterate over all available memory types to reduce chance of oom */
-      for (unsigned i = 0; !skip && !obj->bo && i < screen->heap_count[heap]; i++) {
+      for (unsigned i = 0; !obj->bo && i < screen->heap_count[heap]; i++) {
          if (!(reqs->memoryTypeBits & BITFIELD_BIT(screen->heap_map[heap][i])))
             continue;
 
@@ -1314,18 +1523,32 @@ allocate_bo(struct zink_screen *screen, const struct pipe_resource *templ,
                                           mai.memoryTypeIndex, mai.pNext, zink_clientptr_heap(templ->clientptr_heap)));
       }
 
-      if (obj->bo || heap != ZINK_HEAP_DEVICE_LOCAL_VISIBLE)
+      if (obj->bo)
          break;
 
-      if (small_bar && !skip && reqs->size <= 2 * 1024 * 1024)
-         screen->vis_vram_full = true;
+      /* a demoted dynamic buffer can still use host memory */
+      if (host_fallback && heap == ZINK_HEAP_DEVICE_LOCAL) {
+         host_fallback = false;
+         heap = ZINK_HEAP_HOST_VISIBLE_COHERENT;
+         continue;
+      }
+
+      if (heap != ZINK_HEAP_DEVICE_LOCAL_VISIBLE)
+         break;
+
+      /* staged buffers gain nothing from host memory, which the gpu reads over the bus */
+      bool indirect_dynamic = templ->usage == PIPE_USAGE_DYNAMIC &&
+                              is_indirect_map_buffer(screen, templ) &&
+                              !(templ->flags & PIPE_RESOURCE_FLAG_MAP_PERSISTENT);
 
       /* demote BAR allocations to a different heap on failure to avoid oom */
-      if (templ->flags & PIPE_RESOURCE_FLAG_MAP_COHERENT || templ->usage == PIPE_USAGE_DYNAMIC ||
+      if (templ->flags & PIPE_RESOURCE_FLAG_MAP_COHERENT ||
+          (templ->usage == PIPE_USAGE_DYNAMIC && !indirect_dynamic) ||
           templ->bind & ZINK_BIND_DESCRIPTOR)
           heap = ZINK_HEAP_HOST_VISIBLE_COHERENT;
       else
           heap = ZINK_HEAP_DEVICE_LOCAL;
+      host_fallback = indirect_dynamic;
    };
 
    return obj->bo ? roc_success : roc_fail_and_cleanup_object;
@@ -1896,11 +2119,24 @@ static struct zink_resource_object *
 resource_object_create(struct zink_screen *screen, const struct pipe_resource *templ, struct winsys_handle *whandle, bool *linear,
                        uint64_t *modifiers, int modifiers_count, const void *loader_private, const void *user_mem)
 {
+   /* plain buffers only, nothing imported, exported, or sparse */
+   const bool cacheable = templ->target == PIPE_BUFFER && !whandle && !user_mem && !loader_private && !modifiers_count &&
+                          !templ->clientptr_heap &&
+                          templ->width0 <= ZINK_OBJ_CACHE_MAX_SIZE &&
+                          !(templ->flags & (PIPE_RESOURCE_FLAG_SPARSE | PIPE_RESOURCE_FLAG_FIXED_ADDRESS)) &&
+                          !(templ->bind & PIPE_BIND_SHARED);
+   if (cacheable) {
+      struct zink_resource_object *cached = obj_cache_get(screen, templ);
+      if (cached)
+         return cached;
+   }
    struct zink_resource_object *obj = CALLOC_STRUCT_CL(zink_resource_object);
    unsigned max_level = 0;
    if (!obj)
       return NULL;
    u_rwlock_init(&obj->copy_lock);
+   /* here rather than in resource_create so cached objects aren't initialized again */
+   simple_mtx_init(&obj->surface_mtx, mtx_plain);
    obj->unordered_read = true;
    obj->unordered_write = true;
    obj->unsync_access = true;
@@ -1960,6 +2196,13 @@ resource_object_create(struct zink_screen *screen, const struct pipe_resource *t
       for (unsigned i = 0; i < max_level; i++) {
          obj->copies[i] = UTIL_DYNARRAY_INIT;
       }
+      if (cacheable && !alloc_info.external) {
+         obj->cacheable = true;
+         obj->cache_width0 = templ->width0;
+         obj->cache_bind = templ->bind;
+         obj->cache_flags = templ->flags;
+         obj->cache_usage = templ->usage;
+      }
       FALLTHROUGH;
    case roc_success_early_return:
       return obj;
@@ -1992,12 +2235,7 @@ resource_create(struct pipe_screen *pscreen,
                 const void *loader_private, const void *user_mem)
 {
    struct zink_screen *screen = zink_screen(pscreen);
-   struct zink_resource *res = CALLOC_STRUCT_CL(zink_resource);
-
-   if (!res) {
-      mesa_loge("ZINK: failed to allocate res!");
-      return NULL;
-   }
+   struct zink_resource *res = struct_pool_alloc(&screen->resource_structs);
 
    if (modifiers_count > 0 && screen->info.have_EXT_image_drm_format_modifier) {
       /* for rebinds */
@@ -2065,7 +2303,7 @@ resource_create(struct pipe_screen *pscreen,
    if (templ->target == PIPE_BUFFER) {
       util_range_init(&res->valid_buffer_range);
       res->base.b.bind |= PIPE_BIND_SHADER_IMAGE;
-      if (!screen->resizable_bar && templ->width0 >= 8196) {
+      if (is_indirect_map_buffer(screen, templ)) {
          /* We don't want to evict buffers from VRAM by mapping them for CPU access,
           * because they might never be moved back again. If a buffer is large enough,
           * upload data by copying from a temporary GTT buffer. 8K might not seem much,
@@ -2146,7 +2384,6 @@ resource_create(struct pipe_screen *pscreen,
       res->base.b.flags |= PIPE_RESOURCE_FLAG_DONT_MAP_DIRECTLY;
       res->base.allow_cpu_storage = false;
    }
-   simple_mtx_init(&res->obj->surface_mtx, mtx_plain);
    if (res->obj->is_buffer) {
       res->base.buffer_id_unique = util_idalloc_mt_alloc(&screen->buffer_ids);
    } else {
@@ -2171,7 +2408,7 @@ fail:
       renderonly_scanout_destroy(res->ro_scanout, screen->ro);
 #endif
    free(res->modifiers);
-   FREE_CL(res);
+   struct_pool_free(&screen->resource_structs, res);
    return NULL;
 }
 
@@ -2194,11 +2431,7 @@ zink_resource_create_with_modifiers(struct pipe_screen *pscreen, const struct pi
    res_planes[0] = res;
    unsigned num_planes = util_format_get_num_planes(templ->format);
    for (unsigned p = 1; p < num_planes; p++) {
-      struct zink_resource *res_plane = CALLOC_STRUCT_CL(zink_resource);
-      if (!res_plane) {
-         pipe_resource_reference(&pres, NULL);
-         return NULL;
-      }
+      struct zink_resource *res_plane = struct_pool_alloc(&zink_screen(pscreen)->resource_structs);
       res_plane->base.b = *templ;
       res_plane->base.b.width0 = util_format_get_plane_width(templ->format, p, templ->width0);
       res_plane->base.b.height0 = util_format_get_plane_height(templ->format, p, templ->height0);
@@ -2732,7 +2965,11 @@ invalidate_buffer(struct zink_context *ctx, struct zink_resource *res)
    res->queue = VK_QUEUE_FAMILY_IGNORED;
    if (needs_bda)
       zink_resource_get_address(screen, res);
-   if (!zink_resource_rebind(ctx, res))
+   /* bindless handles can be resident in other contexts too */
+   bool bindless = zink_resource_has_bindless(res);
+   if (bindless)
+      res->rebind_count++;
+   if (!zink_resource_rebind(ctx, res) || bindless)
       ctx->buffer_rebind_counter = p_atomic_inc_return(&screen->buffer_rebind_counter);
    return true;
 }
@@ -3760,8 +3997,12 @@ resource_object_add_bind(struct zink_context *ctx, struct zink_resource *res, un
    assert(!res->obj->dt);
    zink_fb_clears_apply(ctx, &res->base.b, 0, INT32_MAX);
    bool ret = add_resource_bind(ctx, res, bind);
-   if (ret)
+   if (ret) {
       zink_resource_rebind(ctx, res);
+      /* other contexts have to refresh their views too */
+      if (res->all_binds)
+         p_atomic_inc(&zink_screen(ctx->base.screen)->image_rebind_counter);
+   }
 
    return ret;
 }

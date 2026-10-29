@@ -58,13 +58,13 @@ zink_create_gfx_pipeline_input(struct zink_screen *screen,
                                const uint8_t *binding_map,
                                VkPrimitiveTopology primitive_topology);
 VkPipeline
-zink_create_gfx_pipeline_library(struct zink_screen *screen, struct zink_gfx_program *prog);
+zink_create_gfx_pipeline_library(struct zink_screen *screen, struct zink_gfx_program *prog, const struct zink_shader_object *objs);
 VkPipeline
 zink_create_gfx_pipeline_output(struct zink_screen *screen, struct zink_gfx_pipeline_state *state);
 VkPipeline
 zink_create_gfx_pipeline_combined(struct zink_screen *screen, struct zink_gfx_program *prog, VkPipeline input, VkPipeline *library, unsigned libcount, VkPipeline output, bool optimized, bool testonly);
 VkPipeline
-zink_create_gfx_pipeline_separate(struct zink_screen *screen, struct zink_shader_object *objs, VkPipelineLayout layout, mesa_shader_stage stage, bool robust);
+zink_create_gfx_pipeline_separate(struct zink_screen *screen, struct zink_shader_object *objs, VkPipelineLayout layout, mesa_shader_stage stage);
 #ifdef __cplusplus
 }
 #endif

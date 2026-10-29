@@ -54,6 +54,7 @@
 #include "util/set.h"
 #include "util/simple_mtx.h"
 #include "util/slab.h"
+#include "util/sparse_array.h"
 #include "util/u_blitter.h"
 #include "util/u_dynarray.h"
 #include "util/u_idalloc.h"
@@ -446,7 +447,7 @@ struct zink_descriptor_template {
 
 /* ctx->dd; created at context creation */
 struct zink_descriptor_data {
-   bool bindless_bound;
+   bool bindless_bound[ZINK_PIPELINE_MAX]; //gfx, compute, mesh
    bool bindless_init;
    bool has_fbfetch;
    bool push_state_changed[ZINK_PIPELINE_MAX]; //gfx, compute, mesh
@@ -883,7 +884,6 @@ struct zink_shader {
    bool has_uniforms;
    bool has_edgeflags;
    bool needs_inlining;
-   bool robust; //from a robust context
    struct spirv_shader *spirv;
 
    struct {
@@ -910,6 +910,7 @@ struct zink_shader {
          struct zink_shader *parent; // for a generated gs this points to the shader that "owns" it
 
          bool is_generated; // if this is a driver-created shader (e.g., tcs)
+         bool has_injected_psiz; // the only psiz output is one that the frontend injected
       } non_fs;
 
       struct {
@@ -1151,6 +1152,12 @@ struct zink_gfx_pipeline_cache_entry {
    struct zink_gfx_program *prog;
    /* GPL only */
    struct util_queue_fence fence;
+   /* the optimized compile has not been queued yet */
+   bool compile_pending;
+   /* batches the entry has been used in, up to ZINK_FULL_PROG_BATCHES */
+   uint8_t batches;
+   /* id of the last batch counted in batches */
+   uint64_t batch_id;
    union {
       struct {
          struct zink_gfx_input_key *ikey;
@@ -1197,10 +1204,34 @@ struct zink_gfx_program {
    bool needs_inlining; // whether this program requires some uniforms to be inlined
    bool has_edgeflags;
    bool optimal_keys;
-   bool robust;
 
    /* separable */
+   /* background-compiled full program that replaces a link-time shader-object program */
    struct zink_gfx_program *full_prog;
+   /* background job state: signaled when the job is done */
+   struct util_queue_fence bg_fence;
+   /* batches this program has been bound in, up to ZINK_FULL_PROG_BATCHES */
+   uint8_t bg_batches;
+   /* id of the last batch counted in bg_batches */
+   uint64_t bg_batch_id;
+   /* the background job has been queued or skipped for noopt */
+   bool bg_queued;
+
+   /* draw variants of the last vertex stage [0] and the fragment stage [1] which are compiled in the background,
+    * before and after they are added to the shader cache
+    */
+   struct zink_shader_module *draw_variant_zm[2];
+   struct zink_shader_module *draw_variant_mod[2];
+   uint32_t draw_variant_key;
+   struct zink_shader_object draw_variant_objs[MESA_SHADER_MESH_STAGES];
+   /* the job compiled everything for draw_variant_key */
+   bool draw_variant_done;
+   /* the draw variant bits which the job compiles */
+   uint8_t draw_variant_bits;
+   /* the sets of draw variant key bits (get_draw_variant_bits()) which can be bound without a compile, one bit each */
+   uint8_t draw_variant_ready;
+   /* the key without the draw variant bits which draw_variant_ready is valid for */
+   uint32_t draw_variant_base_key;
 
    struct hash_table pipelines[11]; // [number of draw modes we support]
    uint32_t last_variant_hash;
@@ -1217,7 +1248,6 @@ struct zink_compute_program {
    bool use_local_size;
    bool has_variable_shared_mem;
    bool uses_bindless;
-   bool robust;
 
    unsigned scratch_size;
 
@@ -1330,6 +1360,15 @@ struct zink_resource_object {
    bool immutable_handle;
 
    struct pipe_clientptr_heap *clientptr_heap;
+
+   /* the key a buffer must match to reuse this object from the screen's cache */
+   bool cacheable;
+   uint8_t cache_usage;
+   uint32_t cache_width0;
+   uint32_t cache_bind;
+   uint32_t cache_flags;
+   int64_t cache_time;
+   struct list_head cache_link;
 };
 
 /* "gfx" includes mesh here */
@@ -1406,6 +1445,10 @@ struct zink_resource {
 #ifdef HAVE_LIBDRM
    struct renderonly_scanout *ro_scanout;
 #endif
+
+   /* keep these last since c++ ignores the alignas(64) union and would disagree on the layout */
+   uint32_t pool_idx;
+   uint32_t pool_next;
 };
 
 static inline struct zink_resource *
@@ -1451,6 +1494,9 @@ struct zink_video_format_prop {
    VkVideoFormatPropertiesKHR *pVideoFormatProperties;
 };
 
+/* log2 of the number of buckets in zink_screen::buffer_objs */
+#define ZINK_OBJ_CACHE_BUCKET_BITS 10
+
 struct zink_screen {
    struct pipe_screen base;
 
@@ -1482,6 +1528,23 @@ struct zink_screen {
    simple_mtx_t free_batch_states_lock;
    simple_mtx_t submit_lock;
 
+   struct zink_struct_pool {
+      struct util_sparse_array arr;
+      struct util_sparse_array_free_list free_list;
+      uint32_t count; //next never-used index
+      uint32_t idx_offset; //offset of the uint32_t index in the pooled struct
+   } resource_structs;
+
+   /* idle buffer objects kept for reuse, oldest first in each bucket */
+   struct {
+      simple_mtx_t lock;
+      struct list_head buckets[1 << ZINK_OBJ_CACHE_BUCKET_BITS];
+      unsigned count;
+      uint64_t bytes;
+      uint64_t max_bytes;
+      int64_t last_sweep;
+   } buffer_objs;
+
    struct zink_batch_state *active_batch_states; //active batch states
    struct zink_batch_state *last_active_batch_state; //for appending
    simple_mtx_t active_batch_states_lock;
@@ -1493,6 +1556,7 @@ struct zink_screen {
    unsigned buffer_rebind_counter;
    unsigned image_rebind_counter;
    unsigned robust_ctx_count;
+   bool has_robust_ctx; //a robust context has been created, so all pipelines are robust
 
    struct hash_table dts;
    simple_mtx_t dt_lock;
@@ -1646,17 +1710,22 @@ struct zink_screen {
       bool broken_cache_semantics;
       bool missing_a8_unorm;
       bool implicit_sync;
+      /* skip the implicit_sync handling on X11 swapchains */
+      bool implicit_sync_not_x11;
       bool disable_optimized_compile;
       bool always_feedback_loop;
       bool always_feedback_loop_zs;
       bool track_renderpasses;
       bool no_linestipple;
       bool no_linesmooth;
+      bool no_thin_rectangular_lines;
       bool can_do_invalid_linear_modifier;
       bool inconsistent_interpolation;
       bool can_2d_view_sparse;
       bool general_depth_layout;
       bool general_layout;
+      /* render passes per batch before a flush, UINT32_MAX means no limit */
+      unsigned max_batch_rps;
       /* intel driver is somehow broken for srgb-compatible dmabufs...but only in mesa CI */
       bool srgb_dmabufs;
    } driver_workarounds;
@@ -1795,6 +1864,14 @@ struct zink_descriptor_surface {
 struct zink_bindless_descriptor {
    struct zink_descriptor_surface ds;
    struct pipe_resource *pres;
+   /* what a handle needs to get its view again for a new backing object */
+   union {
+      struct {
+         struct pipe_surface templ;
+         VkImageViewCreateInfo ivci;
+      };
+      struct pipe_image_view view;
+   };
    struct zink_sampler_state *sampler;
    /* the handle and each context it is resident in hold a reference */
    uint32_t refcount;
@@ -1808,6 +1885,8 @@ struct zink_bindless_resident {
    struct zink_bindless_descriptor *bd;
    /* PIPE_IMAGE_ACCESS_*, per context since each can use a different one */
    unsigned access;
+   /* the resource's rebind_count the handle was last written for in this context */
+   unsigned rebind_count;
 };
 
 struct zink_rendering_info {
@@ -2060,6 +2139,8 @@ struct zink_context {
    } render_condition;
    struct {
       uint64_t render_passes;
+      uint32_t frame_submits_current;
+      uint32_t frame_submits;
    } hud;
 
    struct pipe_resource *dummy_xfb_buffer;
@@ -2166,6 +2247,19 @@ struct zink_context {
    bool needs_transfer_sync : 1;
    bool can_promote_depth_op : 1;
    bool depth_op_promoted : 1;
+   /* vertex input and buffer last bound by a vertex-state draw in this batch */
+   struct {
+      bool input_valid;
+      bool buffer_valid;
+      uint32_t full_velem_mask;
+      uint32_t partial_velem_mask;
+      unsigned num_bindings;
+      unsigned num_attribs;
+      VkVertexInputBindingDescription2EXT bindings[PIPE_MAX_ATTRIBS];
+      VkVertexInputAttributeDescription2EXT attribs[PIPE_MAX_ATTRIBS];
+      VkBuffer buffer;
+      VkDeviceSize offset;
+   } vstate_bound;
 };
 
 static inline struct zink_context *

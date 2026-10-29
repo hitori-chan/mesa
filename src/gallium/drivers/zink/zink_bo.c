@@ -105,11 +105,17 @@ static unsigned get_slab_entry_alignment(struct zink_screen *screen, unsigned si
    return entry_size;
 }
 
+/* host-visible vram on a small bar fills up fast, and running out is not an error */
+static bool
+is_small_bar_type(const struct zink_screen *screen, unsigned mem_type_idx)
+{
+   return !screen->resizable_bar && zink_is_vis_vram_type(screen, mem_type_idx);
+}
+
 static void
 bo_clear_vis_vram_full(struct zink_screen *screen, struct zink_bo *bo)
 {
-   if (screen->vis_vram_full &&
-       (screen->info.mem_props.memoryTypes[bo->base.placement].propertyFlags & VK_VIS_VRAM) == VK_VIS_VRAM)
+   if (screen->vis_vram_full && bo->mem && zink_is_vis_vram_type(screen, bo->base.placement))
       screen->vis_vram_full = false;
 }
 
@@ -193,14 +199,16 @@ bo_slab_destroy(struct zink_screen *screen, struct zink_bo *bo)
    struct zink_clientptr_heap *clientptr_heap = bo->u.slab.real->u.real.clientptr_heap;
    struct pb_slabs *slabs = clientptr_heap ? &clientptr_heap->slabs : &screen->pb.bo_slabs;
 
-   bo_clear_vis_vram_full(screen, bo);
    pb_slab_free(slabs, &bo->u.slab.entry);
+   if (!p_atomic_read_relaxed(&screen->base.num_contexts))
+      pb_slabs_reclaim(slabs);
 }
 
 static bool
 clean_up_buffer_managers(struct zink_screen *screen)
 {
-   unsigned num_reclaims = pb_slabs_reclaim(&screen->pb.bo_slabs);
+   unsigned num_reclaims = zink_resource_object_cache_release(screen);
+   num_reclaims += pb_slabs_reclaim(&screen->pb.bo_slabs);
    num_reclaims += pb_cache_release_all_buffers(&screen->pb.bo_cache);
    return !!num_reclaims;
 }
@@ -228,7 +236,7 @@ bo_destroy_or_cache(struct zink_screen *screen, struct zink_bo *bo)
    bo->reads.u = NULL;
    bo->writes.u = NULL;
 
-   if (bo->u.real.use_reusable_pool)
+   if (bo->u.real.use_reusable_pool && p_atomic_read_relaxed(&screen->base.num_contexts))
       pb_cache_add_buffer(&screen->pb.bo_cache, bo->cache_entry);
    else
       bo_destroy(screen, bo);
@@ -277,8 +285,14 @@ bo_create_internal(struct zink_screen *screen,
       alignment = MAX2(alignment, screen->info.props.limits.minMemoryMapAlignment);
       mai.allocationSize = align64(mai.allocationSize, screen->info.props.limits.minMemoryMapAlignment);
    }
+   bool small_bar = is_small_bar_type(screen, mem_type_idx);
+   /* skip the driver call while the heap is known to be full */
+   if (small_bar && screen->vis_vram_full)
+      return NULL;
    unsigned vk_heap_idx = screen->info.mem_props.memoryTypes[mem_type_idx].heapIndex;
    if (mai.allocationSize > screen->info.mem_props.memoryHeaps[vk_heap_idx].size) {
+      if (small_bar)
+         return NULL;
       mesa_loge("zink: can't allocate %"PRIu64" bytes from heap that's only %"PRIu64" bytes!\n", mai.allocationSize, screen->info.mem_props.memoryHeaps[vk_heap_idx].size);
       return NULL;
    }
@@ -291,6 +305,14 @@ bo_create_internal(struct zink_screen *screen,
 
    VkResult ret = VKSCR(AllocateMemory)(screen->dev, &mai, NULL, &bo->mem);
    if (!zink_screen_handle_vkresult(screen, ret)) {
+      bo->mem = VK_NULL_HANDLE;
+      /* a full small bar is expected, so it is not an error */
+      if (small_bar && ret == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
+         /* larger requests can fail while small ones still fit */
+         if (mai.allocationSize <= 2 * 1024 * 1024)
+            screen->vis_vram_full = true;
+         goto fail;
+      }
       mesa_loge("zink: couldn't allocate memory: heap=%u size=%" PRIu64, heap, size);
       if (zink_debug & ZINK_DEBUG_MEM) {
          zink_debug_mem_print_stats(screen);
@@ -608,17 +630,18 @@ zink_bo_create(struct zink_screen *screen, uint64_t size, unsigned alignment, en
 
       struct pb_slabs *slabs = clientptr_heap ? &clientptr_heap->slabs : &screen->pb.bo_slabs;
       bool reclaim_all = false;
-      if (heap == ZINK_HEAP_DEVICE_LOCAL_VISIBLE && !screen->resizable_bar) {
+      bool small_bar = is_small_bar_type(screen, mem_type_idx);
+      if (small_bar) {
          unsigned low_bound = 128 * 1024 * 1024; //128MB is a very small BAR
          if (zink_driverid(screen) == VK_DRIVER_ID_NVIDIA_PROPRIETARY)
             low_bound *= 2; //nvidia has fat textures or something
          unsigned vk_heap_idx = screen->info.mem_props.memoryTypes[mem_type_idx].heapIndex;
+         /* reuse idle entries before growing a very small heap */
          reclaim_all = screen->info.mem_props.memoryHeaps[vk_heap_idx].size <= low_bound;
-         if (reclaim_all)
-            reclaim_all = clean_up_buffer_managers(screen);
       }
       entry = pb_slab_alloc_reclaimed(slabs, alloc_size, mem_type_idx, reclaim_all);
-      if (!entry) {
+      /* running out of a small bar is routine, don't drop every cached buffer */
+      if (!entry && !small_bar) {
          /* Clean up buffer managers and try again. */
          if (clean_up_buffer_managers(screen))
             entry = pb_slab_alloc_reclaimed(slabs, alloc_size, mem_type_idx, true);
@@ -693,7 +716,7 @@ no_slab:
    bo = bo_create_internal(screen, size, alignment, heap, mem_type_idx, flags, pNext, clientptr_heap);
    if (!bo) {
       /* Clean up buffer managers and try again. */
-      if (clean_up_buffer_managers(screen))
+      if (!is_small_bar_type(screen, mem_type_idx) && clean_up_buffer_managers(screen))
          bo = bo_create_internal(screen, size, alignment, heap, mem_type_idx, flags, pNext, clientptr_heap);
       if (!bo)
          return NULL;
@@ -1406,6 +1429,12 @@ static struct pb_slab *
 bo_slab_alloc_normal(void *priv, unsigned mem_type_idx, unsigned entry_size, unsigned group_index)
 {
    return bo_slab_alloc(priv, mem_type_idx, entry_size, group_index, false, NULL);
+}
+
+void
+zink_bo_release_unused(struct zink_screen *screen)
+{
+   clean_up_buffer_managers(screen);
 }
 
 bool
