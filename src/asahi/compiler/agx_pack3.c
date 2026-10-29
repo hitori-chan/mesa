@@ -2599,9 +2599,13 @@ a3_reads_lanes(const agx_instr *I)
 void
 agx3_end_helpers(agx_context *ctx)
 {
-   /* A prolog runs before the main program, whose own samples follow it */
+   /* A prolog runs before the main program, whose own samples follow it; a
+    * program agx_fast_link runs once a sample loops back to its start,
+    * which the IR does not show
+    */
    if (ctx->stage != MESA_SHADER_FRAGMENT || ctx->is_preamble ||
-       ctx->key->secondary || (agx_compiler_debug & AGX_DBG_HELPERS))
+       ctx->key->secondary || ctx->key->fs.inside_sample_loop ||
+       (agx_compiler_debug & AGX_DBG_HELPERS))
       return;
 
    agx_instr *last = NULL;
