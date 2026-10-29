@@ -80,21 +80,7 @@ hk_device_finish_meta(struct hk_device *dev)
    vk_meta_device_finish(&dev->vk, &dev->meta);
 }
 
-struct hk_meta_save {
-   struct vk_vertex_input_state _dynamic_vi;
-   struct vk_sample_locations_state _dynamic_sl;
-   struct vk_dynamic_graphics_state dynamic;
-   struct hk_api_shader *shaders[MESA_SHADER_MESH + 1];
-   struct hk_addr_range vb0;
-   struct hk_descriptor_set *desc0;
-   bool has_push_desc0;
-   enum agx_visibility_mode occlusion;
-   struct hk_push_descriptor_set push_desc0;
-   VkQueryPipelineStatisticFlags pipeline_stats_flags;
-   uint8_t push[HK_MAX_PUSH_SIZE];
-};
-
-static void
+void
 hk_meta_begin(struct hk_cmd_buffer *cmd, struct hk_meta_save *save,
               VkPipelineBindPoint bind_point)
 {
@@ -154,7 +140,7 @@ hk_meta_init_render(struct hk_cmd_buffer *cmd,
    }
 }
 
-static void
+void
 hk_meta_end(struct hk_cmd_buffer *cmd, struct hk_meta_save *save,
             VkPipelineBindPoint bind_point)
 {
@@ -1427,7 +1413,7 @@ hk_meta_resolve_rendering(struct hk_cmd_buffer *cmd,
    hk_meta_end(cmd, &save, VK_PIPELINE_BIND_POINT_GRAPHICS);
 }
 
-static void
+void
 hk_cmd_copy(struct hk_cmd_buffer *cmd, uint64_t dst, uint64_t src, size_t size)
 {
    /* Use vectorized copies for as much of the buffer as possible. This requires
@@ -1549,6 +1535,18 @@ hk_CmdCopyImage2(VkCommandBuffer commandBuffer,
    hk_meta_end(cmd, &save, bind_point);
 }
 
+void
+hk_cmd_fill(struct hk_cmd_buffer *cmd, uint64_t addr, size_t range,
+            uint32_t data)
+{
+   if (util_is_aligned(addr, 16) && util_is_aligned(range, 16)) {
+      libagx_fill_uint4(cmd, agx_2d(range / 16, 1), AGX_BARRIER_ALL,
+                        addr, 0, data, data, data, data);
+   } else {
+      libagx_fill(cmd, agx_1d(range / 4), AGX_BARRIER_ALL, addr, data);
+   }
+}
+
 VKAPI_ATTR void VKAPI_CALL
 hk_CmdFillBuffer(VkCommandBuffer commandBuffer, VkBuffer dstBuffer,
                  VkDeviceSize dstOffset, VkDeviceSize dstRange, uint32_t data)
@@ -1561,12 +1559,7 @@ hk_CmdFillBuffer(VkCommandBuffer commandBuffer, VkBuffer dstBuffer,
    uint64_t addr =
       vk_meta_buffer_address(&dev->vk, dstBuffer, dstOffset, dstRange);
 
-   if (util_is_aligned(addr, 16) && util_is_aligned(range, 16)) {
-      libagx_fill_uint4(cmd, agx_2d(range / 16, 1), AGX_BARRIER_ALL,
-                        addr, 0, data, data, data, data);
-   } else {
-      libagx_fill(cmd, agx_1d(range / 4), AGX_BARRIER_ALL, addr, data);
-   }
+   hk_cmd_fill(cmd, addr, range, data);
 }
 
 VKAPI_ATTR void VKAPI_CALL

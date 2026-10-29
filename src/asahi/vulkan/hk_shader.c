@@ -15,6 +15,7 @@
 #include "agx_nir_lower_vbo.h"
 #include "glsl_types.h"
 #include "hk_instance.h"
+#include "hk_nir_ray_tracing.h"
 #include "libagx.h"
 #include "nir.h"
 #include "nir_builder.h"
@@ -175,6 +176,11 @@ hk_preprocess_nir_internal(struct vk_physical_device *vk_pdev, nir_shader *nir)
 
    NIR_PASS(_, nir, nir_split_var_copies);
    NIR_PASS(_, nir, nir_split_struct_vars, nir_var_function_temp);
+
+   /* Into a walk whose state and stack are local variables, which
+    * agx_preprocess_nir puts in registers or scratch.
+    */
+   NIR_PASS(_, nir, hk_nir_lower_ray_queries);
 
    /* Optimize but allow copies because we haven't lowered them yet */
    agx_preprocess_nir(nir);

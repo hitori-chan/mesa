@@ -46,10 +46,15 @@ hk_get_vk_version()
 }
 
 static void
-hk_get_device_extensions(const struct hk_instance *instance,
+hk_get_device_extensions(const struct agx_device *dev,
+                         const struct hk_instance *instance,
                          struct vk_device_extension_table *ext)
 {
+   /* Software ray queries (hk_nir_ray_tracing.c), behind a flag until tested */
+   bool rq = dev->debug & AGX_DBG_RAYQUERY;
+
    *ext = (struct vk_device_extension_table){
+      .KHR_acceleration_structure = rq,
       .KHR_8bit_storage = true,
       .KHR_16bit_storage = true,
       .KHR_bind_memory2 = true,
@@ -58,6 +63,7 @@ hk_get_device_extensions(const struct hk_instance *instance,
       .KHR_copy_commands2 = true,
       .KHR_create_renderpass2 = true,
       .KHR_dedicated_allocation = true,
+      .KHR_deferred_host_operations = rq,
       .KHR_depth_stencil_resolve = true,
       .KHR_descriptor_update_template = true,
       .KHR_device_group = true,
@@ -105,6 +111,7 @@ hk_get_device_extensions(const struct hk_instance *instance,
       .KHR_present_wait2 = true,
 #endif
       .KHR_push_descriptor = true,
+      .KHR_ray_query = rq,
       .KHR_relaxed_block_layout = true,
       .KHR_robustness2 = true,
       .KHR_sampler_mirror_clamp_to_edge = true,
@@ -407,6 +414,11 @@ hk_get_device_features(
       .stippledBresenhamLines = false,
       .stippledSmoothLines = false,
 
+      /* VK_KHR_acceleration_structure */
+      .accelerationStructure = supported_extensions->KHR_acceleration_structure,
+      .descriptorBindingAccelerationStructureUpdateAfterBind =
+         supported_extensions->KHR_acceleration_structure,
+
       /* VK_KHR_maintenance5 */
       .maintenance5 = true,
 
@@ -427,6 +439,9 @@ hk_get_device_features(
 
       /* VK_KHR_pipeline_binary */
       .pipelineBinaries = true,
+
+      /* VK_KHR_ray_query */
+      .rayQuery = supported_extensions->KHR_ray_query,
 
       /* VK_KHR_pipeline_executable_properties */
       .pipelineExecutableInfo = true,
@@ -943,6 +958,20 @@ hk_get_device_properties(const struct agx_device *dev,
       /* VK_KHR_push_descriptor */
       .maxPushDescriptors = HK_MAX_PUSH_DESCRIPTORS,
 
+      /* VK_KHR_acceleration_structure: the spec's minimums. A node reference
+       * is a 32-bit byte offset, which holds about 40 million triangles.
+       */
+      .maxGeometryCount = (1 << 24) - 1,
+      .maxInstanceCount = (1 << 24) - 1,
+      .maxPrimitiveCount = (1 << 29) - 1,
+      .maxPerStageDescriptorAccelerationStructures = HK_MAX_DESCRIPTORS,
+      .maxPerStageDescriptorUpdateAfterBindAccelerationStructures =
+         HK_MAX_DESCRIPTORS,
+      .maxDescriptorSetAccelerationStructures = HK_MAX_DESCRIPTORS,
+      .maxDescriptorSetUpdateAfterBindAccelerationStructures =
+         HK_MAX_DESCRIPTORS,
+      .minAccelerationStructureScratchOffsetAlignment = 256,
+
       /* VK_EXT_custom_border_color */
       .maxCustomBorderColorSamplers = 4000,
 
@@ -1289,7 +1318,7 @@ hk_create_drm_physical_device(struct vk_instance *_instance,
       &dispatch_table, &wsi_physical_device_entrypoints, false);
 
    struct vk_device_extension_table supported_extensions;
-   hk_get_device_extensions(instance, &supported_extensions);
+   hk_get_device_extensions(&pdev->dev, instance, &supported_extensions);
 
    struct vk_features supported_features;
    hk_get_device_features(&pdev->dev, instance, &supported_extensions,

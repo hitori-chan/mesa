@@ -92,8 +92,11 @@ hk_dispatch_with_usc(struct hk_device *dev, struct hk_cs *cs,
    hk_dispatch_with_usc_launch(dev, cs, launch, usc, grid, local_size);
 }
 
+/* A direct grid counts workgroups, unless in_threads: invocations, the last
+ * workgroup of each dimension partial.
+ */
 static void
-dispatch(struct hk_cmd_buffer *cmd, struct agx_grid grid)
+dispatch(struct hk_cmd_buffer *cmd, struct agx_grid grid, bool in_threads)
 {
    struct hk_shader *s = hk_only_variant(cmd->state.cs.shader);
    if (agx_is_shader_empty(&s->b))
@@ -118,7 +121,7 @@ dispatch(struct hk_cmd_buffer *cmd, struct agx_grid grid)
                                       stat, agx_workgroup_threads(local_size));
    }
 
-   if (!agx_is_indirect(grid)) {
+   if (!agx_is_indirect(grid) && !in_threads) {
       grid.count[0] *= local_size.x;
       grid.count[1] *= local_size.y;
       grid.count[2] *= local_size.z;
@@ -155,7 +158,31 @@ hk_CmdDispatchBase(VkCommandBuffer commandBuffer, uint32_t baseGroupX,
    desc->root.cs.group_count_addr =
       hk_pool_upload(cmd, &group_count, sizeof(group_count), 8);
 
-   dispatch(cmd, agx_3d(groupCountX, groupCountY, groupCountZ));
+   dispatch(cmd, agx_3d(groupCountX, groupCountY, groupCountZ), false);
+}
+
+/* The common acceleration-structure builder's unaligned dispatch */
+void
+hk_cmd_dispatch_unaligned(VkCommandBuffer commandBuffer, uint32_t x,
+                          uint32_t y, uint32_t z)
+{
+   VK_FROM_HANDLE(hk_cmd_buffer, cmd, commandBuffer);
+   struct hk_descriptor_state *desc = &cmd->state.cs.descriptors;
+   if (desc->push_dirty)
+      hk_cmd_buffer_flush_push_descriptors(cmd, desc);
+
+   const struct hk_shader *s = hk_only_variant(cmd->state.cs.shader);
+   VkDispatchIndirectCommand group_count = {
+      .x = DIV_ROUND_UP(x, s->b.info.workgroup_size[0]),
+      .y = DIV_ROUND_UP(y, s->b.info.workgroup_size[1]),
+      .z = DIV_ROUND_UP(z, s->b.info.workgroup_size[2]),
+   };
+
+   memset(desc->root.cs.base_group, 0, sizeof(desc->root.cs.base_group));
+   desc->root.cs.group_count_addr =
+      hk_pool_upload(cmd, &group_count, sizeof(group_count), 8);
+
+   dispatch(cmd, agx_3d(x, y, z), true);
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -180,5 +207,5 @@ hk_CmdDispatchIndirect(VkCommandBuffer commandBuffer, VkBuffer _buffer,
    assert(dispatch_addr != 0);
 
    desc->root.cs.group_count_addr = dispatch_addr;
-   dispatch(cmd, agx_grid_indirect(dispatch_addr));
+   dispatch(cmd, agx_grid_indirect(dispatch_addr), false);
 }

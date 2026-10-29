@@ -19,6 +19,7 @@
 #include "hk_image_view.h"
 #include "hk_physical_device.h"
 #include "hk_sampler.h"
+#include "vk_acceleration_structure.h"
 
 static inline uint32_t
 align_u32(uint32_t v, uint32_t a)
@@ -411,6 +412,31 @@ write_buffer_view_desc(struct hk_descriptor_set *set,
 }
 
 static void
+write_accel_struct_desc(struct hk_descriptor_set *set,
+                        VkAccelerationStructureKHR handle, uint32_t binding,
+                        uint32_t elem)
+{
+   VK_FROM_HANDLE(vk_acceleration_structure, accel, handle);
+   const uint64_t desc = accel ? vk_acceleration_structure_get_va(accel) : 0;
+
+   write_desc(set, binding, elem, &desc, sizeof(desc));
+}
+
+static void
+write_accel_struct_descs(struct hk_descriptor_set *set,
+                         const VkWriteDescriptorSet *write)
+{
+   const VkWriteDescriptorSetAccelerationStructureKHR *info =
+      vk_find_struct_const(write->pNext,
+                           WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR);
+
+   for (uint32_t j = 0; j < write->descriptorCount; j++) {
+      write_accel_struct_desc(set, info->pAccelerationStructures[j],
+                              write->dstBinding, write->dstArrayElement + j);
+   }
+}
+
+static void
 write_inline_uniform_data(struct hk_descriptor_set *set,
                           const VkWriteDescriptorSetInlineUniformBlock *info,
                           uint32_t binding, uint32_t offset)
@@ -477,6 +503,10 @@ hk_UpdateDescriptorSets(VkDevice device, uint32_t descriptorWriteCount,
                write->descriptorType ==
                   VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC);
          }
+         break;
+
+      case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR:
+         write_accel_struct_descs(set, write);
          break;
 
       case VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK: {
@@ -584,6 +614,10 @@ hk_push_descriptor_set_update(struct hk_push_descriptor_set *push_set,
                write->dstArrayElement + j,
                write->descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
          }
+         break;
+
+      case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR:
+         write_accel_struct_descs(&set, write);
          break;
 
       default:
@@ -963,6 +997,16 @@ hk_descriptor_set_write_template(
       case VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK:
          write_desc(set, entry->binding, entry->array_element,
                     data + entry->offset, entry->array_count);
+         break;
+
+      case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR:
+         for (uint32_t j = 0; j < entry->array_count; j++) {
+            const VkAccelerationStructureKHR *accel =
+               data + entry->offset + j * entry->stride;
+
+            write_accel_struct_desc(set, *accel, entry->binding,
+                                    entry->array_element + j);
+         }
          break;
 
       default:

@@ -13,6 +13,9 @@
 #include "hk_device.h"
 #include "hk_entrypoints.h"
 #include "hk_shader.h"
+#include "vk_acceleration_structure.h"
+
+#include "bvh/hk_bvh_defines.h"
 
 #include "libagx_dgc.h"
 #include "libagx_shaders.h"
@@ -52,6 +55,8 @@ hk_reports_per_query(struct hk_query_pool *pool)
    case VK_QUERY_TYPE_OCCLUSION:
    case VK_QUERY_TYPE_TIMESTAMP:
    case VK_QUERY_TYPE_PRIMITIVES_GENERATED_EXT:
+   case VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR:
+   case VK_QUERY_TYPE_ACCELERATION_STRUCTURE_SERIALIZATION_SIZE_KHR:
       return 1;
    case VK_QUERY_TYPE_PIPELINE_STATISTICS:
       return util_bitcount(pool->vk.pipeline_statistics);
@@ -366,6 +371,34 @@ hk_CmdResetQueryPool(VkCommandBuffer commandBuffer, VkQueryPool queryPool,
 
    perf_debug(cmd, "Reset query pool");
    emit_zero_queries(cmd, pool, firstQuery, queryCount, false);
+}
+
+/* A structure's sizes are in its header (bvh/hk_bvh_defines.h) */
+VKAPI_ATTR void VKAPI_CALL
+hk_CmdWriteAccelerationStructuresPropertiesKHR(
+   VkCommandBuffer commandBuffer, uint32_t accelerationStructureCount,
+   const VkAccelerationStructureKHR *pAccelerationStructures,
+   VkQueryType queryType, VkQueryPool queryPool, uint32_t firstQuery)
+{
+   VK_FROM_HANDLE(hk_cmd_buffer, cmd, commandBuffer);
+   VK_FROM_HANDLE(hk_query_pool, pool, queryPool);
+   struct hk_device *dev = hk_cmd_buffer_device(cmd);
+
+   size_t field =
+      queryType == VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR
+         ? offsetof(struct hk_bvh_header, compacted_size)
+         : offsetof(struct hk_bvh_header, serialization_size);
+
+   for (uint32_t i = 0; i < accelerationStructureCount; i++) {
+      VK_FROM_HANDLE(vk_acceleration_structure, accel,
+                     pAccelerationStructures[i]);
+      uint32_t query = firstQuery + i;
+
+      hk_cmd_copy(cmd, hk_query_report_addr(dev, pool, query),
+                  vk_acceleration_structure_get_va(accel) + field,
+                  sizeof(uint64_t));
+      hk_queue_write(cmd, hk_query_available_addr(pool, query), 1, false);
+   }
 }
 
 VKAPI_ATTR void VKAPI_CALL

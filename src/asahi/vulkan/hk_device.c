@@ -410,6 +410,8 @@ hk_CreateDevice(VkPhysicalDevice physicalDevice,
    if (result != VK_SUCCESS)
       goto fail_mem_cache;
 
+   hk_device_init_accel_struct(dev);
+
    /* Precompile an empty fragment shader that can be used to handle API-level
     * null fragment shaders. We do this at device-time to make binds cheap.
     * Regardless, compiling this shader should be fast.
