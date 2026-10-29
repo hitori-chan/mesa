@@ -52,6 +52,11 @@ lower(nir_builder *b, nir_alu_instr *alu, void *data)
    else
       alu->op = nir_op_fmin_agx;
 
+   /* The cmpsel orders -0 and +0 as equal, so signed zeros are not kept
+    * (SPIR-V's FMin and FMax leave their order undefined)
+    */
+   alu->fp_math_ctrl &= nir_op_infos[alu->op].valid_fp_math_ctrl;
+
    /* We need to canonicalize the result if the output could be a denorm. That
     * occurs only when one of the sources could be a denorm. Check each source.
     * Swizzles don't affect denormalness so we can grab the def directly.
