@@ -1151,7 +1151,7 @@ kk_compile_shader(struct kk_device *dev, nir_shader *nir,
       NIR_PASS(_, nir, nir_lower_io_to_scalar, nir_var_shader_in, NULL, NULL);
 
       nir_shader *count = NULL, *rast = NULL, *pre_gs = NULL;
-      NIR_PASS(_, nir, poly_nir_lower_gs, &count, &rast, &pre_gs,
+      NIR_PASS(_, nir, poly_nir_lower_gs, &count, &rast, NULL, &pre_gs,
                &shader->info.gs);
 
       /* Only transform feedback and pipeline statistics need these, and KK

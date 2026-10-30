@@ -1664,7 +1664,7 @@ panvk_compile_shader(struct panvk_device *dev,
       panvk_lower_nir_io(main);
 
       nir_shader *count = NULL, *rast = NULL, *pre = NULL;
-      NIR_PASS(_, main, poly_nir_lower_gs, &count, &rast, &pre,
+      NIR_PASS(_, main, poly_nir_lower_gs, &count, &rast, NULL, &pre,
                &shader->gs_info);
 
       assert(!pre || pre->info.stage == MESA_SHADER_COMPUTE);
