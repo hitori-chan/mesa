@@ -375,3 +375,156 @@ poly_pre_gs(global struct poly_geometry_params *p, uint streams,
    *c_primitives += emitted_prims;
    *c_invocations += emitted_prims;
 }
+
+/*
+ * Conservative rasterization (overestimation) of a triangle, from clip space.
+ * Each corner is moved out along its two edges until every edge lies
+ * conservative_r pixels further out (in units of the pixel square's half-width
+ * along the edge's normal), and the outputs are extrapolated on the triangle's
+ * plane. The fragment shader then tests the pixel square against the triangle
+ * exactly: its bounding box and its three edges.
+ */
+static float
+cr_cross(float2 a, float2 b)
+{
+   return a.x * b.y - a.y * b.x;
+}
+
+static float2
+cr_screen(float4 P, float4 vp)
+{
+   return (P.xy / P.w) * vp.xy + vp.zw;
+}
+
+/* Snap like the rasterizer, to 8 subpixel bits */
+static float2
+cr_snap(float2 s)
+{
+   return rint(s * 256.0f) / 256.0f;
+}
+
+/* Inward normal of the edge from a to b, scaled by its length */
+static float2
+cr_normal(float2 a, float2 b, float sigma)
+{
+   float2 d = b - a;
+   return (float2)(-d.y, d.x) * sigma;
+}
+
+static float
+cr_l1(float2 n)
+{
+   return fabs(n.x) + fabs(n.y);
+}
+
+/* Corner at q, moved out until both edges through it are r out */
+static float2
+cr_corner(float2 q, float2 n1, float2 n2, float r)
+{
+   float r1 = -r * cr_l1(n1), r2 = -r * cr_l1(n2);
+   float det = cr_cross(n1, n2);
+
+   return q + (float2)(r1 * n2.y - r2 * n1.y, n1.x * r2 - n2.x * r1) / det;
+}
+
+/* Screen-space barycentrics of v */
+static float3
+cr_bary(float2 s0, float2 s1, float2 s2, float area, float2 v)
+{
+   float3 l = (float3)(cr_cross(s2 - s1, v - s1), cr_cross(s0 - s2, v - s2),
+                       cr_cross(s1 - s0, v - s0));
+   return l / area;
+}
+
+/* Edge value for the fragment test: the pixel square touches the edge's
+ * half-plane iff the value at its centre is >= -0.5.
+ */
+static float
+cr_edge(float2 n, float2 q, float2 v, float extra)
+{
+   float l1 = cr_l1(n);
+   return (dot(n, v - q) + extra * sqrt(dot(n, n))) / l1 + (1.0f / 512.0f);
+}
+
+/*
+ * For output corner `corner`, returns:
+ *
+ *    what = 0: the perspective weights of the three vertices, and the status
+ *    what = 1: the screen-space weights, and the status
+ *    what = 2: the bounding box (x0, y0, x1, y1) in pixels
+ *    what = 3: the three edge values, for the edges opposite each vertex
+ *
+ * Status 0: widened. 1: a vertex has w <= 0 or the widened triangle reaches
+ * the plane's horizon, so the triangle is not widened and the fragment test
+ * passes. 2: the snapped triangle is degenerate, cull it.
+ */
+float4
+poly_conservative_corner(constant struct poly_geometry_params *p, float4 P0,
+                         float4 P1, float4 P2, uint corner, uint viewport,
+                         uint what)
+{
+   uint vp = min(viewport, p->conservative_viewport_count - 1);
+   float4 xf = vload4(vp, p->conservative_viewports);
+   float r = p->conservative_r, extra = p->conservative_extra;
+
+   float2 s0 = cr_screen(P0, xf), s1 = cr_screen(P1, xf),
+          s2 = cr_screen(P2, xf);
+   float2 q0 = cr_snap(s0), q1 = cr_snap(s1), q2 = cr_snap(s2);
+
+   /* Twice the signed areas, snapped and exact */
+   float area = cr_cross(q1 - q0, q2 - q0);
+   float area_s = cr_cross(s1 - s0, s2 - s0);
+   float sigma = area < 0.0f ? -1.0f : 1.0f;
+
+   /* Edge k is opposite vertex k */
+   float2 n0 = cr_normal(q1, q2, sigma);
+   float2 n1 = cr_normal(q2, q0, sigma);
+   float2 n2 = cr_normal(q0, q1, sigma);
+
+   float2 v0 = cr_corner(q0, n1, n2, r);
+   float2 v1 = cr_corner(q1, n2, n0, r);
+   float2 v2 = cr_corner(q2, n0, n1, r);
+
+   float3 rw = (float3)(1.0f / P0.w, 1.0f / P1.w, 1.0f / P2.w);
+   float3 mu0 = cr_bary(s0, s1, s2, area_s, v0);
+   float3 mu1 = cr_bary(s0, s1, s2, area_s, v1);
+   float3 mu2 = cr_bary(s0, s1, s2, area_s, v2);
+
+   /* 1/w along the plane, at each corner */
+   float h0 = dot(mu0, rw), h1 = dot(mu1, rw), h2 = dot(mu2, rw);
+   float eps = fmax(rw.x, fmax(rw.y, rw.z)) * (1.0f / 1024.0f);
+
+   uint status = 0;
+   if (!(P0.w > 0.0f && P1.w > 0.0f && P2.w > 0.0f))
+      status = 1;
+   else if (area == 0.0f)
+      status = 2;
+   else if (!(area_s != 0.0f && fmin(h0, fmin(h1, h2)) > eps))
+      status = 1;
+
+   float2 v = corner == 0 ? v0 : corner == 1 ? v1 : v2;
+   float3 mu = corner == 0 ? mu0 : corner == 1 ? mu1 : mu2;
+   float h = corner == 0 ? h0 : corner == 1 ? h1 : h2;
+
+   if (what == 0 || what == 1) {
+      float3 w = what == 0 ? (mu * rw) / h : mu;
+
+      if (status != 0)
+         w = (float3)(corner == 0, corner == 1, corner == 2);
+
+      return (float4)(w, (float)status);
+   } else if (what == 2) {
+      if (status != 0)
+         return (float4)(-1.0e30f, -1.0e30f, 1.0e30f, 1.0e30f);
+
+      float2 lo = fmin(q0, fmin(q1, q2)) - extra;
+      float2 hi = fmax(q0, fmax(q1, q2)) + extra;
+      return (float4)(lo, hi);
+   } else {
+      if (status != 0)
+         return (float4)(1.0e30f, 1.0e30f, 1.0e30f, 0.0f);
+
+      return (float4)(cr_edge(n0, q1, v, extra), cr_edge(n1, q2, v, extra),
+                      cr_edge(n2, q0, v, extra), 0.0f);
+   }
+}
