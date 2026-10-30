@@ -375,6 +375,85 @@ poly_geometry_params_set_draw(struct poly_geometry_params *p,
       shape, max_indices, prim_per_instance, instance_count);
 }
 
+/* Mesh workgroups in one draw, after a task shader too (the spec's minimum
+ * maxMeshWorkGroupTotalCount)
+ */
+#define POLY_MAX_MESH_WORKGROUPS (1u << 22)
+
+/*
+ * Parameters of a mesh draw. The task and mesh stages run as compute: each mesh
+ * workgroup writes a record of its outputs, which a hardware vertex shader
+ * rasterizes, one instance per workgroup (poly_nir_lower_mesh.c).
+ */
+struct poly_mesh_params {
+   /* Output records, one per mesh workgroup */
+   DEVICE(uchar) outputs;
+
+   /* Task payloads, payload_stride bytes apart, one per task workgroup */
+   DEVICE(uchar) payloads;
+
+   /* Mesh grid launched by each task workgroup, {x, y, z, end}. A task
+    * workgroup writes x * y * z as end, libagx_mesh_setup_from_task turns it
+    * into the inclusive prefix sum.
+    */
+   DEVICE(uint) launches;
+
+   /* Workgroup count of the first stage: task, else mesh */
+   uint32_t group_count[3];
+   uint32_t task_count;
+
+   uint32_t payload_stride;
+   uint32_t draw_id;
+
+   /* Dispatch grids in the "indirect local" format: first 3 in threads,
+    * second 3 the workgroup size. Mesh workgroups launched by task workgroups
+    * are dispatched in one dimension.
+    */
+   uint32_t task_grid[6];
+   uint32_t mesh_grid[6];
+
+   /* Rasterization draw: max_primitives * vertices per primitive vertices,
+    * one instance per mesh workgroup
+    */
+   struct poly_indirect_draw draw;
+   uint32_t _pad;
+} PACKED;
+static_assert(sizeof(struct poly_mesh_params) == 30 * 4,
+              "struct poly_mesh_params must be 30 words");
+
+/* Set the first stage's grid and allocation. Without a task shader, the first
+ * stage is the mesh stage and this also sets the rasterization draw.
+ */
+static inline void
+poly_mesh_params_set_grid(GLOBAL struct poly_mesh_params *p,
+                          const uint32_t count[3], const uint32_t wg[3],
+                          uint64_t alloc, bool task, uint32_t draw_vertices)
+{
+   uint32_t total = count[0] * count[1] * count[2];
+
+   for (unsigned i = 0; i < 3; ++i) {
+      p->group_count[i] = count[i];
+
+      if (task) {
+         p->task_grid[i] = count[i] * wg[i];
+         p->task_grid[3 + i] = wg[i];
+      } else {
+         p->mesh_grid[i] = count[i] * wg[i];
+         p->mesh_grid[3 + i] = wg[i];
+      }
+   }
+
+   if (task) {
+      p->task_count = total;
+      p->launches = (DEVICE(uint))alloc;
+      p->payloads = (DEVICE(uchar))(alloc + (total * 16));
+   } else {
+      p->outputs = (DEVICE(uchar))alloc;
+      p->draw.vertex_count = draw_vertices;
+      p->draw.instance_count = total;
+   }
+}
+
 /* TCS shared memory layout:
  *
  *    vec4 vs_outputs[VERTICES_IN_INPUT_PATCH][TOTAL_VERTEX_OUTPUTS];
