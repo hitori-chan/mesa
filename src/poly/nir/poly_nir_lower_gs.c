@@ -210,6 +210,10 @@ load_geometry_param_offset(nir_builder *b, uint32_t offset, uint8_t bytes)
 struct lower_output_to_var_slot {
    nir_variable *output_var;
    nir_variable *selected_var;
+
+   /* Conservative rasterization: the output at each corner of the triangle */
+   nir_variable *corner_var[3];
+
    nir_alu_type type;
    unsigned nr_components;
 };
@@ -518,6 +522,7 @@ struct lower_gs_rast_state {
    nir_def *instance_id, *primitive_id, *output_id, *stream;
    struct lower_output_to_var_slot outputs[NUM_TOTAL_VARYING_SLOTS];
    bool points;
+   bool conservative;
 
    nir_variable *output_strip_length, *output_strip_base, *id_in_strip;
 };
@@ -539,6 +544,16 @@ select_rast_output(nir_builder *b, nir_intrinsic_instr *intr,
 
       nir_store_var(b, state->outputs[slot].selected_var, value,
                     nir_component_mask(value->num_components));
+
+      /* Keep all three corners of the (single) output triangle */
+      for (unsigned k = 0; k < 3 && state->conservative; ++k) {
+         nir_variable *var = state->outputs[slot].corner_var[k];
+         nir_def *corner = nir_ieq_imm(b, intr->src[0].ssa, k);
+
+         value = nir_bcsel(b, corner, data, nir_load_var(b, var));
+         nir_store_var(b, var, value,
+                       nir_component_mask(value->num_components));
+      }
    }
 }
 
@@ -660,12 +675,149 @@ stream_multiplier(const nir_shader *gs)
    return util_next_power_of_two(nr_streams);
 }
 
+/* Whether a conservatively rasterized output is extrapolated on the triangle's
+ * plane, rather than taken from its own vertex.
+ */
+static bool
+conservative_extrapolates(gl_varying_slot slot)
+{
+   switch (slot) {
+   case VARYING_SLOT_PSIZ:
+   case VARYING_SLOT_EDGE:
+   case VARYING_SLOT_PRIMITIVE_ID:
+   case VARYING_SLOT_LAYER:
+   case VARYING_SLOT_VIEWPORT:
+   case VARYING_SLOT_VIEWPORT_MASK:
+   case VARYING_SLOT_VIEW_INDEX:
+      return false;
+   default:
+      return true;
+   }
+}
+
+static nir_def *
+mix_corners(nir_builder *b, nir_def **corners, nir_def *weights)
+{
+   unsigned n = corners[0]->num_components;
+   nir_def *v =
+      nir_fmul(b, corners[0], nir_replicate(b, nir_channel(b, weights, 0), n));
+   v = nir_ffma(b, corners[1], nir_replicate(b, nir_channel(b, weights, 1), n),
+                v);
+   return nir_ffma(b, corners[2],
+                   nir_replicate(b, nir_channel(b, weights, 2), n), v);
+}
+
+/*
+ * Forward the outputs of a conservatively rasterized triangle: each corner is
+ * widened in screen space, its outputs extrapolated on the triangle's plane by
+ * their interpolation (flat outputs keep the corner's own), and the fragment
+ * test's bounding box and edges are written as linear varyings.
+ */
+static void
+forward_conservative_outputs(nir_builder *b, nir_shader *shader,
+                             struct lower_gs_rast_state *rs)
+{
+   struct lower_output_to_var_slot *outputs = rs->outputs;
+   nir_def *zero = nir_imm_int(b, 0);
+
+   nir_def *pos[3];
+   for (unsigned k = 0; k < 3; ++k)
+      pos[k] = nir_load_var(b, outputs[VARYING_SLOT_POS].corner_var[k]);
+
+   /* The viewport is the provoking corner's */
+   nir_def *viewport = zero;
+   if (shader->info.outputs_written & VARYING_BIT_VIEWPORT) {
+      nir_variable **vp = outputs[VARYING_SLOT_VIEWPORT].corner_var;
+
+      viewport = nir_bcsel(b, nir_i2b(b, nir_load_provoking_last(b)),
+                           nir_channel(b, nir_load_var(b, vp[2]), 0),
+                           nir_channel(b, nir_load_var(b, vp[0]), 0));
+   }
+
+   nir_def *params = nir_load_geometry_param_buffer_poly(b);
+   nir_def *weights[4];
+   for (unsigned i = 0; i < ARRAY_SIZE(weights); ++i) {
+      weights[i] =
+         poly_conservative_corner(b, params, pos[0], pos[1], pos[2],
+                                  rs->output_id, viewport, nir_imm_int(b, i));
+   }
+
+   nir_def *status = nir_channel(b, weights[0], 3);
+   nir_def *widened = nir_feq_imm(b, status, 0.0);
+   nir_def *flat_mask = load_geometry_param(b, flat_outputs);
+   nir_def *linear_mask = load_geometry_param(b, linear_outputs);
+
+   u_foreach_bit64(slot, shader->info.outputs_written) {
+      struct lower_output_to_var_slot *output = &outputs[slot];
+      nir_def *value = nir_load_var(b, output->selected_var);
+
+      if (conservative_extrapolates(slot)) {
+         nir_def *corners[3];
+         for (unsigned k = 0; k < 3; ++k)
+            corners[k] = nir_load_var(b, output->corner_var[k]);
+
+         nir_def *mixed = mix_corners(b, corners, weights[0]);
+
+         if (slot == VARYING_SLOT_CLIP_DIST0 ||
+             slot == VARYING_SLOT_CLIP_DIST1) {
+            /* Culling tests each vertex's own cull distances */
+            nir_def *comps[4];
+            unsigned base = (slot - VARYING_SLOT_CLIP_DIST0) * 4;
+
+            for (unsigned c = 0; c < value->num_components; ++c) {
+               bool clip = base + c < shader->info.clip_distance_array_size;
+               comps[c] = nir_channel(b, clip ? mixed : value, c);
+            }
+
+            mixed = nir_vec(b, comps, value->num_components);
+         } else if (slot != VARYING_SLOT_POS) {
+            nir_def *bit = nir_imm_int64(b, BITFIELD64_BIT(slot));
+            nir_def *flat = nir_ine_imm(b, nir_iand(b, flat_mask, bit), 0);
+            nir_def *linear = nir_ine_imm(b, nir_iand(b, linear_mask, bit), 0);
+
+            mixed =
+               nir_bcsel(b, linear, mix_corners(b, corners, weights[1]), mixed);
+            mixed = nir_bcsel(b, flat, value, mixed);
+         }
+
+         value = nir_bcsel(b, widened, mixed, value);
+      }
+
+      /* Degenerate after snapping: cull */
+      if (slot == VARYING_SLOT_POS) {
+         nir_def *w =
+            nir_bcsel(b, nir_feq_imm(b, status, 2.0), nir_imm_float(b, NAN),
+                      nir_channel(b, value, 3));
+         value = nir_vector_insert_imm(b, value, w, 3);
+      }
+
+      nir_store_output(b, value, zero, .src_type = output->type,
+                       .io_semantics.location = slot);
+   }
+
+   nir_store_output(
+      b, weights[2], zero, .src_type = nir_type_float32,
+      .io_semantics.location = POLY_VARYING_SLOT_CONSERVATIVE_BOX);
+
+   nir_store_output(
+      b, nir_trim_vector(b, weights[3], 3), zero, .src_type = nir_type_float32,
+      .io_semantics.location = POLY_VARYING_SLOT_CONSERVATIVE_EDGES);
+
+   shader->info.outputs_written |=
+      BITFIELD64_BIT(POLY_VARYING_SLOT_CONSERVATIVE_BOX) |
+      BITFIELD64_BIT(POLY_VARYING_SLOT_CONSERVATIVE_EDGES);
+}
+
 /*
  * Create a GS rasterization shader. This is a hardware vertex shader that
  * shades each rasterized output vertex in parallel.
+ *
+ * The conservative variant rasterizes a single output triangle per input
+ * primitive, widened.
  */
 static nir_shader *
-create_gs_rast_shader(const nir_shader *gs, const struct lower_gs_state *state)
+create_gs_rast_shader(const nir_shader *gs, const struct lower_gs_state *state,
+                      bool conservative)
 {
    /* Don't muck up the original shader */
    nir_shader *shader = nir_shader_clone(NULL, gs);
@@ -679,9 +831,11 @@ create_gs_rast_shader(const nir_shader *gs, const struct lower_gs_state *state)
    shader->xfb_info = NULL;
 
    if (shader->info.name) {
-      shader->info.name = ralloc_asprintf(shader, "%s_rast", shader->info.name);
+      shader->info.name =
+         ralloc_asprintf(shader, "%s_rast%s", shader->info.name,
+                         conservative ? "_conservative" : "");
    } else {
-      shader->info.name = "gs rast";
+      shader->info.name = conservative ? "gs rast conservative" : "gs rast";
    }
 
    /* Optimize out pointless gl_PointSize outputs. Bizarrely, these occur. */
@@ -698,6 +852,7 @@ create_gs_rast_shader(const nir_shader *gs, const struct lower_gs_state *state)
    struct lower_gs_rast_state rs = {
       .raw_instance_id = nir_load_instance_id(b),
       .points = gs->info.gs.output_primitive == MESA_PRIM_POINTS,
+      .conservative = conservative,
       .stream = nir_umod_imm(b, raw_vertex_id, stream_multiplier(gs)),
       .output_strip_length = nir_local_variable_create(b->impl, T, NULL),
       .output_strip_base = nir_local_variable_create(b->impl, T, NULL),
@@ -761,6 +916,13 @@ create_gs_rast_shader(const nir_shader *gs, const struct lower_gs_state *state)
       output->selected_var = nir_variable_create(
          shader, nir_var_shader_temp, glsl_vector_type(type, output->nr_components),
          ralloc_asprintf(shader, "%s-selected", slot_name));
+
+      for (unsigned k = 0; k < 3 && conservative; ++k) {
+         output->corner_var[k] = nir_variable_create(
+            shader, nir_var_shader_temp,
+            glsl_vector_type(type, output->nr_components),
+            ralloc_asprintf(shader, "%s-corner%u", slot_name, k));
+      }
    }
 
    nir_shader_intrinsics_pass(shader, lower_to_gs_rast,
@@ -841,6 +1003,11 @@ create_gs_rast_shader(const nir_shader *gs, const struct lower_gs_state *state)
          }
          nir_pop_if(b, NULL);
       }
+   }
+
+   if (conservative) {
+      forward_conservative_outputs(b, shader, &rs);
+      return shader;
    }
 
    /* Forward each selected output to the rasterizer */
@@ -1225,7 +1392,8 @@ optimize_static_topology(struct poly_gs_info *info, nir_shader *gs)
 
 bool
 poly_nir_lower_gs(nir_shader *gs, nir_shader **gs_count, nir_shader **gs_copy,
-                  nir_shader **pre_gs, struct poly_gs_info *info)
+                  nir_shader **gs_copy_conservative, nir_shader **pre_gs,
+                  struct poly_gs_info *info)
 {
    /* Lower I/O as assumed by the rest of GS lowering */
    if (gs->xfb_info != NULL) {
@@ -1331,7 +1499,20 @@ poly_nir_lower_gs(nir_shader *gs, nir_shader **gs_count, nir_shader **gs_copy,
    /* Ensure that outputs_written is still accurate after DCE. */
    nir_shader_gather_info(gs, nir_shader_get_entrypoint(gs));
 
-   *gs_copy = create_gs_rast_shader(gs, &gs_state);
+   *gs_copy = create_gs_rast_shader(gs, &gs_state, false);
+
+   /* Conservative rasterization needs all three corners of a triangle in each
+    * rasterized vertex: at most one triangle per input primitive, the emitted
+    * vertices 0, 1 and 2, on stream 0.
+    */
+   if (gs_copy_conservative) {
+      bool one_triangle = nir_verts_in_output_prim(gs) == 3 &&
+                          gs->info.gs.vertices_out == 3 && !info->multistream &&
+                          (gs->info.outputs_written & VARYING_BIT_POS);
+
+      *gs_copy_conservative =
+         one_triangle ? create_gs_rast_shader(gs, &gs_state, true) : NULL;
+   }
 
    NIR_PASS(_, gs, nir_shader_intrinsics_pass, lower_id,
             nir_metadata_control_flow, NULL);
