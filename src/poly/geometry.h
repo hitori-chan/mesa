@@ -318,9 +318,26 @@ struct poly_geometry_params {
     * layout() declared input class.
     */
    uint32_t input_topology;
+
+   /* Conservative rasterization: number of viewports in the table */
+   uint32_t conservative_viewport_count;
+
+   /* Conservative rasterization: (scale x, scale y, translate x, translate y)
+    * of each viewport.
+    */
+   DEVICE(float) conservative_viewports;
+
+   /* Location-indexed mask of noperspective outputs */
+   uint64_t linear_outputs;
+
+   /* Conservative rasterization: distance in pixels to widen each edge by,
+    * and the extra overestimation size.
+    */
+   float conservative_r;
+   float conservative_extra;
 } PACKED;
-static_assert(sizeof(struct poly_geometry_params) == 79 * 4,
-              "struct poly_geometry_params must be 79 words");
+static_assert(sizeof(struct poly_geometry_params) == 86 * 4,
+              "struct poly_geometry_params must be 86 words");
 
 static inline void
 poly_geometry_params_init(struct poly_geometry_params *p,
