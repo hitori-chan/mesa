@@ -5,6 +5,7 @@
 
 #include "compiler/nir/nir.h"
 #include "compiler/nir/nir_builder.h"
+#include "poly/nir/poly_nir.h"
 #include "util/bitscan.h"
 #include "util/macros.h"
 #include "agx_compile.h"
@@ -249,8 +250,12 @@ agx_assign_uvs(struct agx_varyings_vs *varyings,
    flat_mask &= BITFIELD64_RANGE(VARYING_SLOT_VAR0, 32);
    flat_mask |= VARYING_BIT_LAYER | VARYING_BIT_VIEWPORT;
 
-   /* The internal cull distance slots are always linearly-interpolated */
-   linear_mask |= BITFIELD64_RANGE(VARYING_SLOT_CULL_PRIMITIVE, 2);
+   /* The internal cull distance and conservative rasterization slots are
+    * always linearly-interpolated
+    */
+   linear_mask |= BITFIELD64_RANGE(VARYING_SLOT_CULL_PRIMITIVE, 2) |
+                  BITFIELD64_BIT(POLY_VARYING_SLOT_CONSERVATIVE_BOX) |
+                  BITFIELD64_BIT(POLY_VARYING_SLOT_CONSERVATIVE_EDGES);
 
    assert(!(flat_mask & linear_mask & layout->written));
 
