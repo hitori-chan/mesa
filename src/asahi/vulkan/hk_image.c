@@ -96,8 +96,12 @@ hk_get_image_plane_format_features(struct hk_physical_device *pdev,
       features |= VK_FORMAT_FEATURE_2_DEPTH_STENCIL_ATTACHMENT_BIT;
    }
 
-   /* Our image atomic lowering doesn't bother to handle linear */
-   if ((p_format == PIPE_FORMAT_R32_UINT || p_format == PIPE_FORMAT_R32_SINT) &&
+   /* Our image atomic lowering doesn't bother to handle linear. G15 adds
+    * fp32 (VK_EXT_shader_atomic_float).
+    */
+   if ((p_format == PIPE_FORMAT_R32_UINT || p_format == PIPE_FORMAT_R32_SINT ||
+        (p_format == PIPE_FORMAT_R32_FLOAT &&
+         pdev->dev.params.gpu_generation >= 15)) &&
        tiling == VK_IMAGE_TILING_OPTIMAL) {
 
       features |= VK_FORMAT_FEATURE_2_STORAGE_IMAGE_ATOMIC_BIT;
