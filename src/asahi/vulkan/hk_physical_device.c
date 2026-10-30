@@ -210,6 +210,7 @@ hk_get_device_extensions(const struct agx_device *dev,
       .EXT_sampler_filter_minmax = false,
       .EXT_scalar_block_layout = true,
       .EXT_separate_stencil_usage = true,
+      .EXT_shader_atomic_float = g15,
       .EXT_shader_image_atomic_int64 = false,
       .EXT_shader_demote_to_helper_invocation = true,
       .EXT_shader_module_identifier = true,
@@ -645,6 +646,16 @@ hk_get_device_features(
       /* VK_EXT_shader_image_atomic_int64 */
       .shaderImageInt64Atomics = false,
       .sparseImageInt64Atomics = false,
+
+      /* VK_EXT_shader_atomic_float: G15's device atomics add fp32, which the
+       * buffers and the images (lowered to device atomics) use, and exchange
+       * is the integer one. Threadgroup memory has no float add on G15C.
+       */
+      .shaderBufferFloat32Atomics = dev->params.gpu_generation >= 15,
+      .shaderBufferFloat32AtomicAdd = dev->params.gpu_generation >= 15,
+      .shaderSharedFloat32Atomics = dev->params.gpu_generation >= 15,
+      .shaderImageFloat32Atomics = dev->params.gpu_generation >= 15,
+      .shaderImageFloat32AtomicAdd = dev->params.gpu_generation >= 15,
 
       /* VK_EXT_shader_module_identifier */
       .shaderModuleIdentifier = true,
