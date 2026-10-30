@@ -1,6 +1,6 @@
 /*
  * Copyright 2026 hitori1403
- * SPDX-License-Identifier: MIT
+ * SPDX-License-Identifier: GPL-2.0-only
  */
 
 /*

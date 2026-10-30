@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-# Copyright 2026 Asahi Linux GPU project contributors
-# SPDX-License-Identifier: MIT
+# Copyright 2026 hitori1403
+# SPDX-License-Identifier: GPL-2.0-only
 
 # gen-pack.py ISA.xml: generates the AGX3 (G15, M3) packer tables, the
 # inverse of the disassembler. The same scatter model the disassembler

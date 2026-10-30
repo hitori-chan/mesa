@@ -1,5 +1,5 @@
 <!--
- SPDX-License-Identifier: MIT
+ SPDX-License-Identifier: GPL-2.0-only
 
  AGX3, the G15 (Apple M3) shader ISA. The encodings follow the M3
  instruction descriptors of applegpu (Dougall Johnson and TellowKrinkle,
