@@ -169,6 +169,7 @@ hk_get_device_extensions(const struct agx_device *dev,
       .EXT_extended_dynamic_state2 = true,
       .EXT_extended_dynamic_state3 = true,
       .EXT_external_memory_dma_buf = true,
+      .EXT_fragment_shader_interlock = g15,
       .EXT_global_priority = true,
       .EXT_global_priority_query = true,
       .EXT_graphics_pipeline_library = true,
@@ -567,6 +568,14 @@ hk_get_device_features(
       .extendedDynamicState3CoverageReductionMode = false,
       .extendedDynamicState3RepresentativeFragmentTestEnable = false,
       .extendedDynamicState3ShadingRateImageEnable = false,
+
+      /* VK_EXT_fragment_shader_interlock: the pixel fence that orders the
+       * tile buffer's accesses, held to the end of the shader. It orders per
+       * sample, so pixel interlock waits for drirc (00-hk-defaults.conf). */
+      .fragmentShaderSampleInterlock = dev->params.gpu_generation >= 15,
+      .fragmentShaderPixelInterlock = dev->params.gpu_generation >= 15 &&
+                                      instance->drirc.misc.pixel_interlock,
+      .fragmentShaderShadingRateInterlock = false,
 
       /* VK_EXT_graphics_pipeline_library */
       .graphicsPipelineLibrary = true,
