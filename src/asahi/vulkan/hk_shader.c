@@ -191,6 +191,9 @@ hk_preprocess_nir(struct vk_physical_device *vk_pdev, nir_shader *nir,
    hk_preprocess_nir_internal(vk_pdev, nir);
    nir_lower_compute_system_values_options csv_options = {
       .has_base_workgroup_id = true,
+      .shuffle_local_ids_for_quad_derivatives = true,
+      .lower_local_invocation_index =
+         nir->info.derivative_group == DERIVATIVE_GROUP_QUADS,
    };
    NIR_PASS(_, nir, nir_lower_compute_system_values, &csv_options);
 }
