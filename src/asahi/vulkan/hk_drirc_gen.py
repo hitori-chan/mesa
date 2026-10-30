@@ -33,6 +33,9 @@ def declare_options():
         B("hk_pixel_interlock", False,
           "Expose fragmentShaderPixelInterlock (unordered between a pixel's samples at MSAA)",
           c_name="pixel_interlock"),
+        B("hk_fake_fp32_denorm_preserve", False,
+          "Fake support for preserving fp32 denormals (they are flushed)",
+          c_name="fake_fp32_denorm_preserve"),
     ]
 
     debug_options = []
