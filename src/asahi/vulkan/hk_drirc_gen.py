@@ -30,6 +30,9 @@ def declare_options():
         B("hk_enable_vertex_pipeline_stores_atomics", False,
           "Enable vertexPipelineStoresAndAtomics",
           c_name="enable_vertex_pipeline_stores_atomics"),
+        B("hk_pixel_interlock", False,
+          "Expose fragmentShaderPixelInterlock (unordered between a pixel's samples at MSAA)",
+          c_name="pixel_interlock"),
     ]
 
     debug_options = []

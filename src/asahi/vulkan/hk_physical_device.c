@@ -46,15 +46,19 @@ hk_get_vk_version()
 }
 
 static void
-hk_get_device_extensions(const struct hk_instance *instance,
+hk_get_device_extensions(const struct agx_device *dev,
+                         const struct hk_instance *instance,
                          struct vk_device_extension_table *ext)
 {
+   bool g15 = dev->params.gpu_generation >= 15;
+
    *ext = (struct vk_device_extension_table){
       .KHR_8bit_storage = true,
       .KHR_16bit_storage = true,
       .KHR_bind_memory2 = true,
       .KHR_buffer_device_address = true,
       .KHR_calibrated_timestamps = true,
+      .KHR_compute_shader_derivatives = g15,
       .KHR_copy_commands2 = true,
       .KHR_create_renderpass2 = true,
       .KHR_dedicated_allocation = true,
@@ -165,6 +169,7 @@ hk_get_device_extensions(const struct hk_instance *instance,
       .EXT_extended_dynamic_state2 = true,
       .EXT_extended_dynamic_state3 = true,
       .EXT_external_memory_dma_buf = true,
+      .EXT_fragment_shader_interlock = g15,
       .EXT_global_priority = true,
       .EXT_global_priority_query = true,
       .EXT_graphics_pipeline_library = true,
@@ -387,6 +392,11 @@ hk_get_device_features(
       /* Vulkan 1.4 */
       .pushDescriptor = true,
 
+      /* VK_KHR_compute_shader_derivatives: quads of four lanes, as a fragment
+       * shader's, which NIR lays the quad groups out as */
+      .computeDerivativeGroupQuads = dev->params.gpu_generation >= 15,
+      .computeDerivativeGroupLinear = dev->params.gpu_generation >= 15,
+
       /* VK_KHR_dynamic_rendering_local_read */
       .dynamicRenderingLocalRead = true,
 
@@ -558,6 +568,14 @@ hk_get_device_features(
       .extendedDynamicState3CoverageReductionMode = false,
       .extendedDynamicState3RepresentativeFragmentTestEnable = false,
       .extendedDynamicState3ShadingRateImageEnable = false,
+
+      /* VK_EXT_fragment_shader_interlock: the pixel fence that orders the
+       * tile buffer's accesses, held to the end of the shader. It orders per
+       * sample, so pixel interlock waits for drirc (00-hk-defaults.conf). */
+      .fragmentShaderSampleInterlock = dev->params.gpu_generation >= 15,
+      .fragmentShaderPixelInterlock = dev->params.gpu_generation >= 15 &&
+                                      instance->drirc.misc.pixel_interlock,
+      .fragmentShaderShadingRateInterlock = false,
 
       /* VK_EXT_graphics_pipeline_library */
       .graphicsPipelineLibrary = true,
@@ -1289,7 +1307,7 @@ hk_create_drm_physical_device(struct vk_instance *_instance,
       &dispatch_table, &wsi_physical_device_entrypoints, false);
 
    struct vk_device_extension_table supported_extensions;
-   hk_get_device_extensions(instance, &supported_extensions);
+   hk_get_device_extensions(&pdev->dev, instance, &supported_extensions);
 
    struct vk_features supported_features;
    hk_get_device_features(&pdev->dev, instance, &supported_extensions,
