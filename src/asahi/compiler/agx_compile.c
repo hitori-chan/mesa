@@ -1310,10 +1310,18 @@ lower_ffma32_exact_g15(nir_builder *b, nir_alu_instr *alu)
    return true;
 }
 
-/* The exact fp32 fmas are gathered first: each redo splits its block */
+/* The exact fp32 fmas are gathered first: each redo splits its block. An
+ * OpenCL kernel (physical addressing) needs none: its CTS finds that the
+ * device flushes a result tiny before rounding and checks fma() so (the
+ * math_brute_force tininess probe), and fma() is always exact there, where
+ * the redo's branch made it eight times slower.
+ */
 static bool
 agx_nir_lower_ffma32_exact_g15(nir_shader *nir)
 {
+   if (mesa_shader_stage_is_compute(nir->info.stage) && nir->info.cs.ptr_size)
+      return false;
+
    struct util_dynarray fmas;
    util_dynarray_init(&fmas, NULL);
 
