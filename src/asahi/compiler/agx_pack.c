@@ -808,6 +808,7 @@ agx_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
        * that do not use atomics and are therefore portable across devices.
        */
       assert(needs_g13x_coherency != U_TRISTATE_UNSET);
+      assert(I->atomic_opc != AGX_ATOMIC_OPC_FADD && "G15 only");
 
       uint64_t raw =
          agx_opcodes_info[I->op].encoding.exact |
@@ -837,6 +838,7 @@ agx_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
       unsigned S = agx_pack_atomic_source(I, I->src[0]);
       unsigned A = agx_pack_local_base(I, I->src[1], &At);
       unsigned O = agx_pack_local_index(I, I->src[2], &Ot);
+      assert(I->atomic_opc != AGX_ATOMIC_OPC_FADD && "G15 only");
 
       uint64_t raw =
          agx_opcodes_info[I->op].encoding.exact | (Rt ? BITFIELD64_BIT(8) : 0) |
