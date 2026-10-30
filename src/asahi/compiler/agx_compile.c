@@ -2555,6 +2555,11 @@ agx_emit_intrinsic(agx_builder *b, nir_intrinsic_instr *instr)
       return NULL;
    }
 
+   /* The program releases the fences it waited on at its end (agx_linker.c):
+    * the critical section runs to there */
+   case nir_intrinsic_end_invocation_interlock:
+      return NULL;
+
    case nir_intrinsic_ddx:
    case nir_intrinsic_ddx_coarse:
    case nir_intrinsic_ddx_fine:
