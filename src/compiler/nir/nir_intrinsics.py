@@ -1609,6 +1609,9 @@ system_value("geometry_param_buffer_poly", 1, bit_sizes=[64])
 # Address of poly_tess_param for tessellation shaders
 system_value("tess_param_buffer_poly", 1, bit_sizes=[64])
 
+# Address of poly_mesh_params for task and mesh shaders
+system_value("mesh_param_buffer_poly", 1, bit_sizes=[64])
+
 # Address of the pipeline statistic query result indexed by BASE
 system_value("stat_query_address_poly", 1, bit_sizes=[64], indices=[BASE])
 
