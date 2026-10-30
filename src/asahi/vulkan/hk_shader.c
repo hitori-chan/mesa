@@ -220,6 +220,30 @@ hk_preprocess_rt_stage(nir_shader *nir)
             nir_var_function_temp | nir_var_shader_temp, NULL);
 }
 
+/* The hardware's global ID runs x-fastest over the dispatch, so a compute
+ * shader with quad derivatives builds it from the local ID, which
+ * nir_lower_compute_system_values then lays out in 2x2 quads. The base
+ * workgroup is not in load_workgroup_id.
+ */
+static bool
+lower_global_id_for_quads(nir_builder *b, nir_intrinsic_instr *intr,
+                          UNUSED void *data)
+{
+   if (intr->intrinsic != nir_intrinsic_load_global_invocation_id)
+      return false;
+
+   b->cursor = nir_before_instr(&intr->instr);
+   unsigned bit_size = intr->def.bit_size;
+   nir_def *group =
+      nir_iadd(b, nir_u2uN(b, nir_load_workgroup_id(b), bit_size),
+               nir_load_base_workgroup_id(b, bit_size));
+   nir_def *size = nir_u2uN(b, nir_load_workgroup_size(b), bit_size);
+   nir_def *local = nir_u2uN(b, nir_load_local_invocation_id(b), bit_size);
+
+   nir_def_replace(&intr->def, nir_iadd(b, nir_imul(b, group, size), local));
+   return true;
+}
+
 static void
 hk_preprocess_nir(struct vk_physical_device *vk_pdev, nir_shader *nir,
                   UNUSED const struct vk_pipeline_robustness_state *rs)
@@ -232,7 +256,15 @@ hk_preprocess_nir(struct vk_physical_device *vk_pdev, nir_shader *nir,
    hk_preprocess_nir_internal(vk_pdev, nir);
    nir_lower_compute_system_values_options csv_options = {
       .has_base_workgroup_id = true,
+      .shuffle_local_ids_for_quad_derivatives = true,
+      .lower_local_invocation_index =
+         nir->info.derivative_group == DERIVATIVE_GROUP_QUADS,
    };
+   if (nir->info.derivative_group == DERIVATIVE_GROUP_QUADS) {
+      NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_global_id_for_quads,
+               nir_metadata_control_flow, NULL);
+   }
+
    NIR_PASS(_, nir, nir_lower_compute_system_values, &csv_options);
 }
 
