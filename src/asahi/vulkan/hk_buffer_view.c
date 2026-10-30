@@ -44,7 +44,9 @@ hk_get_buffer_format_features(struct hk_physical_device *pdev,
                      VK_FORMAT_FEATURE_2_STORAGE_WRITE_WITHOUT_FORMAT_BIT;
       }
 
-      if (p_format == PIPE_FORMAT_R32_UINT || p_format == PIPE_FORMAT_R32_SINT)
+      if (p_format == PIPE_FORMAT_R32_UINT || p_format == PIPE_FORMAT_R32_SINT ||
+          (p_format == PIPE_FORMAT_R32_FLOAT &&
+           pdev->dev.params.gpu_generation >= 15))
          features |= VK_FORMAT_FEATURE_2_STORAGE_TEXEL_BUFFER_ATOMIC_BIT;
    }
 

@@ -1866,6 +1866,7 @@ translate_atomic_opcode(nir_atomic_op op)
    case nir_atomic_op_ixor:    return AGX_ATOMIC_OPC_XOR;
    case nir_atomic_op_xchg:    return AGX_ATOMIC_OPC_XCHG;
    case nir_atomic_op_cmpxchg: return AGX_ATOMIC_OPC_CMPXCHG;
+   case nir_atomic_op_fadd:    return AGX_ATOMIC_OPC_FADD;
    default: UNREACHABLE("unknown atomic opcode");
    }
    /* clang-format on */
