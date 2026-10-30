@@ -528,3 +528,36 @@ poly_conservative_corner(constant struct poly_geometry_params *p, float4 P0,
                       cr_edge(n2, q0, v, extra), 0.0f);
    }
 }
+
+/*
+ * With a task shader, mesh workgroup w belongs to the first task workgroup whose
+ * launch ends after w (a binary search of the inclusive prefix sum).
+ */
+uint
+poly_mesh_task_index(constant struct poly_mesh_params *p, uint w)
+{
+   uint lo = 0, hi = p->task_count - 1;
+
+   while (lo < hi) {
+      uint mid = (lo + hi) / 2;
+
+      if (p->launches[(mid * 4) + 3] > w)
+         hi = mid;
+      else
+         lo = mid + 1;
+   }
+
+   return lo;
+}
+
+/* The workgroup ID of mesh workgroup w within the grid task workgroup t
+ * launched
+ */
+uint3
+poly_mesh_workgroup_id(constant struct poly_mesh_params *p, uint t, uint w)
+{
+   global uint *l = &p->launches[t * 4];
+   uint i = w - (l[3] - (l[0] * l[1] * l[2]));
+
+   return (uint3)(i % l[0], (i / l[0]) % l[1], i / (l[0] * l[1]));
+}

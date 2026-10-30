@@ -487,6 +487,13 @@ lower_uvs_index(nir_builder *b, nir_intrinsic_instr *intrin, void *data)
    case nir_intrinsic_load_tess_param_buffer_poly:
       return lower_sysval_to_root_table(b, intrin, draw.tess_params);
 
+   case nir_intrinsic_load_mesh_param_buffer_poly:
+      return lower_sysval_to_root_table(b, intrin, draw.mesh_params);
+
+   /* From a mesh rasterization shader, built after the descriptor lowering */
+   case nir_intrinsic_load_view_index:
+      return lower_sysval_to_root_table(b, intrin, draw.view_index);
+
    case nir_intrinsic_load_vertex_param_buffer_poly:
       if (args->sw_stage == MESA_SHADER_VERTEX) {
          b->cursor = nir_instr_remove(&intrin->instr);
@@ -642,6 +649,10 @@ try_lower_intrin(nir_builder *b, nir_intrinsic_instr *intrin,
       return lower_image_intrin(b, intrin, ctx);
 
    case nir_intrinsic_load_num_workgroups: {
+      /* Task and mesh shaders read theirs from the mesh parameters */
+      if (mesa_shader_stage_is_mesh(b->shader->info.stage))
+         return false;
+
       b->cursor = nir_instr_remove(&intrin->instr);
 
       unsigned offset = hk_root_descriptor_offset(cs.group_count_addr);

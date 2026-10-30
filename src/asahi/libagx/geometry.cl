@@ -172,3 +172,85 @@ libagx_prefix_sum_tess(global struct poly_tess_params *p, global uint *c_prims,
       poly_increment_counters(c_prims, c_invs, NULL, prims);
    }
 }
+
+/* Allocate from the heap, or return 0 if it would overflow: the draw is then
+ * dropped instead of faulting.
+ */
+static uint64_t
+mesh_heap_alloc(global struct poly_heap *heap, uint64_t size_B)
+{
+   if (size_B == 0 || heap->bottom >= heap->size ||
+       size_B + 16 > heap->size - heap->bottom)
+      return 0;
+
+   return (uintptr_t)poly_heap_alloc(heap, size_B, 16);
+}
+
+/*
+ * An indirect mesh draw: the first stage's grid and allocation. Without a task
+ * shader, also the rasterization draw.
+ */
+KERNEL(1)
+libagx_mesh_setup_indirect(global struct poly_mesh_params *p,
+                           global struct poly_heap *heap, constant uint *in,
+                           uint wg_x, uint wg_y, uint wg_z, uint stride_B,
+                           uint draw_vertices, uint task__2)
+{
+   uint count[3] = {in[0], in[1], in[2]};
+   uint wg[3] = {wg_x, wg_y, wg_z};
+
+   uint64_t total = 0;
+   if (count[0] <= 65535 && count[1] <= 65535 && count[2] <= 65535)
+      total = (uint64_t)count[0] * count[1] * count[2];
+
+   uint64_t stride = task__2 ? (p->payload_stride + 16) : stride_B;
+   uint64_t alloc = 0;
+
+   if (total <= POLY_MAX_MESH_WORKGROUPS)
+      alloc = mesh_heap_alloc(heap, total * stride);
+
+   if (!alloc)
+      count[0] = count[1] = count[2] = 0;
+
+   poly_mesh_params_set_grid(p, count, wg, alloc, task__2, draw_vertices);
+}
+
+/*
+ * After a task shader: the mesh workgroups' grid, allocation and rasterization
+ * draw, from the launches the task workgroups wrote.
+ */
+KERNEL(1024)
+libagx_mesh_setup_from_task(global struct poly_mesh_params *p,
+                            global struct poly_heap *heap, uint wg_x,
+                            uint wg_y, uint wg_z, uint stride_B,
+                            uint draw_vertices)
+{
+   local uint scratch[32];
+   poly_prefix_sum(scratch, p->launches, p->task_count, 4 /* words */,
+                   3 /* word */, 1024);
+
+   barrier(CLK_LOCAL_MEM_FENCE);
+   if (cl_local_id.x != 0)
+      return;
+
+   /* The last element of an inclusive prefix sum is the total sum */
+   uint total = p->task_count ? p->launches[(p->task_count * 4) - 1] : 0;
+   uint64_t alloc = 0;
+
+   if (total <= POLY_MAX_MESH_WORKGROUPS)
+      alloc = mesh_heap_alloc(heap, (uint64_t)total * stride_B);
+
+   if (!alloc)
+      total = 0;
+
+   /* One dimension: the mesh shader finds its workgroup ID in the launches */
+   uint wg[3] = {wg_x, wg_y, wg_z};
+   for (unsigned i = 0; i < 3; ++i) {
+      p->mesh_grid[i] = (i == 0 ? total : 1) * wg[i];
+      p->mesh_grid[3 + i] = wg[i];
+   }
+
+   p->outputs = (global uchar *)alloc;
+   p->draw.vertex_count = draw_vertices;
+   p->draw.instance_count = total;
+}

@@ -433,6 +433,11 @@ hk_bind_descriptor_sets(UNUSED struct hk_cmd_buffer *cmd,
    desc->root_dirty = true;
 }
 
+/* Task and mesh shaders use the graphics descriptors */
+#define HK_GRAPHICS_STAGES                                                     \
+   (VK_SHADER_STAGE_ALL_GRAPHICS | VK_SHADER_STAGE_TASK_BIT_EXT |              \
+    VK_SHADER_STAGE_MESH_BIT_EXT)
+
 VKAPI_ATTR void VKAPI_CALL
 hk_CmdBindDescriptorSets2KHR(
    VkCommandBuffer commandBuffer,
@@ -440,7 +445,7 @@ hk_CmdBindDescriptorSets2KHR(
 {
    VK_FROM_HANDLE(hk_cmd_buffer, cmd, commandBuffer);
 
-   if (pBindDescriptorSetsInfo->stageFlags & VK_SHADER_STAGE_ALL_GRAPHICS) {
+   if (pBindDescriptorSetsInfo->stageFlags & HK_GRAPHICS_STAGES) {
       hk_bind_descriptor_sets(cmd, &cmd->state.gfx.descriptors,
                               pBindDescriptorSetsInfo);
    }
@@ -466,7 +471,7 @@ hk_CmdPushConstants2KHR(VkCommandBuffer commandBuffer,
 {
    VK_FROM_HANDLE(hk_cmd_buffer, cmd, commandBuffer);
 
-   if (pPushConstantsInfo->stageFlags & VK_SHADER_STAGE_ALL_GRAPHICS)
+   if (pPushConstantsInfo->stageFlags & HK_GRAPHICS_STAGES)
       hk_push_constants(cmd, &cmd->state.gfx.descriptors, pPushConstantsInfo);
 
    if (pPushConstantsInfo->stageFlags & VK_SHADER_STAGE_COMPUTE_BIT)
@@ -522,7 +527,7 @@ hk_CmdPushDescriptorSet2KHR(
 {
    VK_FROM_HANDLE(hk_cmd_buffer, cmd, commandBuffer);
 
-   if (pPushDescriptorSetInfo->stageFlags & VK_SHADER_STAGE_ALL_GRAPHICS) {
+   if (pPushDescriptorSetInfo->stageFlags & HK_GRAPHICS_STAGES) {
       hk_push_descriptor_set(cmd, &cmd->state.gfx.descriptors,
                              pPushDescriptorSetInfo);
    }

@@ -71,6 +71,34 @@ unsigned poly_tcs_output_stride(const struct nir_shader *nir);
 
 bool poly_nir_lower_sysvals(struct nir_shader *nir);
 
+struct poly_mesh_info {
+   /* Slots of a mesh workgroup's output record, a vec4 per vertex or per
+    * primitive each
+    */
+   uint64_t vertex_outputs;
+   uint64_t primitive_outputs;
+
+   /* Bytes per output record */
+   uint32_t record_stride;
+
+   uint16_t max_vertices;
+   uint16_t max_primitives;
+
+   /* Rasterized primitive: points, lines or triangles */
+   uint8_t prim;
+   uint8_t _pad;
+
+   /* Task shader: payload bytes per task workgroup */
+   uint16_t payload_size;
+};
+
+bool poly_nir_lower_mesh(struct nir_shader *mesh, bool task, bool multiview,
+                         struct nir_shader **rast,
+                         struct poly_mesh_info *info);
+
+bool poly_nir_lower_task(struct nir_shader *task,
+                         struct poly_mesh_info *info);
+
 struct poly_passthrough_gs_key {
    /* Bit mask of outputs written by the VS/TES, to be passed through */
    uint64_t outputs;
