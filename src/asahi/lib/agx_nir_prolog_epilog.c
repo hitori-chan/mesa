@@ -747,6 +747,55 @@ agx_nir_lower_stats_fs(nir_shader *s)
    return nir_progress(true, b->impl, nir_metadata_control_flow);
 }
 
+/*
+ * Conservative rasterization: the triangle was widened, so keep only the
+ * pixels whose square touches it. The vertex shader wrote its bounding box and
+ * its edge functions (>= -0.5 at the centre iff the square touches the edge's
+ * half-plane) as linear varyings, which are tested at the pixel centre.
+ */
+static bool
+agx_nir_lower_conservative_fs(nir_shader *s, enum agx_conservative_test test)
+{
+   assert(s->info.stage == MESA_SHADER_FRAGMENT);
+   nir_builder b_ =
+      nir_builder_at(nir_before_impl(nir_shader_get_entrypoint(s)));
+   nir_builder *b = &b_;
+
+   nir_def *bary = nir_load_barycentric_pixel(
+      b, 32, .interp_mode = INTERP_MODE_NOPERSPECTIVE);
+   nir_def *centre =
+      nir_fadd_imm(b, nir_u2f32(b, nir_load_pixel_coord(b)), 0.5);
+
+   nir_def *box = nir_load_interpolated_input(
+      b, 4, 32, bary, nir_imm_int(b, 0), .dest_type = nir_type_float32,
+      .io_semantics.location = POLY_VARYING_SLOT_CONSERVATIVE_BOX,
+      .io_semantics.num_slots = 1);
+
+   nir_def *touches =
+      nir_iand(b,
+               nir_ball(b, nir_fge(b, nir_fadd_imm(b, centre, 0.5),
+                                   nir_trim_vector(b, box, 2))),
+               nir_ball(b, nir_fge(b, nir_channels(b, box, 0xc),
+                                   nir_fadd_imm(b, centre, -0.5))));
+
+   if (test == AGX_CONSERVATIVE_BOX_EDGES) {
+      nir_def *edges = nir_load_interpolated_input(
+         b, 3, 32, bary, nir_imm_int(b, 0), .dest_type = nir_type_float32,
+         .io_semantics.location = POLY_VARYING_SLOT_CONSERVATIVE_EDGES,
+         .io_semantics.num_slots = 1);
+
+      touches = nir_iand(b, touches, nir_ball(b, nir_fge_imm(b, edges, -0.5)));
+      s->info.inputs_read |=
+         BITFIELD64_BIT(POLY_VARYING_SLOT_CONSERVATIVE_EDGES);
+   }
+
+   nir_demote_if(b, nir_inot(b, touches));
+
+   s->info.inputs_read |= BITFIELD64_BIT(POLY_VARYING_SLOT_CONSERVATIVE_BOX);
+   s->info.fs.uses_discard = true;
+   return nir_progress(true, b->impl, nir_metadata_control_flow);
+}
+
 void
 agx_nir_fs_prolog(nir_builder *b, const void *key_)
 {
@@ -772,6 +821,11 @@ agx_nir_fs_prolog(nir_builder *b, const void *key_)
 
    if (key->polygon_stipple) {
       NIR_PASS(_, b->shader, agx_nir_lower_poly_stipple);
+   }
+
+   /* Last, so it runs first: it stands in for rasterization */
+   if (key->conservative) {
+      NIR_PASS(_, b->shader, agx_nir_lower_conservative_fs, key->conservative);
    }
 
    /* Then, lower the prolog */
