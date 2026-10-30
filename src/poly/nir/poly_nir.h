@@ -48,9 +48,17 @@ struct poly_gs_info {
    uint8_t topology[64];
 };
 
+/* Internal varyings written by the conservative rasterization shader for a
+ * fragment-side test: the triangle's bounding box and its three edge functions
+ * in pixels, both linear. Tessellation levels never reach a fragment shader.
+ */
+#define POLY_VARYING_SLOT_CONSERVATIVE_BOX   VARYING_SLOT_TESS_LEVEL_OUTER
+#define POLY_VARYING_SLOT_CONSERVATIVE_EDGES VARYING_SLOT_TESS_LEVEL_INNER
+
 bool poly_nir_lower_gs(struct nir_shader *gs, struct nir_shader **gs_count,
-                       struct nir_shader **gs_copy, struct nir_shader **pre_gs,
-                       struct poly_gs_info *info);
+                       struct nir_shader **gs_copy,
+                       struct nir_shader **gs_copy_conservative,
+                       struct nir_shader **pre_gs, struct poly_gs_info *info);
 
 bool poly_nir_lower_tcs(struct nir_shader *tcs,
                         bool can_ignore_shader_out_barriers);
