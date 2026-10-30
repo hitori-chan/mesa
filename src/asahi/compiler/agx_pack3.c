@@ -1328,7 +1328,8 @@ a3_stack_mem(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
 
 /* The IR's atomic operations (G13's numbering, which Apple's compiler also
  * uses: the low 4 bits of its memory flags operand) to the hardware's code,
- * Apple's table */
+ * Apple's table. Its 11 is fp32 add, code 3 (on the hardware: exact sums);
+ * G15C has it on device memory only (fp32-atomicdev, no fp32-atomictg). */
 static unsigned
 a3_atomic_op(const struct a3 *a, enum agx_atomic_opc op)
 {
@@ -1338,7 +1339,7 @@ a3_atomic_op(const struct a3 *a, enum agx_atomic_opc op)
       [AGX_ATOMIC_OPC_UMIN] = 13, [AGX_ATOMIC_OPC_IMIN] = 5,
       [AGX_ATOMIC_OPC_UMAX] = 12, [AGX_ATOMIC_OPC_IMAX] = 4,
       [AGX_ATOMIC_OPC_AND] = 1,   [AGX_ATOMIC_OPC_OR] = 6,
-      [AGX_ATOMIC_OPC_XOR] = 15,
+      [AGX_ATOMIC_OPC_XOR] = 15,  [AGX_ATOMIC_OPC_FADD] = 3,
    };
 
    if (op >= ARRAY_SIZE(hw))
@@ -1368,6 +1369,8 @@ a3_local_atomic(struct a3 *a, const agx_instr *I,
    bool result = !agx_is_null(I->dest[0]);
 
    a3_begin(a, I, AGX3_THREADGROUP_ATOMIC, T_ATG);
+   if (I->atomic_opc == AGX_ATOMIC_OPC_FADD)
+      a3_fail(a, "no threadgroup float atomics");
    a3_set(a, ATG_G, result ? A3_SYNC_G + 1 : 0);
    a3_set(a, ATG_DST, result ? a3_reg(a, ATG_DST, I->dest[0], 0, 0, 0) : 0);
    a3_set(a, ATG_DATA, a3_atomic_data(a, ATG_DATA, I->src[0]));

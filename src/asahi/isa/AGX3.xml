@@ -983,13 +983,14 @@
    compiler passes G13's operation numbering (Mesa's agx_atomic_opc: the
    low 4 bits of its memory-flags operand, sub_251C62B48) through a table
    to this code. The 64-bit atomicdev form takes umin..imax only (Metal's
-   64-bit min/max); 3 and 7-10 have no G13 name.
+   64-bit min/max). 3 is fp32 add (Apple's 11, on atomicdev: Metal's
+   atomic_float add); 7-10 have no G13 name and left fp32 data unchanged.
   -->
   <enum kind="atomic_op" name="Atomic operation">
     <value value="0">add</value>
     <value value="1">and</value>
     <value value="2">cmpxchg</value>
-    <value value="3">op11</value>
+    <value value="3">fadd</value>
     <value value="4">imax</value>
     <value value="5">imin</value>
     <value value="6">or</value>
