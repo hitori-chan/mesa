@@ -54,6 +54,7 @@ hk_get_device_extensions(const struct agx_device *dev,
     * (hk_rt_pipeline.c), behind a flag until tested
     */
    bool rq = dev->debug & AGX_DBG_RAYQUERY;
+   bool g15 = dev->params.gpu_generation >= 15;
 
    *ext = (struct vk_device_extension_table){
       .KHR_acceleration_structure = rq,
@@ -62,6 +63,7 @@ hk_get_device_extensions(const struct agx_device *dev,
       .KHR_bind_memory2 = true,
       .KHR_buffer_device_address = true,
       .KHR_calibrated_timestamps = true,
+      .KHR_compute_shader_derivatives = g15,
       .KHR_copy_commands2 = true,
       .KHR_create_renderpass2 = true,
       .KHR_dedicated_allocation = true,
@@ -401,6 +403,11 @@ hk_get_device_features(
 
       /* Vulkan 1.4 */
       .pushDescriptor = true,
+
+      /* VK_KHR_compute_shader_derivatives: quads of four lanes, as a fragment
+       * shader's, which NIR lays the quad groups out as */
+      .computeDerivativeGroupQuads = dev->params.gpu_generation >= 15,
+      .computeDerivativeGroupLinear = dev->params.gpu_generation >= 15,
 
       /* VK_KHR_dynamic_rendering_local_read */
       .dynamicRenderingLocalRead = true,
