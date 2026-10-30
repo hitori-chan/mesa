@@ -731,12 +731,48 @@ lower_robustness(nir_builder *b, nir_intrinsic_instr *intr, UNUSED void *data)
  * can accurately lower descriptors after this pass but before calling
  * the full agx_nir_lower_texture.
  */
+/*
+ * A compute shader with derivative groups samples with an implicit LOD from
+ * its quads' gradients, which lower_derivatives_g15 takes across the lanes:
+ * whether the texture unit derives a LOD outside fragment shaders is not
+ * known. A bias scales the gradients, as cube_min_lod_to_txd's.
+ */
+static bool
+compute_implicit_lod_to_txd(nir_builder *b, nir_tex_instr *tex,
+                            UNUSED void *data)
+{
+   if (!mesa_shader_stage_is_compute(b->shader->info.stage) ||
+       b->shader->info.derivative_group == DERIVATIVE_GROUP_NONE ||
+       (tex->op != nir_texop_tex && tex->op != nir_texop_txb))
+      return false;
+
+   b->cursor = nir_before_instr(&tex->instr);
+   nir_def *p = nir_trim_vector(b, nir_get_tex_src(tex, nir_tex_src_coord),
+                                tex->coord_components - tex->is_array);
+   nir_def *dx = nir_ddx(b, p), *dy = nir_ddy(b, p);
+
+   nir_def *bias = nir_steal_tex_src(tex, nir_tex_src_bias);
+   if (bias) {
+      nir_def *scale = nir_fexp2(b, nir_f2fN(b, bias, p->bit_size));
+      dx = nir_fmul(b, dx, scale);
+      dy = nir_fmul(b, dy, scale);
+   }
+
+   nir_tex_instr_add_src(tex, nir_tex_src_ddx, dx);
+   nir_tex_instr_add_src(tex, nir_tex_src_ddy, dy);
+   tex->op = nir_texop_txd;
+   return true;
+}
+
 bool
 agx_nir_lower_texture_early(nir_shader *s, bool support_lod_bias)
 {
    bool progress = false;
 
    NIR_PASS(progress, s, nir_shader_intrinsics_pass, lower_robustness,
+            nir_metadata_control_flow, NULL);
+
+   NIR_PASS(progress, s, nir_shader_tex_pass, compute_implicit_lod_to_txd,
             nir_metadata_control_flow, NULL);
 
    nir_lower_tex_options lower_tex_options = {
