@@ -109,6 +109,9 @@ struct hk_shader_info {
    uint8_t cull_distance_array_size;
    uint8_t set_count;
 
+   /* Conservative rasterization variant: enum agx_conservative_test */
+   uint8_t conservative;
+
    /* XXX: is there a less goofy way to do this? I really don't want dynamic
     * allocation here.
     */
@@ -190,6 +193,11 @@ enum hk_gs_variant {
    /* Pre-GS compute shader */
    HK_GS_VARIANT_PRE,
 
+   /* Hardware vertex shader for conservative rasterization, only for the
+    * passthrough geometry shader
+    */
+   HK_GS_VARIANT_RAST_CONSERVATIVE,
+
    HK_GS_VARIANTS,
 };
 
@@ -199,6 +207,7 @@ static const char *hk_gs_variant_name[] = {
    [HK_GS_VARIANT_MAIN] = "Main",
    [HK_GS_VARIANT_COUNT] = "Count",
    [HK_GS_VARIANT_PRE] = "Pre-GS",
+   [HK_GS_VARIANT_RAST_CONSERVATIVE] = "Conservative rasterization",
 };
 /* clang-format on */
 

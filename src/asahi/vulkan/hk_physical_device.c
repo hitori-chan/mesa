@@ -155,6 +155,7 @@ hk_get_device_extensions(const struct agx_device *dev,
       .EXT_calibrated_timestamps = true,
       .EXT_conditional_rendering = false,
       .EXT_color_write_enable = true,
+      .EXT_conservative_rasterization = g15,
       .EXT_custom_border_color = true,
       .EXT_debug_marker = true,
       .EXT_depth_bias_control = true,
@@ -549,8 +550,10 @@ hk_get_device_features(
       .extendedDynamicState3ColorBlendEquation = true,
       .extendedDynamicState3ColorWriteMask = true,
       .extendedDynamicState3RasterizationStream = true,
-      .extendedDynamicState3ConservativeRasterizationMode = false,
-      .extendedDynamicState3ExtraPrimitiveOverestimationSize = false,
+      .extendedDynamicState3ConservativeRasterizationMode =
+         dev->params.gpu_generation >= 15,
+      .extendedDynamicState3ExtraPrimitiveOverestimationSize =
+         dev->params.gpu_generation >= 15,
       .extendedDynamicState3DepthClipEnable = true,
       .extendedDynamicState3SampleLocationsEnable = true,
       .extendedDynamicState3ColorBlendAdvanced = false,
@@ -960,6 +963,21 @@ hk_get_device_properties(const struct agx_device *dev,
 
       /* VK_KHR_push_descriptor */
       .maxPushDescriptors = HK_MAX_PUSH_DESCRIPTORS,
+
+      /* VK_EXT_conservative_rasterization: triangles widened in a geometry
+       * shader, then an exact test of the pixel square in the fragment
+       * shader, up to its slack of 1/512 pixel. Both take any extra size,
+       * read at each draw: 4 is the CTS's largest.
+       */
+      .primitiveOverestimationSize = 1.0f / 256.0f,
+      .maxExtraPrimitiveOverestimationSize = 4.0f,
+      .extraPrimitiveOverestimationSizeGranularity = 0.0f,
+      .primitiveUnderestimation = false,
+      .conservativePointAndLineRasterization = false,
+      .degenerateTrianglesRasterized = false,
+      .degenerateLinesRasterized = false,
+      .fullyCoveredFragmentShaderInputVariable = false,
+      .conservativeRasterizationPostDepthCoverage = false,
 
       /* VK_EXT_custom_border_color */
       .maxCustomBorderColorSamplers = 4000,

@@ -261,6 +261,11 @@ struct hk_graphics_state {
     */
    uint8_t provoking;
 
+   /* Whether triangles are rasterized conservatively, through the passthrough
+    * geometry shader's conservative variant
+    */
+   bool conservative;
+
    struct {
       enum agx_visibility_mode mode;
 
@@ -538,7 +543,9 @@ hk_bound_hw_vs(struct hk_graphics_state *gfx)
    struct hk_api_shader *tes = gfx->shaders[MESA_SHADER_TESS_EVAL];
    struct hk_api_shader *gs = gfx->shaders[MESA_SHADER_GEOMETRY];
 
-   if (gs)
+   if (gs && gfx->conservative)
+      return &gs->variants[HK_GS_VARIANT_RAST_CONSERVATIVE];
+   else if (gs)
       return &gs->variants[HK_GS_VARIANT_RAST];
    else if (tes)
       return &tes->variants[HK_VS_VARIANT_HW];
