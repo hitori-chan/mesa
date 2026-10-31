@@ -617,6 +617,7 @@ hk_cmd_buffer_upload_root(struct hk_cmd_buffer *cmd,
       return 0;
 
    root->root_desc_addr = root_ptr.gpu;
+   root->atomic64_locks = hk_cmd_buffer_device(cmd)->atomic64_locks->va->addr;
 
    memcpy(root_ptr.cpu, root, sizeof(*root));
    return root_ptr.gpu;
