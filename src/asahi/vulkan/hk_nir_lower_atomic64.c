@@ -17,6 +17,8 @@
  * and max take it, or one landing between another operation's read and
  * write would be lost. Each lane retries in one loop and leaves it once it
  * has had the lock, so the lanes of a SIMD group never wait on each other.
+ * Image atomics reach it as global atomics on their texel's address
+ * (agx_nir_lower_texture_gen), so it runs after them.
  */
 
 static nir_def *
@@ -131,4 +133,65 @@ hk_nir_lower_atomic64(nir_shader *nir)
    }
 
    return progress;
+}
+
+/*
+ * R64 image loads and stores go through the image's R32G32_UINT descriptors
+ * (hk_image_view.c): a load returns (x, 0, 0, 1), and a sparse one its
+ * residency code after, a store writes x's halves.
+ */
+static bool
+lower_image_r64(nir_builder *b, nir_intrinsic_instr *intr, void *data_)
+{
+   bool sparse = intr->intrinsic == nir_intrinsic_bindless_image_sparse_load;
+
+   if ((intr->intrinsic == nir_intrinsic_bindless_image_load || sparse) &&
+       intr->def.bit_size == 64) {
+      unsigned n = intr->def.num_components - sparse;
+      b->cursor = nir_after_instr(&intr->instr);
+
+      intr->num_components = 4 + sparse;
+      intr->def.num_components = 4 + sparse;
+      intr->def.bit_size = 32;
+      nir_intrinsic_set_dest_type(intr, nir_type_uint32);
+      nir_intrinsic_set_format(intr, PIPE_FORMAT_R32G32_UINT);
+
+      nir_def *zero = nir_imm_int64(b, 0);
+      nir_def *v[5] = {
+         nir_pack_64_2x32(b, nir_trim_vector(b, &intr->def, 2)),
+         zero,
+         zero,
+         nir_imm_int64(b, 1),
+      };
+      if (sparse)
+         v[n] = nir_u2u64(b, nir_channel(b, &intr->def, 4));
+
+      nir_def_rewrite_uses_after(&intr->def, nir_vec(b, v, n + sparse));
+      return true;
+   }
+
+   if (intr->intrinsic == nir_intrinsic_bindless_image_store &&
+       intr->src[3].ssa->bit_size == 64) {
+      b->cursor = nir_before_instr(&intr->instr);
+
+      nir_def *x = nir_unpack_64_2x32(b, nir_channel(b, intr->src[3].ssa, 0));
+      nir_def *zero = nir_imm_int(b, 0);
+      nir_src_rewrite(
+         &intr->src[3],
+         nir_vec4(b, nir_channel(b, x, 0), nir_channel(b, x, 1), zero, zero));
+
+      intr->num_components = 4;
+      nir_intrinsic_set_src_type(intr, nir_type_uint32);
+      nir_intrinsic_set_format(intr, PIPE_FORMAT_R32G32_UINT);
+      return true;
+   }
+
+   return false;
+}
+
+bool
+hk_nir_lower_image_r64(nir_shader *nir)
+{
+   return nir_shader_intrinsics_pass(nir, lower_image_r64,
+                                     nir_metadata_control_flow, NULL);
 }
