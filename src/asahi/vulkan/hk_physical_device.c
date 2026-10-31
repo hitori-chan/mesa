@@ -1075,7 +1075,10 @@ hk_get_device_properties(const struct agx_device *dev,
       .maxMeshOutputVertices = 256,
       .maxMeshOutputPrimitives = 256,
       .maxMeshOutputLayers = 2048,
-      .maxMeshMultiviewViewCount = HK_MAX_MULTIVIEW_VIEW_COUNT,
+      /* Each view reruns the task and mesh stages. Below 32, which the CTS's
+       * properties.max_view_index cannot take: it shifts 1u by the count.
+       */
+      .maxMeshMultiviewViewCount = 16,
       .meshOutputPerVertexGranularity = 1,
       .meshOutputPerPrimitiveGranularity = 1,
       .maxPreferredTaskWorkGroupInvocations = 32,
