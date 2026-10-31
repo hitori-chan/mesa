@@ -35,6 +35,7 @@ hk_files = files(
   'hk_image_view.h',
   'hk_instance.c',
   'hk_instance.h',
+  'hk_nir_lower_atomic64.c',
   'hk_nir_lower_descriptors.c',
   'hk_nir_lower_ray_queries.c',
   'hk_nir_ray_tracing.c',
