@@ -77,6 +77,9 @@ struct hk_device {
       uint64_t heap;
    } rodata;
 
+   /* HK_ATOMIC64_LOCKS 32-bit locks for 64-bit atomics, zeroed */
+   struct agx_bo *atomic64_locks;
+
    struct hk_internal_shaders prolog_epilog;
    struct hk_internal_shaders kernels;
    struct hk_api_shader *null_fs;
