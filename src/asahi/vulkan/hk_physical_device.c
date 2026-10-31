@@ -199,6 +199,7 @@ hk_get_device_extensions(const struct agx_device *dev,
       .EXT_load_store_op_none = true,
       .EXT_map_memory_placed = true,
       .EXT_memory_budget = false,
+      .EXT_mesh_shader = g15,
       .EXT_multi_draw = true,
       .EXT_mutable_descriptor_type = true,
       .EXT_non_seamless_cube_map = true,
@@ -654,6 +655,13 @@ hk_get_device_features(
       .memoryMapRangePlaced = false,
       .memoryUnmapReserve = true,
 
+      /* VK_EXT_mesh_shader: task and mesh run as compute (hk_draw_mesh) */
+      .taskShader = dev->params.gpu_generation >= 15,
+      .meshShader = dev->params.gpu_generation >= 15,
+      .multiviewMeshShader = dev->params.gpu_generation >= 15,
+      .primitiveFragmentShadingRateMeshShader = false,
+      .meshShaderQueries = false,
+
       /* VK_EXT_multi_draw */
       .multiDraw = true,
 
@@ -920,7 +928,10 @@ hk_get_device_properties(const struct agx_device *dev,
       /* Vulkan 1.1 properties */
       .subgroupSize = 32,
       .subgroupSupportedStages =
-         VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_ALL_GRAPHICS,
+         VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_ALL_GRAPHICS |
+         (dev->params.gpu_generation >= 15
+             ? VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT
+             : 0),
       .subgroupSupportedOperations =
          VK_SUBGROUP_FEATURE_BASIC_BIT | VK_SUBGROUP_FEATURE_BALLOT_BIT |
          VK_SUBGROUP_FEATURE_VOTE_BIT | VK_SUBGROUP_FEATURE_QUAD_BIT |
@@ -1118,6 +1129,39 @@ hk_get_device_properties(const struct agx_device *dev,
 
       /* VK_EXT_map_memory_placed */
       .minPlacedMemoryMapAlignment = os_page_size,
+
+      /* VK_EXT_mesh_shader */
+      .maxTaskWorkGroupTotalCount = POLY_MAX_MESH_WORKGROUPS,
+      .maxTaskWorkGroupCount = {65535, 65535, 65535},
+      .maxTaskWorkGroupInvocations = 128,
+      .maxTaskWorkGroupSize = {128, 128, 128},
+      .maxTaskPayloadSize = 16384,
+      .maxTaskSharedMemorySize = HK_MAX_SHARED_SIZE,
+      .maxTaskPayloadAndSharedMemorySize = 16384 + HK_MAX_SHARED_SIZE,
+      .maxMeshWorkGroupTotalCount = POLY_MAX_MESH_WORKGROUPS,
+      .maxMeshWorkGroupCount = {65535, 65535, 65535},
+      .maxMeshWorkGroupInvocations = 128,
+      .maxMeshWorkGroupSize = {128, 128, 128},
+      .maxMeshSharedMemorySize = 28672,
+      .maxMeshPayloadAndSharedMemorySize = 16384 + 28672,
+      .maxMeshOutputMemorySize = 32768,
+      .maxMeshPayloadAndOutputMemorySize = 16384 + 32768,
+      .maxMeshOutputComponents = 128,
+      .maxMeshOutputVertices = 256,
+      .maxMeshOutputPrimitives = 256,
+      .maxMeshOutputLayers = 2048,
+      /* Each view reruns the task and mesh stages. Below 32, which the CTS's
+       * properties.max_view_index cannot take: it shifts 1u by the count.
+       */
+      .maxMeshMultiviewViewCount = 16,
+      .meshOutputPerVertexGranularity = 1,
+      .meshOutputPerPrimitiveGranularity = 1,
+      .maxPreferredTaskWorkGroupInvocations = 32,
+      .maxPreferredMeshWorkGroupInvocations = 32,
+      .prefersLocalInvocationVertexOutput = true,
+      .prefersLocalInvocationPrimitiveOutput = true,
+      .prefersCompactVertexOutput = false,
+      .prefersCompactPrimitiveOutput = true,
 
       /* VK_EXT_multi_draw */
       .maxMultiDrawCount = UINT16_MAX,

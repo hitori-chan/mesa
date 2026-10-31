@@ -1250,9 +1250,12 @@ hk_rast_prim(struct hk_cmd_buffer *cmd)
 {
    struct hk_graphics_state *gfx = &cmd->state.gfx;
    struct hk_api_shader *gs = gfx->shaders[MESA_SHADER_GEOMETRY];
+   struct hk_api_shader *mesh = gfx->shaders[MESA_SHADER_MESH];
    struct vk_dynamic_graphics_state *dyn = &cmd->vk.dynamic_graphics_state;
 
-   if (gs != NULL) {
+   if (mesh != NULL) {
+      return mesh->variants[HK_MESH_VARIANT_RAST].info.mesh.prim;
+   } else if (gs != NULL) {
       return gs->variants[HK_GS_VARIANT_RAST].info.gs.mode;
    } else {
       switch (dyn->ia.primitive_topology) {
@@ -1268,6 +1271,54 @@ hk_rast_prim(struct hk_cmd_buffer *cmd)
    }
 }
 
+/*
+ * The interpolation masks and, when widening, the conservative rasterization
+ * parameters the rasterization shader reads (poly_conservative_corner)
+ */
+static void
+hk_conservative_params(struct hk_cmd_buffer *cmd,
+                       struct poly_geometry_params *params)
+{
+   struct hk_graphics_state *gfx = &cmd->state.gfx;
+   struct vk_dynamic_graphics_state *dyn = &cmd->vk.dynamic_graphics_state;
+   struct hk_shader *fs = hk_only_variant(gfx->shaders[MESA_SHADER_FRAGMENT]);
+
+   params->flat_outputs = fs->info.fs.interp.flat;
+   params->linear_outputs = fs->info.fs.interp.linear;
+
+   if (gfx->conservative) {
+      struct hk_shader *rast = hk_bound_hw_vs(gfx);
+      unsigned samples =
+         gfx->render.tilebuffer.nr_samples ?: dyn->ms.rasterization_samples;
+      float extra = dyn->rs.extra_primitive_overestimation_size;
+
+      /* The fragment test keeps or kills whole pixels, so with MSAA the edges
+       * move out by a pixel to cover every sample of a pixel kept. Without the
+       * edge test, half a pixel: the rasterizer's own test of the centre.
+       */
+      bool edges = rast->info.conservative == AGX_CONSERVATIVE_BOX_EDGES;
+      params->conservative_r =
+         (edges && samples > 1 ? 1.0f : 0.5f) + extra + (1.0f / 256.0f);
+      params->conservative_extra = extra;
+
+      unsigned vp_count = MAX2(dyn->vp.viewport_count, 1);
+      float vp[HK_MAX_VIEWPORTS][4];
+
+      for (unsigned i = 0; i < vp_count; ++i) {
+         const VkViewport *v = &dyn->vp.viewports[i];
+
+         vp[i][0] = v->width * 0.5f;
+         vp[i][1] = v->height * 0.5f;
+         vp[i][2] = v->x + 0.5f * v->width;
+         vp[i][3] = v->y + 0.5f * v->height;
+      }
+
+      params->conservative_viewports =
+         hk_pool_upload(cmd, vp, vp_count * sizeof(vp[0]), 16);
+      params->conservative_viewport_count = vp_count;
+   }
+}
+
 static uint64_t
 hk_upload_geometry_params(struct hk_cmd_buffer *cmd, struct agx_draw draw)
 {
@@ -1275,9 +1326,7 @@ hk_upload_geometry_params(struct hk_cmd_buffer *cmd, struct agx_draw draw)
    struct hk_descriptor_state *desc = &cmd->state.gfx.descriptors;
    struct hk_graphics_state *gfx = &cmd->state.gfx;
    struct hk_api_shader *gs = gfx->shaders[MESA_SHADER_GEOMETRY];
-   struct hk_shader *fs = hk_only_variant(gfx->shaders[MESA_SHADER_FRAGMENT]);
    struct hk_shader *count = hk_count_gs_variant(gs);
-   struct vk_dynamic_graphics_state *dyn = &cmd->vk.dynamic_graphics_state;
 
    /* XXX: We should deduplicate this logic */
    bool indirect = agx_is_indirect(draw.b) ||
@@ -1293,40 +1342,7 @@ hk_upload_geometry_params(struct hk_cmd_buffer *cmd, struct agx_draw draw)
    struct poly_geometry_params params;
    poly_geometry_params_init(&params, mode, wg_size);
 
-   params.flat_outputs = fs->info.fs.interp.flat;
-   params.linear_outputs = fs->info.fs.interp.linear;
-
-   if (gfx->conservative) {
-      struct hk_shader *rast = hk_bound_hw_vs(gfx);
-      unsigned samples =
-         gfx->render.tilebuffer.nr_samples ?: dyn->ms.rasterization_samples;
-      float extra = dyn->rs.extra_primitive_overestimation_size;
-
-      /* The fragment test keeps or kills whole pixels, so with MSAA the edges
-       * move out by a pixel to cover every sample of a pixel kept. Without the
-       * edge test, half a pixel: the rasterizer's own test of the centre.
-       */
-      bool edges = rast->info.conservative == AGX_CONSERVATIVE_BOX_EDGES;
-      params.conservative_r =
-         (edges && samples > 1 ? 1.0f : 0.5f) + extra + (1.0f / 256.0f);
-      params.conservative_extra = extra;
-
-      unsigned vp_count = MAX2(dyn->vp.viewport_count, 1);
-      float vp[HK_MAX_VIEWPORTS][4];
-
-      for (unsigned i = 0; i < vp_count; ++i) {
-         const VkViewport *v = &dyn->vp.viewports[i];
-
-         vp[i][0] = v->width * 0.5f;
-         vp[i][1] = v->height * 0.5f;
-         vp[i][2] = v->x + 0.5f * v->width;
-         vp[i][3] = v->y + 0.5f * v->height;
-      }
-
-      params.conservative_viewports =
-         hk_pool_upload(cmd, vp, vp_count * sizeof(vp[0]), 16);
-      params.conservative_viewport_count = vp_count;
-   }
+   hk_conservative_params(cmd, &params);
 
    if (gfx->xfb_enabled) {
       for (unsigned i = 0; i < ARRAY_SIZE(gfx->xfb); ++i) {
@@ -1492,6 +1508,84 @@ hk_upload_tess_params(struct hk_cmd_buffer *cmd, struct poly_tess_params *out,
 
    gfx->tess.out_draws = args.out_draws;
    memcpy(out, &args, sizeof(args));
+}
+
+/* Most mesh records a direct task draw allocates on the CPU */
+#define HK_MESH_RECORDS_MAX_B (1ull << 30)
+
+static void
+hk_mesh_workgroup(struct hk_shader *s, uint32_t wg[3])
+{
+   for (unsigned i = 0; i < 3; ++i)
+      wg[i] = s->b.info.workgroup_size[i];
+}
+
+static uint32_t
+hk_mesh_draw_vertices(const struct poly_mesh_info *info)
+{
+   return info->max_primitives * mesa_vertices_per_prim(info->prim);
+}
+
+/*
+ * Parameters of a mesh draw. A direct draw's first stage is set up here, an
+ * indirect draw's by libagx_mesh_setup_indirect.
+ */
+static uint64_t
+hk_upload_mesh_params(struct hk_cmd_buffer *cmd, uint32_t draw_id,
+                      struct agx_grid grid)
+{
+   struct hk_graphics_state *gfx = &cmd->state.gfx;
+   struct hk_api_shader *task = gfx->shaders[MESA_SHADER_TASK];
+   struct hk_shader *mesh =
+      &gfx->shaders[MESA_SHADER_MESH]->variants[HK_MESH_VARIANT_MAIN];
+
+   struct poly_mesh_params params = {
+      .payloads = AGX_ZERO_PAGE_ADDRESS,
+      .draw_id = draw_id,
+   };
+
+   if (task) {
+      params.payload_stride =
+         align(hk_only_variant(task)->info.mesh.payload_size, 16);
+   }
+
+   if (!agx_is_indirect(grid)) {
+      uint32_t count[3] = {grid.count[0], grid.count[1], grid.count[2]};
+      uint32_t stride = task ? params.payload_stride + 16
+                             : mesh->info.mesh.record_stride;
+
+      uint64_t total = (uint64_t)count[0] * count[1] * count[2];
+      uint64_t alloc = 0;
+
+      if (total <= POLY_MAX_MESH_WORKGROUPS && total * stride <= UINT32_MAX)
+         alloc = hk_pool_alloc(cmd, total * stride, 16).gpu;
+
+      if (!alloc) {
+         perf_debug(cmd, "Mesh draw outputs too large, dropped");
+         count[0] = count[1] = count[2] = 0;
+      }
+
+      uint32_t wg[3];
+      hk_mesh_workgroup(task ? hk_only_variant(task) : mesh, wg);
+
+      poly_mesh_params_set_grid(&params, count, wg, alloc, task != NULL,
+                                hk_mesh_draw_vertices(&mesh->info.mesh));
+
+      /* With the task launches bounded at compile time, the mesh records are
+       * allocated here too, up to HK_MESH_RECORDS_MAX_B, instead of from the
+       * 128 MiB GPU heap. The bound is not the count: memory may go unused.
+       */
+      uint32_t launch = task ? hk_only_variant(task)->info.mesh.max_launch : 0;
+
+      if (task && alloc && launch != UINT32_MAX) {
+         uint64_t records = total * launch * mesh->info.mesh.record_stride;
+
+         if (records && records <= HK_MESH_RECORDS_MAX_B)
+            params.outputs = hk_pool_alloc(cmd, records, 16).gpu;
+      }
+   }
+
+   return hk_pool_upload(cmd, &params, sizeof(params), 8);
 }
 
 static struct hk_api_shader *
@@ -1871,6 +1965,11 @@ hk_cmd_bind_graphics_shader(struct hk_cmd_buffer *cmd,
 
    if (stage == MESA_SHADER_FRAGMENT) {
       BITSET_SET(dyn->dirty, MESA_VK_DYNAMIC_MS_RASTERIZATION_SAMPLES);
+   }
+
+   /* A mesh shader replaces the input assembly's topology */
+   if (stage == MESA_SHADER_MESH) {
+      BITSET_SET(dyn->dirty, MESA_VK_DYNAMIC_IA_PRIMITIVE_TOPOLOGY);
    }
 }
 
@@ -2493,7 +2592,7 @@ hk_flush_ppp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
    bool g15 = hk_cmd_buffer_device(cmd)->dev.params.gpu_generation >= 15;
 
    bool hw_vs_dirty = IS_SHADER_DIRTY(VERTEX) || IS_SHADER_DIRTY(TESS_EVAL) ||
-                      IS_SHADER_DIRTY(GEOMETRY);
+                      IS_SHADER_DIRTY(GEOMETRY) || IS_SHADER_DIRTY(MESH);
    bool fs_dirty = IS_SHADER_DIRTY(FRAGMENT);
 
    struct hk_linked_shader *linked_fs = gfx->linked[MESA_SHADER_FRAGMENT];
@@ -2846,9 +2945,11 @@ hk_flush_dynamic_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
    struct hk_shader *hw_vs = hk_bound_hw_vs(gfx);
    struct hk_shader *sw_vs = hk_bound_sw_vs(gfx);
 
+   /* Each mesh draw has its own parameters */
    if (!vk_dynamic_graphics_state_any_dirty(dyn) && !gfx->dirty &&
        !gfx->descriptors.root_dirty && !gfx->shaders_dirty &&
-       !sw_vs->b.info.uses_draw_id && !sw_vs->b.info.uses_base_param &&
+       !gfx->shaders[MESA_SHADER_MESH] && !sw_vs->b.info.uses_draw_id &&
+       !sw_vs->b.info.uses_base_param &&
        !(gfx->linked[MESA_SHADER_VERTEX] &&
          gfx->linked[MESA_SHADER_VERTEX]->b.uses_base_param))
       return;
@@ -2861,7 +2962,8 @@ hk_flush_dynamic_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
    struct hk_shader *fs = hk_only_variant(gfx->shaders[MESA_SHADER_FRAGMENT]);
 
    bool gt_dirty = IS_SHADER_DIRTY(TESS_CTRL) || IS_SHADER_DIRTY(TESS_EVAL) ||
-                   IS_SHADER_DIRTY(GEOMETRY);
+                   IS_SHADER_DIRTY(GEOMETRY) || IS_SHADER_DIRTY(MESH);
+   bool mesh = gfx->shaders[MESA_SHADER_MESH];
    bool vgt_dirty = IS_SHADER_DIRTY(VERTEX) || gt_dirty;
    bool fs_dirty = IS_SHADER_DIRTY(FRAGMENT);
 
@@ -2920,8 +3022,14 @@ hk_flush_dynamic_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
       desc->root_dirty = true;
    }
 
-   if (IS_DIRTY(VI) || IS_DIRTY(VI_BINDINGS_VALID) ||
-       IS_DIRTY(VI_BINDING_STRIDES) || vgt_dirty || true /* TODO */) {
+   if (mesh) {
+      /* The rasterization shader reads no vertex input: no prolog */
+      if (gfx->linked[MESA_SHADER_VERTEX] != hw_vs->only_linked) {
+         gfx->linked[MESA_SHADER_VERTEX] = hw_vs->only_linked;
+         gfx->linked_dirty |= BITFIELD_BIT(MESA_SHADER_VERTEX);
+      }
+   } else if (IS_DIRTY(VI) || IS_DIRTY(VI_BINDINGS_VALID) ||
+              IS_DIRTY(VI_BINDING_STRIDES) || vgt_dirty || true /* TODO */) {
 
       struct hk_fast_link_key_vs key = {
          .prolog.hw = (sw_vs == hw_vs),
@@ -2975,9 +3083,9 @@ hk_flush_dynamic_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
       hk_update_fast_linked(cmd, sw_vs, &key);
    }
 
-   if (IS_DIRTY(VI) || IS_DIRTY(VI_BINDINGS_VALID) ||
-       IS_DIRTY(VI_BINDING_STRIDES) || vgt_dirty ||
-       (gfx->dirty & HK_DIRTY_VB)) {
+   if (!mesh && (IS_DIRTY(VI) || IS_DIRTY(VI_BINDINGS_VALID) ||
+                 IS_DIRTY(VI_BINDING_STRIDES) || vgt_dirty ||
+                 (gfx->dirty & HK_DIRTY_VB))) {
 
       unsigned slot = 0;
       u_foreach_bit(a, sw_vs->info.vs.attribs_read) {
@@ -3305,6 +3413,22 @@ hk_flush_dynamic_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
       gfx->descriptors.root_dirty = true;
    }
 
+   if (mesh) {
+      gfx->descriptors.root.draw.mesh_params =
+         hk_upload_mesh_params(cmd, draw_id, draw.b);
+
+      /* The conservative variant reads geometry parameters, only those */
+      if (gfx->conservative) {
+         struct poly_geometry_params params = {0};
+         hk_conservative_params(cmd, &params);
+
+         gfx->descriptors.root.draw.geometry_params =
+            hk_pool_upload(cmd, &params, sizeof(params), 8);
+      }
+
+      gfx->descriptors.root_dirty = true;
+   }
+
    /* Root must be uploaded after the above, which touch the root */
    if (gfx->descriptors.root_dirty) {
       gfx->root =
@@ -3443,12 +3567,14 @@ static bool
 hk_rast_conservative(struct hk_cmd_buffer *cmd)
 {
    struct vk_dynamic_graphics_state *dyn = &cmd->vk.dynamic_graphics_state;
+   enum mesa_prim prim = cmd->state.gfx.shaders[MESA_SHADER_MESH]
+                            ? hk_rast_prim(cmd)
+                            : hk_gs_in_prim(cmd);
 
    return dyn->rs.conservative_mode ==
              VK_CONSERVATIVE_RASTERIZATION_MODE_OVERESTIMATE_EXT &&
           dyn->rs.polygon_mode == VK_POLYGON_MODE_FILL &&
-          u_reduced_prim(hk_gs_in_prim(cmd)) == MESA_PRIM_TRIANGLES &&
-          !hk_rast_discard(cmd);
+          u_reduced_prim(prim) == MESA_PRIM_TRIANGLES && !hk_rast_discard(cmd);
 }
 
 static void
@@ -3458,6 +3584,31 @@ hk_handle_passthrough_gs(struct hk_cmd_buffer *cmd, struct agx_draw draw)
    struct hk_graphics_state *gfx = &cmd->state.gfx;
    struct vk_dynamic_graphics_state *dyn = &cmd->vk.dynamic_graphics_state;
    struct hk_api_shader *gs = gfx->shaders[MESA_SHADER_GEOMETRY];
+
+   /* Mesh pipelines have no geometry stage: unbind a passthrough left over.
+    * Their rasterization shader has its own conservative variant.
+    */
+   struct hk_api_shader *mesh = gfx->shaders[MESA_SHADER_MESH];
+   if (mesh) {
+      if (gs && gs->is_passthrough)
+         hk_cmd_bind_graphics_shader(cmd, MESA_SHADER_GEOMETRY, NULL);
+
+      bool conservative = hk_rast_conservative(cmd);
+
+      if (conservative &&
+          !mesh->variants[HK_MESH_VARIANT_RAST_CONSERVATIVE].code_size) {
+         perf_debug(cmd, "Conservative rasterization not widened");
+         conservative = false;
+      }
+
+      /* The variant is per draw: relink when it changes */
+      if (gfx->conservative != conservative) {
+         gfx->conservative = conservative;
+         gfx->shaders_dirty |= BITFIELD_BIT(MESA_SHADER_MESH);
+      }
+
+      return;
+   }
 
    /* The passthrough also depends on the primitive type, and on the state
     * conservative rasterization depends on.
@@ -4129,7 +4280,7 @@ hk_draw_indirect_count(VkCommandBuffer commandBuffer, VkBuffer _buffer,
 
    libagx_predicate_indirect(cmd, agx_1d(maxDrawCount),
                              AGX_BARRIER_ALL | AGX_PREGFX, patched, in,
-                             count_addr, stride / 4, indexed);
+                             count_addr, stride / 4, out_stride / 4);
 
    if (indexed) {
       hk_draw_indexed_indirect_inner(commandBuffer, patched, maxDrawCount,
@@ -4157,6 +4308,141 @@ hk_CmdDrawIndexedIndirectCount(VkCommandBuffer commandBuffer, VkBuffer _buffer,
 {
    hk_draw_indirect_count(commandBuffer, _buffer, offset, countBuffer,
                           countBufferOffset, maxDrawCount, stride, true);
+}
+
+/*
+ * Mesh draws run the task and mesh stages as compute before the render pass,
+ * then rasterize the mesh workgroups' outputs (poly_nir_lower_mesh.c).
+ */
+static void
+hk_draw_mesh(struct hk_cmd_buffer *cmd, uint16_t draw_id, struct agx_grid grid)
+{
+   struct hk_device *dev = hk_cmd_buffer_device(cmd);
+   struct hk_graphics_state *gfx = &cmd->state.gfx;
+
+   /* Filter trivial draws */
+   if (!agx_is_indirect(grid) &&
+       (grid.count[0] == 0 || grid.count[1] == 0 || grid.count[2] == 0))
+      return;
+
+   perf_debug(cmd, "Mesh shader");
+
+   hk_foreach_view(cmd) {
+      struct hk_cs *cs =
+         hk_flush_gfx_state(cmd, draw_id, (struct agx_draw){.b = grid});
+      if (!cs)
+         return;
+
+      struct hk_cs *ccs =
+         hk_cmd_buffer_get_cs_general(cmd, &cmd->current_cs.pre_gfx, true);
+      if (!ccs)
+         return;
+
+      struct hk_api_shader *task = gfx->shaders[MESA_SHADER_TASK];
+      struct hk_shader *ts = task ? hk_only_variant(task) : NULL;
+      struct hk_shader *main =
+         &gfx->shaders[MESA_SHADER_MESH]->variants[HK_MESH_VARIANT_MAIN];
+
+      const struct poly_mesh_info *info = &main->info.mesh;
+      uint64_t params = gfx->descriptors.root.draw.mesh_params;
+      uint32_t wg[3];
+
+      if (agx_is_indirect(grid)) {
+         hk_mesh_workgroup(ts ?: main, wg);
+
+         libagx_mesh_setup_indirect(cmd, agx_1d(1),
+                                    AGX_BARRIER_ALL | AGX_PREGFX, params,
+                                    hk_heap(cmd), grid.ptr, wg[0], wg[1],
+                                    wg[2], info->record_stride,
+                                    hk_mesh_draw_vertices(info), ts != NULL);
+      }
+
+      if (ts) {
+         hk_mesh_workgroup(ts, wg);
+         hk_dispatch_with_local_size(
+            cmd, ccs, ts,
+            agx_grid_indirect_local(params +
+                                    offsetof(struct poly_mesh_params, task_grid)),
+            agx_workgroup(wg[0], wg[1], wg[2]));
+
+         hk_mesh_workgroup(main, wg);
+         libagx_mesh_setup_from_task(cmd, agx_1d(1024),
+                                     AGX_BARRIER_ALL | AGX_PREGFX, params,
+                                     hk_heap(cmd), wg[0], wg[1], wg[2],
+                                     info->record_stride,
+                                     hk_mesh_draw_vertices(info));
+      }
+
+      hk_mesh_workgroup(main, wg);
+      hk_dispatch_with_local_size(
+         cmd, ccs, main,
+         agx_grid_indirect_local(params +
+                                 offsetof(struct poly_mesh_params, mesh_grid)),
+         agx_workgroup(wg[0], wg[1], wg[2]));
+
+      struct agx_draw draw = agx_draw_indirect(
+         params + offsetof(struct poly_mesh_params, draw));
+
+      cs->stats.calls++;
+      cs->current = (void *)agx_vdm_draw((uint32_t *)cs->current,
+                                         dev->dev.chip, draw, gfx->topology);
+      cs->stats.cmds++;
+   }
+}
+
+VKAPI_ATTR void VKAPI_CALL
+hk_CmdDrawMeshTasksEXT(VkCommandBuffer commandBuffer, uint32_t groupCountX,
+                       uint32_t groupCountY, uint32_t groupCountZ)
+{
+   VK_FROM_HANDLE(hk_cmd_buffer, cmd, commandBuffer);
+
+   hk_draw_mesh(cmd, 0, agx_3d(groupCountX, groupCountY, groupCountZ));
+}
+
+VKAPI_ATTR void VKAPI_CALL
+hk_CmdDrawMeshTasksIndirectEXT(VkCommandBuffer commandBuffer, VkBuffer _buffer,
+                               VkDeviceSize offset, uint32_t drawCount,
+                               uint32_t stride)
+{
+   VK_FROM_HANDLE(hk_cmd_buffer, cmd, commandBuffer);
+   VK_FROM_HANDLE(hk_buffer, buffer, _buffer);
+   uint64_t base = hk_buffer_address_ro(buffer, offset);
+
+   for (unsigned draw_id = 0; draw_id < drawCount; ++draw_id) {
+      hk_draw_mesh(cmd, draw_id, agx_grid_indirect(base + stride * draw_id));
+   }
+}
+
+VKAPI_ATTR void VKAPI_CALL
+hk_CmdDrawMeshTasksIndirectCountEXT(VkCommandBuffer commandBuffer,
+                                    VkBuffer _buffer, VkDeviceSize offset,
+                                    VkBuffer countBuffer,
+                                    VkDeviceSize countBufferOffset,
+                                    uint32_t maxDrawCount, uint32_t stride)
+{
+   VK_FROM_HANDLE(hk_cmd_buffer, cmd, commandBuffer);
+   VK_FROM_HANDLE(hk_buffer, buffer, _buffer);
+   VK_FROM_HANDLE(hk_buffer, count_buffer, countBuffer);
+
+   perf_debug(cmd, "Draw mesh tasks indirect count");
+
+   if (maxDrawCount == 0)
+      return;
+
+   /* As hk_draw_indirect_count */
+   size_t out_stride = sizeof(VkDrawMeshTasksIndirectCommandEXT);
+   uint64_t patched = hk_pool_alloc(cmd, out_stride * maxDrawCount, 4).gpu;
+   uint64_t in = hk_buffer_address_ro(buffer, offset);
+   uint64_t count_addr = hk_buffer_address_ro(count_buffer, countBufferOffset);
+
+   libagx_predicate_indirect(cmd, agx_1d(maxDrawCount),
+                             AGX_BARRIER_ALL | AGX_PREGFX, patched, in,
+                             count_addr, stride / 4, out_stride / 4);
+
+   for (unsigned draw_id = 0; draw_id < maxDrawCount; ++draw_id) {
+      hk_draw_mesh(cmd, draw_id,
+                   agx_grid_indirect(patched + out_stride * draw_id));
+   }
 }
 
 VKAPI_ATTR void VKAPI_CALL

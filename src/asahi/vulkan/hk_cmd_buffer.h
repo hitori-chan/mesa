@@ -77,6 +77,9 @@ struct hk_root_descriptor_table {
          /* Address of geometry param buffer if GS is used, else 0 */
          uint64_t geometry_params;
 
+         /* Address of mesh param buffer if a mesh shader is used, else 0 */
+         uint64_t mesh_params;
+
          /* Pipeline statistics queries. This is a base address with flags. */
          uint64_t pipeline_stats;
          VkQueryPipelineStatisticFlags pipeline_stats_flags;
@@ -552,7 +555,8 @@ hk_cmd_buffer_pool(struct hk_cmd_buffer *cmd)
 
 /*
  * The hardware vertex shader is supplied by the last geometry stage. The
- * geometry pipeline is vertex->tess->geometry so we search backwards.
+ * geometry pipeline is vertex->tess->geometry so we search backwards. A mesh
+ * pipeline has no vertex shader: its rasterization shader is the one.
  */
 static inline struct hk_shader *
 hk_bound_hw_vs(struct hk_graphics_state *gfx)
@@ -560,8 +564,13 @@ hk_bound_hw_vs(struct hk_graphics_state *gfx)
    struct hk_api_shader *vs = gfx->shaders[MESA_SHADER_VERTEX];
    struct hk_api_shader *tes = gfx->shaders[MESA_SHADER_TESS_EVAL];
    struct hk_api_shader *gs = gfx->shaders[MESA_SHADER_GEOMETRY];
+   struct hk_api_shader *mesh = gfx->shaders[MESA_SHADER_MESH];
 
-   if (gs && gfx->conservative)
+   if (mesh && gfx->conservative)
+      return &mesh->variants[HK_MESH_VARIANT_RAST_CONSERVATIVE];
+   else if (mesh)
+      return &mesh->variants[HK_MESH_VARIANT_RAST];
+   else if (gs && gfx->conservative)
       return &gs->variants[HK_GS_VARIANT_RAST_CONSERVATIVE];
    else if (gs)
       return &gs->variants[HK_GS_VARIANT_RAST];
@@ -577,7 +586,7 @@ hk_bound_sw_vs(struct hk_graphics_state *gfx)
    struct hk_api_shader *vs = gfx->shaders[MESA_SHADER_VERTEX];
    struct hk_shader *hw_vs = hk_bound_hw_vs(gfx);
 
-   if (hw_vs == &vs->variants[HK_VS_VARIANT_HW])
+   if (!vs || hw_vs == &vs->variants[HK_VS_VARIANT_HW])
       return hw_vs;
    else
       return &vs->variants[HK_VS_VARIANT_SW];

@@ -231,7 +231,8 @@ hk_preprocess_nir(struct vk_physical_device *vk_pdev, nir_shader *nir,
 
    hk_preprocess_nir_internal(vk_pdev, nir);
    nir_lower_compute_system_values_options csv_options = {
-      .has_base_workgroup_id = true,
+      /* Task and mesh shaders use the graphics root, without a base */
+      .has_base_workgroup_id = !mesa_shader_stage_is_mesh(nir->info.stage),
       .shuffle_local_ids_for_quad_derivatives = true,
       .lower_local_invocation_index =
          nir->info.derivative_group == DERIVATIVE_GROUP_QUADS,
@@ -348,14 +349,16 @@ hk_hash_graphics_state(struct vk_physical_device *device,
       _mesa_blake3_update(&blake3_ctx, &key, sizeof(key));
    }
 
-   if (state &&
-       (stages & (VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT))) {
+   if (state && (stages & (VK_SHADER_STAGE_VERTEX_BIT |
+                           VK_SHADER_STAGE_FRAGMENT_BIT |
+                           VK_SHADER_STAGE_MESH_BIT_EXT))) {
       const bool is_multiview = state->mv->view_mask != 0;
       _mesa_blake3_update(&blake3_ctx, &is_multiview, sizeof(is_multiview));
    }
 
    if (state && (stages & (VK_SHADER_STAGE_VERTEX_BIT |
-                           VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT))) {
+                           VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT |
+                           VK_SHADER_STAGE_MESH_BIT_EXT))) {
       const bool conservative = hk_may_rasterize_conservative(NULL, state);
       _mesa_blake3_update(&blake3_ctx, &conservative, sizeof(conservative));
    }
@@ -967,6 +970,19 @@ hk_lower_nir(struct hk_device *dev, nir_shader *nir,
    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_shared,
             nir_address_format_32bit_offset);
 
+   /* The payload lives in global memory (poly_nir_lower_mesh.c) */
+   if (mesa_shader_stage_is_mesh(nir->info.stage)) {
+      NIR_PASS(_, nir, nir_lower_vars_to_explicit_types,
+               nir_var_mem_task_payload, shared_var_info);
+      NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_task_payload,
+               nir_address_format_32bit_offset);
+   }
+
+   if (nir->info.stage == MESA_SHADER_TASK) {
+      NIR_PASS(_, nir, nir_lower_task_shader,
+               (nir_lower_task_shader_options){0});
+   }
+
    if (nir->info.zero_initialize_shared_memory && nir->info.shared_size > 0) {
       /* Align everything up to 16B so we can write whole vec4s. */
       nir->info.shared_size = align(nir->info.shared_size, 16);
@@ -993,6 +1009,15 @@ hk_lower_nir(struct hk_device *dev, nir_shader *nir,
 
    NIR_PASS(_, nir, nir_lower_indirect_derefs_to_if_else_trees,
             lower_indirect_modes, UINT32_MAX);
+
+   /* Mesh outputs stay indirect: a vector component must not read as a slot */
+   if (nir->info.stage == MESA_SHADER_MESH) {
+      NIR_PASS(_, nir, nir_lower_array_deref_of_vec, nir_var_shader_out, NULL,
+               nir_lower_direct_array_deref_of_vec_load |
+                  nir_lower_indirect_array_deref_of_vec_load |
+                  nir_lower_direct_array_deref_of_vec_store |
+                  nir_lower_indirect_array_deref_of_vec_store);
+   }
 
    NIR_PASS(_, nir, nir_lower_io, nir_var_shader_in | nir_var_shader_out,
             glsl_type_size,
@@ -1190,6 +1215,30 @@ hk_lower_conservative_budget(nir_shader *nir, struct hk_shader *shader,
    }
 }
 
+/*
+ * A mesh shader's per-primitive outputs reach the rasterizer on every corner
+ * (poly_nir_lower_mesh.c), so they read as flat inputs.
+ */
+static bool
+lower_per_primitive_input(nir_builder *b, nir_intrinsic_instr *intr,
+                          UNUSED void *data)
+{
+   if (intr->intrinsic != nir_intrinsic_load_per_primitive_input)
+      return false;
+
+   b->cursor = nir_before_instr(&intr->instr);
+   nir_io_semantics sem = nir_intrinsic_io_semantics(intr);
+
+   nir_def *repl = nir_load_input(
+      b, intr->def.num_components, intr->def.bit_size, intr->src[0].ssa,
+      .base = nir_intrinsic_base(intr), .range = sem.num_slots,
+      .component = nir_intrinsic_component(intr),
+      .dest_type = nir_intrinsic_dest_type(intr), .io_semantics = sem);
+
+   nir_def_replace(&intr->def, repl);
+   return true;
+}
+
 static VkResult
 hk_compile_nir(struct hk_device *dev, const VkAllocationCallbacks *pAllocator,
                nir_shader *nir, VkShaderCreateFlagsEXT shader_flags,
@@ -1207,6 +1256,9 @@ hk_compile_nir(struct hk_device *dev, const VkAllocationCallbacks *pAllocator,
          BITSET_LAST_BIT(shader->info.vs.attrib_components_read), 4);
       kill_psiz = key->vs.kill_psiz;
    } else if (sw_stage == MESA_SHADER_FRAGMENT) {
+      NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_per_primitive_input,
+               nir_metadata_control_flow, NULL);
+
       shader->info.fs.writes_memory = nir->info.writes_memory;
       shader->info.fs.interp.linear = nir->info.linear_varyings;
       shader->info.fs.interp.flat =
@@ -1477,6 +1529,9 @@ hk_compile_shader(struct hk_device *dev, struct vk_shader_compile_info *info,
       key = &key_tmp;
    } else if (sw_stage == MESA_SHADER_TESS_CTRL) {
       NIR_PASS(_, nir, poly_nir_lower_tcs, true);
+   } else if (sw_stage == MESA_SHADER_TASK) {
+      NIR_PASS(_, nir, poly_nir_lower_task, &obj->variants[0].info.mesh);
+      agx_preprocess_nir(nir);
    }
 
    const bool dump_vk =
@@ -1567,6 +1622,70 @@ hk_compile_shader(struct hk_device *dev, struct vk_shader_compile_info *info,
             ralloc_free(variants[v].in);
          }
       }
+   } else if (sw_stage == MESA_SHADER_MESH) {
+      struct hk_shader *main_variant = &obj->variants[HK_MESH_VARIANT_MAIN];
+      struct hk_shader *rast_variant = &obj->variants[HK_MESH_VARIANT_RAST];
+      struct hk_shader *cons_variant =
+         &obj->variants[HK_MESH_VARIANT_RAST_CONSERVATIVE];
+      nir_shader *rast = NULL, *rast_cons = NULL;
+
+      bool task = !(info->flags & VK_SHADER_CREATE_NO_TASK_SHADER_BIT_EXT);
+      bool multiview = state && state->mv && state->mv->view_mask;
+      bool conservative = hk_may_rasterize_conservative(dev, state);
+
+      NIR_PASS(_, nir, poly_nir_lower_mesh, task, multiview, &rast,
+               conservative ? &rast_cons : NULL, &main_variant->info.mesh);
+
+      agx_preprocess_nir(nir);
+      agx_preprocess_nir(rast);
+
+      rast_variant->info.mesh = main_variant->info.mesh;
+      hk_lower_hw_vs(rast, rast_variant,
+                     main_variant->info.mesh.prim != MESA_PRIM_POINTS);
+
+      if (rast_cons) {
+         agx_preprocess_nir(rast_cons);
+         hk_lower_conservative_budget(rast_cons, cons_variant,
+                                      rast_variant->info.uvs.size);
+         hk_lower_hw_vs(rast_cons, cons_variant, true);
+         cons_variant->info.mesh = main_variant->info.mesh;
+      }
+
+      struct {
+         nir_shader *in;
+         struct hk_shader *out;
+      } variants[] = {
+         {nir, main_variant},
+         {rast, rast_variant},
+         {rast_cons, cons_variant},
+      };
+
+      for (unsigned v = 0; v < ARRAY_SIZE(variants); ++v) {
+         if (!variants[v].in)
+            continue;
+
+         result = hk_compile_nir(dev, pAllocator, variants[v].in, info->flags,
+                                 info->robustness, NULL, features,
+                                 variants[v].out, sw_stage, true, NULL,
+                                 info->set_layout_count);
+
+         if (result != VK_SUCCESS) {
+            hk_api_shader_destroy(&dev->vk, &obj->vk, pAllocator);
+            ralloc_free(nir);
+            ralloc_free(rast);
+            ralloc_free(rast_cons);
+            return result;
+         }
+
+         if (dump_vk) {
+            dump_shader_ir(obj, variants[v].out, variants[v].in,
+                           debug_nir_stream, debug_agx_stream);
+         }
+      }
+
+      ralloc_free(nir);
+      ralloc_free(rast);
+      ralloc_free(rast_cons);
    } else if (sw_stage == MESA_SHADER_VERTEX ||
               sw_stage == MESA_SHADER_TESS_EVAL) {
 
@@ -1756,6 +1875,7 @@ hk_compile_shaders(struct vk_device *vk_dev, uint32_t shader_count,
    }
 
    nir_shader *shaders[shader_count];
+   bool mesh = false;
 
    /* Lower shaders, notably lowering I/O. This is a prerequisite for
     * intershader optimization.
@@ -1766,6 +1886,20 @@ hk_compile_shaders(struct vk_device *vk_dev, uint32_t shader_count,
       const bool is_multiview = state && state->mv->view_mask != 0;
       enum hk_feature_key hk_features = hk_make_feature_key(features);
       nir_shader *nir = info->nir;
+
+      mesh |= nir->info.stage == MESA_SHADER_MESH;
+
+      /* As NVK: after a mesh shader these inputs are per-primitive, which
+       * nir_opt_varyings needs both sides to agree on.
+       */
+      if (nir->info.stage == MESA_SHADER_FRAGMENT && mesh) {
+         nir_foreach_shader_in_variable(var, nir) {
+            if (var->data.location == VARYING_SLOT_PRIMITIVE_ID ||
+                var->data.location == VARYING_SLOT_VIEWPORT ||
+                var->data.location == VARYING_SLOT_LAYER)
+               var->data.per_primitive = true;
+         }
+      }
 
       hk_lower_nir(dev, nir, info->robustness, is_multiview,
                    info->set_layout_count, info->set_layouts, hk_features);
