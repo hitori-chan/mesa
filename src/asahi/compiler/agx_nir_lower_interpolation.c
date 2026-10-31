@@ -220,13 +220,17 @@ project_g15(nir_builder *b, nir_intrinsic_instr *load)
  * A per-vertex input (VK_KHR_fragment_shader_barycentric): its binding's shade
  * model "flat vertex 1" leaves vertex k's value in coefficient k, so a read
  * picks the coefficient by the vertex index, as Apple's compiler reads
- * air.get_vertex_value (an element of the binding's registers).
+ * air.get_vertex_value (an element of the binding's registers). A line's
+ * vertex 2 is its vertex 1, a point's every vertex its one: the registers
+ * past the primitive's last vertex hold something else.
  */
 static nir_def *
 lower_input_vertex(nir_builder *b, nir_intrinsic_instr *load)
 {
    assert(load->def.bit_size == 32);
-   nir_def *vertex = load->src[0].ssa;
+   nir_def *last =
+      nir_iadd_imm(b, nir_u2u32(b, nir_load_rast_vertices_agx(b)), -1);
+   nir_def *vertex = nir_umin(b, load->src[0].ssa, last);
 
    nir_def *values[NIR_MAX_VEC_COMPONENTS] = {NULL};
    for (unsigned i = 0; i < load->def.num_components; ++i) {
@@ -247,8 +251,9 @@ lower_input_vertex(nir_builder *b, nir_intrinsic_instr *load)
                           nir_channel(b, cf, k));
       }
 
-      if (nir_src_is_const(load->src[0])) {
-         values[i] = v[MIN2(nir_src_as_uint(load->src[0]), 2)];
+      if (nir_src_is_const(load->src[0]) &&
+          nir_src_as_uint(load->src[0]) == 0) {
+         values[i] = v[0];
       } else {
          values[i] =
             nir_bcsel(b, nir_ieq_imm(b, vertex, 0), v[0],
@@ -343,7 +348,13 @@ lower_bary_coord(nir_builder *b, nir_intrinsic_instr *intr, void *data)
    nir_def *x = nir_channel(b, xy, 0), *y = nir_channel(b, xy, 1);
    nir_def *z = nir_fsub(b, nir_fsub_imm(b, 1.0, x), y);
 
-   nir_def_replace(&intr->def, nir_vec3(b, x, y, z));
+   /* A fan whose first vertex provokes is rotated by one, as its per-vertex
+    * values (lower_input_vertex)
+    */
+   nir_def *first_fan = nir_load_is_first_fan_agx(b);
+   nir_def_replace(&intr->def,
+                   nir_bcsel(b, first_fan, nir_vec3(b, y, z, x),
+                             nir_vec3(b, x, y, z)));
    return true;
 }
 
