@@ -57,6 +57,8 @@ hk_reports_per_query(struct hk_query_pool *pool)
    case VK_QUERY_TYPE_PRIMITIVES_GENERATED_EXT:
    case VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR:
    case VK_QUERY_TYPE_ACCELERATION_STRUCTURE_SERIALIZATION_SIZE_KHR:
+   case VK_QUERY_TYPE_ACCELERATION_STRUCTURE_SIZE_KHR:
+   case VK_QUERY_TYPE_ACCELERATION_STRUCTURE_SERIALIZATION_BOTTOM_LEVEL_POINTERS_KHR:
       return 1;
    case VK_QUERY_TYPE_PIPELINE_STATISTICS:
       return util_bitcount(pool->vk.pipeline_statistics);
@@ -384,10 +386,24 @@ hk_CmdWriteAccelerationStructuresPropertiesKHR(
    VK_FROM_HANDLE(hk_query_pool, pool, queryPool);
    struct hk_device *dev = hk_cmd_buffer_device(cmd);
 
-   size_t field =
-      queryType == VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR
-         ? offsetof(struct hk_bvh_header, compacted_size)
-         : offsetof(struct hk_bvh_header, serialization_size);
+   /* A structure is never compacted further: its size is its compacted size.
+    * A serialized structure has a bottom-level pointer an instance.
+    */
+   size_t field;
+   switch (queryType) {
+   case VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR:
+   case VK_QUERY_TYPE_ACCELERATION_STRUCTURE_SIZE_KHR:
+      field = offsetof(struct hk_bvh_header, compacted_size);
+      break;
+   case VK_QUERY_TYPE_ACCELERATION_STRUCTURE_SERIALIZATION_SIZE_KHR:
+      field = offsetof(struct hk_bvh_header, serialization_size);
+      break;
+   case VK_QUERY_TYPE_ACCELERATION_STRUCTURE_SERIALIZATION_BOTTOM_LEVEL_POINTERS_KHR:
+      field = offsetof(struct hk_bvh_header, instance_count);
+      break;
+   default:
+      UNREACHABLE("Unsupported query type");
+   }
 
    for (uint32_t i = 0; i < accelerationStructureCount; i++) {
       VK_FROM_HANDLE(vk_acceleration_structure, accel,
