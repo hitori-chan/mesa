@@ -512,10 +512,62 @@ per_wg_merge(uint32_t kv_count, uint32_t wg_id, uint32_t dst_wgs_per_list, KEY_R
    store_keyvals_to_global(local_kvs, dst, dst_list_start + first_dst_elem, items_to_write);
 }
 
+/* Sort workgroup cur_wg_id's KEYVALS_PER_WG keys into ids_odd. */
+void
+sort_tile(uint32_t kv_count, uint32_t cur_wg_id)
+{
+   KEY_T local_kvs[MORTON_SORT_KVS_PER_THREAD];
+   uint32_t wg_base = cur_wg_id * KEYVALS_PER_WG;
+   uint32_t base = wg_base + gl_LocalInvocationID.x * MORTON_SORT_KVS_PER_THREAD;
+   if (base + MORTON_SORT_KVS_PER_THREAD <= kv_count) {
+      for (uint32_t i = 0; i < MORTON_SORT_KVS_PER_THREAD; ++i) {
+         uint32_t id_index = base + i;
+         uint32_t id = DEREF(INDEX(uint32_t, args.ids_even, id_index));
+         local_kvs[i] = GET_KEY(args.header, args.bvh, id);
+      }
+   } else {
+      for (uint32_t i = 0; i < MORTON_SORT_KVS_PER_THREAD; ++i) {
+         uint32_t id_index = base + i;
+         if (id_index < kv_count) {
+            uint32_t id = DEREF(INDEX(uint32_t, args.ids_even, id_index));
+            local_kvs[i] = GET_KEY(args.header, args.bvh, id);
+         } else {
+            local_kvs[i] = INVALID_KEY;
+         }
+      }
+   }
+
+   subgroup_bitonic_merge(local_kvs);
+
+   /* Intra-workgroup cooperative merging steps */
+   for (uint multiplier = gl_SubgroupSize * 2; multiplier <= MORTON_SORT_WORKGROUP_SIZE; multiplier *= 2) {
+      intra_wg_merge(local_kvs, multiplier);
+      barrier();
+   }
+
+   store_keyvals_to_global(local_kvs, KEY_REF(args.ids_odd), wg_base, kv_count - wg_base);
+}
+
 void
 main()
 {
    uint32_t kv_count = args.leaf_count;
+
+   /* One step a dispatch: every workgroup takes the tile of its own ID, so none waits for another. The single
+    * dispatch below waits, and needs each workgroup that took a tile to run on while others spin, which G15 does
+    * not do: there a core's other resident workgroups stall while its first spins (not traced further).
+    */
+   if (args.step == 1) {
+      sort_tile(kv_count, gl_WorkGroupID.x);
+      return;
+   } else if (args.step > 1) {
+      uint32_t log2_multiplier = args.step - 1;
+      bool pass_even = (log2_multiplier & 0x1) == 0;
+      KEY_REF cur_in = pass_even ? KEY_REF(args.ids_even) : KEY_REF(args.ids_odd);
+      KEY_REF cur_out = pass_even ? KEY_REF(args.ids_odd) : KEY_REF(args.ids_even);
+      per_wg_merge(kv_count, gl_WorkGroupID.x, 1 << log2_multiplier, cur_in, cur_out);
+      return;
+   }
 
    uint32_t num_wgs_done = 0;
    while (true) {
@@ -539,36 +591,7 @@ main()
          barrier();
       }
 
-      KEY_T local_kvs[MORTON_SORT_KVS_PER_THREAD];
-      uint32_t wg_base = cur_wg_id * KEYVALS_PER_WG;
-      uint32_t base = wg_base + gl_LocalInvocationID.x * MORTON_SORT_KVS_PER_THREAD;
-      if (base + MORTON_SORT_KVS_PER_THREAD <= kv_count) {
-         for (uint32_t i = 0; i < MORTON_SORT_KVS_PER_THREAD; ++i) {
-            uint32_t id_index = base + i;
-            uint32_t id = DEREF(INDEX(uint32_t, args.ids_even, id_index));
-            local_kvs[i] = GET_KEY(args.header, args.bvh, id);
-         }
-      } else {
-         for (uint32_t i = 0; i < MORTON_SORT_KVS_PER_THREAD; ++i) {
-            uint32_t id_index = base + i;
-            if (id_index < kv_count) {
-               uint32_t id = DEREF(INDEX(uint32_t, args.ids_even, id_index));
-               local_kvs[i] = GET_KEY(args.header, args.bvh, id);
-            } else {
-               local_kvs[i] = INVALID_KEY;
-            }
-         }
-      }
-
-      subgroup_bitonic_merge(local_kvs);
-
-      /* Intra-workgroup cooperative merging steps */
-      for (uint multiplier = gl_SubgroupSize * 2; multiplier <= MORTON_SORT_WORKGROUP_SIZE; multiplier *= 2) {
-         intra_wg_merge(local_kvs, multiplier);
-         barrier();
-      }
-
-      store_keyvals_to_global(local_kvs, KEY_REF(args.ids_odd), wg_base, kv_count - wg_base);
+      sort_tile(kv_count, cur_wg_id);
 
       barrier();
       ++num_wgs_done;

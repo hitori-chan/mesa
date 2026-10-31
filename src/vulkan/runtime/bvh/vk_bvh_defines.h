@@ -458,6 +458,9 @@ struct morton_sort_args {
    VOID_REF ids_odd;
    REF(morton_ready_count) counts;
    uint32_t leaf_count;
+   /* 0 the whole sort in one dispatch; 1 the tiles' sort, k + 1 the merge pass of log2 multiplier k, a dispatch
+    * each (vk_acceleration_structure_build_args::morton_sort_per_step) */
+   uint32_t step;
 };
 
 #define LBVH_RIGHT_CHILD_BIT_SHIFT 29
