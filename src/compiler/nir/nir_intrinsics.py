@@ -2685,6 +2685,9 @@ system_value("fixed_point_size_agx", 1, bit_sizes=[32])
 # Bit mask of TEX locations that are replaced with point sprites
 system_value("tex_sprite_mask_agx", 1, bit_sizes=[16])
 
+# The address of a ray-tracing dispatch's VkTraceRaysIndirectCommand2KHR
+system_value("rt_params_agx", 1, bit_sizes=[64])
+
 # Image loads go through the texture cache, which is not coherent with the PBE
 # or memory access, so fencing is necessary for writes to become visible.
 
