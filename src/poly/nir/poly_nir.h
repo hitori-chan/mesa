@@ -90,6 +90,11 @@ struct poly_mesh_info {
 
    /* Task shader: payload bytes per task workgroup */
    uint16_t payload_size;
+
+   /* Task shader: most mesh workgroups one task workgroup launches, UINT32_MAX
+    * if not bounded at compile time
+    */
+   uint32_t max_launch;
 };
 
 bool poly_nir_lower_mesh(struct nir_shader *mesh, bool task, bool multiview,

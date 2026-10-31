@@ -8,6 +8,7 @@
 #include "poly/geometry.h"
 #include "poly/nir/poly_nir.h"
 #include "util/bitscan.h"
+#include "util/hash_table.h"
 #include "util/macros.h"
 #include "util/u_math.h"
 #include "nir.h"
@@ -557,7 +558,31 @@ poly_nir_lower_mesh(nir_shader *mesh, bool task, bool multiview,
 
 struct lower_task_state {
    nir_def *payload, *launch, *num_workgroups, *draw_id;
+   struct hash_table *range_ht;
+   uint32_t max_launch;
 };
+
+/* Upper bound of a launch's mesh workgroups, as launched (an invalid one
+ * launches none), or UINT32_MAX when a dimension has no bound
+ */
+static uint32_t
+launch_upper_bound(nir_shader *shader, struct lower_task_state *s,
+                   nir_def *grid)
+{
+   uint64_t bound = 1;
+
+   for (unsigned c = 0; c < 3; ++c) {
+      nir_scalar dim = nir_get_scalar(grid, c);
+      uint32_t dim_bound = nir_unsigned_upper_bound(shader, s->range_ht, dim);
+
+      if (dim_bound > 65535)
+         return UINT32_MAX;
+
+      bound *= dim_bound;
+   }
+
+   return MIN2(bound, POLY_MAX_MESH_WORKGROUPS);
+}
 
 static bool
 lower_task(nir_builder *b, nir_intrinsic_instr *intr, void *data)
@@ -602,6 +627,9 @@ lower_task(nir_builder *b, nir_intrinsic_instr *intr, void *data)
        * prefix sum. A launch past the limits is undefined: launch nothing.
        */
       nir_def *grid = intr->src[0].ssa;
+      s->max_launch =
+         MAX2(s->max_launch, launch_upper_bound(b->shader, s, grid));
+
       nir_def *xy = nir_imul(b, nir_channel(b, grid, 0), nir_channel(b, grid, 1));
       nir_def *size64 = nir_imul_2x32_64(b, xy, nir_channel(b, grid, 2));
 
@@ -658,6 +686,7 @@ poly_nir_lower_task(nir_shader *task, struct poly_mesh_info *info)
    struct lower_task_state s = {
       .num_workgroups = load_param(&b, p, group_count, 3, 32),
       .draw_id = load_param(&b, p, draw_id, 1, 32),
+      .range_ht = _mesa_pointer_hash_table_create(NULL),
    };
 
    nir_def *t = linear_id(&b, nir_load_workgroup_id(&b), s.num_workgroups);
@@ -666,6 +695,8 @@ poly_nir_lower_task(nir_shader *task, struct poly_mesh_info *info)
                        nir_u2u64(&b, nir_imul_imm(&b, t, 16)));
 
    nir_shader_intrinsics_pass(task, lower_task, nir_metadata_none, &s);
+   info->max_launch = s.max_launch;
+   _mesa_hash_table_destroy(s.range_ht, NULL);
 
    /* Run as a compute shader */
    task->info.stage = MESA_SHADER_COMPUTE;

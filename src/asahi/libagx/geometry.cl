@@ -237,8 +237,10 @@ libagx_mesh_setup_from_task(global struct poly_mesh_params *p,
    uint total = p->task_count ? p->launches[(p->task_count * 4) - 1] : 0;
    uint64_t alloc = 0;
 
+   /* A direct draw whose launches are bounded has its records allocated */
    if (total <= POLY_MAX_MESH_WORKGROUPS)
-      alloc = mesh_heap_alloc(heap, (uint64_t)total * stride_B);
+      alloc = p->outputs ? (uintptr_t)p->outputs
+                         : mesh_heap_alloc(heap, (uint64_t)total * stride_B);
 
    if (!alloc)
       total = 0;

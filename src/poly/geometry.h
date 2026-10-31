@@ -386,7 +386,9 @@ poly_geometry_params_set_draw(struct poly_geometry_params *p,
  * rasterizes, one instance per workgroup (poly_nir_lower_mesh.c).
  */
 struct poly_mesh_params {
-   /* Output records, one per mesh workgroup */
+   /* Output records, one per mesh workgroup. After a task shader, set before
+    * libagx_mesh_setup_from_task only by a direct draw with bounded launches.
+    */
    DEVICE(uchar) outputs;
 
    /* Task payloads, payload_stride bytes apart, one per task workgroup */

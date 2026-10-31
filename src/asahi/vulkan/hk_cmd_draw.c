@@ -1493,6 +1493,9 @@ hk_upload_tess_params(struct hk_cmd_buffer *cmd, struct poly_tess_params *out,
    memcpy(out, &args, sizeof(args));
 }
 
+/* Most mesh records a direct task draw allocates on the CPU */
+#define HK_MESH_RECORDS_MAX_B (1ull << 30)
+
 static void
 hk_mesh_workgroup(struct hk_shader *s, uint32_t wg[3])
 {
@@ -1550,6 +1553,19 @@ hk_upload_mesh_params(struct hk_cmd_buffer *cmd, uint32_t draw_id,
 
       poly_mesh_params_set_grid(&params, count, wg, alloc, task != NULL,
                                 hk_mesh_draw_vertices(&mesh->info.mesh));
+
+      /* With the task launches bounded at compile time, the mesh records are
+       * allocated here too, up to HK_MESH_RECORDS_MAX_B, instead of from the
+       * 128 MiB GPU heap. The bound is not the count: memory may go unused.
+       */
+      uint32_t launch = task ? hk_only_variant(task)->info.mesh.max_launch : 0;
+
+      if (task && alloc && launch != UINT32_MAX) {
+         uint64_t records = total * launch * mesh->info.mesh.record_stride;
+
+         if (records && records <= HK_MESH_RECORDS_MAX_B)
+            params.outputs = hk_pool_alloc(cmd, records, 16).gpu;
+      }
    }
 
    return hk_pool_upload(cmd, &params, sizeof(params), 8);
