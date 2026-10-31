@@ -111,6 +111,24 @@ struct vk_shader_compile_info {
 
 struct vk_shader_ops;
 
+/** A ray-tracing shader group, for vk_device_shader_ops::link_rt_pipeline */
+struct vk_rt_link_group {
+   VkRayTracingShaderGroupTypeKHR type;
+
+   uint32_t shader_count;
+   struct vk_shader *shaders[3];
+};
+
+struct vk_rt_link_info {
+   VkPipelineCreateFlags2KHR flags;
+   uint32_t max_recursion_depth;
+   struct vk_pipeline_layout *layout;
+
+   /* In the API's order, the libraries' after the pipeline's own */
+   uint32_t group_count;
+   const struct vk_rt_link_group *groups;
+};
+
 struct vk_shader {
    struct vk_object_base base;
 
@@ -359,6 +377,24 @@ struct vk_device_shader_ops {
    /** Sets stack size for RT pipelines */
    void (*cmd_set_stack_size)(struct vk_command_buffer *cmd_buffer,
                               VkDeviceSize stack_size);
+
+   /** Links a ray-tracing pipeline's shaders into one shader
+    *
+    * Optional.  Called once a ray-tracing pipeline that is not a library has
+    * all its groups, its libraries' included.  The shader it returns is the
+    * pipeline's: cmd_bind_rt_shader binds it, and the pipeline destroys it.
+    */
+   VkResult (*link_rt_pipeline)(struct vk_device *device,
+                                const struct vk_rt_link_info *info,
+                                const VkAllocationCallbacks *pAllocator,
+                                struct vk_shader **shader_out);
+
+   /** Binds a linked ray-tracing shader, or NULL when the pipeline goes
+    *
+    * Required with link_rt_pipeline.
+    */
+   void (*cmd_bind_rt_shader)(struct vk_command_buffer *cmd_buffer,
+                              struct vk_shader *shader);
 };
 
 extern const struct vk_pipeline_robustness_state vk_robustness_disabled;
