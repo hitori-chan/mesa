@@ -14,6 +14,7 @@
 
 #define HK_MAX_SETS                      8
 #define HK_MAX_PUSH_SIZE                 256
+#define HK_ATOMIC64_LOCKS                65536
 #define HK_MAX_DYNAMIC_BUFFERS           64
 #define HK_MAX_RTS                       8
 #define HK_MIN_SSBO_ALIGNMENT            4
