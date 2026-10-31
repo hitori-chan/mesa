@@ -2737,6 +2737,9 @@ struct vk_rt_pipeline {
    uint32_t ray_queries;
 
    uint8_t dynamic_descriptor_offsets[MESA_VK_MAX_DESCRIPTOR_SETS];
+
+   /* The driver's linked shader (vk_device_shader_ops::link_rt_pipeline) */
+   struct vk_shader *linked;
 };
 
 uint32_t
@@ -2786,6 +2789,8 @@ vk_rt_pipeline_destroy(struct vk_device *device,
       vk_pipeline_stage_finish(device, &rt_pipeline->stages[i]);
    if (rt_pipeline->layout != NULL)
       vk_pipeline_layout_unref(device, rt_pipeline->layout);
+   if (rt_pipeline->linked != NULL)
+      vk_shader_destroy(device, rt_pipeline->linked, pAllocator);
    vk_pipeline_free(device, pAllocator, pipeline);
 }
 
@@ -2809,9 +2814,18 @@ vk_rt_pipeline_cmd_bind(struct vk_command_buffer *cmd_buffer,
       if (rt_pipeline->stack_size > 0)
          ops->cmd_set_stack_size(cmd_buffer, rt_pipeline->stack_size);
 
+      if (ops->cmd_bind_rt_shader != NULL)
+         ops->cmd_bind_rt_shader(cmd_buffer, rt_pipeline->linked);
+
       assert(pipeline->bind_point == VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR);
       cmd_buffer->pipeline_shader_stages |= pipeline->stages;
    } else {
+      struct vk_device *device = cmd_buffer->base.device;
+      const struct vk_device_shader_ops *ops = device->shader_ops;
+
+      if (ops->cmd_bind_rt_shader != NULL)
+         ops->cmd_bind_rt_shader(cmd_buffer, NULL);
+
       cmd_buffer->pipeline_shader_stages &= ~(VK_SHADER_STAGE_RAYGEN_BIT_KHR |
                                               VK_SHADER_STAGE_ANY_HIT_BIT_KHR |
                                               VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
@@ -3520,6 +3534,48 @@ is_rt_stack_size_dynamic(const VkRayTracingPipelineCreateInfoKHR *info)
    return false;
 }
 
+static VkResult
+vk_rt_pipeline_link(struct vk_device *device,
+                    struct vk_rt_pipeline *pipeline,
+                    const VkRayTracingPipelineCreateInfoKHR *pCreateInfo,
+                    VkPipelineCreateFlags2KHR pipeline_flags,
+                    struct vk_pipeline_layout *pipeline_layout,
+                    const VkAllocationCallbacks *pAllocator)
+{
+   struct vk_rt_link_group *groups =
+      vk_alloc2(&device->alloc, pAllocator,
+                MAX2(pipeline->group_count, 1) * sizeof(*groups), 8,
+                VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
+   if (groups == NULL)
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+   for (uint32_t g = 0; g < pipeline->group_count; g++) {
+      const struct vk_rt_shader_group *group = &pipeline->groups[g];
+
+      groups[g] = (struct vk_rt_link_group) {
+         .type = group->type,
+         .shader_count = group->stage_count,
+      };
+      for (uint32_t s = 0; s < group->stage_count; s++)
+         groups[g].shaders[s] = group->stages[s].shader;
+   }
+
+   const struct vk_rt_link_info info = {
+      .flags = pipeline_flags,
+      .max_recursion_depth = pCreateInfo->maxPipelineRayRecursionDepth,
+      .layout = pipeline_layout,
+      .group_count = pipeline->group_count,
+      .groups = groups,
+   };
+
+   VkResult result =
+      device->shader_ops->link_rt_pipeline(device, &info, pAllocator,
+                                           &pipeline->linked);
+
+   vk_free2(&device->alloc, pAllocator, groups);
+   return result;
+}
+
 static int
 cmp_vk_rt_pipeline_stages(const void *_a, const void *_b)
 {
@@ -3816,6 +3872,15 @@ vk_create_rt_pipeline(struct vk_device *device,
        */
       if (pipeline->stack_size == 0)
          pipeline->stack_size = 1;
+   }
+
+   if (device->shader_ops->link_rt_pipeline != NULL &&
+       !(pipeline_flags & VK_PIPELINE_CREATE_2_LIBRARY_BIT_KHR)) {
+      result = vk_rt_pipeline_link(device, pipeline, pCreateInfo,
+                                   pipeline_flags, pipeline_layout,
+                                   pAllocator);
+      if (result != VK_SUCCESS)
+         goto fail_stages_compile;
    }
 
    if (pipeline_layout != NULL)
