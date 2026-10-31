@@ -19,6 +19,7 @@
 #include "hk_entrypoints.h"
 #include "hk_image.h"
 #include "hk_physical_device.h"
+#include "vk_acceleration_structure.h"
 
 VkFormatFeatureFlags2
 hk_get_buffer_format_features(struct hk_physical_device *pdev,
@@ -47,6 +48,10 @@ hk_get_buffer_format_features(struct hk_physical_device *pdev,
       if (p_format == PIPE_FORMAT_R32_UINT || p_format == PIPE_FORMAT_R32_SINT)
          features |= VK_FORMAT_FEATURE_2_STORAGE_TEXEL_BUFFER_ATOMIC_BIT;
    }
+
+   if (pdev->vk.supported_extensions.KHR_acceleration_structure &&
+       vk_acceleration_struct_vtx_format_supported(vk_format))
+      features |= VK_FORMAT_FEATURE_2_ACCELERATION_STRUCTURE_VERTEX_BUFFER_BIT_KHR;
 
    return features;
 }
