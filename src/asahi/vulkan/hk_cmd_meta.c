@@ -248,7 +248,10 @@ aspect_format(VkFormat fmt, VkImageAspectFlags aspect)
 static enum pipe_format
 canonical_format_pipe(enum pipe_format fmt, bool g15)
 {
-   assert(ail_is_valid_pixel_format(fmt));
+   /* G15's R64 storage images copy as R32G32 (hk_image.c) */
+   assert(
+      ail_is_valid_pixel_format(fmt) ||
+      (g15 && (fmt == PIPE_FORMAT_R64_UINT || fmt == PIPE_FORMAT_R64_SINT)));
 
    if (util_format_is_compressed(fmt)) {
       unsigned size_B = util_format_get_blocksize(fmt);
