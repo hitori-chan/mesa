@@ -1031,7 +1031,6 @@ hk_lower_nir(struct hk_device *dev, nir_shader *nir,
             hk_buffer_addr_format(rs->storage_buffers));
    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_ubo,
             hk_buffer_addr_format(rs->uniform_buffers));
-   NIR_PASS(_, nir, hk_nir_lower_atomic64);
 
    /* Before inserting bounds checks, we want to do a fair bit of optimization.
     * lower_load_global_constant_offset_instr has special optimizations for
@@ -1121,10 +1120,13 @@ hk_lower_nir(struct hk_device *dev, nir_shader *nir,
                nir_metadata_control_flow, NULL);
    }
 
+   if (dev->dev.params.gpu_generation >= 15)
+      NIR_PASS(_, nir, hk_nir_lower_image_r64);
    NIR_PASS(_, nir, agx_nir_lower_texture_gen,
             dev->dev.params.gpu_generation >= 15);
    if (dev->dev.params.gpu_generation >= 15)
       NIR_PASS(_, nir, hk_nir_lower_image_loads_g15);
+   NIR_PASS(_, nir, hk_nir_lower_atomic64);
    NIR_PASS(_, nir, agx_nir_lower_multisampled_image_store,
             dev->dev.params.gpu_generation >= 15);
 

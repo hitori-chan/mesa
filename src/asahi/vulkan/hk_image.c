@@ -60,6 +60,26 @@ hk_get_image_plane_format_features(struct hk_physical_device *pdev,
    if (util_format_is_compressed(p_format) && tiling != VK_IMAGE_TILING_OPTIMAL)
       return 0;
 
+   /* G15: R64 is a storage format for 64-bit image atomics, read and written
+    * as R32G32_UINT (hk_nir_lower_image_r64), never sampled or rendered. With
+    * sparseResidencyImage2D, Vulkan requires sparse residency of a 2D optimal
+    * image of any such format with a power-of-two texel: it is R32G32's.
+    * sparseImageInt64Atomics stays off.
+    */
+   if (p_format == PIPE_FORMAT_R64_UINT || p_format == PIPE_FORMAT_R64_SINT) {
+      if (pdev->dev.params.gpu_generation < 15)
+         return 0;
+
+      features = VK_FORMAT_FEATURE_2_STORAGE_IMAGE_BIT |
+                 VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT |
+                 VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT;
+
+      if (tiling == VK_IMAGE_TILING_OPTIMAL)
+         features |= VK_FORMAT_FEATURE_2_STORAGE_IMAGE_ATOMIC_BIT;
+
+      return features;
+   }
+
    if (ail_pixel_format[p_format].texturable) {
       features |= VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT;
       features |= VK_FORMAT_FEATURE_2_BLIT_SRC_BIT;
@@ -474,8 +494,7 @@ hk_GetPhysicalDeviceImageFormatProperties2(
     * emulate on G13 but it'd be fiddly. Fortunately, vkd3d-proton doesn't need
     * sparse depth, as RADV has the same limitation!
     */
-   if ((ycbcr_info ||
-        vk_format_is_depth_or_stencil(pImageFormatInfo->format)) &&
+   if ((ycbcr_info || vk_format_is_depth_or_stencil(pImageFormatInfo->format)) &&
        (pImageFormatInfo->flags & VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT)) {
       return VK_ERROR_FORMAT_NOT_SUPPORTED;
    }
