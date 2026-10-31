@@ -33,8 +33,9 @@ struct agx_cf_binding {
    /* Perspective correct interpolation */
    bool perspective : 1;
 
-   /* For flat shading, the vertex whose value is taken: 0 for the provoking
-    * vertex, else the primitive's vertex plus one (per-vertex inputs).
+   /* For flat shading, 0 for the provoking vertex's value, else the shade
+    * model "flat vertex" this minus one: a per-vertex input's binding is 2
+    * ("flat vertex 1"), which holds the three vertices' values.
     */
    uint8_t flat_vertex;
 };

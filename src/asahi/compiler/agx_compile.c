@@ -345,8 +345,10 @@ assign_coefficient_regs(nir_shader *nir, struct agx_varyings_fs *var)
       var->nr_cf += count;
    }
 
-   /* Per-vertex inputs: a flat binding for each vertex, each over the range
-    * read at any vertex, so the three have one layout.
+   /* Per-vertex inputs: one binding at shade model "flat vertex 1", whose
+    * register holds the primitive's three vertices' values as its three
+    * coefficients (flatprobe: register k is vertex k, in the primitive's
+    * order), over the range read at any vertex.
     */
    for (unsigned i = VARYING_SLOT_POS + 1; i < VARYING_SLOT_MAX; ++i) {
       unsigned offset = 4, end = 0;
@@ -363,17 +365,15 @@ assign_coefficient_regs(nir_shader *nir, struct agx_varyings_fs *var)
       if (offset >= end)
          continue;
 
-      for (unsigned v = 0; v < 3; ++v) {
-         var->bindings[var->nr_bindings++] = (struct agx_cf_binding){
-            .cf_base = var->nr_cf,
-            .slot = i,
-            .offset = offset,
-            .count = end - offset,
-            .flat_vertex = v + 1,
-         };
+      var->bindings[var->nr_bindings++] = (struct agx_cf_binding){
+         .cf_base = var->nr_cf,
+         .slot = i,
+         .offset = offset,
+         .count = end - offset,
+         .flat_vertex = 2,
+      };
 
-         var->nr_cf += end - offset;
-      }
+      var->nr_cf += end - offset;
    }
 }
 
