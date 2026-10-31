@@ -190,10 +190,45 @@ hk_preprocess_nir_internal(struct vk_physical_device *vk_pdev, nir_shader *nir)
    NIR_PASS(_, nir, nir_lower_memcpy);
 }
 
+/* A ray-tracing stage stays NIR until its pipeline is linked
+ * (hk_rt_pipeline.c), lowered only as far as inlining needs; its ray queries
+ * are lowered in the kernel.
+ */
+static void
+hk_preprocess_rt_stage(nir_shader *nir)
+{
+   NIR_PASS(_, nir, nir_lower_global_vars_to_local);
+   NIR_PASS(_, nir, nir_lower_system_values);
+   NIR_PASS(_, nir, nir_split_var_copies);
+   NIR_PASS(_, nir, nir_lower_var_copies);
+
+   /* The shader record: a cast of load_shader_record_ptr */
+   NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_constant,
+            nir_address_format_64bit_global);
+
+   bool progress;
+   do {
+      progress = false;
+      NIR_PASS(progress, nir, nir_lower_vars_to_ssa);
+      NIR_PASS(progress, nir, nir_opt_copy_prop);
+      NIR_PASS(progress, nir, nir_opt_dce);
+      NIR_PASS(progress, nir, nir_opt_dead_cf);
+      NIR_PASS(progress, nir, nir_opt_constant_folding);
+   } while (progress);
+
+   NIR_PASS(_, nir, nir_remove_dead_variables,
+            nir_var_function_temp | nir_var_shader_temp, NULL);
+}
+
 static void
 hk_preprocess_nir(struct vk_physical_device *vk_pdev, nir_shader *nir,
                   UNUSED const struct vk_pipeline_robustness_state *rs)
 {
+   if (mesa_shader_stage_is_rt(nir->info.stage)) {
+      hk_preprocess_rt_stage(nir);
+      return;
+   }
+
    hk_preprocess_nir_internal(vk_pdev, nir);
    nir_lower_compute_system_values_options csv_options = {
       .has_base_workgroup_id = true,
@@ -1619,6 +1654,15 @@ hk_compile_shaders(struct vk_device *vk_dev, uint32_t shader_count,
                    struct vk_shader **shaders_out)
 {
    struct hk_device *dev = container_of(vk_dev, struct hk_device, vk);
+
+   /* The runtime compiles ray-tracing stages one by one, without
+    * get_rt_group_linking
+    */
+   if (shader_count > 0 && mesa_shader_stage_is_rt(infos[0].stage)) {
+      return hk_compile_rt_stages(dev, shader_count, infos, pAllocator,
+                                  shaders_out);
+   }
+
    nir_shader *shaders[shader_count];
 
    /* Lower shaders, notably lowering I/O. This is a prerequisite for
@@ -1668,6 +1712,22 @@ hk_compile_shaders(struct vk_device *vk_dev, uint32_t shader_count,
    }
 
    return VK_SUCCESS;
+}
+
+/* A ray-tracing pipeline's kernel (hk_rt_pipeline.c), lowered as an API
+ * compute shader
+ */
+VkResult
+hk_compile_rt_kernel(struct hk_device *dev, struct vk_shader_compile_info *info,
+                     const VkAllocationCallbacks *pAllocator,
+                     struct hk_api_shader **shader_out)
+{
+   const struct vk_features *features = &dev->vk.enabled_features;
+
+   hk_lower_nir(dev, info->nir, info->robustness, false, info->set_layout_count,
+                info->set_layouts, hk_make_feature_key(features));
+
+   return hk_compile_shader(dev, info, NULL, features, pAllocator, shader_out);
 }
 
 static VkResult
@@ -1726,6 +1786,9 @@ hk_deserialize_api_shader(struct vk_device *vk_dev, struct blob_reader *blob,
    mesa_shader_stage stage = blob_read_uint8(blob);
    if (blob->overrun)
       return vk_error(dev, VK_ERROR_INCOMPATIBLE_SHADER_BINARY_EXT);
+
+   if (mesa_shader_stage_is_rt(stage))
+      return hk_rt_stage_deserialize(dev, blob, stage, pAllocator, shader_out);
 
    size_t size = sizeof(struct hk_api_shader) +
                  sizeof(struct hk_shader) * hk_num_variants(stage);
@@ -1945,6 +2008,14 @@ const struct vk_device_shader_ops hk_device_shader_ops = {
    .deserialize = hk_deserialize_api_shader,
    .cmd_set_dynamic_graphics_state = vk_cmd_set_dynamic_graphics_state,
    .cmd_bind_shaders = hk_cmd_bind_shaders,
+   .write_rt_shader_group = hk_write_rt_shader_group,
+   .write_rt_shader_group_replay_handle =
+      hk_write_rt_shader_group_replay_handle,
+   .replay_rt_shader_group = hk_replay_rt_shader_group,
+   .cmd_set_rt_state = hk_cmd_set_rt_state,
+   .cmd_set_stack_size = hk_cmd_set_rt_stack_size,
+   .link_rt_pipeline = hk_link_rt_pipeline,
+   .cmd_bind_rt_shader = hk_cmd_bind_rt_shader,
 };
 
 struct hk_linked_shader *

@@ -108,4 +108,43 @@ nir_def *hk_build_ray_traversal(nir_builder *b, const struct hk_ray_traversal_ar
 
 bool hk_nir_lower_ray_queries(struct nir_shader *shader);
 
+/* A ray-tracing pipeline's kernel (hk_nir_rt_pipeline.c) */
+
+/* A group handle: the IDs of its general or closest-hit, any-hit and
+ * intersection shaders, 0 for none, and a zero. The shader record follows.
+ */
+#define HK_RT_HANDLE_SIZE 32
+
+#define HK_RT_UNUSED (~0u)
+
+struct hk_rt_stage {
+   nir_shader *nir;
+   uint64_t id;
+};
+
+/* Indices into hk_rt_kernel_info::stages, or HK_RT_UNUSED */
+struct hk_rt_group {
+   uint32_t general;
+   uint32_t closest_hit;
+   uint32_t any_hit;
+   uint32_t intersection;
+};
+
+struct hk_rt_kernel_info {
+   /* One a shader ID */
+   const struct hk_rt_stage *stages;
+   uint32_t stage_count;
+
+   const struct hk_rt_group *groups;
+   uint32_t group_count;
+
+   bool skip_triangles;
+   bool skip_aabbs;
+};
+
+bool hk_nir_rt_kernel_supported(const struct hk_rt_kernel_info *info);
+
+nir_shader *hk_nir_build_rt_kernel(const nir_shader_compiler_options *options,
+                                   const struct hk_rt_kernel_info *info);
+
 #endif

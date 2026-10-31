@@ -50,7 +50,9 @@ hk_get_device_extensions(const struct agx_device *dev,
                          const struct hk_instance *instance,
                          struct vk_device_extension_table *ext)
 {
-   /* Software ray queries (hk_nir_ray_tracing.c), behind a flag until tested */
+   /* Software ray queries (hk_nir_ray_tracing.c) and ray-tracing pipelines
+    * (hk_rt_pipeline.c), behind a flag until tested
+    */
    bool rq = dev->debug & AGX_DBG_RAYQUERY;
 
    *ext = (struct vk_device_extension_table){
@@ -104,6 +106,7 @@ hk_get_device_extensions(const struct agx_device *dev,
       .KHR_pipeline_binary = true,
       .KHR_pipeline_executable_properties = true,
       .KHR_pipeline_library = true,
+      .KHR_pipeline_library_group_handles = rq,
 #ifdef HK_USE_WSI_PLATFORM
       .KHR_present_id = true,
       .KHR_present_id2 = true,
@@ -112,6 +115,9 @@ hk_get_device_extensions(const struct agx_device *dev,
 #endif
       .KHR_push_descriptor = true,
       .KHR_ray_query = rq,
+      .KHR_ray_tracing_maintenance1 = rq,
+      .KHR_ray_tracing_pipeline = rq,
+      .KHR_ray_tracing_position_fetch = rq,
       .KHR_relaxed_block_layout = true,
       .KHR_robustness2 = true,
       .KHR_sampler_mirror_clamp_to_edge = true,
@@ -194,6 +200,7 @@ hk_get_device_extensions(const struct agx_device *dev,
       .EXT_non_seamless_cube_map = true,
       .EXT_pipeline_creation_cache_control = true,
       .EXT_pipeline_creation_feedback = true,
+      .EXT_pipeline_library_group_handles = rq,
       .EXT_pipeline_protected_access = true,
       .EXT_pipeline_robustness = true,
       .EXT_physical_device_drm = true,
@@ -442,6 +449,33 @@ hk_get_device_features(
 
       /* VK_KHR_ray_query */
       .rayQuery = supported_extensions->KHR_ray_query,
+
+      /* VK_KHR_ray_tracing_pipeline: group handles name their shaders'
+       * contents, so a captured handle replays in any pipeline.
+       */
+      .rayTracingPipeline = supported_extensions->KHR_ray_tracing_pipeline,
+      .rayTracingPipelineShaderGroupHandleCaptureReplay =
+         supported_extensions->KHR_ray_tracing_pipeline,
+      .rayTracingPipelineShaderGroupHandleCaptureReplayMixed =
+         supported_extensions->KHR_ray_tracing_pipeline,
+      .rayTracingPipelineTraceRaysIndirect =
+         supported_extensions->KHR_ray_tracing_pipeline,
+      .rayTraversalPrimitiveCulling =
+         supported_extensions->KHR_ray_tracing_pipeline,
+
+      /* VK_KHR_ray_tracing_maintenance1 */
+      .rayTracingMaintenance1 =
+         supported_extensions->KHR_ray_tracing_maintenance1,
+      .rayTracingPipelineTraceRaysIndirect2 =
+         supported_extensions->KHR_ray_tracing_maintenance1,
+
+      /* VK_KHR_ray_tracing_position_fetch */
+      .rayTracingPositionFetch =
+         supported_extensions->KHR_ray_tracing_position_fetch,
+
+      /* VK_KHR_pipeline_library_group_handles */
+      .pipelineLibraryGroupHandles =
+         supported_extensions->KHR_pipeline_library_group_handles,
 
       /* VK_KHR_pipeline_executable_properties */
       .pipelineExecutableInfo = true,
@@ -957,6 +991,19 @@ hk_get_device_properties(const struct agx_device *dev,
 
       /* VK_KHR_push_descriptor */
       .maxPushDescriptors = HK_MAX_PUSH_DESCRIPTORS,
+
+      /* VK_KHR_ray_tracing_pipeline: a handle is four 64-bit shader IDs
+       * (hk_rt_pipeline.c). One level of recursion: only ray generation
+       * shaders trace, and the pipeline is one kernel.
+       */
+      .shaderGroupHandleSize = 32,
+      .maxRayRecursionDepth = 1,
+      .maxShaderGroupStride = 4096,
+      .shaderGroupBaseAlignment = 32,
+      .shaderGroupHandleCaptureReplaySize = 32,
+      .maxRayDispatchInvocationCount = 1 << 30,
+      .shaderGroupHandleAlignment = 16,
+      .maxRayHitAttributeSize = 32,
 
       /* VK_KHR_acceleration_structure: the spec's minimums. A node reference
        * is a 32-bit byte offset, which holds about 40 million triangles.
