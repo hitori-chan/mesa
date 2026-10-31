@@ -217,9 +217,10 @@ project_g15(nir_builder *b, nir_intrinsic_instr *load)
 }
 
 /*
- * A per-vertex input (VK_KHR_fragment_shader_barycentric): each of the
- * primitive's vertices has a flat binding of its own (shade models "flat
- * vertex 0", "1" and "2", in the primitive's order), read as any flat input.
+ * A per-vertex input (VK_KHR_fragment_shader_barycentric): its binding's shade
+ * model "flat vertex 1" leaves vertex k's value in coefficient k, so a read
+ * picks the coefficient by the vertex index, as Apple's compiler reads
+ * air.get_vertex_value (an element of the binding's registers).
  */
 static nir_def *
 lower_input_vertex(nir_builder *b, nir_intrinsic_instr *load)
@@ -229,16 +230,21 @@ lower_input_vertex(nir_builder *b, nir_intrinsic_instr *load)
 
    nir_def *values[NIR_MAX_VEC_COMPONENTS] = {NULL};
    for (unsigned i = 0; i < load->def.num_components; ++i) {
+      nir_def *cf = nir_load_coefficients_agx(
+         b, nir_get_io_offset_src(load)->ssa,
+         .component = nir_intrinsic_component(load) + i,
+         .io_semantics = nir_intrinsic_io_semantics(load),
+         .interp_mode = INTERP_MODE_FLAT, .base = 2);
+
+      /* A fan whose first vertex provokes has the provoking vertex in
+       * coefficient 1 (interpolate_flat), so the primitive's vertex k is
+       * coefficient k + 1.
+       */
       nir_def *v[3];
-
       for (unsigned k = 0; k < 3; ++k) {
-         nir_def *cf = nir_load_coefficients_agx(
-            b, nir_get_io_offset_src(load)->ssa,
-            .component = nir_intrinsic_component(load) + i,
-            .io_semantics = nir_intrinsic_io_semantics(load),
-            .interp_mode = INTERP_MODE_FLAT, .base = k + 1);
-
-         v[k] = interpolate_flat(b, cf);
+         v[k] = nir_bcsel(b, nir_load_is_first_fan_agx(b),
+                          nir_channel(b, cf, (k + 1) % 3),
+                          nir_channel(b, cf, k));
       }
 
       if (nir_src_is_const(load->src[0])) {
