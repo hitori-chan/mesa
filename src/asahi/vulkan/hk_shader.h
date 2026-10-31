@@ -95,6 +95,13 @@ struct hk_shader_info {
 
       struct poly_gs_info gs;
 
+      struct {
+         /* A ray-tracing pipeline's kernel (hk_rt_pipeline.c), whose root
+          * table is the ray-tracing bind point's
+          */
+         bool ray_tracing;
+      } cs;
+
       /* Used to initialize the union for other stages */
       uint8_t _pad[32];
    };
@@ -371,6 +378,59 @@ void hk_api_shader_destroy(struct vk_device *vk_dev,
 const nir_shader_compiler_options *
 hk_get_nir_options(struct vk_physical_device *vk_pdev, mesa_shader_stage stage,
                    UNUSED const struct vk_pipeline_robustness_state *rs);
+
+/* Ray-tracing pipelines (hk_rt_pipeline.c) */
+struct blob_reader;
+struct vk_command_buffer;
+struct vk_pipeline_layout;
+
+VkResult hk_compile_rt_stages(struct hk_device *dev, uint32_t shader_count,
+                              struct vk_shader_compile_info *infos,
+                              const VkAllocationCallbacks *pAllocator,
+                              struct vk_shader **shaders_out);
+
+VkResult hk_compile_rt_kernel(struct hk_device *dev,
+                              struct vk_shader_compile_info *info,
+                              const VkAllocationCallbacks *pAllocator,
+                              struct hk_api_shader **shader_out);
+
+VkResult hk_rt_stage_deserialize(struct hk_device *dev,
+                                 struct blob_reader *blob,
+                                 mesa_shader_stage stage,
+                                 const VkAllocationCallbacks *pAllocator,
+                                 struct vk_shader **shader_out);
+
+void hk_write_rt_shader_group(struct vk_device *device,
+                              VkRayTracingShaderGroupTypeKHR type,
+                              const struct vk_shader **shaders,
+                              uint32_t shader_count, void *output);
+
+void hk_write_rt_shader_group_replay_handle(struct vk_device *device,
+                                            const struct vk_shader **shaders,
+                                            uint32_t shader_count,
+                                            void *output);
+
+void hk_replay_rt_shader_group(struct vk_device *device,
+                               VkRayTracingShaderGroupTypeKHR type,
+                               uint32_t shader_count,
+                               struct vk_shader **shaders,
+                               const void *replay_data);
+
+VkResult hk_link_rt_pipeline(struct vk_device *device,
+                             const struct vk_rt_link_info *info,
+                             const VkAllocationCallbacks *pAllocator,
+                             struct vk_shader **shader_out);
+
+void hk_cmd_set_rt_state(struct vk_command_buffer *cmd,
+                         struct vk_pipeline_layout *layout,
+                         VkDeviceSize scratch_size, uint32_t ray_queries,
+                         const uint8_t *dynamic_descriptor_offsets);
+
+void hk_cmd_set_rt_stack_size(struct vk_command_buffer *cmd,
+                              VkDeviceSize stack_size);
+
+void hk_cmd_bind_rt_shader(struct vk_command_buffer *cmd,
+                           struct vk_shader *shader);
 
 struct hk_api_shader *hk_meta_shader(struct hk_device *dev,
                                      hk_internal_builder_t builder, void *data,
