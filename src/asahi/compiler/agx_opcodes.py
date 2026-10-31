@@ -403,6 +403,27 @@ op("rcp_cf", _, srcs = 2)
 op("fmul_cf", _, srcs = 4)
 
 op("ldcf", (0xA1, 8, _), srcs = 1, imms = [CHANNELS])
+
+# G15's ray tracing (agx_pack3.c). SCS memory, the ray's, its record's and the
+# driver's: B + (C << SHIFT) + IMM, B and C a register, uniform or immediate.
+# Sources are base, index (and the value first for a store); scs_release frees
+# the 16-byte chunks MASK names, a lane each.
+op("scs_load", _, srcs = 2, imms = [FORMAT, MASK, SHIFT, IMM],
+   can_reorder = False, schedule_class = "load")
+op("scs_store", _, dests = 0, srcs = 3, imms = [FORMAT, MASK, SHIFT, IMM],
+   can_eliminate = False, schedule_class = "store")
+op("scs_release", _, dests = 0, srcs = 2, imms = [MASK, SHIFT, IMM],
+   can_eliminate = False, schedule_class = "store")
+
+# Sources are the table of acceleration structures (64-bit), the index in it,
+# C, D, and cr4096's and cr4097's values; IMM is the 13-bit field. The ray and
+# the result are in SCS memory.
+op("intersect_ray", _, dests = 0, srcs = 6, imms = [IMM],
+   can_eliminate = False, can_reorder = False, schedule_class = "barrier")
+
+# Resumes the unit's traversal; the source is cr2's value (the slot)
+op("continue_ray", _, dests = 0, srcs = 1, imms = [IMM],
+   can_eliminate = False, can_reorder = False, schedule_class = "barrier")
 op("st_vary", None, dests = 0, srcs = 2, can_eliminate = False)
 op("no_varyings", (0x80000051, 4, _), dests = 0, can_eliminate = False)
 op("stop", (0x88, 2, _), dests = 0, can_eliminate = False,

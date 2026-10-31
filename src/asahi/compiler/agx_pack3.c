@@ -869,6 +869,13 @@ a3_memshift(const struct a3 *a, unsigned bytes)
  * group 0, du2, index 1, level 0, xyzw, wait 0 */
 #define T_IMGW "d71054102040000100040000883a0900"
 
+/* Metal's ray-query kernel (macOS 27.0.1, ray-tracing.md) */
+#define T_LDSCS   "5f025422002c2000400b00006800" /* ldscs 5, x, r17, r0, r11 */
+#define T_STSCS   "df02540a780420005c0500400800" /* stscs xyzw, r5, u60, r1 */
+#define T_SCS_REL "5f02540f00100000402d00006100" /* scs_release 15, r0, r4l */
+#define T_ISECT   "5f10540000c125c0864f4c00"     /* intersect_ray du16, u46 */
+#define T_CONT    "5f1154040000"                 /* continue_ray 4 */
+
 /* Apple's texture instructions (the 2026-10-16 capture's kernels and the
  * QuartzCore corpus, texture.md) */
 #define T_TEX_L0 "05820cb830250900000010000100" /* texture_sample 2D, level 0 */
@@ -981,6 +988,34 @@ enum {
    FMUL_CF_B = 2,
    FMUL_CF_W = 3,
    FMUL_CF_N = 4,
+   SCS_G = 0,
+   SCS_REG = 3,
+   SCS_BASE = 4,
+   SCS_INDEX = 5,
+   SCS_SHIFT = 6,
+   SCS_OFFSET = 7,
+   SCS_U72 = 8,
+   STSCS_REG = 2,
+   STSCS_BASE = 3,
+   STSCS_INDEX = 4,
+   STSCS_SHIFT = 5,
+   STSCS_OFFSET = 6,
+   STSCS_U72 = 7,
+   STSCS_LU = 8,
+   SCS_REL_MASK = 0,
+   SCS_REL_BASE = 2,
+   SCS_REL_INDEX = 3,
+   SCS_REL_SHIFT = 4,
+   SCS_REL_OFFSET = 5,
+   SCS_REL_U72 = 6,
+   ISECT_A = 0,
+   ISECT_B = 1,
+   ISECT_C = 2,
+   ISECT_D = 3,
+   ISECT_K = 4,
+   ISECT_WAIT = 6,
+   CONT_K = 0,
+   CONT_WAIT = 1,
    ZS_CR = 0,
    ZS_G = 1,
    ZS_MODE = 2,
@@ -3064,6 +3099,119 @@ a3_fmul_cf(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
    a3_emit(a, emission);
 }
 
+/* G15's ray tracing (ray-tracing.md). An SCS address is B + (C << shift) +
+ * the offset; B and C are each a register, a uniform or an immediate (the IR's
+ * zero or a constant index), C 16- or 32-bit. Bit 72 is set as Metal's
+ * kernels set it, when B or C is not an immediate (its meaning is not known).
+ * ldscs delivers in A3_SYNC_G and is waited for at once, as ldtg. ldscs's mask
+ * has its own code (AGX3.xml scs_load_mask), stscs's is device memory's. */
+static const uint8_t a3_scs_load_mask[16] = {
+   [1] = 0,   [2] = 1,   [4] = 2,   [8] = 3,  [10] = 4,
+   [12] = 5,  [3] = 6,   [5] = 7,   [6] = 8,  [9] = 9,
+   [11] = 10, [13] = 11, [14] = 12, [7] = 13, [15] = 14,
+};
+
+static uint64_t
+a3_scs_src(struct a3 *a, unsigned op, agx_index idx)
+{
+   if (idx.type == AGX_INDEX_IMMEDIATE)
+      return a3_imm(a, op, idx.value, false);
+
+   return a3_reg(a, op, idx, 0, 0, 0);
+}
+
+static void
+a3_scs_mem(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
+{
+   bool store = I->op == AGX_OPCODE_SCS_STORE;
+   bool release = I->op == AGX_OPCODE_SCS_RELEASE;
+   agx_index base = I->src[store ? 1 : 0];
+   agx_index index = I->src[store ? 2 : 1];
+   bool u72 =
+      base.type != AGX_INDEX_IMMEDIATE || index.type != AGX_INDEX_IMMEDIATE;
+   unsigned b, x, s, o, u;
+
+   if (I->shift > 4 || I->imm > 0xffff)
+      a3_fail(a, "SCS address out of range");
+
+   if (release) {
+      a3_begin(a, I, AGX3_SCS_RELEASE, T_SCS_REL);
+      a3_set(a, SCS_REL_MASK, I->mask);
+      b = SCS_REL_BASE, x = SCS_REL_INDEX, s = SCS_REL_SHIFT;
+      o = SCS_REL_OFFSET, u = SCS_REL_U72;
+   } else if (store) {
+      unsigned type = a3_mem_type(a, I->format);
+
+      a3_begin(a, I, AGX3_SCS_STORE, T_STSCS);
+      a3_set(a, STSCS_REG,
+             a3_memreg(a, STSCS_REG, I->src[0], type, a3_mem_mask[I->mask]));
+      a3_set(a, STSCS_LU, 0);
+      b = STSCS_BASE, x = STSCS_INDEX, s = STSCS_SHIFT;
+      o = STSCS_OFFSET, u = STSCS_U72;
+   } else {
+      unsigned type = a3_mem_type(a, I->format);
+
+      if (!I->mask)
+         a3_fail(a, "SCS load of nothing");
+
+      a3_begin(a, I, AGX3_SCS_LOAD, T_LDSCS);
+      a3_set(a, SCS_G, A3_SYNC_G);
+      a3_set(
+         a, SCS_REG,
+         a3_memreg(a, SCS_REG, I->dest[0], type, a3_scs_load_mask[I->mask]));
+      b = SCS_BASE, x = SCS_INDEX, s = SCS_SHIFT;
+      o = SCS_OFFSET, u = SCS_U72;
+   }
+
+   a3_set(a, b, a3_scs_src(a, b, base));
+   a3_set(a, x, a3_scs_src(a, x, index));
+   a3_set(a, s, a3_memshift(a, I->shift));
+   a3_set(a, o, I->imm);
+   a3_set(a, u, u72);
+   a3_emit(a, emission);
+
+   if (!store && !release && !I->g15_nosync)
+      a3_wait(a, I, A3_SYNC_G, emission);
+}
+
+/* intersect_ray: cr4096 and cr4097 first, in group 0 (Metal's kernel: the
+ * options and the slot, then 0), which it waits for, as Metal's does */
+static void
+a3_intersect_ray(struct a3 *a, const agx_instr *I,
+                 struct util_dynarray *emission)
+{
+   a3_mov_cr(a, I, 4096, I->src[4], emission);
+   a3_mov_cr(a, I, 4097, I->src[5], emission);
+
+   if (I->imm >> 13)
+      a3_fail(a, "intersect_ray field out of range");
+
+   a3_begin(a, I, AGX3_INTERSECT_RAY, T_ISECT);
+   a3_set(a, ISECT_A, a3_reg(a, ISECT_A, I->src[0], 0, 0, 0));
+   a3_set(a, ISECT_B, a3_scs_src(a, ISECT_B, I->src[1]));
+   a3_set(a, ISECT_C, a3_scs_src(a, ISECT_C, I->src[2]));
+   a3_set(a, ISECT_D, a3_scs_src(a, ISECT_D, I->src[3]));
+   a3_set(a, ISECT_K, I->imm);
+   a3_set(a, ISECT_WAIT, BITFIELD_BIT(0));
+   a3_emit(a, emission);
+}
+
+/* continue_ray: the slot to cr2 first (Metal's kernel), in group 0 */
+static void
+a3_continue_ray(struct a3 *a, const agx_instr *I,
+                struct util_dynarray *emission)
+{
+   a3_mov_cr(a, I, 2, I->src[0], emission);
+
+   if (I->imm >> 13)
+      a3_fail(a, "continue_ray field out of range");
+
+   a3_begin(a, I, AGX3_CONTINUE_RAY, T_CONT);
+   a3_set(a, CONT_K, I->imm);
+   a3_set(a, CONT_WAIT, BITFIELD_BIT(0));
+   a3_emit(a, emission);
+}
+
 /* zs_emit (depthf) reads movmsk's coverage word and the depth from the
  * coordinate registers Apple's depth-output shader writes before it: its
  * 10-byte mov and cmpsel name cr4096 and cr4097 (the destination's y field,
@@ -3642,6 +3790,7 @@ a3_sync_group(const agx_instr *I)
    case AGX_OPCODE_LDCF:
    case AGX_OPCODE_LOCAL_LOAD:
    case AGX_OPCODE_LD_TILE:
+   case AGX_OPCODE_SCS_LOAD:
       return A3_SYNC_G;
    case AGX_OPCODE_GET_SR:
    case AGX_OPCODE_GET_SR_COVERAGE:
@@ -3863,6 +4012,20 @@ a3_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
 
    case AGX_OPCODE_LOCAL_ATOMIC:
       a3_local_atomic(&a, I, emission);
+      return;
+
+   case AGX_OPCODE_SCS_LOAD:
+   case AGX_OPCODE_SCS_STORE:
+   case AGX_OPCODE_SCS_RELEASE:
+      a3_scs_mem(&a, I, emission);
+      return;
+
+   case AGX_OPCODE_INTERSECT_RAY:
+      a3_intersect_ray(&a, I, emission);
+      return;
+
+   case AGX_OPCODE_CONTINUE_RAY:
+      a3_continue_ray(&a, I, emission);
       return;
 
    case AGX_OPCODE_STACK_LOAD:
