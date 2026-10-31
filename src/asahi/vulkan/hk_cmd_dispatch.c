@@ -209,3 +209,142 @@ hk_CmdDispatchIndirect(VkCommandBuffer commandBuffer, VkBuffer _buffer,
    desc->root.cs.group_count_addr = dispatch_addr;
    dispatch(cmd, agx_grid_indirect(dispatch_addr), false);
 }
+
+/* A ray-tracing pipeline's kernel (hk_rt_pipeline.c) reads its
+ * VkTraceRaysIndirectCommand2KHR at params. A direct grid counts rays; an
+ * indirect one is an indirect-local grid: rays, then the workgroup.
+ */
+static void
+trace_rays(struct hk_cmd_buffer *cmd, uint64_t params, struct agx_grid grid)
+{
+   struct hk_descriptor_state *desc = &cmd->state.rt.descriptors;
+   struct hk_shader *s = hk_only_variant(cmd->state.rt.shader);
+   if (!s || agx_is_shader_empty(&s->b))
+      return;
+
+   if (desc->push_dirty)
+      hk_cmd_buffer_flush_push_descriptors(cmd, desc);
+
+   desc->root.cs.rt_params = params;
+
+   struct hk_cs *cs = hk_cmd_buffer_get_cs(cmd, true /* compute */);
+   if (!cs)
+      return;
+
+   struct agx_workgroup local_size =
+      agx_workgroup(s->b.info.workgroup_size[0], s->b.info.workgroup_size[1],
+                    s->b.info.workgroup_size[2]);
+
+   hk_dispatch_with_local_size(cmd, cs, s, grid, local_size);
+   cs->stats.calls++;
+}
+
+static uint64_t
+upload_rt_params(struct hk_cmd_buffer *cmd,
+                 const VkStridedDeviceAddressRegionKHR *raygen,
+                 const VkStridedDeviceAddressRegionKHR *miss,
+                 const VkStridedDeviceAddressRegionKHR *hit,
+                 const VkStridedDeviceAddressRegionKHR *callable,
+                 uint32_t width, uint32_t height, uint32_t depth)
+{
+   VkTraceRaysIndirectCommand2KHR params = {
+      .raygenShaderRecordAddress = raygen->deviceAddress,
+      .raygenShaderRecordSize = raygen->size,
+      .missShaderBindingTableAddress = miss->deviceAddress,
+      .missShaderBindingTableSize = miss->size,
+      .missShaderBindingTableStride = miss->stride,
+      .hitShaderBindingTableAddress = hit->deviceAddress,
+      .hitShaderBindingTableSize = hit->size,
+      .hitShaderBindingTableStride = hit->stride,
+      .callableShaderBindingTableAddress = callable->deviceAddress,
+      .callableShaderBindingTableSize = callable->size,
+      .callableShaderBindingTableStride = callable->stride,
+      .width = width,
+      .height = height,
+      .depth = depth,
+   };
+
+   return hk_pool_upload(cmd, &params, sizeof(params), 16);
+}
+
+/* The grid of a dispatch whose size is at size: copied on the GPU */
+static struct agx_grid
+indirect_rt_grid(struct hk_cmd_buffer *cmd, uint64_t size)
+{
+   const struct hk_shader *s = hk_only_variant(cmd->state.rt.shader);
+   uint32_t grid[6] = {
+      0,
+      0,
+      0,
+      s->b.info.workgroup_size[0],
+      s->b.info.workgroup_size[1],
+      s->b.info.workgroup_size[2],
+   };
+
+   uint64_t addr = hk_pool_upload(cmd, grid, sizeof(grid), 16);
+   hk_cmd_copy(cmd, addr, size, 3 * sizeof(uint32_t));
+
+   return agx_grid_indirect_local(addr);
+}
+
+VKAPI_ATTR void VKAPI_CALL
+hk_CmdTraceRaysKHR(
+   VkCommandBuffer commandBuffer,
+   const VkStridedDeviceAddressRegionKHR *pRaygenShaderBindingTable,
+   const VkStridedDeviceAddressRegionKHR *pMissShaderBindingTable,
+   const VkStridedDeviceAddressRegionKHR *pHitShaderBindingTable,
+   const VkStridedDeviceAddressRegionKHR *pCallableShaderBindingTable,
+   uint32_t width, uint32_t height, uint32_t depth)
+{
+   VK_FROM_HANDLE(hk_cmd_buffer, cmd, commandBuffer);
+
+   if (!cmd->state.rt.shader || !width || !height || !depth)
+      return;
+
+   uint64_t params =
+      upload_rt_params(cmd, pRaygenShaderBindingTable, pMissShaderBindingTable,
+                       pHitShaderBindingTable, pCallableShaderBindingTable,
+                       width, height, depth);
+
+   trace_rays(cmd, params, agx_3d(width, height, depth));
+}
+
+VKAPI_ATTR void VKAPI_CALL
+hk_CmdTraceRaysIndirectKHR(
+   VkCommandBuffer commandBuffer,
+   const VkStridedDeviceAddressRegionKHR *pRaygenShaderBindingTable,
+   const VkStridedDeviceAddressRegionKHR *pMissShaderBindingTable,
+   const VkStridedDeviceAddressRegionKHR *pHitShaderBindingTable,
+   const VkStridedDeviceAddressRegionKHR *pCallableShaderBindingTable,
+   VkDeviceAddress indirectDeviceAddress)
+{
+   VK_FROM_HANDLE(hk_cmd_buffer, cmd, commandBuffer);
+
+   if (!cmd->state.rt.shader)
+      return;
+
+   /* The size is the indirect command's, a VkTraceRaysIndirectCommandKHR */
+   uint64_t params = upload_rt_params(
+      cmd, pRaygenShaderBindingTable, pMissShaderBindingTable,
+      pHitShaderBindingTable, pCallableShaderBindingTable, 0, 0, 0);
+
+   hk_cmd_copy(cmd, params + offsetof(VkTraceRaysIndirectCommand2KHR, width),
+               indirectDeviceAddress, 3 * sizeof(uint32_t));
+
+   trace_rays(cmd, params, indirect_rt_grid(cmd, indirectDeviceAddress));
+}
+
+VKAPI_ATTR void VKAPI_CALL
+hk_CmdTraceRaysIndirect2KHR(VkCommandBuffer commandBuffer,
+                            VkDeviceAddress indirectDeviceAddress)
+{
+   VK_FROM_HANDLE(hk_cmd_buffer, cmd, commandBuffer);
+
+   if (!cmd->state.rt.shader)
+      return;
+
+   uint64_t size =
+      indirectDeviceAddress + offsetof(VkTraceRaysIndirectCommand2KHR, width);
+
+   trace_rays(cmd, indirectDeviceAddress, indirect_rt_grid(cmd, size));
+}
