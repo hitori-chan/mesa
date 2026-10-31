@@ -142,7 +142,7 @@ poly_map_to_line_strip_adj(uint id)
 }
 
 uint
-poly_map_to_tri_strip_adj(uint id)
+poly_map_to_tri_strip_adj(uint id, bool flatshade_first)
 {
    /* Sequence (0, 2, 4), (2, 6, 4), (4, 6, 8), (6, 10, 8)
     *
@@ -158,12 +158,16 @@ poly_map_to_tri_strip_adj(uint id)
    uint prim = id / 3;
    uint vtx = id % 3;
 
-   /* Flip the winding order of odd triangles */
+   /* Flip the winding order of odd triangles: (1, 3, 2) with the first vertex
+    * provoking, (2, 1, 3) with the last, as the spec orders them.
+    */
    if ((prim % 2) == 1) {
-      if (vtx == 1)
-         vtx = 2;
-      else if (vtx == 2)
-         vtx = 1;
+      uint a = flatshade_first ? 1 : 0;
+
+      if (vtx == a)
+         vtx = a + 1;
+      else if (vtx == a + 1)
+         vtx = a;
    }
 
    return 2 * (prim + vtx);

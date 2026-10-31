@@ -2947,6 +2947,10 @@ hk_flush_dynamic_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
          }
 
          key.prolog.adjacency = prim;
+         key.prolog.flatshade_first =
+            prim == MESA_PRIM_TRIANGLE_STRIP_ADJACENCY &&
+            dyn->rs.provoking_vertex !=
+               VK_PROVOKING_VERTEX_MODE_LAST_VERTEX_EXT;
       }
 
       if (key.prolog.adjacency || !key.prolog.hw) {
@@ -3190,6 +3194,9 @@ hk_flush_dynamic_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
 
       gfx->topology = translate_hw_primitive_topology(prim);
       gfx->object_type = translate_object_type(prim);
+
+      gfx->descriptors.root.draw.rast_vertices = mesa_vertices_per_prim(prim);
+      gfx->descriptors.root_dirty = true;
    }
 
    /* gfx->topology depends on the geometry shader, passthrough included */

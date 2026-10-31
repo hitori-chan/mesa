@@ -139,6 +139,9 @@ struct agx_vs_prolog_key {
    /* If !hw and the draw call is indexed, the index size */
    uint8_t sw_index_size_B;
 
+   /* For a triangle strip with adjacency, whether its first vertex provokes */
+   bool flatshade_first;
+
    /* Adjacency primitive to emulate */
    enum mesa_prim adjacency;
 

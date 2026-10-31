@@ -515,6 +515,14 @@ lower_uvs_index(nir_builder *b, nir_intrinsic_instr *intrin, void *data)
       return true;
    }
 
+   case nir_intrinsic_load_rast_vertices_agx: {
+      unsigned offset = hk_root_descriptor_offset(draw.rast_vertices);
+      b->cursor = nir_instr_remove(&intrin->instr);
+      nir_def_rewrite_uses(&intrin->def,
+                           load_root(b, 1, 16, nir_imm_int(b, offset), 2));
+      return true;
+   }
+
    case nir_intrinsic_load_provoking_last: {
       unsigned offset = hk_root_descriptor_offset(draw.provoking);
       b->cursor = nir_instr_remove(&intrin->instr);

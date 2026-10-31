@@ -2508,6 +2508,10 @@ system_value("clip_z_coeff", 1)
 # This affects flatshading, which is defined weirdly for fans with first.
 system_value("is_first_fan_agx", 1, bit_sizes=[1])
 
+# The rasterized primitive's vertex count: 1 for points, 2 for lines, 3 for
+# triangles.
+system_value("rast_vertices_agx", 1, bit_sizes=[16])
+
 # Root descriptor address
 system_value("root_agx", 1, bit_sizes=[64])
 

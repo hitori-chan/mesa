@@ -89,7 +89,9 @@ struct hk_root_descriptor_table {
          uint16_t force_never_in_shader;
          uint16_t _pad3;
          uint16_t provoking;
-         uint16_t _pad4;
+
+         /* The rasterized primitive's vertices: 1, 2 or 3 */
+         uint16_t rast_vertices;
 
          /* True if there is an API geometry shader. If false, there may still
           * be a geometry shader in use (notably for transform feedback) but it
