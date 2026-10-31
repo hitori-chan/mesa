@@ -148,6 +148,9 @@ struct vk_acceleration_structure_build_args {
    uint32_t root_flags_offset;
    uint32_t morton_sort_workgroup_size;
    uint32_t morton_sort_kvs_per_thread;
+   /* Sort in a dispatch per step, no workgroup waiting for another's (for hardware that does not keep running a
+    * workgroup while others on its core spin) */
+   bool morton_sort_per_step;
    bool propagate_cull_flags;
    bool emit_markers;
    bool has_update;
