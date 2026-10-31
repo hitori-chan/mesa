@@ -127,8 +127,8 @@ needs_lower(const nir_instr *instr, const void *data)
    const nir_intrinsic_instr *load = nir_instr_as_intrinsic(instr);
 
    /* at_offset barycentrics need to be lowered, and on G15 every perspective
-    * load but, with AGX_MESA_DEBUG=perspmul, those at the pixel centre and a
-    * constant offset, which the backend projects (agx_emit_load_vary)
+    * load but those at the pixel centre and a constant offset, which the
+    * backend projects (agx_emit_load_vary; all with AGX_MESA_DEBUG=noperspmul)
     */
    if (load->intrinsic == nir_intrinsic_load_interpolated_input) {
       nir_intrinsic_instr *bary = nir_src_as_intrinsic(load->src[0]);
@@ -139,7 +139,7 @@ needs_lower(const nir_instr *instr, const void *data)
       if (!*g15 || nir_intrinsic_interp_mode(bary) == INTERP_MODE_NOPERSPECTIVE)
          return false;
 
-      return !(agx_get_compiler_debug() & AGX_DBG_PERSPMUL) ||
+      return (agx_get_compiler_debug() & AGX_DBG_NOPERSPMUL) ||
              bary->intrinsic != nir_intrinsic_load_barycentric_pixel ||
              !nir_src_is_const(
                 *nir_get_io_offset_src((nir_intrinsic_instr *)load));
