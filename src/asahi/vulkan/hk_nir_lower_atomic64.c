@@ -17,8 +17,21 @@
  * and max take it, or one landing between another operation's read and
  * write would be lost. Each lane retries in one loop and leaves it once it
  * has had the lock, so the lanes of a SIMD group never wait on each other.
- * Image atomics reach it as global atomics on their texel's address
- * (agx_nir_lower_texture_gen), so it runs after them.
+ * No acquire fence: the lock's compare-exchange returns a result, which the
+ * lane waits for before the reads. No release fence either: a G15 device
+ * fence inside the lock made every submit of the CTS's u64 memory_model
+ * cases time out. Instead the release's value, 0, is computed from the
+ * halves' exchanges' results (held & (lo | hi), held being 0 there), so
+ * they return and the lane waits for both before it releases; result-less
+ * exchanges could land after the release (the CTS's R64 image end_result
+ * cases lost updates). The branch tests held != 1, not held == 0, or
+ * nir_opt_if would rewrite held to 0 inside it and fold the dependency
+ * away. An exchange reads nothing first: its value does not depend on the
+ * old one, which its own result returns. Image atomics reach it as global
+ * atomics on their texel's address (agx_nir_lower_texture_gen), so it runs
+ * after them. A fragment shader's helper lanes skip it: their
+ * atomics do nothing and return undefined (nir_lower_helper_writes), so the
+ * lock's compare-exchange would never succeed for them.
  */
 
 static nir_def *
@@ -85,38 +98,42 @@ lower(nir_builder *b, nir_intrinsic_instr *intr, void *data_)
       nir_local_variable_create(b->impl, glsl_uint64_t_type(), "atomic64");
    nir_store_var(b, result, nir_imm_int64(b, 0), 1);
 
+   bool fs = b->shader->info.stage == MESA_SHADER_FRAGMENT;
+   if (fs)
+      nir_push_if(b, nir_inot(b, nir_is_helper_invocation(b, 1)));
+
    nir_push_loop(b);
    {
       nir_def *held = nir_global_atomic_swap(
          b, 32, lock, nir_imm_int(b, 0), nir_imm_int(b, 1),
          .atomic_op = nir_atomic_op_cmpxchg);
-      nir_push_if(b, nir_ieq_imm(b, held, 0));
+      nir_push_if(b, nir_ine_imm(b, held, 1));
       {
-         nir_barrier(b, .memory_scope = SCOPE_DEVICE,
-                     .memory_semantics = NIR_MEMORY_ACQUIRE,
-                     .memory_modes = nir_var_mem_global);
-
          nir_def *zero = nir_imm_int(b, 0);
-         nir_def *old = nir_pack_64_2x32_split(
-            b, atomic32(b, addr, zero, nir_atomic_op_iadd),
-            atomic32(b, hi_addr, zero, nir_atomic_op_iadd));
+         nir_def *old = NULL;
+         if (op != nir_atomic_op_xchg) {
+            old = nir_pack_64_2x32_split(
+               b, atomic32(b, addr, zero, nir_atomic_op_iadd),
+               atomic32(b, hi_addr, zero, nir_atomic_op_iadd));
+         }
          nir_def *new = apply(b, op, old, data, data2);
-         atomic32(b, addr, nir_unpack_64_2x32_split_x(b, new),
-                  nir_atomic_op_xchg);
-         atomic32(b, hi_addr, nir_unpack_64_2x32_split_y(b, new),
+         nir_def *lo = atomic32(b, addr, nir_unpack_64_2x32_split_x(b, new),
+                                nir_atomic_op_xchg);
+         nir_def *hi = atomic32(b, hi_addr,
+                                nir_unpack_64_2x32_split_y(b, new),
+                                nir_atomic_op_xchg);
+         atomic32(b, lock, nir_iand(b, held, nir_ior(b, lo, hi)),
                   nir_atomic_op_xchg);
 
-         nir_barrier(b, .memory_scope = SCOPE_DEVICE,
-                     .memory_semantics = NIR_MEMORY_RELEASE,
-                     .memory_modes = nir_var_mem_global);
-         atomic32(b, lock, zero, nir_atomic_op_xchg);
-
-         nir_store_var(b, result, old, 1);
+         nir_store_var(b, result, nir_pack_64_2x32_split(b, lo, hi), 1);
          nir_jump(b, nir_jump_break);
       }
       nir_pop_if(b, NULL);
    }
    nir_pop_loop(b, NULL);
+
+   if (fs)
+      nir_pop_if(b, NULL);
 
    nir_def_replace(&intr->def, nir_load_var(b, result));
    return true;
