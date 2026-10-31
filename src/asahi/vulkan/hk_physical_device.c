@@ -736,7 +736,8 @@ hk_get_device_properties(const struct agx_device *dev,
       /* Vulkan 1.0 limits */
       .maxImageDimension1D = 16384,
       .maxImageDimension2D = 16384,
-      .maxImageDimension3D = 16384,
+      /* G15 addresses no 3D image deeper than 2048 (hk_image.c) */
+      .maxImageDimension3D = dev->params.gpu_generation >= 15 ? 2048 : 16384,
       .maxImageDimensionCube = 16384,
       .maxImageArrayLayers = 2048,
       .maxTexelBufferElements = AGX_TEXTURE_BUFFER_MAX_SIZE,
