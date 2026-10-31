@@ -4952,6 +4952,273 @@
   </ins>
 
   <!--
+   Ray tracing, from libLLVM 32023's encoder (trees 554898 intersect_ray,
+   554960 continue_ray, 554984 ldscs, 555152 stscs; ray-tracing.md in the
+   M3 notes): opcode 0x5F, the sub-op at 7:10. Checked against Metal's
+   ray-query kernels' bytes; not run from Mesa.
+
+   ldscs and stscs address SCS memory (the ray, its record, the driver's
+   parameters): B + C << shift + offset. B, C and the third operand A
+   (57:65, unused in Metal's kernels, not modelled: zero) are each an
+   immediate, a uniform or a register. Bit 72 is clear when B and C are
+   immediates and set otherwise in Metal's kernels (its meaning is not
+   known). ldscs's mask has its own code; g (73:75) is the load group.
+  -->
+  <enum kind="scs_load_mask" name="SCS load mask">
+    <value value="0">x</value>
+    <value value="1">y</value>
+    <value value="2">z</value>
+    <value value="3">w</value>
+    <value value="4">yw</value>
+    <value value="5">zw</value>
+    <value value="6">xy</value>
+    <value value="7">xz</value>
+    <value value="8">yz</value>
+    <value value="9">xw</value>
+    <value value="10">xyw</value>
+    <value value="11">xzw</value>
+    <value value="12">yzw</value>
+    <value value="13">xyz</value>
+    <value value="14">xyzw</value>
+  </enum>
+
+  <!--
+   ldscs's destination: 0:7 reg, 8:9 type (as memreg), 10:13 the
+   scs_load_mask code (count: its components; i8 packs two per 16-bit
+   register)
+  -->
+  <encoding name="scsreg">
+    <case>
+      <exact bit="8">1</exact>
+      <immediate name="reg" bit="1:7" shift="1"/>
+      <modifier name="count" bit="10:13" table="1 1 1 1 2 2 2 2 2 2 3 3 3 3 4 0"/>
+      <property name="size32"/>
+      <carry bit="0 9"/>
+    </case>
+    <case>
+      <exact bit="8:9">00</exact>
+      <immediate name="reg" bit="0:7"/>
+      <modifier name="count" bit="10:13" table="1 1 1 1 2 2 2 2 2 2 3 3 3 3 4 0"/>
+    </case>
+    <case>
+      <exact bit="8:9">10</exact>
+      <immediate name="reg" bit="0:7"/>
+      <modifier name="count" bit="10:13" table="1 1 1 1 1 1 1 1 1 1 2 2 2 2 2 0"/>
+    </case>
+  </encoding>
+
+  <!--
+   SCS base (B): 0:7 the register or the 8-bit immediate, 8 the uniform's
+   ninth bit (a register's unknown flag), 9 uniform (a register's lu,
+   inferred), 10 register. A 32-bit value.
+  -->
+  <encoding name="scsbase">
+    <case>
+      <exact bit="10">1</exact>
+      <immediate name="reg" bit="1:7" shift="1"/>
+      <modifier name="lu" bit="9"/>
+      <property name="size32"/>
+      <carry bit="0 8"/>
+    </case>
+    <case>
+      <exact bit="9:10">01</exact>
+      <immediate name="uniform" bit="1:8" shift="1"/>
+      <property name="size32"/>
+      <carry bit="0"/>
+    </case>
+    <case>
+      <exact bit="8:10">000</exact>
+      <immediate name="imm" bit="0:7"/>
+    </case>
+  </encoding>
+
+  <!--
+   SCS index (C), and intersect_ray's B: 0:15 the 16-bit immediate, the
+   register (0:7, 11 an unknown flag, 12 32-bit, 13 a second flag in
+   intersect_ray, 14 lu) or the uniform (0:8, 12 32-bit); 16 register,
+   17 uniform. The scsidx9 variant (intersect_ray) has the size at 9 and
+   the flags at 8 and 13.
+  -->
+  <encoding name="scsidx">
+    <case>
+      <exact bit="12 16:17">011</exact>
+      <immediate name="reg" bit="1:7" shift="1"/>
+      <modifier name="lu" bit="14"/>
+      <property name="size32"/>
+      <carry bit="0 11"/>
+    </case>
+    <case>
+      <exact bit="12 16:17">010</exact>
+      <immediate name="reg" bit="0:7"/>
+      <modifier name="lu" bit="14"/>
+      <carry bit="11"/>
+    </case>
+    <case>
+      <exact bit="12 16:17">101</exact>
+      <immediate name="uniform" bit="1:8" shift="1"/>
+      <property name="size32"/>
+      <carry bit="0"/>
+    </case>
+    <case>
+      <exact bit="12 16:17">100</exact>
+      <immediate name="uniform" bit="0:8"/>
+    </case>
+    <case>
+      <exact bit="16:17">00</exact>
+      <immediate name="imm" bit="0:15"/>
+    </case>
+  </encoding>
+
+  <encoding name="scsidx9">
+    <case>
+      <exact bit="9 16:17">011</exact>
+      <immediate name="reg" bit="1:7" shift="1"/>
+      <modifier name="lu" bit="13"/>
+      <property name="size32"/>
+      <carry bit="0 8"/>
+    </case>
+    <case>
+      <exact bit="9 16:17">010</exact>
+      <immediate name="reg" bit="0:7"/>
+      <modifier name="lu" bit="13"/>
+      <carry bit="8"/>
+    </case>
+    <case>
+      <exact bit="9 16:17">101</exact>
+      <immediate name="uniform" bit="1:8" shift="1"/>
+      <property name="size32"/>
+      <carry bit="0"/>
+    </case>
+    <case>
+      <exact bit="9 16:17">100</exact>
+      <immediate name="uniform" bit="0:8"/>
+    </case>
+    <case>
+      <exact bit="16:17">00</exact>
+      <immediate name="imm" bit="0:15"/>
+    </case>
+  </encoding>
+
+  <!--
+   intersect_ray's C and D: 0:7 the register or the 8-bit immediate, 8 the
+   uniform's ninth bit (a register's flag), 9 uniform (a register's
+   second flag), 10 register. 32-bit (inferred for C).
+  -->
+  <encoding name="raysrc">
+    <case>
+      <exact bit="10">1</exact>
+      <immediate name="reg" bit="1:7" shift="1"/>
+      <property name="size32"/>
+      <carry bit="0 8 9"/>
+    </case>
+    <case>
+      <exact bit="9:10">01</exact>
+      <immediate name="uniform" bit="1:8" shift="1"/>
+      <property name="size32"/>
+      <carry bit="0"/>
+    </case>
+    <case>
+      <exact bit="8:10">000</exact>
+      <immediate name="imm" bit="0:7"/>
+    </case>
+  </encoding>
+
+  <!--
+   intersect_ray's A, the table of acceleration structures (64-bit): 0:6,
+   7 register (8 and 9 its flags), else a uniform
+  -->
+  <encoding name="raytable">
+    <case>
+      <exact bit="7">1</exact>
+      <immediate name="reg" bit="0:6" shift="1"/>
+      <property name="size64"/>
+      <carry bit="8 9"/>
+    </case>
+    <case>
+      <exact bit="7:9">000</exact>
+      <immediate name="uniform" bit="0:6" shift="2"/>
+      <property name="size64"/>
+    </case>
+  </encoding>
+
+  <!--
+   The SCS release: ldscs with no destination (73:75 = 6); each bit of the
+   mask (24:27) a 16-byte chunk a lane. Metal's ray-query kernels end with
+   it over the ray and the record (inferred), with bits 77 and 96 set
+   (clear in its loads). Before scs_load, which would match it as group 6.
+  -->
+  <ins name="scs_release" display="scs_release" length="14">
+    <exact bit="0:10 57:65 73:75 78 95 100">00011000000000001001011111</exact>
+    <immediate name="mask" bit="24:27"/>
+    <modifier name="type" bit="70:71" kind="device_load_type"/>
+    <src kind="scsbase" bit="32:39 40 76 101"/>
+    <src kind="scsidx" bit="41:56 102 103"/>
+    <modifier name="shift" bit="97:99" kind="memshift"/>
+    <immediate name="offset" bit="79:94"/>
+    <immediate name="u72" bit="72"/>
+    <immediate name="u77" bit="77"/>
+    <immediate name="u96" bit="96"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <ins name="scs_load" display="ldscs" length="14">
+    <exact bit="0:10 57:65 78 95 100">00000000000001001011111</exact>
+    <immediate name="g" bit="73:75"/>
+    <modifier name="type" bit="70:71" kind="device_load_type"/>
+    <modifier name="mask" bit="66:69" kind="scs_load_mask"/>
+    <dest kind="scsreg" bit="24:31 70:71 66:69"/>
+    <src kind="scsbase" bit="32:39 40 76 101"/>
+    <src kind="scsidx" bit="41:56 102 103"/>
+    <modifier name="shift" bit="97:99" kind="memshift"/>
+    <immediate name="offset" bit="79:94"/>
+    <immediate name="u72" bit="72"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <ins name="scs_store" display="stscs" length="14">
+    <exact bit="0:10 57:65 76 93 97">00000000000001011011111</exact>
+    <modifier name="type" bit="70:71" kind="device_store_type"/>
+    <modifier name="mask" bit="66:69" kind="device_store_mask"/>
+    <src kind="memreg" bit="24 25:31 70:71 66:69"/>
+    <src kind="scsbase" bit="32:39 40 74 98"/>
+    <src kind="scsidx" bit="41:56 99 100"/>
+    <modifier name="shift" bit="94:96" kind="memshift"/>
+    <immediate name="offset" bit="77:92"/>
+    <immediate name="u72" bit="72"/>
+    <immediate name="lu" bit="73"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <!--
+   intersect_ray: A the table of acceleration structures, B the index in
+   it, C (0 in Metal's kernels), D (0x0FE00000; bit 0 set with instances).
+   The ray and the result are in SCS memory. k is a 13-bit field, 0 in
+   Metal's kernels; bit 78 is set in them (unk2).
+  -->
+  <ins name="intersect_ray" display="intersect_ray" length="12">
+    <exact bit="0:10">00001011111</exact>
+    <src kind="raytable" bit="37:43 84 79 80"/>
+    <src kind="scsidx9" bit="44:59 85 86"/>
+    <src kind="raysrc" bit="60:67 68 82 87"/>
+    <src kind="raysrc" bit="69:76 77 83 88"/>
+    <immediate name="k" bit="24:36"/>
+    <modifier name="unk2" bit="78" kind="expect1"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <!-- continue_ray: resumes the unit's traversal; k as intersect_ray's (4 in Metal's kernels) -->
+  <ins name="continue_ray" display="continue_ray" length="6">
+    <exact bit="0:10">00101011111</exact>
+    <immediate name="k" bit="24:36"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <!--
    The entry program's own instructions (Apple's entry state loader; Mesa's
    agx_esl.c emits them, metal-compute.md), from libLLVM 32023's encoder and
    noopwafel's demo15. speclm sets up threadgroup memory: the sample count's
