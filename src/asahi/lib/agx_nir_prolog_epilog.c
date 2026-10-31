@@ -157,7 +157,8 @@ lower_adjacency(nir_builder *b, nir_intrinsic_instr *intr, void *data)
    if (key->adjacency == MESA_PRIM_LINES_ADJACENCY) {
       id = poly_map_to_line_adj(b, id);
    } else if (key->adjacency == MESA_PRIM_TRIANGLE_STRIP_ADJACENCY) {
-      id = poly_map_to_tri_strip_adj(b, id);
+      id = poly_map_to_tri_strip_adj(b, id,
+                                     nir_imm_bool(b, key->flatshade_first));
    } else if (key->adjacency == MESA_PRIM_LINE_STRIP_ADJACENCY) {
       id = poly_map_to_line_strip_adj(b, id);
    } else if (key->adjacency == MESA_PRIM_TRIANGLES_ADJACENCY) {
