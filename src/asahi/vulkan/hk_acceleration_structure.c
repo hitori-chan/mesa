@@ -40,6 +40,8 @@ static const struct vk_acceleration_structure_build_args hk_build_args = {
    .root_flags_offset = -1,
    .morton_sort_workgroup_size = 512,
    .morton_sort_kvs_per_thread = 2,
+   /* G15 stalls a core's other workgroups while one spins: the single dispatch's waits can hang */
+   .morton_sort_per_step = true,
 };
 
 static uint32_t
