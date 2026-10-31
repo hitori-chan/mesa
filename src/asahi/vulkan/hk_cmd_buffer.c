@@ -56,6 +56,7 @@ hk_free_resettable_cmd_buffer(struct hk_cmd_buffer *cmd)
 
    hk_descriptor_state_fini(cmd, &cmd->state.gfx.descriptors);
    hk_descriptor_state_fini(cmd, &cmd->state.cs.descriptors);
+   hk_descriptor_state_fini(cmd, &cmd->state.rt.descriptors);
 
    hk_cmd_pool_free_bo_list(pool, &cmd->uploader.main.bos);
    hk_cmd_pool_free_usc_bo_list(pool, &cmd->uploader.usc.bos);
@@ -449,6 +450,11 @@ hk_CmdBindDescriptorSets2KHR(
       hk_bind_descriptor_sets(cmd, &cmd->state.cs.descriptors,
                               pBindDescriptorSetsInfo);
    }
+
+   if (pBindDescriptorSetsInfo->stageFlags & HK_SHADER_STAGE_ALL_RT) {
+      hk_bind_descriptor_sets(cmd, &cmd->state.rt.descriptors,
+                              pBindDescriptorSetsInfo);
+   }
 }
 
 static void
@@ -471,6 +477,9 @@ hk_CmdPushConstants2KHR(VkCommandBuffer commandBuffer,
 
    if (pPushConstantsInfo->stageFlags & VK_SHADER_STAGE_COMPUTE_BIT)
       hk_push_constants(cmd, &cmd->state.cs.descriptors, pPushConstantsInfo);
+
+   if (pPushConstantsInfo->stageFlags & HK_SHADER_STAGE_ALL_RT)
+      hk_push_constants(cmd, &cmd->state.rt.descriptors, pPushConstantsInfo);
 }
 
 static struct hk_push_descriptor_set *
@@ -529,6 +538,11 @@ hk_CmdPushDescriptorSet2KHR(
 
    if (pPushDescriptorSetInfo->stageFlags & VK_SHADER_STAGE_COMPUTE_BIT) {
       hk_push_descriptor_set(cmd, &cmd->state.cs.descriptors,
+                             pPushDescriptorSetInfo);
+   }
+
+   if (pPushDescriptorSetInfo->stageFlags & HK_SHADER_STAGE_ALL_RT) {
+      hk_push_descriptor_set(cmd, &cmd->state.rt.descriptors,
                              pPushDescriptorSetInfo);
    }
 }
@@ -764,7 +778,10 @@ hk_upload_usc_words(struct hk_cmd_buffer *cmd, struct hk_shader *s,
 
    uint64_t root_ptr;
 
-   if (sw_stage == MESA_SHADER_COMPUTE) {
+   if (sw_stage == MESA_SHADER_COMPUTE && s->info.cs.ray_tracing) {
+      root_ptr =
+         hk_cmd_buffer_upload_root(cmd, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR);
+   } else if (sw_stage == MESA_SHADER_COMPUTE) {
       root_ptr = hk_cmd_buffer_upload_root(cmd, VK_PIPELINE_BIND_POINT_COMPUTE);
    } else {
       root_ptr = cmd->state.gfx.root;
