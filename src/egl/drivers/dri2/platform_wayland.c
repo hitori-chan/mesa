@@ -136,10 +136,24 @@ static const struct dri2_wl_visual {
       DRM_FORMAT_XRGB8888,
    },
    {
+      DRM_FORMAT_BGRX8888,
+      PIPE_FORMAT_X8R8G8B8_UNORM,
+      PIPE_FORMAT_NONE,
+      DRM_FORMAT_BGRX8888,
+   },
+   {
       DRM_FORMAT_ARGB8888,
       PIPE_FORMAT_BGRA8888_UNORM,
       PIPE_FORMAT_NONE,
       DRM_FORMAT_XRGB8888,
+   },
+   {
+      /* On big-endian, same pipe format as ARGB8888 above, which
+       * dri2_wl_visual_idx_from_pipe_format() finds first. */
+      DRM_FORMAT_BGRA8888,
+      PIPE_FORMAT_A8R8G8B8_UNORM,
+      PIPE_FORMAT_NONE,
+      DRM_FORMAT_BGRX8888,
    },
    {
       DRM_FORMAT_RGB888,
@@ -154,10 +168,22 @@ static const struct dri2_wl_visual {
       DRM_FORMAT_XBGR8888,
    },
    {
+      DRM_FORMAT_RGBA8888,
+      PIPE_FORMAT_A8B8G8R8_UNORM,
+      PIPE_FORMAT_NONE,
+      DRM_FORMAT_RGBX8888,
+   },
+   {
       DRM_FORMAT_XBGR8888,
       PIPE_FORMAT_RGBX8888_UNORM,
       PIPE_FORMAT_NONE,
       DRM_FORMAT_XBGR8888,
+   },
+   {
+      DRM_FORMAT_RGBX8888,
+      PIPE_FORMAT_X8B8G8R8_UNORM,
+      PIPE_FORMAT_NONE,
+      DRM_FORMAT_RGBX8888,
    },
    {
       DRM_FORMAT_BGR888,
@@ -1656,7 +1682,20 @@ create_wl_buffer(struct dri2_egl_display *dri2_dpy,
    bool supported_modifier = false;
    bool mod_invalid_supported = false;
    int visual_idx = dri2_wl_visual_idx_from_fourcc(fourcc);
-   assert(visual_idx != -1);
+
+   if (visual_idx < 0) {
+      uint32_t code = fourcc & ~DRM_FORMAT_BIG_ENDIAN;
+
+      _eglLog(_EGL_WARNING,
+              "wayland: no visual for image fourcc 0x%08x (%c%c%c%c%s)",
+              (unsigned int)fourcc,
+              code & 0xff,
+              (code >> 8) & 0xff,
+              (code >> 16) & 0xff,
+              (code >> 24) & 0xff,
+              (fourcc & DRM_FORMAT_BIG_ENDIAN) ? " big-endian" : "");
+      return NULL;
+   }
 
    uint64_t *mod;
    u_vector_foreach(mod, &dri2_dpy->formats.modifiers[visual_idx])
@@ -2270,8 +2309,7 @@ static void
 default_dmabuf_feedback_done(
    void *data, struct zwp_linux_dmabuf_feedback_v1 *dmabuf_feedback)
 {
-   struct dri2_egl_display *dri2_dpy = data;
-   dmabuf_feedback_fini(&dri2_dpy->dmabuf_feedback);
+   /* Intentionally empty */
 }
 
 static const struct zwp_linux_dmabuf_feedback_v1_listener

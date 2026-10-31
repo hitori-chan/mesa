@@ -1302,9 +1302,6 @@ if cc.compiles('__uint128_t foo(void) { return 0; }',
   pre_args += '-DHAVE_UINT128'
 endif
 
-if cc.has_function('reallocarray')
-   pre_args += '-DHAVE_REALLOCARRAY'
-endif
 if cc.has_function('fmemopen')
    pre_args += '-DHAVE_FMEMOPEN'
 endif
@@ -1709,6 +1706,8 @@ if cc.has_header_symbol('unistd.h', '_SC_PHYS_PAGES')
   pre_args += '-DHAVE_SC_PHYS_PAGES'
 endif
 
+# Meson adds -fpermissive to GCC C++ checks, which would allow GNU qsort_r to
+# compile against a BSD prototype (not good)
 if cpp.links('''
     #define _GNU_SOURCE
     #include <stdlib.h>
@@ -1721,7 +1720,7 @@ if cpp.links('''
       qsort_r((void*)&arr[0], 1, 1, dcomp, t);
       return (0);
     }''',
-    args : pre_args,
+    args : pre_args + cpp.get_supported_arguments('-fno-permissive'),
     name : 'GNU qsort_r')
   pre_args += '-DHAVE_GNU_QSORT_R'
 elif cpp.links('''
