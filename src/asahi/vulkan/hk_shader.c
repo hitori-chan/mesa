@@ -1430,6 +1430,7 @@ hk_compile_shader(struct hk_device *dev, struct vk_shader_compile_info *info,
          nir->info.fs.uses_discard = true;
       }
 
+      NIR_PASS(_, nir, agx_nir_lower_bary_coord);
       NIR_PASS(_, nir, agx_nir_lower_sample_intrinsics, false);
    } else if (sw_stage == MESA_SHADER_VERTEX) {
       hk_populate_vs_key(&key_tmp.vs, state);

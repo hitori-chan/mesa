@@ -169,6 +169,9 @@ struct coefficient_info {
    BITSET_DECLARE(smooth, VARYING_NUM_COMPONENTS);
    BITSET_DECLARE(flat, VARYING_NUM_COMPONENTS);
    BITSET_DECLARE(noperspective, VARYING_NUM_COMPONENTS);
+
+   /* Per-vertex inputs, flat at each of the primitive's three vertices */
+   BITSET_DECLARE(vertex[3], VARYING_NUM_COMPONENTS);
 };
 
 static BITSET_WORD *
@@ -218,6 +221,12 @@ gather_cf(nir_builder *b, nir_intrinsic_instr *intr, void *data)
    }
 
    BITSET_WORD *set = bitset_for_interp(data, nir_intrinsic_interp_mode(bary));
+   if (intr->intrinsic == nir_intrinsic_load_coefficients_agx &&
+       nir_intrinsic_base(intr)) {
+      assert(nir_intrinsic_interp_mode(intr) == INTERP_MODE_FLAT);
+      set = info->vertex[nir_intrinsic_base(intr) - 1];
+   }
+
    nir_io_semantics sem = nir_intrinsic_io_semantics(intr);
    nir_src *offset = nir_get_io_offset_src(intr);
 
@@ -335,16 +344,49 @@ assign_coefficient_regs(nir_shader *nir, struct agx_varyings_fs *var)
 
       var->nr_cf += count;
    }
+
+   /* Per-vertex inputs: a flat binding for each vertex, each over the range
+    * read at any vertex, so the three have one layout.
+    */
+   for (unsigned i = VARYING_SLOT_POS + 1; i < VARYING_SLOT_MAX; ++i) {
+      unsigned offset = 4, end = 0;
+
+      for (unsigned v = 0; v < 3; ++v) {
+         for (unsigned c = 0; c < 4; ++c) {
+            if (BITSET_TEST(info.vertex[v], (i * 4) + c)) {
+               offset = MIN2(offset, c);
+               end = MAX2(end, c + 1);
+            }
+         }
+      }
+
+      if (offset >= end)
+         continue;
+
+      for (unsigned v = 0; v < 3; ++v) {
+         var->bindings[var->nr_bindings++] = (struct agx_cf_binding){
+            .cf_base = var->nr_cf,
+            .slot = i,
+            .offset = offset,
+            .count = end - offset,
+            .flat_vertex = v + 1,
+         };
+
+         var->nr_cf += end - offset;
+      }
+   }
 }
 
 static agx_index
-agx_get_cf(agx_context *ctx, gl_varying_slot slot, unsigned offset)
+agx_get_cf(agx_context *ctx, gl_varying_slot slot, unsigned offset,
+           unsigned flat_vertex)
 {
    struct agx_varyings_fs *varyings = &ctx->out->varyings.fs;
 
    /* We already have an appropriate binding, find it */
    for (unsigned b = 0; b < varyings->nr_bindings; ++b) {
       if (varyings->bindings[b].slot == slot &&
+          varyings->bindings[b].flat_vertex == flat_vertex &&
           (slot != VARYING_SLOT_POS ||
            offset == varyings->bindings[b].offset)) {
 
@@ -625,7 +667,11 @@ cf_for_intrinsic(agx_builder *b, nir_intrinsic_instr *intr)
       location += nir_src_as_uint(*offset);
    }
 
-   agx_index I = agx_get_cf(b->shader, location, nir_intrinsic_component(intr));
+   unsigned flat_vertex = intr->intrinsic == nir_intrinsic_load_coefficients_agx
+                             ? nir_intrinsic_base(intr)
+                             : 0;
+   agx_index I = agx_get_cf(b->shader, location, nir_intrinsic_component(intr),
+                            flat_vertex);
 
    /* If we have a non-constant offset, we add it to the CF. Offsets are in
     * vec4 slots (unless we're compact) but the CF is in components, so we need
@@ -715,7 +761,7 @@ agx_emit_load_vary(agx_builder *b, agx_index dest, nir_intrinsic_instr *instr)
        interp == AGX_INTERPOLATION_CENTER &&
        (agx_compiler_debug & AGX_DBG_PERSPMUL)) {
       assert(I.type == AGX_INDEX_IMMEDIATE && "a constant offset");
-      agx_index J = agx_get_cf(b->shader, VARYING_SLOT_POS, 3);
+      agx_index J = agx_get_cf(b->shader, VARYING_SLOT_POS, 3, 0);
       agx_index w = agx_temp(b->shader, AGX_SIZE_32);
       agx_iter_to(b, w, J, sample_index, 1, interp, true);
 
@@ -737,7 +783,7 @@ agx_emit_load_vary(agx_builder *b, agx_index dest, nir_intrinsic_instr *instr)
       agx_emit_collect_to(b, dest, components, c);
       return;
    } else if (perspective && b->shader->key->dev.gpu_generation < 15) {
-      agx_index J = agx_get_cf(b->shader, VARYING_SLOT_POS, 3);
+      agx_index J = agx_get_cf(b->shader, VARYING_SLOT_POS, 3, 0);
       agx_iterproj_to(b, dest, I, J, sample_index, components, interp);
    } else {
       agx_iter_to(b, dest, I, sample_index, components, interp, false);
@@ -2416,14 +2462,14 @@ agx_emit_intrinsic(agx_builder *b, nir_intrinsic_instr *instr)
          });
 
    case nir_intrinsic_load_frag_coord_z: {
-      agx_index cf = agx_get_cf(b->shader, VARYING_SLOT_POS, 2);
+      agx_index cf = agx_get_cf(b->shader, VARYING_SLOT_POS, 2, 0);
 
       return agx_iter_to(b, dst, cf, agx_zero(), 1, AGX_INTERPOLATION_CENTER,
                          false);
    }
 
    case nir_intrinsic_load_frag_coord_w: {
-      agx_index cf = agx_get_cf(b->shader, VARYING_SLOT_POS, 3);
+      agx_index cf = agx_get_cf(b->shader, VARYING_SLOT_POS, 3, 0);
 
       return agx_iter_to(b, dst, cf, agx_zero(), 1, AGX_INTERPOLATION_CENTER,
                          false);
@@ -5108,10 +5154,11 @@ agx_compile_shader_nir_impl(nir_shader *nir, struct agx_shader_key *key,
          nir->info.outputs_written & (VARYING_BIT_LAYER | VARYING_BIT_VIEWPORT);
 
    } else if (nir->info.stage == MESA_SHADER_FRAGMENT) {
+      /* Apple's compiler disables merging for barycentric coordinates */
       info->disable_tri_merging =
          nir->info.uses_wide_subgroup_intrinsics ||
          nir->info.fs.needs_coarse_quad_helper_invocations ||
-         nir->info.writes_memory;
+         nir->info.writes_memory || agx_fs_reads_vertices(&info->varyings.fs);
 
       /* Writing the sample mask requires tag writes */
       info->tag_write_disable &= !info->writes_sample_mask;

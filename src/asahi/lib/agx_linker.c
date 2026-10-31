@@ -323,9 +323,18 @@ agx_fast_link(struct agx_linked_shader *linked, struct agx_device *dev,
          linked->cf.nr_bindings += prolog_vary->nr_bindings;
       }
 
+      bool bary_persp = false, bary_linear = false;
+      for (unsigned i = 0; i < linked->cf.nr_bindings; ++i) {
+         gl_varying_slot slot = linked->cf.bindings[i].slot;
+         bary_persp |= slot == AGX_VARYING_SLOT_BARY_PERSP;
+         bary_linear |= slot == AGX_VARYING_SLOT_BARY_LINEAR;
+      }
+
       agx_pack(&linked->osel, OUTPUT_SELECT, cfg) {
          cfg.varyings = linked->cf.nr_bindings > 0;
          cfg.frag_coord_z = linked->cf.reads_z;
+         cfg.barycentric_coordinates = bary_persp;
+         cfg.linear_barycentric_coordinates = bary_linear;
       }
    }
 }

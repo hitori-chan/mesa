@@ -145,8 +145,9 @@ needs_lower(const nir_instr *instr, const void *data)
                 *nir_get_io_offset_src((nir_intrinsic_instr *)load));
    }
 
-   /* Flat shading always lowered */
-   return (load->intrinsic == nir_intrinsic_load_input);
+   /* Flat shading always lowered, per-vertex inputs too */
+   return load->intrinsic == nir_intrinsic_load_input ||
+          load->intrinsic == nir_intrinsic_load_input_vertex;
 }
 
 static nir_def *
@@ -215,11 +216,51 @@ project_g15(nir_builder *b, nir_intrinsic_instr *load)
    return nir_vec(b, values, load->def.num_components);
 }
 
+/*
+ * A per-vertex input (VK_KHR_fragment_shader_barycentric): each of the
+ * primitive's vertices has a flat binding of its own (shade models "flat
+ * vertex 0", "1" and "2", in the primitive's order), read as any flat input.
+ */
+static nir_def *
+lower_input_vertex(nir_builder *b, nir_intrinsic_instr *load)
+{
+   assert(load->def.bit_size == 32);
+   nir_def *vertex = load->src[0].ssa;
+
+   nir_def *values[NIR_MAX_VEC_COMPONENTS] = {NULL};
+   for (unsigned i = 0; i < load->def.num_components; ++i) {
+      nir_def *v[3];
+
+      for (unsigned k = 0; k < 3; ++k) {
+         nir_def *cf = nir_load_coefficients_agx(
+            b, nir_get_io_offset_src(load)->ssa,
+            .component = nir_intrinsic_component(load) + i,
+            .io_semantics = nir_intrinsic_io_semantics(load),
+            .interp_mode = INTERP_MODE_FLAT, .base = k + 1);
+
+         v[k] = interpolate_flat(b, cf);
+      }
+
+      if (nir_src_is_const(load->src[0])) {
+         values[i] = v[MIN2(nir_src_as_uint(load->src[0]), 2)];
+      } else {
+         values[i] =
+            nir_bcsel(b, nir_ieq_imm(b, vertex, 0), v[0],
+                      nir_bcsel(b, nir_ieq_imm(b, vertex, 1), v[1], v[2]));
+      }
+   }
+
+   return nir_vec(b, values, load->def.num_components);
+}
+
 static nir_def *
 lower(nir_builder *b, nir_instr *instr, void *data)
 {
    nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
    const bool *g15 = data;
+
+   if (intr->intrinsic == nir_intrinsic_load_input_vertex)
+      return lower_input_vertex(b, intr);
 
    if (*g15 && intr->intrinsic == nir_intrinsic_load_interpolated_input &&
        nir_src_as_intrinsic(intr->src[0])->intrinsic !=
@@ -233,6 +274,81 @@ lower(nir_builder *b, nir_instr *instr, void *data)
    }
 
    return nir_vec(b, values, intr->def.num_components);
+}
+
+/*
+ * The barycentric coordinates (VK_KHR_fragment_shader_barycentric) are the
+ * hardware's own two-component input (coefficient source "Barycentric
+ * coord"), at a pseudo-slot, interpolated as an input of the coordinates'
+ * mode and location: on G15 a perspective one iterates as λ/w and is
+ * projected as any perspective input. The third coordinate is one minus the
+ * other two, as Apple's compiler builds it.
+ */
+static bool
+lower_bary_coord(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   enum glsl_interp_mode mode;
+   nir_def *bary;
+
+   b->cursor = nir_before_instr(&intr->instr);
+
+   switch (intr->intrinsic) {
+   case nir_intrinsic_load_barycentric_coord_pixel:
+      mode = nir_intrinsic_interp_mode(intr);
+      bary = nir_load_barycentric_pixel(b, 32, .interp_mode = mode);
+      break;
+   case nir_intrinsic_load_barycentric_coord_centroid:
+      mode = nir_intrinsic_interp_mode(intr);
+      bary = nir_load_barycentric_centroid(b, 32, .interp_mode = mode);
+      break;
+   case nir_intrinsic_load_barycentric_coord_sample:
+      /* A sample-qualified BaryCoord is a system value, which SPIR-V does not
+       * count as sample shading.
+       */
+      mode = nir_intrinsic_interp_mode(intr);
+      bary = nir_load_barycentric_sample(b, 32, .interp_mode = mode);
+      b->shader->info.fs.uses_sample_shading = true;
+      break;
+   case nir_intrinsic_load_barycentric_coord_at_sample:
+      mode = nir_intrinsic_interp_mode(intr);
+      bary = nir_load_barycentric_at_sample(b, 32, intr->src[0].ssa,
+                                            .interp_mode = mode);
+      break;
+   case nir_intrinsic_load_barycentric_coord_at_offset:
+      mode = nir_intrinsic_interp_mode(intr);
+      bary = nir_load_barycentric_at_offset(b, 32, intr->src[0].ssa,
+                                            .interp_mode = mode);
+      break;
+   default:
+      return false;
+   }
+
+   bool linear = mode == INTERP_MODE_NOPERSPECTIVE;
+   nir_io_semantics sem = {
+      .location =
+         linear ? AGX_VARYING_SLOT_BARY_LINEAR : AGX_VARYING_SLOT_BARY_PERSP,
+      .num_slots = 1,
+   };
+
+   nir_def *xy = nir_load_interpolated_input(b, 2, 32, bary, nir_imm_int(b, 0),
+                                             .dest_type = nir_type_float32,
+                                             .io_semantics = sem);
+
+   nir_def *x = nir_channel(b, xy, 0), *y = nir_channel(b, xy, 1);
+   nir_def *z = nir_fsub(b, nir_fsub_imm(b, 1.0, x), y);
+
+   nir_def_replace(&intr->def, nir_vec3(b, x, y, z));
+   return true;
+}
+
+/* Before the sample intrinsics' lowering, which the sample form needs */
+bool
+agx_nir_lower_bary_coord(nir_shader *s)
+{
+   assert(s->info.stage == MESA_SHADER_FRAGMENT);
+
+   return nir_shader_intrinsics_pass(s, lower_bary_coord,
+                                     nir_metadata_control_flow, NULL);
 }
 
 bool

@@ -33,8 +33,18 @@ struct agx_cf_binding {
    /* Perspective correct interpolation */
    bool perspective : 1;
 
-   uint8_t pad;
+   /* For flat shading, the vertex whose value is taken: 0 for the provoking
+    * vertex, else the primitive's vertex plus one (per-vertex inputs).
+    */
+   uint8_t flat_vertex;
 };
+
+/* Pseudo-slots for the barycentric coordinates (the hardware's coefficient
+ * source "Barycentric coord", two components): Vulkan's fragment shaders never
+ * read these slots, and the bounding box ones carry the cull distances.
+ */
+#define AGX_VARYING_SLOT_BARY_PERSP  VARYING_SLOT_CLIP_VERTEX
+#define AGX_VARYING_SLOT_BARY_LINEAR VARYING_SLOT_EDGE
 
 /* Conservative bound, * 4 due to offsets (TODO: maybe worth eliminating
  * coefficient register aliasing?)
@@ -54,6 +64,22 @@ struct agx_varyings_fs {
    /* Coefficient register bindings */
    struct agx_cf_binding bindings[AGX_MAX_CF_BINDINGS];
 };
+
+/* Whether a fragment shader reads its primitive's vertices apart: barycentric
+ * coordinates or per-vertex inputs.
+ */
+static inline bool
+agx_fs_reads_vertices(const struct agx_varyings_fs *fs)
+{
+   for (unsigned i = 0; i < fs->nr_bindings; ++i) {
+      if (fs->bindings[i].flat_vertex ||
+          fs->bindings[i].slot == AGX_VARYING_SLOT_BARY_PERSP ||
+          fs->bindings[i].slot == AGX_VARYING_SLOT_BARY_LINEAR)
+         return true;
+   }
+
+   return false;
+}
 
 union agx_varyings {
    struct agx_varyings_fs fs;
@@ -427,6 +453,7 @@ void agx_preprocess_nir(nir_shader *nir);
 bool agx_nir_lower_discard_zs_emit(nir_shader *s);
 bool agx_nir_lower_stencil_only_g15(nir_shader *s);
 bool agx_nir_lower_sample_mask(nir_shader *s);
+bool agx_nir_lower_bary_coord(nir_shader *s);
 bool agx_nir_lower_interpolation(nir_shader *s, bool g15);
 
 bool agx_nir_lower_cull_distance_vs(struct nir_shader *s);

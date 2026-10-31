@@ -322,7 +322,18 @@ agx_link_varyings_vs_fs(void *out, struct agx_varyings_vs *vs,
    struct agx_cf_binding_header_packed *header = out;
    struct agx_cf_binding_packed *bindings = (void *)(header + 1);
 
-   unsigned user_base = 1 + (fs->reads_z ? 1 : 0);
+   /* The barycentric coordinates come after W and Z, two slots for each kind
+    * read, the perspective ones first (inferred: Apple's shaders read one kind
+    * at a time, at slot 1).
+    */
+   bool bary_persp = false, bary_linear = false;
+   for (unsigned i = 0; i < fs->nr_bindings; ++i) {
+      bary_persp |= fs->bindings[i].slot == AGX_VARYING_SLOT_BARY_PERSP;
+      bary_linear |= fs->bindings[i].slot == AGX_VARYING_SLOT_BARY_LINEAR;
+   }
+
+   unsigned bary_base = 1 + (fs->reads_z ? 1 : 0);
+   unsigned user_base = bary_base + 2 * (bary_persp + bary_linear);
    unsigned nr_slots = user_base + nr_user_indices;
 
    agx_pack(header, CF_BINDING_HEADER, cfg) {
@@ -340,14 +351,25 @@ agx_link_varyings_vs_fs(void *out, struct agx_varyings_vs *vs,
          if (b.smooth) {
             cfg.shade_model = b.perspective ? AGX_SHADE_MODEL_PERSPECTIVE
                                             : AGX_SHADE_MODEL_LINEAR;
+         } else if (b.flat_vertex) {
+            cfg.shade_model = translate_flat_shade_model(b.flat_vertex - 1);
          } else {
             cfg.shade_model = translate_flat_shade_model(provoking_vertex);
          }
 
-         if (b.slot == VARYING_SLOT_PNTC ||
-             (b.slot >= VARYING_SLOT_TEX0 && b.slot <= VARYING_SLOT_TEX7 &&
-              (sprite_coord_enable &
-               BITFIELD_BIT(b.slot - VARYING_SLOT_TEX0)))) {
+         if (b.slot == AGX_VARYING_SLOT_BARY_PERSP ||
+             b.slot == AGX_VARYING_SLOT_BARY_LINEAR) {
+            assert(b.offset == 0 && b.count == 2);
+            cfg.source = AGX_COEFFICIENT_SOURCE_BARYCENTRIC_COORD;
+            cfg.base_slot = bary_base;
+
+            if (b.slot == AGX_VARYING_SLOT_BARY_LINEAR && bary_persp)
+               cfg.base_slot += 2;
+         } else if (b.slot == VARYING_SLOT_PNTC ||
+                    (b.slot >= VARYING_SLOT_TEX0 &&
+                     b.slot <= VARYING_SLOT_TEX7 &&
+                     (sprite_coord_enable &
+                      BITFIELD_BIT(b.slot - VARYING_SLOT_TEX0)))) {
 
             assert(b.offset == 0);
             cfg.source = AGX_COEFFICIENT_SOURCE_POINT_COORD;
