@@ -750,27 +750,42 @@ morton_generate(VkCommandBuffer commandBuffer, struct vk_device *device,
    disp->CmdBindPipeline(
       commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
 
-   for (uint32_t i = 0; i < build_count; ++i) {
-      if (states[i].config.internal_type == VK_INTERNAL_BUILD_TYPE_UPDATE)
-         continue;
-      if ((states[i].config.build_flags & VK_MORTON_BUILD_FLAGS) != build_flags)
-         continue;
+   /* Per step, the steps are the passes: the tiles' sort, then a merge per doubling */
+   uint32_t steps = 1;
+   if (args->morton_sort_per_step) {
+      for (uint32_t i = 0; i < build_count; ++i)
+         steps = MAX2(steps, states[i].morton_sort_passes);
+   }
 
-      uint64_t scratch_addr = states[i].build_info->scratchData.deviceAddress;
-      const struct morton_sort_args consts = {
-         .bvh = scratch_addr + states[i].scratch.ir_offset,
-         .header = scratch_addr + states[i].scratch.header_offset,
-         .ids_even = scratch_addr + states[i].scratch.sort_buffer_offset[0],
-         .ids_odd = scratch_addr + states[i].scratch.sort_buffer_offset[1],
-         .counts = scratch_addr + states[i].scratch.sort_internal_offset,
-         .leaf_count = states[i].leaf_node_count,
-      };
+   for (uint32_t step = 1; step <= steps; ++step) {
+      if (step > 1)
+         vk_bvh_build_barrier_compute_to_compute(commandBuffer, false);
 
-      disp->CmdPushConstants(commandBuffer, layout,
-                             VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(consts), &consts);
-      disp->CmdDispatch(commandBuffer, states[i].morton_sort_dispatch_size, 1, 1);
+      for (uint32_t i = 0; i < build_count; ++i) {
+         if (states[i].config.internal_type == VK_INTERNAL_BUILD_TYPE_UPDATE)
+            continue;
+         if ((states[i].config.build_flags & VK_MORTON_BUILD_FLAGS) != build_flags)
+            continue;
+         if (args->morton_sort_per_step && step > states[i].morton_sort_passes)
+            continue;
 
-      states[i].scratch_offset = states[i].scratch.sort_buffer_offset[states[i].morton_sort_passes & 0x1];
+         uint64_t scratch_addr = states[i].build_info->scratchData.deviceAddress;
+         const struct morton_sort_args consts = {
+            .bvh = scratch_addr + states[i].scratch.ir_offset,
+            .header = scratch_addr + states[i].scratch.header_offset,
+            .ids_even = scratch_addr + states[i].scratch.sort_buffer_offset[0],
+            .ids_odd = scratch_addr + states[i].scratch.sort_buffer_offset[1],
+            .counts = scratch_addr + states[i].scratch.sort_internal_offset,
+            .leaf_count = states[i].leaf_node_count,
+            .step = args->morton_sort_per_step ? step : 0,
+         };
+
+         disp->CmdPushConstants(commandBuffer, layout,
+                                VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(consts), &consts);
+         disp->CmdDispatch(commandBuffer, states[i].morton_sort_dispatch_size, 1, 1);
+
+         states[i].scratch_offset = states[i].scratch.sort_buffer_offset[states[i].morton_sort_passes & 0x1];
+      }
    }
 
    if (args->emit_markers) {
