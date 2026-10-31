@@ -92,6 +92,14 @@ hk_upload_rodata(struct hk_device *dev)
    dev->rodata.heap = dev->rodata.bo->va->addr + offs;
    offs += sizeof(struct poly_heap);
 
+   /* A BO from the cache may hold old words: the locks start free */
+   size_t size = HK_ATOMIC64_LOCKS * sizeof(uint32_t);
+   dev->atomic64_locks =
+      agx_bo_create(&dev->dev, size, 0, 0, "64-bit atomic locks");
+   if (!dev->atomic64_locks)
+      return VK_ERROR_OUT_OF_HOST_MEMORY;
+
+   memset(agx_bo_map(dev->atomic64_locks), 0, size);
    return VK_SUCCESS;
 }
 
@@ -462,6 +470,7 @@ fail_bg_eot:
    agx_bg_eot_cleanup(&dev->bg_eot);
 fail_rodata:
    agx_bo_unreference(&dev->dev, dev->rodata.bo);
+   agx_bo_unreference(&dev->dev, dev->atomic64_locks);
 fail_queries:
    hk_descriptor_table_finish(dev, &dev->occlusion_queries);
 fail_samplers:
@@ -514,6 +523,7 @@ hk_DestroyDevice(VkDevice _device, const VkAllocationCallbacks *pAllocator)
    hk_destroy_sampler_heap(dev, &dev->samplers);
    hk_descriptor_table_finish(dev, &dev->occlusion_queries);
    agx_bo_unreference(&dev->dev, dev->rodata.bo);
+   agx_bo_unreference(&dev->dev, dev->atomic64_locks);
    agx_bo_unreference(&dev->dev, dev->heap);
    agx_bg_eot_cleanup(&dev->bg_eot);
    agx_close_device(&dev->dev);
