@@ -54,6 +54,7 @@ enum agx_dbg {
    AGX_DBG_NOIX = BITFIELD_BIT(26),
    AGX_DBG_IX = BITFIELD_BIT(27),
    AGX_DBG_RAYQUERY = BITFIELD_BIT(28),
+   AGX_DBG_MESH = BITFIELD_BIT(29),
 };
 
 /* How many power-of-two levels in the BO cache do we want? 2^14 minimum chosen

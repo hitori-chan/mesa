@@ -56,6 +56,11 @@ hk_get_device_extensions(const struct agx_device *dev,
    bool rq = dev->debug & AGX_DBG_RAYQUERY;
    bool g15 = dev->params.gpu_generation >= 15;
 
+   /* Task and mesh shaders as compute (hk_draw_mesh), behind a flag while
+    * the CTS's mesh_shader.ext.misc.max_lines fails
+    */
+   bool mesh = g15 && (dev->debug & AGX_DBG_MESH);
+
    *ext = (struct vk_device_extension_table){
       .KHR_acceleration_structure = rq,
       .KHR_8bit_storage = true,
@@ -199,7 +204,7 @@ hk_get_device_extensions(const struct agx_device *dev,
       .EXT_load_store_op_none = true,
       .EXT_map_memory_placed = true,
       .EXT_memory_budget = false,
-      .EXT_mesh_shader = g15,
+      .EXT_mesh_shader = mesh,
       .EXT_multi_draw = true,
       .EXT_mutable_descriptor_type = true,
       .EXT_non_seamless_cube_map = true,
@@ -656,9 +661,9 @@ hk_get_device_features(
       .memoryUnmapReserve = true,
 
       /* VK_EXT_mesh_shader: task and mesh run as compute (hk_draw_mesh) */
-      .taskShader = dev->params.gpu_generation >= 15,
-      .meshShader = dev->params.gpu_generation >= 15,
-      .multiviewMeshShader = dev->params.gpu_generation >= 15,
+      .taskShader = supported_extensions->EXT_mesh_shader,
+      .meshShader = supported_extensions->EXT_mesh_shader,
+      .multiviewMeshShader = supported_extensions->EXT_mesh_shader,
       .primitiveFragmentShadingRateMeshShader = false,
       .meshShaderQueries = false,
 
