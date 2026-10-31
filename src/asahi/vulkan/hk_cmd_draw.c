@@ -25,6 +25,7 @@
 #include "hk_entrypoints.h"
 #include "hk_image.h"
 #include "hk_image_view.h"
+#include "hk_instance.h"
 #include "hk_physical_device.h"
 #include "hk_private.h"
 #include "hk_shader.h"
@@ -1124,10 +1125,13 @@ hk_init_heap(const void *data)
 {
    struct hk_cmd_buffer *cmd = (struct hk_cmd_buffer *)data;
    struct hk_device *dev = hk_cmd_buffer_device(cmd);
+   struct hk_instance *instance =
+      hk_physical_device_instance(hk_device_physical(dev));
 
    perf_debug(cmd, "Allocating heap");
 
-   size_t size = 128 * 1024 * 1024;
+   size_t size =
+      (size_t)instance->drirc.misc.geometry_heap_size_mb * 1024 * 1024;
    dev->heap = agx_bo_create(&dev->dev, size, 0, 0, "Geometry heap");
 
    /* The geometry state buffer is initialized here and then is treated by
@@ -1273,6 +1277,7 @@ hk_upload_geometry_params(struct hk_cmd_buffer *cmd, struct agx_draw draw)
    struct hk_api_shader *gs = gfx->shaders[MESA_SHADER_GEOMETRY];
    struct hk_shader *fs = hk_only_variant(gfx->shaders[MESA_SHADER_FRAGMENT]);
    struct hk_shader *count = hk_count_gs_variant(gs);
+   struct vk_dynamic_graphics_state *dyn = &cmd->vk.dynamic_graphics_state;
 
    /* XXX: We should deduplicate this logic */
    bool indirect = agx_is_indirect(draw.b) ||
@@ -1289,6 +1294,39 @@ hk_upload_geometry_params(struct hk_cmd_buffer *cmd, struct agx_draw draw)
    poly_geometry_params_init(&params, mode, wg_size);
 
    params.flat_outputs = fs->info.fs.interp.flat;
+   params.linear_outputs = fs->info.fs.interp.linear;
+
+   if (gfx->conservative) {
+      struct hk_shader *rast = hk_bound_hw_vs(gfx);
+      unsigned samples =
+         gfx->render.tilebuffer.nr_samples ?: dyn->ms.rasterization_samples;
+      float extra = dyn->rs.extra_primitive_overestimation_size;
+
+      /* The fragment test keeps or kills whole pixels, so with MSAA the edges
+       * move out by a pixel to cover every sample of a pixel kept. Without the
+       * edge test, half a pixel: the rasterizer's own test of the centre.
+       */
+      bool edges = rast->info.conservative == AGX_CONSERVATIVE_BOX_EDGES;
+      params.conservative_r =
+         (edges && samples > 1 ? 1.0f : 0.5f) + extra + (1.0f / 256.0f);
+      params.conservative_extra = extra;
+
+      unsigned vp_count = MAX2(dyn->vp.viewport_count, 1);
+      float vp[HK_MAX_VIEWPORTS][4];
+
+      for (unsigned i = 0; i < vp_count; ++i) {
+         const VkViewport *v = &dyn->vp.viewports[i];
+
+         vp[i][0] = v->width * 0.5f;
+         vp[i][1] = v->height * 0.5f;
+         vp[i][2] = v->x + 0.5f * v->width;
+         vp[i][3] = v->y + 0.5f * v->height;
+      }
+
+      params.conservative_viewports =
+         hk_pool_upload(cmd, vp, vp_count * sizeof(vp[0]), 16);
+      params.conservative_viewport_count = vp_count;
+   }
 
    if (gfx->xfb_enabled) {
       for (unsigned i = 0; i < ARRAY_SIZE(gfx->xfb); ++i) {
@@ -1994,9 +2032,9 @@ hk_get_fast_linked_locked_fs(struct hk_device *dev, struct hk_shader *shader,
                              struct hk_fast_link_key_fs *key)
 {
    /* TODO: prolog without fs needs to work too... */
-   bool needs_prolog = key->prolog.statistics ||
-                       key->prolog.cull_distance_size ||
-                       key->prolog.api_sample_mask != 0xff;
+   bool needs_prolog =
+      key->prolog.statistics || key->prolog.cull_distance_size ||
+      key->prolog.conservative || key->prolog.api_sample_mask != 0xff;
 
    struct agx_shader_part *prolog = NULL;
    if (needs_prolog) {
@@ -2992,6 +3030,11 @@ hk_flush_dynamic_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
          perf_debug(cmd, "Emulating sample mask");
       }
 
+      if (gfx->conservative) {
+         perf_debug(cmd, "Conservative rasterization (fragment test %u)",
+                    hw_vs->info.conservative);
+      }
+
       unsigned samples_shaded = 0;
       if (fs->info.fs.epilog_key.sample_shading)
          samples_shaded = dyn->ms.rasterization_samples;
@@ -3001,11 +3044,14 @@ hk_flush_dynamic_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
             cmd, VK_QUERY_PIPELINE_STATISTIC_FRAGMENT_SHADER_INVOCATIONS_BIT)),
 
          .prolog.cull_distance_size = hw_vs->info.cull_distance_array_size,
+         .prolog.conservative = gfx->conservative ? hw_vs->info.conservative
+                                                  : AGX_CONSERVATIVE_NONE,
          .prolog.api_sample_mask = has_sample_mask ? api_sample_mask : 0xff,
          .nr_samples_shaded = samples_shaded,
       };
 
-      bool prolog_discards = has_sample_mask || key.prolog.cull_distance_size;
+      bool prolog_discards = has_sample_mask || key.prolog.cull_distance_size ||
+                             key.prolog.conservative;
 
       bool needs_prolog = key.prolog.statistics || prolog_discards;
 
@@ -3022,7 +3068,7 @@ hk_flush_dynamic_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
                                    !fs->b.info.writes_sample_mask &&
                                    !epilog_discards && prolog_discards;
 
-         if (key.prolog.cull_distance_size) {
+         if (key.prolog.cull_distance_size || key.prolog.conservative) {
             key.prolog.cf_base = fs->b.info.varyings.fs.nr_cf;
          }
       }
@@ -3146,7 +3192,9 @@ hk_flush_dynamic_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
       gfx->object_type = translate_object_type(prim);
    }
 
-   if (IS_DIRTY(IA_PRIMITIVE_TOPOLOGY) || IS_DIRTY(RS_PROVOKING_VERTEX)) {
+   /* gfx->topology depends on the geometry shader, passthrough included */
+   if (IS_DIRTY(IA_PRIMITIVE_TOPOLOGY) || IS_DIRTY(RS_PROVOKING_VERTEX) ||
+       gt_dirty) {
       unsigned provoking;
       if (dyn->rs.provoking_vertex == VK_PROVOKING_VERTEX_MODE_LAST_VERTEX_EXT)
          provoking = 2;
@@ -3387,26 +3435,74 @@ hk_needs_index_robustness(struct hk_cmd_buffer *cmd, struct agx_draw *draw)
    return agx_direct_draw_overreads_indices(*draw);
 }
 
+/*
+ * Conservative rasterization widens triangles in the passthrough geometry
+ * shader. Only overestimation of filled triangles is supported.
+ */
+static bool
+hk_rast_conservative(struct hk_cmd_buffer *cmd)
+{
+   struct vk_dynamic_graphics_state *dyn = &cmd->vk.dynamic_graphics_state;
+
+   return dyn->rs.conservative_mode ==
+             VK_CONSERVATIVE_RASTERIZATION_MODE_OVERESTIMATE_EXT &&
+          dyn->rs.polygon_mode == VK_POLYGON_MODE_FILL &&
+          u_reduced_prim(hk_gs_in_prim(cmd)) == MESA_PRIM_TRIANGLES &&
+          !hk_rast_discard(cmd);
+}
+
 static void
 hk_handle_passthrough_gs(struct hk_cmd_buffer *cmd, struct agx_draw draw)
 {
+   struct hk_device *dev = hk_cmd_buffer_device(cmd);
    struct hk_graphics_state *gfx = &cmd->state.gfx;
+   struct vk_dynamic_graphics_state *dyn = &cmd->vk.dynamic_graphics_state;
    struct hk_api_shader *gs = gfx->shaders[MESA_SHADER_GEOMETRY];
 
-   if (!IS_SHADER_DIRTY(VERTEX) && !IS_SHADER_DIRTY(GEOMETRY))
+   /* The passthrough also depends on the primitive type, and on the state
+    * conservative rasterization depends on.
+    */
+   if (!IS_SHADER_DIRTY(VERTEX) && !IS_SHADER_DIRTY(GEOMETRY) &&
+       !IS_SHADER_DIRTY(TESS_CTRL) && !IS_SHADER_DIRTY(TESS_EVAL) &&
+       !IS_DIRTY(IA_PRIMITIVE_TOPOLOGY) && !IS_DIRTY(RS_CONSERVATIVE_MODE) &&
+       !IS_DIRTY(RS_POLYGON_MODE) && !IS_DIRTY(RS_RASTERIZER_DISCARD_ENABLE) &&
+       !IS_DIRTY(RS_RASTERIZATION_STREAM))
       return;
 
    /* If there's an application geometry shader, there's nothing to un/bind */
-   if (gs && !gs->is_passthrough)
-      return;
+   if (gs && !gs->is_passthrough) {
+      gfx->conservative = false;
 
-   /* Determine if we need a geometry shader to emulate XFB or adjacency */
+      if (dyn->rs.conservative_mode !=
+          VK_CONSERVATIVE_RASTERIZATION_MODE_DISABLED_EXT)
+         perf_debug(cmd, "Conservative rasterization with a geometry shader "
+                         "is not widened");
+      return;
+   }
+
+   /* Determine if we need a geometry shader to emulate XFB or conservative
+    * rasterization
+    */
    struct hk_shader *last_sw = hk_bound_sw_vs_before_gs(gfx);
    uint32_t xfb_outputs = last_sw->info.xfb_info.output_count;
-   bool needs_gs = xfb_outputs;
+   bool conservative = hk_rast_conservative(cmd);
+
+   if (conservative && !last_sw->code_size) {
+      perf_debug(cmd, "Conservative rasterization without a software VS");
+      conservative = false;
+   }
+
+   /* For regression runs of the passthrough, without widening */
+   bool forced = (dev->dev.debug & AGX_DBG_PASSTHROUGH_GS) &&
+                 last_sw->code_size &&
+                 u_reduced_prim(hk_gs_in_prim(cmd)) == MESA_PRIM_TRIANGLES;
+
+   bool needs_gs = xfb_outputs || conservative || forced;
 
    /* If we don't need a GS but we do have a passthrough, unbind it */
    if (!needs_gs) {
+      gfx->conservative = false;
+
       if (gs != NULL) {
          assert(gs->is_passthrough);
          hk_cmd_bind_graphics_shader(cmd, MESA_SHADER_GEOMETRY, NULL);
@@ -3452,11 +3548,25 @@ hk_handle_passthrough_gs(struct hk_cmd_buffer *cmd, struct agx_draw draw)
              nir_xfb_info_size(xfb_outputs));
    }
 
-   struct hk_device *dev = hk_cmd_buffer_device(cmd);
-   perf_debug(cmd, "Binding passthrough GS for%s\n", xfb_outputs ? " XFB" : "");
+   perf_debug(cmd, "Binding passthrough GS for%s%s\n",
+              xfb_outputs ? " XFB" : "",
+              conservative ? " conservative rasterization" : "");
 
    gs = hk_meta_shader(dev, poly_nir_passthrough_gs, key, key_size);
    gs->is_passthrough = true;
+
+   if (conservative &&
+       !gs->variants[HK_GS_VARIANT_RAST_CONSERVATIVE].code_size) {
+      perf_debug(cmd, "Conservative rasterization not widened");
+      conservative = false;
+   }
+
+   /* The variant is per draw: relink when it changes */
+   if (gfx->conservative != conservative) {
+      gfx->conservative = conservative;
+      gfx->shaders_dirty |= BITFIELD_BIT(MESA_SHADER_GEOMETRY);
+   }
+
    hk_cmd_bind_graphics_shader(cmd, MESA_SHADER_GEOMETRY, gs);
 }
 
@@ -3568,10 +3678,6 @@ hk_CmdBindIndexBuffer2KHR(VkCommandBuffer commandBuffer, VkBuffer _buffer,
       .buffer = hk_buffer_addr_range(buffer, offset, size, true),
       .size = agx_translate_index_size(vk_index_type_to_bytes(indexType)),
    };
-
-   /* TODO: check if necessary, blob does this */
-   cmd->state.gfx.index.buffer.range =
-      align(cmd->state.gfx.index.buffer.range, 4);
 }
 
 void
@@ -4108,6 +4214,9 @@ hk_begin_end_xfb(VkCommandBuffer commandBuffer, uint32_t firstCounterBuffer,
          params.dest[copies] = gfx->xfb_offsets + copies * sizeof(uint32_t);
       }
    }
+
+   if (pCounterBuffers == NULL)
+      counterBufferCount = 0;
 
    for (unsigned i = 0; i < counterBufferCount; ++i) {
       if (pCounterBuffers[i] == VK_NULL_HANDLE)

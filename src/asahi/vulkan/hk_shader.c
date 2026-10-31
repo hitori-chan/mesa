@@ -232,6 +232,9 @@ hk_preprocess_nir(struct vk_physical_device *vk_pdev, nir_shader *nir,
    hk_preprocess_nir_internal(vk_pdev, nir);
    nir_lower_compute_system_values_options csv_options = {
       .has_base_workgroup_id = true,
+      .shuffle_local_ids_for_quad_derivatives = true,
+      .lower_local_invocation_index =
+         nir->info.derivative_group == DERIVATIVE_GROUP_QUADS,
    };
    NIR_PASS(_, nir, nir_lower_compute_system_values, &csv_options);
 }
@@ -309,6 +312,24 @@ hk_make_feature_key(const struct vk_features *feats)
    return (!feats || feats->customBorderColors) ? HK_FEAT_CUSTOM_BORDER : 0;
 }
 
+/*
+ * Conservative rasterization runs the vertex shader (or TES) as compute before
+ * a passthrough geometry shader, so it needs the software variant. Shader
+ * objects take the mode dynamically whatever the pipeline state says.
+ */
+static bool
+hk_may_rasterize_conservative(const struct hk_device *dev,
+                              const struct vk_graphics_pipeline_state *state)
+{
+   if (state == NULL)
+      return dev && dev->vk.enabled_extensions.EXT_conservative_rasterization;
+
+   return state->rs &&
+          (BITSET_TEST(state->dynamic, MESA_VK_DYNAMIC_RS_CONSERVATIVE_MODE) ||
+           state->rs->conservative_mode !=
+              VK_CONSERVATIVE_RASTERIZATION_MODE_DISABLED_EXT);
+}
+
 static void
 hk_hash_graphics_state(struct vk_physical_device *device,
                        const struct vk_graphics_pipeline_state *state,
@@ -331,6 +352,12 @@ hk_hash_graphics_state(struct vk_physical_device *device,
        (stages & (VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT))) {
       const bool is_multiview = state->mv->view_mask != 0;
       _mesa_blake3_update(&blake3_ctx, &is_multiview, sizeof(is_multiview));
+   }
+
+   if (state && (stages & (VK_SHADER_STAGE_VERTEX_BIT |
+                           VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT))) {
+      const bool conservative = hk_may_rasterize_conservative(NULL, state);
+      _mesa_blake3_update(&blake3_ctx, &conservative, sizeof(conservative));
    }
 
    enum hk_feature_key feature_key = hk_make_feature_key(features);
@@ -1120,6 +1147,49 @@ hk_lower_hw_vs(nir_shader *nir, struct hk_shader *shader, bool kill_psiz)
    NIR_PASS(_, nir, agx_nir_lower_uvs, &shader->info.uvs);
 }
 
+static bool
+remove_output(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   const gl_varying_slot *slot = data;
+
+   if (intr->intrinsic != nir_intrinsic_store_output ||
+       nir_intrinsic_io_semantics(intr).location != *slot)
+      return false;
+
+   nir_instr_remove(&intr->instr);
+   return true;
+}
+
+/*
+ * The UVS holds 128 words. The conservative variant writes 7 more than the
+ * rasterization variant: the fragment test's bounding box and edges. Drop the
+ * edges, then the box, when they do not fit.
+ */
+static void
+hk_lower_conservative_budget(nir_shader *nir, struct hk_shader *shader,
+                             unsigned rast_uvs_size)
+{
+   static const gl_varying_slot box = POLY_VARYING_SLOT_CONSERVATIVE_BOX;
+   static const gl_varying_slot edges = POLY_VARYING_SLOT_CONSERVATIVE_EDGES;
+
+   if (rast_uvs_size + 7 <= 128) {
+      shader->info.conservative = AGX_CONSERVATIVE_BOX_EDGES;
+      return;
+   }
+
+   NIR_PASS(_, nir, nir_shader_intrinsics_pass, remove_output,
+            nir_metadata_control_flow, (void *)&edges);
+   nir->info.outputs_written &= ~BITFIELD64_BIT(edges);
+   shader->info.conservative = AGX_CONSERVATIVE_BOX;
+
+   if (rast_uvs_size + 4 > 128) {
+      NIR_PASS(_, nir, nir_shader_intrinsics_pass, remove_output,
+               nir_metadata_control_flow, (void *)&box);
+      nir->info.outputs_written &= ~BITFIELD64_BIT(box);
+      shader->info.conservative = AGX_CONSERVATIVE_NONE;
+   }
+}
+
 static VkResult
 hk_compile_nir(struct hk_device *dev, const VkAllocationCallbacks *pAllocator,
                nir_shader *nir, VkShaderCreateFlagsEXT shader_flags,
@@ -1429,9 +1499,16 @@ hk_compile_shader(struct hk_device *dev, struct vk_shader_compile_info *info,
       struct hk_shader *main_variant = hk_main_gs_variant(obj);
       struct hk_shader *count_variant = hk_count_gs_variant(obj);
 
-      nir_shader *count = NULL, *rast = NULL, *pre_gs = NULL;
+      nir_shader *count = NULL, *rast = NULL, *rast_cons = NULL;
+      nir_shader *pre_gs = NULL;
 
-      NIR_PASS(_, nir, poly_nir_lower_gs, &count, &rast, &pre_gs,
+      /* Only the passthrough geometry shader rasterizes conservatively */
+      bool conservative =
+         nir->info.internal &&
+         dev->vk.enabled_extensions.EXT_conservative_rasterization;
+
+      NIR_PASS(_, nir, poly_nir_lower_gs, &count, &rast,
+               conservative ? &rast_cons : NULL, &pre_gs,
                &count_variant->info.gs);
 
       agx_preprocess_nir(count);
@@ -1443,6 +1520,17 @@ hk_compile_shader(struct hk_device *dev, struct vk_shader_compile_info *info,
       shader->info.gs = count_variant->info.gs;
       main_variant->info.gs = count_variant->info.gs;
 
+      struct hk_shader *cons_variant =
+         &obj->variants[HK_GS_VARIANT_RAST_CONSERVATIVE];
+
+      if (rast_cons) {
+         agx_preprocess_nir(rast_cons);
+         hk_lower_conservative_budget(rast_cons, cons_variant,
+                                      shader->info.uvs.size);
+         hk_lower_hw_vs(rast_cons, cons_variant, false);
+         cons_variant->info.gs = count_variant->info.gs;
+      }
+
       struct {
          nir_shader *in;
          struct hk_shader *out;
@@ -1451,6 +1539,7 @@ hk_compile_shader(struct hk_device *dev, struct vk_shader_compile_info *info,
          {pre_gs, hk_pre_gs_variant(obj)},
          {count, count_variant},
          {rast, &obj->variants[HK_GS_VARIANT_RAST]},
+         {rast_cons, cons_variant},
       };
 
       for (unsigned v = 0; v < ARRAY_SIZE(variants); ++v) {
@@ -1467,6 +1556,7 @@ hk_compile_shader(struct hk_device *dev, struct vk_shader_compile_info *info,
                ralloc_free(pre_gs);
                ralloc_free(count);
                ralloc_free(rast);
+               ralloc_free(rast_cons);
                return result;
             }
 
@@ -1482,11 +1572,13 @@ hk_compile_shader(struct hk_device *dev, struct vk_shader_compile_info *info,
 
       VkShaderStageFlags next_stage = info->next_stage_mask;
 
-      /* Transform feedback is layered on top of geometry shaders. If there is
-       * not a geometry shader in the pipeline, we will compile a geometry
-       * shader for the purpose. Update the next_stage mask accordingly.
+      /* Transform feedback and conservative rasterization are layered on top
+       * of geometry shaders. If there is not a geometry shader in the
+       * pipeline, we will compile a geometry shader for the purpose. Update
+       * the next_stage mask accordingly.
        */
-      if (nir->xfb_info != NULL) {
+      if (nir->xfb_info != NULL || hk_may_rasterize_conservative(dev, state) ||
+          (dev->dev.debug & AGX_DBG_PASSTHROUGH_GS)) {
          next_stage |= VK_SHADER_STAGE_GEOMETRY_BIT;
       }
 

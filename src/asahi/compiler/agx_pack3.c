@@ -1,6 +1,6 @@
 /*
  * Copyright 2026 hitori1403
- * SPDX-License-Identifier: MIT
+ * SPDX-License-Identifier: GPL-2.0-only
  */
 
 /*
@@ -24,6 +24,7 @@
 #include "agx3_pack.h"
 #include "agx_builder.h"
 #include "agx_compiler.h"
+#include "agx_debug.h"
 
 /* agx3_kind_names' order */
 enum a3_kind {
@@ -63,6 +64,14 @@ struct a3 {
 
    /* The shader's scratch in bytes: the thread-private stack below it */
    unsigned scratch_B;
+
+   /* The register-cache hints the operands may carry (A3_CACHE, A3_LU), and
+    * the count of instructions emitted */
+   uint32_t hints;
+   unsigned *emitted;
+
+   /* While a shorter form is tried, a3_fail returns here */
+   jmp_buf *trial;
 };
 
 static unsigned
@@ -278,6 +287,9 @@ a3_survey_print(void)
 static void NORETURN
 a3_fail(const struct a3 *a, const char *what)
 {
+   if (a->trial)
+      longjmp(*a->trial, 1);
+
    if (a3_survey_on) {
       unsigned w = 0;
       while (w < ARRAY_SIZE(a3_survey_what) - 1 && a3_survey_what[w] &&
@@ -293,7 +305,40 @@ a3_fail(const struct a3 *a, const char *what)
    UNREACHABLE("AGX3 packing failed");
 }
 
-/* A register or uniform operand */
+/* Whether the instruction, at its length, holds the value bits of case c's
+ * modifiers mods for operand op (some instructions give an operand's bits
+ * other uses: fmul_cf's sources have no high register bits) */
+static bool
+a3_holds(const struct a3 *a, unsigned op, const struct agx3_case *c,
+         uint32_t mods)
+{
+   const struct agx3_pack_spec *s = a->spec;
+
+   for (unsigned k = c->nkind; k < c->nfields; k++) {
+      if (!(mods & BITFIELD_BIT(c->mod[k])))
+         continue;
+
+      for (unsigned p = c->f[k].start; p < c->f[k].start + c->f[k].size; p++) {
+         bool held = false;
+
+         for (unsigned f = s->op_start[op]; f < s->op_start[op + 1]; f++) {
+            const struct agx3_field *fl = &s->fields[f];
+
+            held |= p >= fl->vpos && p < fl->vpos + fl->size &&
+                    fl->start + (p - fl->vpos) < a->length * 8;
+         }
+
+         if (!held)
+            return false;
+      }
+   }
+
+   return true;
+}
+
+/* A register or uniform operand. A register takes the cache and last-use
+ * hints agx_opt_register_cache gave it where the instruction allows them
+ * (a->hints) and its encoding holds them. */
 static uint64_t
 a3_reg(struct a3 *a, unsigned op, agx_index idx, uint32_t mods, uint32_t prefer,
        unsigned count_field)
@@ -307,8 +352,23 @@ a3_reg(struct a3 *a, unsigned op, agx_index idx, uint32_t mods, uint32_t prefer,
    else
       a3_fail(a, "operand is not a register or uniform");
 
-   const struct agx3_case *c =
-      a3_case(a, op, kind, a3_size(idx.size), mods, prefer);
+   uint32_t hints = 0;
+   if (kind == A3_REG && idx.cache)
+      hints |= a->hints & BITFIELD_BIT(A3_CACHE);
+   if (kind == A3_REG && idx.discard)
+      hints |= a->hints & BITFIELD_BIT(A3_LU);
+
+   const struct agx3_case *c = NULL;
+   if (hints) {
+      c = a3_case(a, op, kind, a3_size(idx.size), mods | hints, prefer);
+      if (c && a3_holds(a, op, c, hints))
+         mods |= hints;
+      else
+         c = NULL;
+   }
+
+   if (!c)
+      c = a3_case(a, op, kind, a3_size(idx.size), mods, prefer);
    if (!c)
       a3_fail(a, "no case for an operand");
 
@@ -490,26 +550,62 @@ a3_vt(struct a3 *a, unsigned op)
 static bool
 a3_check(const struct a3 *a, uint8_t *out)
 {
-   uint64_t back[A3_MAX_OPS];
+   uint64_t back[A3_MAX_OPS], ops[A3_MAX_OPS], want[A3_MAX_OPS];
+   uint32_t set = a->set;
+
+   memcpy(ops, a->ops, sizeof(ops));
+   memcpy(want, a->want, sizeof(want));
+
+   /* A wait folded into the instruction (agx3_fold_waits) joins its first
+    * encoding's own (texture_load and st_var wait for group 0): a form
+    * without a wait field, or with one group's and another set, does not
+    * hold it */
+   unsigned wait = (!a->emitted || !*a->emitted) ? a->I->g15_wait : 0;
+   if (wait) {
+      int w = a->spec->wait_op;
+      if (w < 0)
+         return false;
+
+      if (a->spec->wait_one) {
+         if (util_bitcount(wait) != 1 || (ops[w] && ops[w] != ffs(wait)))
+            return false;
+
+         ops[w] = ffs(wait);
+      } else {
+         ops[w] |= wait;
+      }
+
+      want[w] = ops[w];
+      set |= BITFIELD_BIT(w);
+   }
 
    memset(out, 0, AGX3_MAX_BYTES);
-   agx3_pack(out, a->spec, a->length, a->ops);
+   agx3_pack(out, a->spec, a->length, ops);
    agx3_unpack(out, a->spec, a->length, back);
 
-   u_foreach_bit(op, a->set) {
+   u_foreach_bit(op, set) {
       uint64_t pad = a->spec->op_pad ? a->spec->op_pad[op] : 0;
 
-      if (back[op] != (a->want[op] | pad)) {
-         if (a3_debug)
+      if (back[op] != (want[op] | pad)) {
+         /* a shorter form's failure is expected */
+         if (a3_debug && !a->trial)
             fprintf(stderr,
                     "AGX3: %s operand %u: set 0x%" PRIx64 ", reads 0x%" PRIx64
                     "\n",
-                    a->spec->name, op, a->want[op], back[op]);
+                    a->spec->name, op, want[op], back[op]);
          return false;
       }
    }
 
    return agx3_instr_length(out, AGX3_MAX_BYTES) == a->length;
+}
+
+static void
+a3_put(struct a3 *a, const uint8_t *out, struct util_dynarray *emission)
+{
+   memcpy(util_dynarray_grow_bytes(emission, 1, a->length), out, a->length);
+   if (a->emitted)
+      (*a->emitted)++;
 }
 
 static void
@@ -532,7 +628,7 @@ a3_emit(struct a3 *a, struct util_dynarray *emission)
    if (!ok)
       a3_fail(a, "the operands do not fit the encoding");
 
-   memcpy(util_dynarray_grow_bytes(emission, 1, a->length), out, a->length);
+   a3_put(a, out, emission);
 }
 
 /* G13 special registers to G15 (AGX3.xml's sr names) */
@@ -719,8 +815,13 @@ a3_memshift(const struct a3 *a, unsigned bytes)
 #define T_F2I      "27075400020494480300"     /* convert f_to_s32 */
 #define T_I2F      "a707540002048c20"         /* convert u32_to_f */
 #define T_FUNOP    "2f005400020490400200"     /* floor r0, r1 */
+#define T_RCP_CF   "af00546c020c00482001"     /* rcp r54, r3, cf0 (Apple's) */
+#define T_FMUL_CF  "39172fed00030000"         /* fmul r3, r11, r54, cf0, cf3 */
 #define T_FADD     "01000400020000000000"     /* fadd (10 B) */
 #define T_FFMA     "01000600020000000000"     /* ffma (10 B) */
+#define T_ZERO4    "00000000"
+#define T_ZERO6    "000000000000"
+#define T_ZERO8    "0000000000000000"
 #define T_ZERO10   "00000000000000000000"
 #define T_ICMP_BAL "1707540002041038a202"     /* icmp_ballot ieq */
 #define T_FCMP_BAL "97075400020410a888840000" /* fcmp_ballot flt */
@@ -806,6 +907,7 @@ enum {
    WAIT_MASK = 0,
    BITOP_TT = 0,
    CMPSEL_CC = 0,
+   MINMAX_SEL_INT = 5,
    VT = 1,
    IADD_WT = 2,
    IADD_SHIFT = 5,
@@ -870,6 +972,15 @@ enum {
    ITRCOORDS_SRC = 1,
    ITRCOORDS_SAMPLE = 2,
    ITRCOORDS_DCACHE = 3,
+   RCP_CF_DST = 0,
+   RCP_CF_VT = 1,
+   RCP_CF_SRC = 2,
+   RCP_CF_CF = 6,
+   FMUL_CF_DST = 0,
+   FMUL_CF_A = 1,
+   FMUL_CF_B = 2,
+   FMUL_CF_W = 3,
+   FMUL_CF_N = 4,
    ZS_CR = 0,
    ZS_G = 1,
    ZS_MODE = 2,
@@ -946,8 +1057,8 @@ struct a3_alu {
 };
 
 static void
-a3_alu(struct a3 *a, const agx_instr *I, const struct a3_alu *d,
-       const agx_index *srcs, struct util_dynarray *emission)
+a3_alu_set(struct a3 *a, const agx_instr *I, const struct a3_alu *d,
+           const agx_index *srcs)
 {
    unsigned nsrcs = agx_opcodes_info[I->op].nr_srcs;
 
@@ -969,8 +1080,62 @@ a3_alu(struct a3 *a, const agx_instr *I, const struct a3_alu *d,
       a3_vt(a, d->vt);
    if (d->wt >= 0)
       a3_vt(a, d->wt);
+}
 
+static void
+a3_alu(struct a3 *a, const agx_instr *I, const struct a3_alu *d,
+       const agx_index *srcs, struct util_dynarray *emission)
+{
+   a3_alu_set(a, I, d, srcs);
    a3_emit(a, emission);
+}
+
+/* Whether the ALU instruction packs in form d, into out */
+static bool
+a3_alu_fits(struct a3 *a, const agx_instr *I, const struct a3_alu *d,
+            const agx_index *srcs, uint8_t *out)
+{
+   jmp_buf *outer = a->trial, trial;
+
+   if (setjmp(trial)) {
+      a->trial = outer;
+      return false;
+   }
+
+   a->trial = &trial;
+   a3_alu_set(a, I, d, srcs);
+   bool fits = a3_check(a, out);
+   a->trial = outer;
+   return fits;
+}
+
+/* An ALU instruction in the first of its forms that holds it, with its
+ * first two sources in either order (they multiply or add), the last form
+ * always */
+static void
+a3_alu_forms(struct a3 *a, const agx_instr *I, const struct a3_alu *forms,
+             unsigned nforms, struct util_dynarray *emission)
+{
+   unsigned nsrcs = agx_opcodes_info[I->op].nr_srcs;
+   agx_index swap[3];
+   uint8_t out[AGX3_MAX_BYTES];
+
+   assert(nsrcs >= 2 && nsrcs <= ARRAY_SIZE(swap));
+   memcpy(swap, I->src, nsrcs * sizeof(*swap));
+   SWAP(swap[0], swap[1]);
+
+   for (unsigned i = 0; i + 1 < nforms; i++) {
+      if (agx_compiler_debug & AGX_DBG_LONGALU)
+         break;
+
+      if (a3_alu_fits(a, I, &forms[i], I->src, out) ||
+          a3_alu_fits(a, I, &forms[i], swap, out)) {
+         a3_put(a, out, emission);
+         return;
+      }
+   }
+
+   a3_alu(a, I, &forms[nforms - 1], I->src, emission);
 }
 
 static const struct a3_alu a3_imadd = {AGX3_IMADD, T_IMADD, {2, 3, 4}, 1,
@@ -1001,18 +1166,50 @@ static const struct a3_alu a3_bitrev = {AGX3_BITREV, T_IUNOP, {2}, 1,
 static const struct a3_alu a3_popcount = {
    AGX3_POPCOUNT, T_IUNOP, {2}, 1, -1, -1, true};
 static const struct a3_alu a3_ffs = {AGX3_FFS, T_IUNOP, {2}, 1, -1, -1, true};
-static const struct a3_alu a3_fadd = {AGX3_FADD10, T_FADD, {1, 2}, -1,
-                                      -1,          5,      false};
-static const struct a3_alu a3_fmul = {AGX3_FMUL12, T_ZERO12, {1, 2}, -1,
-                                      -1,          5,        false};
-static const struct a3_alu a3_ffma = {AGX3_FFMA10, T_FFMA, {1, 2, 3}, -1,
-                                      -1,          6,      false};
-static const struct a3_alu a3_hadd = {AGX3_HADD10, T_ZERO10, {1, 2}, -1,
-                                      -1,          4,        false};
-static const struct a3_alu a3_hmul = {AGX3_HMUL10, T_ZERO10, {1, 2}, -1,
-                                      -1,          4,        false};
-static const struct a3_alu a3_hfma = {AGX3_HFMA10, T_FFMA, {1, 2, 3}, -1,
-                                      -1,          5,      false};
+/* The float arithmetic in its forms, shortest first, as Apple's B1 code
+ * uses them all: 4 bytes reach r0-r63 without uniforms, immediates or
+ * modifiers, 6 add those but neg on the first source (the second's in fmul
+ * and fadd), 8 neg on all and saturate, and the longest abs. ffma's and
+ * hfma's 4-byte forms add into their destination (z0) or multiply it (z1),
+ * ffma4_z1 with bit 24 clear as in all of Apple's. */
+static const struct a3_alu a3_fadd[] = {
+   {AGX3_FADD4, T_ZERO4, {1, 2}, -1, -1, -1},
+   {AGX3_FADD6, T_ZERO6, {1, 2}, -1, -1, -1},
+   {AGX3_FADD8, T_ZERO8, {1, 2}, -1, -1, 5},
+   {AGX3_FADD10, T_FADD, {1, 2}, -1, -1, 5},
+};
+static const struct a3_alu a3_fmul[] = {
+   {AGX3_FMUL4, T_ZERO4, {1, 2}, -1, -1, -1},
+   {AGX3_FMUL6, T_ZERO6, {1, 2}, -1, -1, -1},
+   {AGX3_FMUL8, T_ZERO8, {1, 2}, -1, -1, 5},
+   {AGX3_FMUL12, T_ZERO12, {1, 2}, -1, -1, 5},
+};
+static const struct a3_alu a3_ffma[] = {
+   {AGX3_FFMA4_Z0, T_ZERO4, {1, 2, 3}, -1, -1, -1},
+   {AGX3_FFMA4_Z1, T_ZERO4, {1, 2, 3}, -1, -1, -1},
+   {AGX3_FFMA6, T_ZERO6, {1, 2, 3}, -1, -1, -1},
+   {AGX3_FFMA8, T_ZERO8, {1, 2, 3}, -1, -1, -1},
+   {AGX3_FFMA10, T_FFMA, {1, 2, 3}, -1, -1, 6},
+};
+static const struct a3_alu a3_hadd[] = {
+   {AGX3_HADD4, T_ZERO4, {1, 2}, -1, -1, -1},
+   {AGX3_HADD6, T_ZERO6, {1, 2}, -1, -1, -1},
+   {AGX3_HADD8, T_ZERO8, {1, 2}, -1, -1, 4},
+   {AGX3_HADD10, T_ZERO10, {1, 2}, -1, -1, 4},
+};
+static const struct a3_alu a3_hmul[] = {
+   {AGX3_HMUL4, T_ZERO4, {1, 2}, -1, -1, -1},
+   {AGX3_HMUL6, T_ZERO6, {1, 2}, -1, -1, -1},
+   {AGX3_HMUL8, T_ZERO8, {1, 2}, -1, -1, 4},
+   {AGX3_HMUL10, T_ZERO10, {1, 2}, -1, -1, 4},
+};
+static const struct a3_alu a3_hfma[] = {
+   {AGX3_HFMA4_Z0, T_ZERO4, {1, 2, 3}, -1, -1, -1},
+   {AGX3_HFMA4_Z1, T_ZERO4, {1, 2, 3}, -1, -1, -1},
+   {AGX3_HFMA6, T_ZERO6, {1, 2, 3}, -1, -1, -1},
+   {AGX3_HFMA8, T_ZERO8, {1, 2, 3}, -1, -1, -1},
+   {AGX3_HFMA10, T_FFMA, {1, 2, 3}, -1, -1, 5},
+};
 
 /* The float unary operations: dest, t/v, source */
 static enum agx3_instr
@@ -1059,12 +1256,84 @@ a3_bitop(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
       y = I->src[0];
    }
 
+   /* and, xor and or have 4-byte forms for r0-r63, as fadd4 */
+   static const struct a3_alu bitop4[] = {
+      [0x8] = {AGX3_AND4, T_ZERO4, {1, 2}, -1, -1, -1, true},
+      [0x6] = {AGX3_XOR4, T_ZERO4, {1, 2}, -1, -1, -1, true},
+      [0xe] = {AGX3_OR4, T_ZERO4, {1, 2}, -1, -1, -1, true},
+   };
+   if (tt < ARRAY_SIZE(bitop4) && bitop4[tt].tmpl &&
+       !(agx_compiler_debug & AGX_DBG_LONGALU)) {
+      const agx_index swap[2] = {I->src[1], I->src[0]};
+      uint8_t out[AGX3_MAX_BYTES];
+
+      if (a3_alu_fits(a, I, &bitop4[tt], I->src, out) ||
+          a3_alu_fits(a, I, &bitop4[tt], swap, out)) {
+         a3_put(a, out, emission);
+         return;
+      }
+   }
+
    a3_begin(a, I, AGX3_BITOP10, T_BITOP);
    a3_set(a, BITOP_TT, tt);
    a3_set(a, 1, a3_reg(a, 1, I->dest[0], 0, 0, 0));
    a3_set(a, 2, a3_src(a, 2, x, true));
    a3_set(a, 3, a3_src(a, 3, y, true));
    a3_emit(a, emission);
+}
+
+/* min and max, D = A cc B ? A : B: 6 bytes for the first eight conditions
+ * (the variant is cc), as Apple's fmax and fmin, when neither value is
+ * modified. Bit 18 is the selected value's integer flag (cmpsel6's), clear
+ * only beside a float immediate as in all of Apple's. */
+static bool
+a3_minmax(struct a3 *a, const agx_instr *I, unsigned cc, bool integer,
+          struct util_dynarray *emission)
+{
+   static const enum agx3_instr minmax[] = {
+      AGX3_FMAX, AGX3_FMIN, AGX3_FMAXSSE, AGX3_FMINSSE,
+      AGX3_UMAX, AGX3_UMIN, AGX3_SMAX,    AGX3_SMIN,
+   };
+   agx_index x = I->src[0], y = I->src[1];
+   uint8_t out[AGX3_MAX_BYTES];
+   jmp_buf *outer = a->trial, trial;
+
+   if (cc >= ARRAY_SIZE(minmax) || (agx_compiler_debug & AGX_DBG_LONGALU))
+      return false;
+
+   for (unsigned i = 0; i < 2; i++) {
+      agx_index v = I->src[i], sel = I->src[2 + i];
+
+      if (v.type != sel.type || v.value != sel.value || v.size != sel.size ||
+          v.abs || v.neg || sel.abs || sel.neg)
+         return false;
+   }
+
+   /* one read for both: the last use is either's */
+   x.discard |= I->src[2].discard;
+   y.discard |= I->src[3].discard;
+
+   if (setjmp(trial)) {
+      a->trial = outer;
+      return false;
+   }
+
+   a->trial = &trial;
+   a3_begin(a, I, minmax[cc], T_ZERO6);
+   a3_set(a, 0, a3_reg(a, 0, I->dest[0], 0, 0, 0));
+   a3_set(a, 1, a3_cmp_src(a, 1, x, integer, I->icond));
+   a3_set(a, 2, a3_cmp_src(a, 2, y, integer, I->icond));
+   a3_set(a, MINMAX_SEL_INT,
+          integer ||
+             (x.type != AGX_INDEX_IMMEDIATE && y.type != AGX_INDEX_IMMEDIATE));
+   bool fits = a3_check(a, out);
+   a->trial = outer;
+
+   if (!fits)
+      return false;
+
+   a3_put(a, out, emission);
+   return true;
 }
 
 /* icmpsel/fcmpsel: D = A cc B ? X : Y. The selected values are moved as
@@ -1087,6 +1356,9 @@ a3_cmpsel(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
 
    for (unsigned i = 2; i < 4; i++)
       sel_int &= !I->src[i].abs && !I->src[i].neg;
+
+   if (a3_minmax(a, I, cc, integer, emission))
+      return;
 
    /* The 10-byte form lacks abs on the compared values and the high
     * destination bits; the 14-byte form has them */
@@ -1217,8 +1489,8 @@ a3_mem(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
 }
 
 /* The IR's local_load and local_atomic are synchronous; G15's ldtg and
- * atomictg deliver in a load group. They use group 2 (the scoreboard
- * assigns 0 and 1) and wait for it. */
+ * atomictg deliver in a load group. They use group 2 (the scoreboard slots
+ * are groups 3 and 4, agx3_assign_groups) and wait for it. */
 #define A3_SYNC_G 2
 
 static void
@@ -1268,7 +1540,7 @@ a3_local_mem(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
    a3_set(a, r + 4, 0);
    a3_emit(a, emission);
 
-   if (!store)
+   if (!store && !I->g15_nosync)
       a3_wait(a, I, A3_SYNC_G, emission);
 }
 
@@ -1328,7 +1600,8 @@ a3_stack_mem(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
 
 /* The IR's atomic operations (G13's numbering, which Apple's compiler also
  * uses: the low 4 bits of its memory flags operand) to the hardware's code,
- * Apple's table */
+ * Apple's table. Its 11 is fp32 add, code 3 (on the hardware: exact sums);
+ * G15C has it on device memory only (fp32-atomicdev, no fp32-atomictg). */
 static unsigned
 a3_atomic_op(const struct a3 *a, enum agx_atomic_opc op)
 {
@@ -1338,7 +1611,7 @@ a3_atomic_op(const struct a3 *a, enum agx_atomic_opc op)
       [AGX_ATOMIC_OPC_UMIN] = 13, [AGX_ATOMIC_OPC_IMIN] = 5,
       [AGX_ATOMIC_OPC_UMAX] = 12, [AGX_ATOMIC_OPC_IMAX] = 4,
       [AGX_ATOMIC_OPC_AND] = 1,   [AGX_ATOMIC_OPC_OR] = 6,
-      [AGX_ATOMIC_OPC_XOR] = 15,
+      [AGX_ATOMIC_OPC_XOR] = 15,  [AGX_ATOMIC_OPC_FADD] = 3,
    };
 
    if (op >= ARRAY_SIZE(hw))
@@ -1368,6 +1641,8 @@ a3_local_atomic(struct a3 *a, const agx_instr *I,
    bool result = !agx_is_null(I->dest[0]);
 
    a3_begin(a, I, AGX3_THREADGROUP_ATOMIC, T_ATG);
+   if (I->atomic_opc == AGX_ATOMIC_OPC_FADD)
+      a3_fail(a, "no threadgroup float atomics");
    a3_set(a, ATG_G, result ? A3_SYNC_G + 1 : 0);
    a3_set(a, ATG_DST, result ? a3_reg(a, ATG_DST, I->dest[0], 0, 0, 0) : 0);
    a3_set(a, ATG_DATA, a3_atomic_data(a, ATG_DATA, I->src[0]));
@@ -1783,17 +2058,43 @@ a3_tex_grad_words(const agx_instr *I)
    return I->lod_mode == AGX_LOD_MODE_LOD_GRAD ? I->src[1].channels_m1 + 1 : 0;
 }
 
+/* The group a texture's result arrives in: its scoreboard slot's
+ * (agx3_assign_groups), or A3_SYNC_G for a texture the IR waits for at
+ * once */
+static unsigned
+a3_tex_group(const agx_instr *I)
+{
+   bool async = agx_opcodes_info[I->op].immediates & AGX_IMMEDIATE_SCOREBOARD;
+
+   return (async && !(agx_compiler_debug & AGX_DBG_SYNCTEX)) ? I->scoreboard
+                                                             : A3_SYNC_G;
+}
+
+/* The coordinate registers a texture reads from its first */
+static unsigned
+a3_tex_crs(const agx_instr *I)
+{
+   unsigned n = MAX2(a3_tex_slot(I, a3_tex_coords(I) - 1) + 1,
+                     (a3_tex_lod_word(I) || a3_tex_offset_in_word(I)) ? 4
+                     : I->shadow                                      ? 3
+                                                                      : 2);
+   return MAX2(n, a3_tex_grad_words(I) ? 4 + a3_tex_grad_words(I) : 0);
+}
+
 /* texture_sample / texture_load (texture.md; boots #252 and #256 run
  * Apple's 2D forms): G15 has no texture state registers. The texture is
  * entry ts of the 32 B state array at a uniform pair (the IR's bindless base,
  * its index counting 32 B descriptors), the sampler entry ss of the 32 B
  * sampler table at another pair (src[6]). The coordinates go to cr slots
- * (smp.md), in group 0, which the instruction waits for: x, y and z in
- * cr0-cr2, a depth reference in cr2, the LOD word in cr3 (an array's layer at
- * bits 0:10, a texel offset's x at 12:15, y at 28:31 and z at 0:3 when it is
- * not F42's immediate, the LOD or bias at 16:27 through pack_smpir), the
- * gradients from cr4; the result arrives in group A3_SYNC_G and
- * is waited for at once. Done: every dimension, automatic LOD (fragment
+ * (smp.md), in group 0, which the instruction waits for, from its first cr
+ * (I->g15_cr): x, y and z in slots 0-2, a depth reference in slot 2, the
+ * LOD word in slot 3 (an array's layer at bits 0:10, a texel offset's x at
+ * 12:15, y at 28:31 and z at 0:3 when it is not F42's immediate, the LOD or
+ * bias at 16:27 through pack_smpir), the gradients from slot 4; the result
+ * arrives in its scoreboard slot's group, which its first reader waits for
+ * (agx_insert_waits), and the crs stay in use
+ * until then (agx3_assign_crs; AGX_MESA_DEBUG=synctex: in group A3_SYNC_G,
+ * waited for at once). Done: every dimension, automatic LOD (fragment
  * shaders) and level 0, a fetch at a constant level, a LOD, bias or fetch
  * level in a register (2D and 2D array samples and 2D fetches run on the
  * hardware), gradients, immediate or register indices, constant offsets and
@@ -1924,6 +2225,8 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
       a3_fail(a, "texture form not in the encoder tree for this dimension");
 
    bool has_lod = load && !lodw && a3_tex_load[I->dim] != A3_NONE;
+   /* the first cr, agx3_assign_crs's */
+   unsigned cr = I->g15_cr;
 
    /* The layer word goes into the LOD word when there is one */
    bool word = lodw || off_word;
@@ -1935,7 +2238,7 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
       if (word && a3_tex_slot(I, c) == 3)
          layer = v;
       else
-         a3_mov_cr(a, I, a3_tex_slot(I, c), v, emission);
+         a3_mov_cr(a, I, cr + a3_tex_slot(I, c), v, emission);
    }
 
    /* The LOD word: pack_smpir's A the f16 LOD or bias as q5.6 (mode 0xa,
@@ -1949,11 +2252,11 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
       agx_index pc = off_word ? offset : lodw ? layer : agx_null();
 
       if (agx_is_null(pa)) {
-         a3_mov_cr(a, I, 3, offset, emission);
+         a3_mov_cr(a, I, cr + 3, offset, emission);
       } else {
          a3_begin(a, I, AGX3_PACK_SMPIR, T_PACK_SMPIR);
          a3_set(a, PACK_SMPIR_DST,
-                a3_kind_value(a, PACK_SMPIR_DST, A3_CR, 3, 0));
+                a3_kind_value(a, PACK_SMPIR_DST, A3_CR, cr + 3, 0));
          a3_set(a, PACK_SMPIR_G, 0);
          a3_set(a, PACK_SMPIR_A, a3_src9(a, PACK_SMPIR_A, pa));
          if (!agx_is_null(pc))
@@ -1969,7 +2272,7 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
    if (I->shadow) {
       agx_index ref = I->src[5];
       ref.channels_m1 = 0;
-      a3_mov_cr(a, I, 2, ref, emission);
+      a3_mov_cr(a, I, cr + 2, ref, emission);
    }
 
    /* The gradients from cr4 in the IR's order, dP/dx and dP/dy of each
@@ -1980,23 +2283,18 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
       agx_index v = lod;
       v.value += 2 * i;
       v.channels_m1 = 0;
-      a3_mov_cr(a, I, 4 + i, v, emission);
+      a3_mov_cr(a, I, cr + 4 + i, v, emission);
    }
 
    a3_begin(a, I, instr, tmpl);
-   a3_set(a, TEX_G0, A3_SYNC_G);
-   a3_set(a, TEX_G1, A3_SYNC_G);
-   /* Bit 64 of a sample (q3) ends the quad's helper lanes: after it,
-    * derivatives read 0 across an uncovered pixel, and a later sample's
-    * implicit LOD comes out wrong (the last column of an odd-width
-    * viewport). Apple sets it only on a fragment shader's last sample when
-    * no sample or derivative follows (the QuartzCore corpus: 222 of 222
-    * flagged samples, none on an earlier one); T_TEX_AUTO is such a sample.
-    * Keep the helpers to the end. */
+   a3_set(a, TEX_G0, a3_tex_group(I));
+   a3_set(a, TEX_G1, a3_tex_group(I));
+   /* Bit 64 (q3) ends the quad's helper lanes (agx3_end_helpers); T_TEX_AUTO,
+    * Apple's last sample, has it set */
    if (!load) {
       int q3 = a3_op_at_bit(a, 64);
       if (q3 >= 0)
-         a3_set(a, q3, 0);
+         a3_set(a, q3, I->g15_end_helpers);
    }
    if (gather) {
       /* four values of one component (AGX_GATHER_R, _G, _B, _A) */
@@ -2011,7 +2309,7 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
    if (I->sparse)
       a3_set(a, a3_op_at_bit(a, 81), 1);
    a3_set(a, TEX_TS, a3_tex_index(a, TEX_TS, A3_TS, texture));
-   a3_set(a, TEX_CR, a3_kind_value(a, TEX_CR, A3_CR, 0, 0));
+   a3_set(a, TEX_CR, a3_kind_value(a, TEX_CR, A3_CR, cr, 0));
    a3_set(a, TEX_Q1, 1);
    /* 0 for a fetch and Apple's sample at a level in cr3 (gradients: a
     * guess) */
@@ -2043,7 +2341,8 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
          out[10] |= BITFIELD_BIT(82 - 80);
    }
 
-   a3_wait(a, I, A3_SYNC_G, emission);
+   if (a3_tex_group(I) == A3_SYNC_G)
+      a3_wait(a, I, A3_SYNC_G, emission);
 }
 
 /* The coordinate registers the packing of I writes, the highest plus one,
@@ -2056,13 +2355,8 @@ agx3_cr_count(const agx_instr *I)
    switch (I->op) {
    case AGX_OPCODE_TEXTURE_SAMPLE:
    case AGX_OPCODE_TEXTURE_LOAD:
-   case AGX_OPCODE_IMAGE_LOAD: {
-      unsigned n = MAX2(a3_tex_slot(I, a3_tex_coords(I) - 1) + 1,
-                        (a3_tex_lod_word(I) || a3_tex_offset_in_word(I)) ? 4
-                        : I->shadow                                      ? 3
-                                                                         : 2);
-      return MAX2(n, a3_tex_grad_words(I) ? 4 + a3_tex_grad_words(I) : 0);
-   }
+   case AGX_OPCODE_IMAGE_LOAD:
+      return I->g15_cr + a3_tex_crs(I);
    case AGX_OPCODE_ZS_EMIT:
       /* the coverage word (with the stencil), then the depth (a3_zs_emit) */
       return (I->zs & 1) ? 2 : 1;
@@ -2258,11 +2552,122 @@ a3_mov_cr(struct a3 *a, const agx_instr *I, unsigned cr, agx_index value,
    a3_emit(a, emission);
 }
 
+/* G15's groups: the IR's scoreboard slots 0 and 1 become groups 3 and 4
+ * (A3_SLOT_G), so that group 0 holds only the coordinate registers' writes
+ * (a3_mov_cr) and st_var's and image_write's reads of them. A wait is for a
+ * whole group, and a texture waits for its coordinates in group 0: in group
+ * 0 itself, a texture or load waited for the one before it to complete
+ * before it issued. Apple's textures likewise wait for their coordinates in
+ * groups no texture in flight delivers in (the QuartzCore corpus; that a
+ * wait is for the whole group is inferred from it). Group 2 is the
+ * synchronous loads' (A3_SYNC_G). From here on I->scoreboard is the group;
+ * the entry program's loads and waits (agx3_emit_load) name theirs. */
+#define A3_SLOT_G 3
+
+/* A sample's bit 64 ends the quad's helper lanes: after it, derivatives read 0
+ * across an uncovered pixel, and a later sample's implicit LOD comes out wrong
+ * (the last column of an odd-width viewport). Apple sets it on a fragment
+ * shader's last sample when no sample or derivative follows (the QuartzCore
+ * corpus: 222 of 222 flagged samples, none on an earlier one), so the helpers
+ * run no further. Likewise here: on the last sample in program order, when
+ * nothing after it reads another lane (a sample, a derivative, a quad or
+ * subgroup operation, a register of the active lanes) and no loop runs it
+ * again. AGX_MESA_DEBUG=helpers keeps the helpers to the end. */
+static bool
+a3_reads_lanes(const agx_instr *I)
+{
+   switch (I->op) {
+   case AGX_OPCODE_TEXTURE_SAMPLE:
+   case AGX_OPCODE_DFDX:
+   case AGX_OPCODE_DFDY:
+   case AGX_OPCODE_QUAD_REDUCE:
+   case AGX_OPCODE_SIMD_REDUCE:
+   case AGX_OPCODE_QUAD_PREFIX:
+   case AGX_OPCODE_SIMD_PREFIX:
+   case AGX_OPCODE_SHUFFLE:
+   case AGX_OPCODE_SHUFFLE_XOR:
+   case AGX_OPCODE_SHUFFLE_UP:
+   case AGX_OPCODE_SHUFFLE_DOWN:
+   case AGX_OPCODE_QUAD_SHUFFLE:
+   case AGX_OPCODE_QUAD_SHUFFLE_XOR:
+   case AGX_OPCODE_QUAD_SHUFFLE_UP:
+   case AGX_OPCODE_QUAD_SHUFFLE_DOWN:
+   case AGX_OPCODE_BALLOT:
+   case AGX_OPCODE_QUAD_BALLOT:
+   case AGX_OPCODE_ICMP_BALLOT:
+   case AGX_OPCODE_FCMP_BALLOT:
+   case AGX_OPCODE_ICMP_QUAD_BALLOT:
+   case AGX_OPCODE_FCMP_QUAD_BALLOT:
+      return true;
+   case AGX_OPCODE_GET_SR:
+   case AGX_OPCODE_GET_SR_BARRIER:
+   case AGX_OPCODE_GET_SR_COVERAGE:
+      return (I->sr >= AGX_SR_ACTIVE_THREAD_INDEX_IN_QUAD &&
+              I->sr <= AGX_SR_COVERAGE_MASK) ||
+             I->sr == AGX_SR_IS_ACTIVE_THREAD;
+   default:
+      return false;
+   }
+}
+
+void
+agx3_end_helpers(agx_context *ctx)
+{
+   /* A prolog runs before the main program, whose own samples follow it; a
+    * program agx_fast_link runs once a sample loops back to its start,
+    * which the IR does not show
+    */
+   if (ctx->stage != MESA_SHADER_FRAGMENT || ctx->is_preamble ||
+       ctx->key->secondary || ctx->key->fs.inside_sample_loop ||
+       (agx_compiler_debug & AGX_DBG_HELPERS))
+      return;
+
+   agx_instr *last = NULL;
+   agx_block *last_block = NULL;
+
+   agx_foreach_block(ctx, block) {
+      agx_foreach_instr_in_block(block, I) {
+         if (I->op == AGX_OPCODE_TEXTURE_SAMPLE) {
+            last = I;
+            last_block = block;
+         } else if (a3_reads_lanes(I)) {
+            last = NULL;
+         }
+      }
+   }
+
+   if (!last)
+      return;
+
+   /* A branch back to the sample's block or before it runs the sample again */
+   agx_foreach_block_from(ctx, last_block, block) {
+      agx_foreach_successor(block, succ) {
+         if (succ->index <= last_block->index)
+            return;
+      }
+   }
+
+   last->g15_end_helpers = true;
+}
+
+void
+agx3_assign_groups(agx_context *ctx)
+{
+   agx_foreach_instr_global(ctx, I) {
+      if (agx_opcodes_info[I->op].immediates & AGX_IMMEDIATE_SCOREBOARD)
+         I->scoreboard += A3_SLOT_G;
+   }
+}
+
 #define A3_VARY_CRS    8
 #define A3_IMGW_TUPLES 2
+#define A3_TEX_CRS     32
+#define A3_GROUPS      6
+#define A3_VARY_G      1
 
 /* G15's st_var and image write read their coordinate registers after they
- * issue, until their group (0) completes, and a later write to those crs does
+ * issue, until their group (st_var's A3_VARY_G, an image write's 0)
+ * completes, and a later write to those crs does
  * not wait for it: a mov to the cr of the st_var just before stored the new
  * value in both slots (the point size and the first varying of a vertex
  * shader with two varyings, the GS copy shader's st_vars through cr0 with
@@ -2275,19 +2680,24 @@ a3_mov_cr(struct a3 *a, const agx_instr *I, unsigned cr, agx_index value,
  * take tuples from cr8 in turn, clear of the crs other instructions write
  * from cr0, as Apple's shaders give each write its own tuple, or the next
  * one free when that one is still being read. A cr still being read is
- * reused only after a wait for group 0, as is one another instruction
+ * reused only after a wait for its group, as is one another instruction
  * writes. A block starts with the crs still being read at the end of each
  * predecessor and of the block before it (a SIMD group runs both sides of a
  * branch, one after the other): a wait on one side does not cover the other
  * (dEQP-VK descriptorset_random: a write in one branch, a wait in another,
  * and the write after the join stored zero to texel (0, 0)). A loop's back
- * edge may bring the last iteration's.
+ * edge may bring the last iteration's. A texture is presumed to read its
+ * crs until its result's group completes too (a3_tex_group; not verified),
+ * so the crs still being read are kept per group, and a 1D or 2D texture
+ * takes the next pair of cr0-cr31 that none is reading, so that a texture
+ * need not wait for the one before it.
  */
 void
 agx3_assign_crs(agx_context *ctx)
 {
-   unsigned next_vary = 0, next_imgw = 0;
-   uint64_t *pending_out = calloc(ctx->num_blocks, sizeof(uint64_t));
+   unsigned next_vary = 0, next_imgw = 0, next_tex = 0;
+   uint64_t (*pending_out)[A3_GROUPS] =
+      calloc(ctx->num_blocks, sizeof(*pending_out));
    unsigned *order = calloc(ctx->num_blocks, sizeof(unsigned));
    agx_block *prev = NULL;
    unsigned n = 0;
@@ -2296,19 +2706,30 @@ agx3_assign_crs(agx_context *ctx)
       order[block->index] = n++;
 
    agx_foreach_block(ctx, block) {
-      uint64_t pending = prev ? pending_out[prev->index] : 0;
-      agx_foreach_predecessor(block, pred) {
-         if (order[(*pred)->index] >= order[block->index])
-            pending = ~0ull;
-         else
-            pending |= pending_out[(*pred)->index];
+      uint64_t pending[A3_GROUPS] = {0};
+      for (unsigned g = 0; g < A3_GROUPS; g++) {
+         pending[g] = prev ? pending_out[prev->index][g] : 0;
+         agx_foreach_predecessor(block, pred) {
+            if (order[(*pred)->index] >= order[block->index])
+               pending[g] = ~0ull;
+            else
+               pending[g] |= pending_out[(*pred)->index][g];
+         }
       }
 
       agx_foreach_instr_in_block(block, I) {
-         if (I->op == AGX_OPCODE_WAIT && I->scoreboard == 0)
-            pending = 0;
+         if (I->op == AGX_OPCODE_WAIT)
+            pending[I->scoreboard] = 0;
+
+         uint64_t all = 0;
+         for (unsigned g = 0; g < A3_GROUPS; g++)
+            all |= pending[g];
 
          uint64_t crs;
+         bool tex = I->op == AGX_OPCODE_TEXTURE_SAMPLE ||
+                    I->op == AGX_OPCODE_TEXTURE_LOAD ||
+                    I->op == AGX_OPCODE_IMAGE_LOAD;
+
          if (I->op == AGX_OPCODE_ST_VARY) {
             I->vary_cr = (next_vary++) % A3_VARY_CRS;
             crs = BITFIELD64_BIT(I->vary_cr);
@@ -2316,30 +2737,56 @@ agx3_assign_crs(agx_context *ctx)
             unsigned t = next_imgw++;
             for (unsigned i = 0; i < A3_IMGW_TUPLES; ++i) {
                unsigned cr = 8 * (1 + (t + i) % A3_IMGW_TUPLES);
-               if (!(pending & BITFIELD64_RANGE(cr, 8))) {
+               if (!(all & BITFIELD64_RANGE(cr, 8))) {
                   t += i;
                   break;
                }
             }
             I->vary_cr = 8 * (1 + t % A3_IMGW_TUPLES);
             crs = BITFIELD64_RANGE(I->vary_cr, 8);
+         } else if (tex) {
+            /* A 1D or 2D read takes the next pair still free, as Apple's 2D
+             * reads take cr0-cr31 in turn (even firsts only); the others
+             * keep cr0 (Apple's 3D samples all read from cr0; other firsts
+             * not verified) */
+            unsigned span = a3_tex_crs(I);
+            I->g15_cr = 0;
+            if (span == 2) {
+               unsigned cr = next_tex;
+               for (unsigned i = 0; i < A3_TEX_CRS; i += 2) {
+                  unsigned c = (next_tex + i) % A3_TEX_CRS;
+                  if (!(all & BITFIELD64_RANGE(c, 2))) {
+                     cr = c;
+                     break;
+                  }
+               }
+               I->g15_cr = cr;
+               next_tex = (cr + 2) % A3_TEX_CRS;
+            }
+            crs = BITFIELD64_RANGE(I->g15_cr, span);
          } else {
             /* Another instruction's crs (a vertex shader's texture fetch after
              * the point size's st_var: the fetch read the wrong texel) */
             crs = BITFIELD64_MASK(MIN2(agx3_cr_count(I), 64));
          }
 
-         if (pending & crs) {
-            agx_builder b = agx_init_builder(ctx, agx_before_instr(I));
-            agx_wait(&b, 0);
-            pending = 0;
+         for (unsigned g = 0; g < A3_GROUPS; g++) {
+            if (pending[g] & crs) {
+               agx_builder b = agx_init_builder(ctx, agx_before_instr(I));
+               agx_wait(&b, g);
+               pending[g] = 0;
+            }
          }
 
-         if (I->op == AGX_OPCODE_ST_VARY || I->op == AGX_OPCODE_IMAGE_WRITE)
-            pending |= crs;
+         if (I->op == AGX_OPCODE_ST_VARY)
+            pending[A3_VARY_G] |= crs;
+         else if (I->op == AGX_OPCODE_IMAGE_WRITE)
+            pending[0] |= crs;
+         else if (tex && agx3_cr_count(I) && a3_tex_group(I) != A3_SYNC_G)
+            pending[a3_tex_group(I)] |= crs;
       }
 
-      pending_out[block->index] = pending;
+      memcpy(pending_out[block->index], pending, sizeof(pending));
       prev = block;
    }
 
@@ -2351,8 +2798,11 @@ agx3_assign_crs(agx_context *ctx)
  * instruction wrote in a group (uvsw; demo15's transform writes cr0-cr3
  * in groups 0-3 and each st_var waits for its group). The value goes
  * through cr (agx3_assign_crs) in group 0; st_var waits for group 0
- * and frees the cr. The slot counts 32-bit words, as G13's. G15 has no last
- * flag: the IR's is dropped. */
+ * and frees the cr. It reads the cr in its own group, A3_VARY_G: in group
+ * 0, each st_var's wait for its cr waited for the st_var before it too
+ * (Apple's vertex shaders give each output a group of its own). The slot
+ * counts 32-bit words, as G13's. G15 has no last flag: the IR's is
+ * dropped. */
 static void
 a3_st_vary(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
 {
@@ -2369,7 +2819,7 @@ a3_st_vary(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
    a3_set(a, ST_VAR_CR,
           a3_kind_value(a, ST_VAR_CR, A3_CR, cr, BITFIELD_BIT(A3_LU)));
    a3_set(a, ST_VAR_SLOT, a3_src9(a, ST_VAR_SLOT, slot));
-   a3_set(a, ST_VAR_G, 0);
+   a3_set(a, ST_VAR_G, A3_VARY_G);
    a3_set(a, ST_VAR_WAIT, BITFIELD_BIT(0));
    a3_emit(a, emission);
 }
@@ -2426,7 +2876,7 @@ a3_tile(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
    a3_set(a, r + 3, a3_imm(a, r + 3, I->pixel_offset, false));
    a3_emit(a, emission);
 
-   if (load)
+   if (load && !I->g15_nosync)
       a3_wait(a, I, A3_SYNC_G, emission);
 }
 
@@ -2486,7 +2936,8 @@ a3_ldcf(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
    a3_set(a, LDCF_CF, a3_src9(a, LDCF_CF, I->src[0]));
    a3_emit(a, emission);
 
-   a3_wait(a, I, A3_SYNC_G, emission);
+   if (!I->g15_nosync)
+      a3_wait(a, I, A3_SYNC_G, emission);
 }
 
 /* iter (f32interp): one instruction per channel, coefficient registers cf,
@@ -2583,6 +3034,33 @@ a3_itrcoords(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
    a3_set(a, ITRCOORDS_SRC, a3_reg(a, ITRCOORDS_SRC, src, 0, 0, 0));
    a3_set(a, ITRCOORDS_SAMPLE, I->interpolation == AGX_INTERPOLATION_SAMPLE);
    a3_set(a, ITRCOORDS_DCACHE, 0);
+   a3_emit(a, emission);
+}
+
+/* rcp_cf and fmul_cf: G15's perspective projection as Apple's compiler emits
+ * it, the reciprocal of W's flagged iteration and a varying's iteration times
+ * it, naming W's and the varying's coefficient registers (AGX3.xml). Their
+ * registers are r0-r63 (register allocation's low_only). */
+static void
+a3_rcp_cf(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
+{
+   a3_begin(a, I, AGX3_RCP_CF, T_RCP_CF);
+   a3_set(a, RCP_CF_DST, a3_reg(a, RCP_CF_DST, I->dest[0], 0, 0, 0));
+   a3_set(a, RCP_CF_SRC, a3_src(a, RCP_CF_SRC, I->src[0], false));
+   a3_set(a, RCP_CF_CF, a3_kind_value(a, RCP_CF_CF, A3_CF, I->src[1].value, 0));
+   a3_vt(a, RCP_CF_VT);
+   a3_emit(a, emission);
+}
+
+static void
+a3_fmul_cf(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
+{
+   a3_begin(a, I, AGX3_FMUL_CF, T_FMUL_CF);
+   a3_set(a, FMUL_CF_DST, a3_reg(a, FMUL_CF_DST, I->dest[0], 0, 0, 0));
+   a3_set(a, FMUL_CF_A, a3_src(a, FMUL_CF_A, I->src[0], false));
+   a3_set(a, FMUL_CF_B, a3_src(a, FMUL_CF_B, I->src[1], false));
+   a3_set(a, FMUL_CF_W, a3_kind_value(a, FMUL_CF_W, A3_CF, I->src[2].value, 0));
+   a3_set(a, FMUL_CF_N, a3_kind_value(a, FMUL_CF_N, A3_CF, I->src[3].value, 0));
    a3_emit(a, emission);
 }
 
@@ -3050,11 +3528,177 @@ agx3_fixup_branches(struct util_dynarray *emission,
    }
 }
 
+/* The instructions whose register operands take the register-cache hints, as
+ * Apple's compiler sets them on G15: its QuartzCore corpus marks about two in
+ * three ALU operands ($ cache, ^ last use; a half of a register is freed while
+ * the other is read on) and no texture or memory operand. */
+static uint32_t
+a3_hints(const agx_instr *I)
+{
+   if (agx_compiler_debug & AGX_DBG_NOHINTS)
+      return 0;
+
+   switch (I->op) {
+   case AGX_OPCODE_MOV:
+   case AGX_OPCODE_MOV_IMM:
+   case AGX_OPCODE_IADD:
+   case AGX_OPCODE_IMAD:
+   case AGX_OPCODE_BFI:
+   case AGX_OPCODE_BFEIL:
+   case AGX_OPCODE_EXTR:
+   case AGX_OPCODE_ASR:
+   case AGX_OPCODE_BITREV:
+   case AGX_OPCODE_POPCOUNT:
+   case AGX_OPCODE_FFS:
+   case AGX_OPCODE_BITOP:
+   case AGX_OPCODE_ICMPSEL:
+   case AGX_OPCODE_FCMPSEL:
+   case AGX_OPCODE_CONVERT:
+   case AGX_OPCODE_FADD:
+   case AGX_OPCODE_FMUL:
+   case AGX_OPCODE_FFMA:
+   case AGX_OPCODE_HADD:
+   case AGX_OPCODE_HMUL:
+   case AGX_OPCODE_HFMA:
+   case AGX_OPCODE_FLOOR:
+   case AGX_OPCODE_CEIL:
+   case AGX_OPCODE_TRUNC:
+   case AGX_OPCODE_ROUNDEVEN:
+   case AGX_OPCODE_RCP:
+   case AGX_OPCODE_RSQRT:
+   case AGX_OPCODE_SRSQRT:
+   case AGX_OPCODE_LOG2:
+   case AGX_OPCODE_EXP2:
+   case AGX_OPCODE_SIN_PT_2:
+   case AGX_OPCODE_ITER:
+      return BITFIELD_BIT(A3_CACHE) | BITFIELD_BIT(A3_LU);
+   default:
+      return 0;
+   }
+}
+
+static void a3_pack_instr(struct util_dynarray *emission,
+                          struct util_dynarray *fixups, const agx_instr *I,
+                          unsigned scratch_B, uint32_t hints, unsigned *emitted,
+                          jmp_buf *trial);
+
+/* An instruction the packer splits reads a source more than once (iter's
+ * channels its coordinates), so a last use there frees it before the last
+ * read: such an instruction is packed again without them. */
+static unsigned
+a3_pack_hinted(struct util_dynarray *emission, struct util_dynarray *fixups,
+               const agx_instr *I, unsigned scratch_B, jmp_buf *trial)
+{
+   uint32_t hints = a3_hints(I);
+   unsigned start = emission->size, emitted = 0;
+
+   a3_pack_instr(emission, fixups, I, scratch_B, hints, &emitted, trial);
+
+   if (emitted > 1 && (hints & BITFIELD_BIT(A3_LU))) {
+      emission->size = start;
+      emitted = 0;
+      a3_pack_instr(emission, fixups, I, scratch_B,
+                    hints & ~BITFIELD_BIT(A3_LU), &emitted, trial);
+   }
+
+   return emitted;
+}
+
 void
 agx3_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
                 const agx_instr *I, unsigned scratch_B)
 {
-   struct a3 a = {.I = I, .scratch_B = scratch_B};
+   a3_pack_hinted(emission, fixups, I, scratch_B, NULL);
+}
+
+/* Whether I packs with a wait for the load groups mask in its first
+ * encoding */
+static bool
+a3_takes_wait(const agx_instr *I, unsigned mask, unsigned scratch_B)
+{
+   agx_instr J = *I;
+   struct util_dynarray emission, fixups;
+   jmp_buf trial;
+   volatile bool ok = false;
+
+   J.g15_wait = mask;
+   util_dynarray_init(&emission, NULL);
+   util_dynarray_init(&fixups, NULL);
+
+   if (!setjmp(trial))
+      ok = a3_pack_hinted(&emission, &fixups, &J, scratch_B, &trial) > 0;
+
+   util_dynarray_fini(&emission);
+   util_dynarray_fini(&fixups);
+   return ok;
+}
+
+/* The group a synchronous instruction waits for at once, or -1: ldcf, ldtg
+ * and a tile load deliver in A3_SYNC_G, get_sr in group 0 */
+static int
+a3_sync_group(const agx_instr *I)
+{
+   switch (I->op) {
+   case AGX_OPCODE_LDCF:
+   case AGX_OPCODE_LOCAL_LOAD:
+   case AGX_OPCODE_LD_TILE:
+      return A3_SYNC_G;
+   case AGX_OPCODE_GET_SR:
+   case AGX_OPCODE_GET_SR_COVERAGE:
+   case AGX_OPCODE_GET_SR_BARRIER:
+      return 0;
+   default:
+      return -1;
+   }
+}
+
+/* Fold each wait into the next instruction of its block where that one has
+ * a wait field, as Apple's B1 code does (its only waits of their own come
+ * before an else or a pop_exec, which have none): the instruction waits
+ * before it issues, as after the wait; and the waits the synchronous
+ * instructions end with. B0 needs a wait and three nops before such an
+ * instruction (not done). */
+void
+agx3_fold_waits(agx_context *ctx)
+{
+   if (agx_compiler_debug & AGX_DBG_WAITS)
+      return;
+
+   agx_foreach_block(ctx, block) {
+      agx_foreach_instr_in_block_safe(block, I) {
+         int sync = a3_sync_group(I);
+
+         if ((I->op != AGX_OPCODE_WAIT && sync < 0) ||
+             I->link.next == &block->instructions)
+            continue;
+
+         agx_instr *next = list_first_entry(&I->link, agx_instr, link);
+         unsigned g = sync >= 0 ? sync : I->scoreboard;
+         unsigned mask = next->g15_wait | BITFIELD_BIT(g);
+
+         if (next->op == AGX_OPCODE_WAIT ||
+             !a3_takes_wait(next, mask, ctx->scratch_size_B))
+            continue;
+
+         next->g15_wait = mask;
+         if (sync >= 0)
+            I->g15_nosync = true;
+         else
+            agx_remove_instruction(I);
+      }
+   }
+}
+
+static void
+a3_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
+              const agx_instr *I, unsigned scratch_B, uint32_t hints,
+              unsigned *emitted, jmp_buf *trial)
+{
+   struct a3 a = {.I = I,
+                  .scratch_B = scratch_B,
+                  .hints = hints,
+                  .emitted = emitted,
+                  .trial = trial};
 
    static bool once;
    if (!once) {
@@ -3087,9 +3731,8 @@ agx3_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
       a3_set(&a, GET_SR_SR, a3_sr(&a, I->sr));
       a3_emit(&a, emission);
 
-      a3_begin(&a, I, AGX3_WAIT, T_WAIT);
-      a3_set(&a, WAIT_MASK, BITFIELD_BIT(0));
-      a3_emit(&a, emission);
+      if (!I->g15_nosync)
+         a3_wait(&a, I, 0, emission);
       return;
 
    case AGX_OPCODE_IADD:
@@ -3166,27 +3809,27 @@ agx3_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
       return;
 
    case AGX_OPCODE_FADD:
-      a3_alu(&a, I, &a3_fadd, I->src, emission);
+      a3_alu_forms(&a, I, a3_fadd, ARRAY_SIZE(a3_fadd), emission);
       return;
 
    case AGX_OPCODE_FMUL:
-      a3_alu(&a, I, &a3_fmul, I->src, emission);
+      a3_alu_forms(&a, I, a3_fmul, ARRAY_SIZE(a3_fmul), emission);
       return;
 
    case AGX_OPCODE_FFMA:
-      a3_alu(&a, I, &a3_ffma, I->src, emission);
+      a3_alu_forms(&a, I, a3_ffma, ARRAY_SIZE(a3_ffma), emission);
       return;
 
    case AGX_OPCODE_HADD:
-      a3_alu(&a, I, &a3_hadd, I->src, emission);
+      a3_alu_forms(&a, I, a3_hadd, ARRAY_SIZE(a3_hadd), emission);
       return;
 
    case AGX_OPCODE_HMUL:
-      a3_alu(&a, I, &a3_hmul, I->src, emission);
+      a3_alu_forms(&a, I, a3_hmul, ARRAY_SIZE(a3_hmul), emission);
       return;
 
    case AGX_OPCODE_HFMA:
-      a3_alu(&a, I, &a3_hfma, I->src, emission);
+      a3_alu_forms(&a, I, a3_hfma, ARRAY_SIZE(a3_hfma), emission);
       return;
 
    case AGX_OPCODE_FLOOR:
@@ -3354,6 +3997,14 @@ agx3_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
 
    case AGX_OPCODE_ITRCOORDS:
       a3_itrcoords(&a, I, emission);
+      return;
+
+   case AGX_OPCODE_RCP_CF:
+      a3_rcp_cf(&a, I, emission);
+      return;
+
+   case AGX_OPCODE_FMUL_CF:
+      a3_fmul_cf(&a, I, emission);
       return;
 
    case AGX_OPCODE_ZS_EMIT:

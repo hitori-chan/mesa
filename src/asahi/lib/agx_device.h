@@ -49,6 +49,7 @@ enum agx_dbg {
    AGX_DBG_1QUEUE = BITFIELD_BIT(21),
    AGX_DBG_NOMERGE = BITFIELD_BIT(22),
    AGX_DBG_LINEAR = BITFIELD_BIT(23),
+   AGX_DBG_PASSTHROUGH_GS = BITFIELD_BIT(24),
    AGX_DBG_COMPRESSZS = BITFIELD_BIT(25),
    AGX_DBG_NOIX = BITFIELD_BIT(26),
    AGX_DBG_IX = BITFIELD_BIT(27),
@@ -125,6 +126,7 @@ struct agx_device {
    simple_mtx_t vma_lock;
    uint64_t shader_base;
    struct util_vma_heap main_heap;
+   struct util_vma_heap capture_heap;
    struct util_vma_heap usc_heap;
 
    uint64_t guard_size;

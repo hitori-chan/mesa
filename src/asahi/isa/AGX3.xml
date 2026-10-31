@@ -1,5 +1,5 @@
 <!--
- SPDX-License-Identifier: MIT
+ SPDX-License-Identifier: GPL-2.0-only
 
  AGX3, the G15 (Apple M3) shader ISA. The encodings follow the M3
  instruction descriptors of applegpu (Dougall Johnson and TellowKrinkle,
@@ -983,13 +983,14 @@
    compiler passes G13's operation numbering (Mesa's agx_atomic_opc: the
    low 4 bits of its memory-flags operand, sub_251C62B48) through a table
    to this code. The 64-bit atomicdev form takes umin..imax only (Metal's
-   64-bit min/max); 3 and 7-10 have no G13 name.
+   64-bit min/max). 3 is fp32 add (Apple's 11, on atomicdev: Metal's
+   atomic_float add); 7-10 have no G13 name and left fp32 data unchanged.
   -->
   <enum kind="atomic_op" name="Atomic operation">
     <value value="0">add</value>
     <value value="1">and</value>
     <value value="2">cmpxchg</value>
-    <value value="3">op11</value>
+    <value value="3">fadd</value>
     <value value="4">imax</value>
     <value value="5">imin</value>
     <value value="6">or</value>
@@ -3956,6 +3957,25 @@
     <modifier name="sat" bit="57" display="sat"/>
   </ins>
 
+  <!--
+   fmul_cf (Apple's perspective multiply, f32mul encoding point 4): the
+   iteration of a varying times the reciprocal of W's flagged iteration,
+   naming W's and the varying's coefficient registers. fmul8's operands where
+   W's cf (32:38) and the varying's (40:46) leave room: no high register bits,
+   no group, wait or saturate; the destination's half select moves to bit 50
+   and its cr select to bit 54; bit 49 set is the 12 B form (not described).
+   All 745 8 B forms of the QuartzCore corpus decode as libLLVM_32023 does
+   (W's cf is always 0 there).
+  -->
+  <ins name="fmul_cf" display="fmul" length="8">
+    <exact bit="0:2 16:18 49">0111001</exact>
+    <dest kind="vdst" bit="50 4:7 22:23 =0 =0000 =00 =0 3 21 54 =0 =0"/>
+    <src kind="vsrc" bit="=0 9:14 =0 15 19 8 =0 =0 =0 55 =0 =0"/>
+    <src kind="vsrc" bit="=0 25:30 =0 31 20 24 =0 =0 =0 56 =0 =0"/>
+    <src kind="cfimm" bit="32:38"/>
+    <src kind="cfimm" bit="40:46"/>
+  </ins>
+
   <ins name="fmul12" display="fmul" length="12">
     <exact bit="0:2 16:18 32:33">10101001</exact>
     <dest kind="vdst" bit="34 4:7 22:23 44 50:53 =00 =0 3 21 38 37 54"/>
@@ -4155,13 +4175,30 @@
   </ins>
 
   <ins name="rcp" display="rcp" length="10">
-    <exact bit="0:11">000010101111</exact>
+    <exact bit="0:11 72">0000010101111</exact>
     <dest kind="fdst_inv" bit="24 25:31 32 33 62 68 =0 57 =1"/>
     <modifier name="vt" bit="66 62" kind="dst_vt"/>
     <src kind="fsrc" bit="41 42:48 49 69 52 59 =0 71 70 58 =1"/>
     <modifier name="group" bit="61 63:64 62" kind="fgroup"/>
     <modifier name="wait" bit="12:17" kind="wait"/>
     <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <!--
+   rcp_cf: the reciprocal of W's flagged iteration (iter's persp), naming W's
+   coefficient register (bit 72; the register at 50:56, over the source's
+   last-use bit), for fmul_cf. Apple's 80 in the QuartzCore corpus all name
+   cf0.
+  -->
+  <ins name="rcp_cf" display="rcp" length="10">
+    <exact bit="0:11 72">1000010101111</exact>
+    <dest kind="fdst_inv" bit="24 25:31 32 33 62 68 =0 57 =1"/>
+    <modifier name="vt" bit="66 62" kind="dst_vt"/>
+    <src kind="fsrc" bit="41 42:48 49 69 =0 59 =0 71 70 58 =1"/>
+    <modifier name="group" bit="61 63:64 62" kind="fgroup"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+    <src kind="cfimm" bit="50:56"/>
   </ins>
 
   <ins name="rsqrt" display="rsqrt" length="10">

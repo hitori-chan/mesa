@@ -77,6 +77,7 @@ static const struct debug_named_value agx_debug_options[] = {
    {"nosoft",    AGX_DBG_NOSOFT,   "Disable soft fault optimizations"},
    {"nomerge",   AGX_DBG_NOMERGE,  "Disable control stream merging"},
    {"linear",    AGX_DBG_LINEAR,   "Prefer linear layouts where allowed"},
+   {"passthroughgs", AGX_DBG_PASSTHROUGH_GS, "Draw triangles through the passthrough geometry shader (Vulkan)"},
    {"compresszs",AGX_DBG_COMPRESSZS,"Also compress depth and stencil on G15"},
    {"noix",      AGX_DBG_NOIX,     "Do not offer the interchange modifier for scanout on G15 (GL)"},
    {"ix",        AGX_DBG_IX,       "Offer interchange for 10-bit RGB too (GL)"},
@@ -672,6 +673,10 @@ agx_open_device(void *memctx, struct agx_device *dev)
    simple_mtx_init(&dev->vma_lock, mtx_plain);
    util_vma_heap_init(&dev->main_heap, user_start, user_size);
    util_vma_heap_init(&dev->usc_heap, dev->shader_base, shader_size);
+
+   /* Capture heap overlap with main heap and is allocated in reverse */
+   util_vma_heap_init(&dev->capture_heap, user_start, user_size);
+   dev->capture_heap.alloc_high = false;
 
    dev->vm_id = vm_create.vm_id;
 

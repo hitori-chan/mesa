@@ -146,12 +146,24 @@ struct agx_vs_prolog_key {
    struct agx_robustness robustness;
 };
 
+/* Fragment test of conservative rasterization, against what the widened
+ * triangle's vertex shader wrote.
+ */
+enum agx_conservative_test {
+   AGX_CONSERVATIVE_NONE,
+   AGX_CONSERVATIVE_BOX,
+   AGX_CONSERVATIVE_BOX_EDGES,
+};
+
 struct agx_fs_prolog_key {
    /* glSampleMask() mask */
    uint8_t api_sample_mask;
 
    /* Number of cull planes requiring lowering */
    uint8_t cull_distance_size;
+
+   /* enum agx_conservative_test */
+   uint8_t conservative;
 
    /* Need to count FRAGMENT_SHADER_INVOCATIONS */
    bool statistics;
@@ -162,8 +174,9 @@ struct agx_fs_prolog_key {
    /* If we discard, whether we need to run Z/S tests */
    bool run_zs_tests;
 
-   /* If we emulate cull distance, the base offset for our allocated coefficient
-    * registers so we don't interfere with the main shader.
+   /* If we emulate cull distance or conservative rasterization, the base
+    * offset for our allocated coefficient registers so we don't interfere with
+    * the main shader.
     */
    unsigned cf_base;
 };

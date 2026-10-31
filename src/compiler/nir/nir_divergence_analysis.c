@@ -736,6 +736,7 @@ visit_intrinsic(nir_intrinsic_instr *instr, struct divergence_state *state)
 
    case nir_intrinsic_image_load:
    case nir_intrinsic_image_deref_load:
+   case nir_intrinsic_image_deref_input_attachment_load:
    case nir_intrinsic_bindless_image_load:
    case nir_intrinsic_image_heap_load:
    case nir_intrinsic_image_sparse_load:
@@ -1054,6 +1055,7 @@ visit_intrinsic(nir_intrinsic_instr *instr, struct divergence_state *state)
    case nir_intrinsic_elect:
    case nir_intrinsic_elect_any_ir3:
    case nir_intrinsic_load_tlb_color_brcm:
+   case nir_intrinsic_load_tlb_depth_stencil_brcm:
    case nir_intrinsic_load_tess_rel_patch_id_amd:
    case nir_intrinsic_load_gs_vertex_offset_amd:
    case nir_intrinsic_is_subgroup_invocation_lt_amd:

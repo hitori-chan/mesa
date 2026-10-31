@@ -324,9 +324,19 @@ kopper_update_drawable_info(struct dri_drawable *drawable)
                                 drawable->textures[ST_ATTACHMENT_FRONT_LEFT];
 
    bool do_kopper_update = is_window && ptex && screen->fd == -1;
-   if (drawable->info.bos.sType == VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR && do_kopper_update)
-      zink_kopper_update(kopper_get_zink_screen(screen->base.screen), ptex, &drawable->w, &drawable->h);
-   else
+   /* skip the blocking size query if the loader knows the window was not resized */
+   const __DRIkopperLoaderExtension *loader = screen->loader.kopper;
+   uint32_t serial = 0;
+   if (do_kopper_update && loader && loader->GetResizeSerial) {
+      serial = loader->GetResizeSerial(drawable->loaderPrivate);
+      if (serial && drawable->w && drawable->h && serial == drawable->kopper_resize_serial)
+         return;
+   }
+   if (drawable->info.bos.sType == VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR && do_kopper_update) {
+      /* set after the query, a resize seen meanwhile changes the serial again */
+      if (zink_kopper_update(kopper_get_zink_screen(screen->base.screen), ptex, &drawable->w, &drawable->h))
+         drawable->kopper_resize_serial = serial;
+   } else
       get_drawable_info(drawable, &drawable->w, &drawable->h);
 }
 
@@ -474,8 +484,9 @@ kopperSwapBuffers(struct dri_drawable *drawable, uint32_t flush_flags, int nrect
 
    drawable->texture_stamp = drawable->lastStamp - 1;
 
+   /* only windows present, and the present syncs tc after the flush is queued */
    dri_flush(ctx, drawable,
-             __DRI2_FLUSH_DRAWABLE | flush_flags,
+             __DRI2_FLUSH_DRAWABLE | (drawable->is_window ? __DRI2_FLUSH_ASYNC : 0) | flush_flags,
              __DRI2_THROTTLE_SWAPBUFFER);
 
    struct pipe_box stack_boxes[64];

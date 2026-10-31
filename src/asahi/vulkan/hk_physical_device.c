@@ -54,6 +54,7 @@ hk_get_device_extensions(const struct agx_device *dev,
     * (hk_rt_pipeline.c), behind a flag until tested
     */
    bool rq = dev->debug & AGX_DBG_RAYQUERY;
+   bool g15 = dev->params.gpu_generation >= 15;
 
    *ext = (struct vk_device_extension_table){
       .KHR_acceleration_structure = rq,
@@ -62,6 +63,7 @@ hk_get_device_extensions(const struct agx_device *dev,
       .KHR_bind_memory2 = true,
       .KHR_buffer_device_address = true,
       .KHR_calibrated_timestamps = true,
+      .KHR_compute_shader_derivatives = g15,
       .KHR_copy_commands2 = true,
       .KHR_create_renderpass2 = true,
       .KHR_dedicated_allocation = true,
@@ -164,6 +166,7 @@ hk_get_device_extensions(const struct agx_device *dev,
       .EXT_calibrated_timestamps = true,
       .EXT_conditional_rendering = false,
       .EXT_color_write_enable = true,
+      .EXT_conservative_rasterization = g15,
       .EXT_custom_border_color = true,
       .EXT_debug_marker = true,
       .EXT_depth_bias_control = true,
@@ -178,6 +181,7 @@ hk_get_device_extensions(const struct agx_device *dev,
       .EXT_extended_dynamic_state2 = true,
       .EXT_extended_dynamic_state3 = true,
       .EXT_external_memory_dma_buf = true,
+      .EXT_fragment_shader_interlock = g15,
       .EXT_global_priority = true,
       .EXT_global_priority_query = true,
       .EXT_graphics_pipeline_library = true,
@@ -218,6 +222,7 @@ hk_get_device_extensions(const struct agx_device *dev,
       .EXT_sampler_filter_minmax = false,
       .EXT_scalar_block_layout = true,
       .EXT_separate_stencil_usage = true,
+      .EXT_shader_atomic_float = g15,
       .EXT_shader_image_atomic_int64 = false,
       .EXT_shader_demote_to_helper_invocation = true,
       .EXT_shader_module_identifier = true,
@@ -400,6 +405,11 @@ hk_get_device_features(
 
       /* Vulkan 1.4 */
       .pushDescriptor = true,
+
+      /* VK_KHR_compute_shader_derivatives: quads of four lanes, as a fragment
+       * shader's, which NIR lays the quad groups out as */
+      .computeDerivativeGroupQuads = dev->params.gpu_generation >= 15,
+      .computeDerivativeGroupLinear = dev->params.gpu_generation >= 15,
 
       /* VK_KHR_dynamic_rendering_local_read */
       .dynamicRenderingLocalRead = true,
@@ -588,8 +598,10 @@ hk_get_device_features(
       .extendedDynamicState3ColorBlendEquation = true,
       .extendedDynamicState3ColorWriteMask = true,
       .extendedDynamicState3RasterizationStream = true,
-      .extendedDynamicState3ConservativeRasterizationMode = false,
-      .extendedDynamicState3ExtraPrimitiveOverestimationSize = false,
+      .extendedDynamicState3ConservativeRasterizationMode =
+         dev->params.gpu_generation >= 15,
+      .extendedDynamicState3ExtraPrimitiveOverestimationSize =
+         dev->params.gpu_generation >= 15,
       .extendedDynamicState3DepthClipEnable = true,
       .extendedDynamicState3SampleLocationsEnable = true,
       .extendedDynamicState3ColorBlendAdvanced = false,
@@ -607,6 +619,14 @@ hk_get_device_features(
       .extendedDynamicState3CoverageReductionMode = false,
       .extendedDynamicState3RepresentativeFragmentTestEnable = false,
       .extendedDynamicState3ShadingRateImageEnable = false,
+
+      /* VK_EXT_fragment_shader_interlock: the pixel fence that orders the
+       * tile buffer's accesses, held to the end of the shader. It orders per
+       * sample, so pixel interlock waits for drirc (00-hk-defaults.conf). */
+      .fragmentShaderSampleInterlock = dev->params.gpu_generation >= 15,
+      .fragmentShaderPixelInterlock = dev->params.gpu_generation >= 15 &&
+                                      instance->drirc.misc.pixel_interlock,
+      .fragmentShaderShadingRateInterlock = false,
 
       /* VK_EXT_graphics_pipeline_library */
       .graphicsPipelineLibrary = true,
@@ -673,6 +693,16 @@ hk_get_device_features(
       /* VK_EXT_shader_image_atomic_int64 */
       .shaderImageInt64Atomics = false,
       .sparseImageInt64Atomics = false,
+
+      /* VK_EXT_shader_atomic_float: G15's device atomics add fp32, which the
+       * buffers and the images (lowered to device atomics) use, and exchange
+       * is the integer one. Threadgroup memory has no float add on G15C.
+       */
+      .shaderBufferFloat32Atomics = dev->params.gpu_generation >= 15,
+      .shaderBufferFloat32AtomicAdd = dev->params.gpu_generation >= 15,
+      .shaderSharedFloat32Atomics = dev->params.gpu_generation >= 15,
+      .shaderImageFloat32Atomics = dev->params.gpu_generation >= 15,
+      .shaderImageFloat32AtomicAdd = dev->params.gpu_generation >= 15,
 
       /* VK_EXT_shader_module_identifier */
       .shaderModuleIdentifier = true,
@@ -753,7 +783,8 @@ hk_get_device_properties(const struct agx_device *dev,
       /* Vulkan 1.0 limits */
       .maxImageDimension1D = 16384,
       .maxImageDimension2D = 16384,
-      .maxImageDimension3D = 16384,
+      /* G15 addresses no 3D image deeper than 2048 (hk_image.c) */
+      .maxImageDimension3D = dev->params.gpu_generation >= 15 ? 2048 : 16384,
       .maxImageDimensionCube = 16384,
       .maxImageArrayLayers = 2048,
       .maxTexelBufferElements = AGX_TEXTURE_BUFFER_MAX_SIZE,
@@ -923,7 +954,7 @@ hk_get_device_properties(const struct agx_device *dev,
       .shaderSignedZeroInfNanPreserveFloat32 = true,
       .shaderSignedZeroInfNanPreserveFloat64 = false,
       .shaderDenormPreserveFloat16 = true,
-      .shaderDenormPreserveFloat32 = false,
+      .shaderDenormPreserveFloat32 = instance->drirc.misc.fake_fp32_denorm_preserve,
       .shaderDenormPreserveFloat64 = false,
       .shaderDenormFlushToZeroFloat16 = false,
       .shaderDenormFlushToZeroFloat32 = true,
@@ -1018,6 +1049,21 @@ hk_get_device_properties(const struct agx_device *dev,
       .maxDescriptorSetUpdateAfterBindAccelerationStructures =
          HK_MAX_DESCRIPTORS,
       .minAccelerationStructureScratchOffsetAlignment = 256,
+
+      /* VK_EXT_conservative_rasterization: triangles widened in a geometry
+       * shader, then an exact test of the pixel square in the fragment
+       * shader, up to its slack of 1/512 pixel. Both take any extra size,
+       * read at each draw: 4 is the CTS's largest.
+       */
+      .primitiveOverestimationSize = 1.0f / 256.0f,
+      .maxExtraPrimitiveOverestimationSize = 4.0f,
+      .extraPrimitiveOverestimationSizeGranularity = 0.0f,
+      .primitiveUnderestimation = false,
+      .conservativePointAndLineRasterization = false,
+      .degenerateTrianglesRasterized = false,
+      .degenerateLinesRasterized = false,
+      .fullyCoveredFragmentShaderInputVariable = false,
+      .conservativeRasterizationPostDepthCoverage = false,
 
       /* VK_EXT_custom_border_color */
       .maxCustomBorderColorSamplers = 4000,

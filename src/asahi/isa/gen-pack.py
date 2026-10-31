@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-# Copyright 2026 Asahi Linux GPU project contributors
-# SPDX-License-Identifier: MIT
+# Copyright 2026 hitori1403
+# SPDX-License-Identifier: GPL-2.0-only
 
 # gen-pack.py ISA.xml: generates the AGX3 (G15, M3) packer tables, the
 # inverse of the disassembler. The same scatter model the disassembler
@@ -280,6 +280,11 @@ struct agx3_pack_spec {{
    uint8_t length_bit;
    uint8_t nlengths;
    uint8_t lengths[3];
+
+   /* The operand that makes the instruction wait for load groups before it
+    * issues (-1 for none): a mask, or with wait_one one group plus one */
+   int8_t wait_op;
+   uint8_t wait_one;
 
    uint16_t nops;
    const uint16_t *op_start;
@@ -599,6 +604,12 @@ for k, instr in isa.instrs.items():
 
     assert len(op_enc) == len(ops), (k, len(op_enc), len(ops))
 
+    # wait_bare is the wait instruction's own
+    wait_op, wait_one = -1, 0
+    for i, (cat, op) in enumerate(ops):
+        if cat == 'mod' and op.name == 'wait' and op.kind in ('wait', 'wait1'):
+            wait_op, wait_one = i, int(op.kind == 'wait1')
+
     if fields:
         decls.append(
             f'static const struct agx3_field {name}_fields[] = {{\n'
@@ -633,6 +644,8 @@ for k, instr in isa.instrs.items():
         f'      .length_bit = {instr.length_bit},\n'
         f'      .nlengths = {len(length)},\n'
         f'      .lengths = {{{", ".join(str(x) for x in length)}}},\n'
+        f'      .wait_op = {wait_op},\n'
+        f'      .wait_one = {wait_one},\n'
         f'      .nops = {len(ops)},\n'
         f'      .op_start = {name}_op_start,\n'
         + (f'      .fields = {name}_fields,\n' if fields

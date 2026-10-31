@@ -114,8 +114,9 @@ struct ra_ctx {
    /* Maximum number of registers that RA is allowed to use */
    unsigned bound[RA_CLASSES];
 
-   /* G15: the SSA values read as a texture or sampler index, which must sit
-    * below AGX_G15_TEX_INDEX_REGS, or NULL if the bound is that low anyway
+   /* G15: the SSA values read as a texture or sampler index or by a
+    * coefficient-register form, which must sit below AGX_G15_TEX_INDEX_REGS,
+    * or NULL if the bound is that low anyway
     */
    BITSET_WORD *low_only;
 };
@@ -686,7 +687,11 @@ find_regs(struct ra_ctx *rctx, agx_instr *I, unsigned dest_idx, unsigned count,
        * insert instructions before the phi.
        */
       if (I->op == AGX_OPCODE_PHI) {
-         util_dynarray_foreach(&copies, struct agx_copy, copy) {
+         /* Move evicted values before the values taking their registers.
+          * Otherwise, a later copy can match a phi we already moved into its
+          * source register and move that phi again instead of the evicted one.
+          */
+         util_dynarray_foreach_reverse(&copies, struct agx_copy, copy) {
             agx_emit_move_before_phi(rctx->shader, rctx->block, copy);
          }
       } else {
@@ -1420,6 +1425,20 @@ lower_exports(agx_context *ctx)
  * (reg_file_alignment in agx_ra) */
 DEBUG_GET_ONCE_NUM_OPTION(agx_g15_max_reg, "AGX_G15_MAX_REG", 0)
 
+/* G15's register file holds 1024 threads at 96 registers (0x60000 B, by its
+ * driver's OMU cost): Apple's compiler bounds a program at 96 registers
+ * whatever its threadgroup size, and where G13's driver derives a kernel's
+ * thread limit from its registers (the occupancy table), G15's takes 1024.
+ * AGX_G15_WG_CAP=0 drops G13's bound by the workgroup size likewise (not
+ * verified on the hardware). */
+DEBUG_GET_ONCE_BOOL_OPTION(agx_g15_wg_cap, "AGX_G15_WG_CAP", true)
+
+bool
+agx_g15_wg_cap(void)
+{
+   return debug_get_option_agx_g15_wg_cap();
+}
+
 static unsigned
 agx_g15_max_regs(agx_context *ctx)
 {
@@ -1471,7 +1490,7 @@ agx_ra(agx_context *ctx)
    /* Compute shaders need to have their entire workgroup together, so our
     * register usage is bounded by the workgroup size.
     */
-   if (mesa_shader_stage_is_compute(ctx->stage)) {
+   if (mesa_shader_stage_is_compute(ctx->stage) && (!g15 || agx_g15_wg_cap())) {
       unsigned threads_per_workgroup;
 
       /* If we don't know the workgroup size, worst case it. TODO: Optimize
@@ -1671,6 +1690,15 @@ agx_ra(agx_context *ctx)
       low_only = BITSET_CALLOC(ctx->alloc);
 
       agx_foreach_instr_global(ctx, I) {
+         /* rcp_cf and fmul_cf reach r0-r63 (a3_rcp_cf in agx_pack3.c) */
+         if (I->op == AGX_OPCODE_RCP_CF || I->op == AGX_OPCODE_FMUL_CF) {
+            agx_foreach_ssa_src(I, s)
+               BITSET_SET(low_only, I->src[s].value);
+            agx_foreach_ssa_dest(I, d)
+               BITSET_SET(low_only, I->dest[d].value);
+            continue;
+         }
+
          if (I->op != AGX_OPCODE_TEXTURE_SAMPLE &&
              I->op != AGX_OPCODE_TEXTURE_LOAD && I->op != AGX_OPCODE_IMAGE_LOAD)
             continue;

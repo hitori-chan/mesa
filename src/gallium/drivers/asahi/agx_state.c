@@ -1781,7 +1781,7 @@ agx_compile_variant(struct agx_device *dev, struct pipe_context *pctx,
    } else if (nir->info.stage == MESA_SHADER_TESS_CTRL) {
       NIR_PASS(_, nir, poly_nir_lower_tcs, true);
    } else if (nir->info.stage == MESA_SHADER_GEOMETRY) {
-      NIR_PASS(_, nir, poly_nir_lower_gs, &gs_count, &gs_copy, &pre_gs,
+      NIR_PASS(_, nir, poly_nir_lower_gs, &gs_count, &gs_copy, NULL, &pre_gs,
                &gs_info);
 
       agx_preprocess_nir(gs_count);
@@ -2240,9 +2240,12 @@ agx_get_compute_state_info(struct pipe_context *pctx, void *cso,
    union asahi_shader_key key = {0};
    struct agx_compiled_shader *so =
       agx_get_shader_variant(agx_screen(pctx->screen), pctx, cso, &key);
+   bool g15 = agx_device(pctx->screen)->params.gpu_generation >= 15;
 
    info->max_threads =
-      agx_occupancy_for_register_count(so->b.info.nr_gprs).max_threads;
+      g15 && !agx_g15_wg_cap()
+         ? 1024
+         : agx_occupancy_for_register_count(so->b.info.nr_gprs).max_threads;
    info->private_memory = 0;
    info->preferred_simd_size = 32;
    info->simd_sizes = 32;

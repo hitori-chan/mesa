@@ -324,6 +324,12 @@ struct gfx9_surf_layout {
    };
 };
 
+typedef struct {
+   uint16_t width;
+   uint8_t height;
+   uint8_t depth;
+} ac_block_extent;
+
 struct radeon_surf {
    /* Format properties. */
    uint8_t blk_w : 4;
@@ -340,8 +346,6 @@ struct radeon_surf {
    uint8_t has_stencil : 1;
    /* This might be true even if micro_tile_mode isn't displayable or rotated. */
    uint8_t is_displayable : 1;
-   /* Thick tiling means 3D tiles. Use 3D compute workgroups for blits. (4x4x4 works well) */
-   uint8_t thick_tiling : 1;
    uint8_t first_mip_tail_level : 4;
 
    /* These are return values. Some of them can be set by the caller, but
@@ -376,6 +380,16 @@ struct radeon_surf {
    uint8_t meta_alignment_log2; /* DCC or HTILE */
    uint8_t cmask_alignment_log2;
    uint8_t alignment_log2;
+
+   /* The dimensions of one 256B block. (96bpp is treated as 32bpp)
+    * This can be smaller or bigger than 256B if 256B block dimensions don't exist.
+    */
+   ac_block_extent block256B_extent;
+
+   /* The dimensions of one 256B block of the stencil buffer, if present.
+    * This can be smaller or bigger than 256B if 256B block dimensions don't exist.
+    */
+   ac_block_extent stencil_block256B_extent;
 
    /* DRM format modifier. Set to DRM_FORMAT_MOD_INVALID to have addrlib
     * select tiling parameters instead.

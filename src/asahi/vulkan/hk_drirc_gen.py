@@ -16,8 +16,12 @@ def declare_options():
     import drirc_gen
 
     B = drirc_gen.DrircBool
+    I = drirc_gen.DrircInt
 
     misc_options = [
+        I("hk_geometry_heap_size_mb", 128, 16, 1024,
+          "Size in MiB of the tessellation/geometry-shader scratch heap",
+          c_name="geometry_heap_size_mb"),
         B("hk_disable_border_emulation", False,
           "Disable custom border colour emulation",
           c_name="disable_border_emulation"),
@@ -30,6 +34,12 @@ def declare_options():
         B("hk_enable_vertex_pipeline_stores_atomics", False,
           "Enable vertexPipelineStoresAndAtomics",
           c_name="enable_vertex_pipeline_stores_atomics"),
+        B("hk_pixel_interlock", False,
+          "Expose fragmentShaderPixelInterlock (unordered between a pixel's samples at MSAA)",
+          c_name="pixel_interlock"),
+        B("hk_fake_fp32_denorm_preserve", False,
+          "Fake support for preserving fp32 denormals (they are flushed)",
+          c_name="fake_fp32_denorm_preserve"),
     ]
 
     debug_options = []

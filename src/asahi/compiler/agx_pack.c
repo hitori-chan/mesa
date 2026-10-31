@@ -808,6 +808,7 @@ agx_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
        * that do not use atomics and are therefore portable across devices.
        */
       assert(needs_g13x_coherency != U_TRISTATE_UNSET);
+      assert(I->atomic_opc != AGX_ATOMIC_OPC_FADD && "G15 only");
 
       uint64_t raw =
          agx_opcodes_info[I->op].encoding.exact |
@@ -837,6 +838,7 @@ agx_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
       unsigned S = agx_pack_atomic_source(I, I->src[0]);
       unsigned A = agx_pack_local_base(I, I->src[1], &At);
       unsigned O = agx_pack_local_index(I, I->src[2], &Ot);
+      assert(I->atomic_opc != AGX_ATOMIC_OPC_FADD && "G15 only");
 
       uint64_t raw =
          agx_opcodes_info[I->op].encoding.exact | (Rt ? BITFIELD64_BIT(8) : 0) |
@@ -1210,8 +1212,12 @@ agx_pack_binary(agx_context *ctx, struct util_dynarray *emission)
    util_dynarray_init(&fixups, ctx);
    util_dynarray_init(&fixups3, ctx);
 
-   if (ctx->key->dev.gpu_generation >= 15)
+   if (ctx->key->dev.gpu_generation >= 15) {
+      agx3_assign_groups(ctx);
       agx3_assign_crs(ctx);
+      agx3_fold_waits(ctx);
+      agx3_end_helpers(ctx);
+   }
 
    agx_foreach_block(ctx, block) {
       /* Relative to the start of the binary, the block begins at the current
