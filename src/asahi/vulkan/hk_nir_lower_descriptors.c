@@ -629,6 +629,9 @@ try_lower_intrin(nir_builder *b, nir_intrinsic_instr *intrin,
    case nir_intrinsic_load_base_workgroup_id:
       return lower_sysval_to_root_table(b, intrin, cs.base_group);
 
+   case nir_intrinsic_load_rt_params_agx:
+      return lower_sysval_to_root_table(b, intrin, cs.rt_params);
+
    case nir_intrinsic_load_push_constant:
       return lower_load_push_constant(b, intrin, ctx);
 
