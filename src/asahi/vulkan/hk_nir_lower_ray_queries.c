@@ -117,6 +117,9 @@ struct ray_query_traversal_vars {
    rq_variable *stack_base;
    rq_variable *stack_ptr;
    rq_variable *stack;
+
+   /* The stack's entries */
+   unsigned stack_size;
 };
 
 struct ray_query_intersection_vars {
@@ -153,7 +156,7 @@ struct ray_query_vars {
 
 static struct ray_query_traversal_vars
 init_ray_query_traversal_vars(void *ctx, nir_shader *shader, unsigned array_length,
-                              const char *base_name)
+                              unsigned stack_size, const char *base_name)
 {
    struct ray_query_traversal_vars result;
 
@@ -171,7 +174,8 @@ init_ray_query_traversal_vars(void *ctx, nir_shader *shader, unsigned array_leng
       rq_variable_create(ctx, shader, array_length, glsl_uint_type(), VAR_NAME("_stack_base"));
    result.stack_ptr = rq_variable_create(ctx, shader, array_length, glsl_uint_type(), VAR_NAME("_stack_ptr"));
    result.stack = rq_variable_create(ctx, shader, array_length,
-                                     glsl_array_type(glsl_uint_type(), HK_BVH_STACK_SIZE, 0), VAR_NAME("_stack"));
+                                     glsl_array_type(glsl_uint_type(), stack_size, 0), VAR_NAME("_stack"));
+   result.stack_size = stack_size;
    return result;
 }
 
@@ -207,8 +211,8 @@ init_ray_query_intersection_vars(void *ctx, nir_shader *shader, unsigned array_l
 }
 
 static void
-init_ray_query_vars(nir_shader *shader, unsigned array_length, struct ray_query_vars *dst,
-                    const char *base_name)
+init_ray_query_vars(nir_shader *shader, unsigned array_length, unsigned stack_size,
+                    struct ray_query_vars *dst, const char *base_name)
 {
    void *ctx = dst;
    const struct glsl_type *vec3_type = glsl_vector_type(GLSL_TYPE_FLOAT, 3);
@@ -230,21 +234,44 @@ init_ray_query_vars(nir_shader *shader, unsigned array_length, struct ray_query_
    dst->candidate =
       init_ray_query_intersection_vars(dst, shader, array_length, VAR_NAME("_candidate"));
 
-   dst->trav = init_ray_query_traversal_vars(dst, shader, array_length, VAR_NAME("_top"));
+   dst->trav =
+      init_ray_query_traversal_vars(dst, shader, array_length, stack_size, VAR_NAME("_top"));
 }
 
 #undef VAR_NAME
 
+static unsigned
+ray_query_count(const nir_variable *ray_query)
+{
+   return glsl_type_is_array(ray_query->type) ? glsl_get_length(ray_query->type) : 1;
+}
+
+/* G15's thread-private stack holds 16 KiB a thread (the specTPR's 12-bit word
+ * count, agx_esl.c), where dynamically indexed ray queries live: about 200 B
+ * of state each besides their traversal stacks. A shader's queries share
+ * 12 KiB of it, so many queries get shorter stacks (48 in the CTS's
+ * misc.dynamic_indexing: 16 entries); a deeper tree loses nodes past the
+ * stack (hk_build_push_stack's clamp).
+ */
+static unsigned
+ray_query_stack_size(unsigned queries)
+{
+   unsigned per_query_B = (12 * 1024) / MAX2(queries, 1);
+
+   if (per_query_B <= 200 + 16 * 4)
+      return 16;
+
+   return MIN2((per_query_B - 200) / 4, HK_BVH_STACK_SIZE);
+}
+
 static void
-lower_ray_query(nir_shader *shader, nir_variable *ray_query, struct hash_table *ht)
+lower_ray_query(nir_shader *shader, nir_variable *ray_query, unsigned stack_size,
+                struct hash_table *ht)
 {
    struct ray_query_vars *vars = ralloc(ht, struct ray_query_vars);
 
-   unsigned array_length = 1;
-   if (glsl_type_is_array(ray_query->type))
-      array_length = glsl_get_length(ray_query->type);
-
-   init_ray_query_vars(shader, array_length, vars, ray_query->name == NULL ? "" : ray_query->name);
+   init_ray_query_vars(shader, ray_query_count(ray_query), stack_size, vars,
+                       ray_query->name == NULL ? "" : ray_query->name);
 
    _mesa_hash_table_insert(ht, ray_query, vars);
 }
@@ -533,6 +560,7 @@ lower_rq_proceed(nir_builder *b, nir_def *index, struct ray_query_vars *vars)
       .tmin = rq_load_var(b, index, vars->tmin),
       .dir = rq_load_var(b, index, vars->direction),
       .vars = trav_vars,
+      .stack_size = vars->trav.stack_size,
       .aabb_cb = handle_candidate_aabb,
       .triangle_cb = handle_candidate_triangle,
       .data = &data,
@@ -561,12 +589,27 @@ hk_nir_lower_ray_queries(struct nir_shader *shader)
 {
    bool progress = false;
    struct hash_table *query_ht = _mesa_pointer_hash_table_create(NULL);
+   unsigned queries = 0;
+
+   nir_foreach_variable_in_list (var, &shader->variables) {
+      if (var->data.ray_query)
+         queries += ray_query_count(var);
+   }
+
+   nir_foreach_function_impl (impl, shader) {
+      nir_foreach_variable_in_list (var, &impl->locals) {
+         if (var->data.ray_query)
+            queries += ray_query_count(var);
+      }
+   }
+
+   unsigned stack_size = ray_query_stack_size(queries);
 
    nir_foreach_variable_in_list (var, &shader->variables) {
       if (!var->data.ray_query)
          continue;
 
-      lower_ray_query(shader, var, query_ht);
+      lower_ray_query(shader, var, stack_size, query_ht);
 
       progress = true;
    }
@@ -581,7 +624,7 @@ hk_nir_lower_ray_queries(struct nir_shader *shader)
          if (!var->data.ray_query)
             continue;
 
-         lower_ray_query(shader, var, query_ht);
+         lower_ray_query(shader, var, stack_size, query_ht);
 
          progress = true;
       }

@@ -91,6 +91,9 @@ struct hk_ray_traversal_args {
 
    struct hk_ray_traversal_vars vars;
 
+   /* vars.stack's entries */
+   unsigned stack_size;
+
    hk_aabb_intersection_cb aabb_cb;
    hk_triangle_intersection_cb triangle_cb;
 
