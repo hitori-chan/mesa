@@ -530,8 +530,8 @@ poly_conservative_corner(constant struct poly_geometry_params *p, float4 P0,
 }
 
 /*
- * With a task shader, mesh workgroup w belongs to the first task workgroup whose
- * launch ends after w (a binary search of the inclusive prefix sum).
+ * With a task shader, mesh workgroup w belongs to the first task workgroup
+ * whose launch ends after w (a binary search of the inclusive prefix sum).
  */
 uint
 poly_mesh_task_index(constant struct poly_mesh_params *p, uint w)

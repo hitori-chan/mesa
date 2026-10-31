@@ -252,7 +252,8 @@ hk_get_device_extensions(const struct agx_device *dev,
       .EXT_ycbcr_image_arrays = false,
       .GOOGLE_decorate_string = true,
 #ifdef HK_USE_WSI_PLATFORM
-      .GOOGLE_display_timing = wsi_instance_supports_google_display_timing(&instance->vk, &instance->drirc.options),
+      .GOOGLE_display_timing = wsi_instance_supports_google_display_timing(
+         &instance->vk, &instance->drirc.options),
 #endif
       .GOOGLE_hlsl_functionality1 = true,
       .GOOGLE_user_type = true,
@@ -970,7 +971,8 @@ hk_get_device_properties(const struct agx_device *dev,
       .shaderSignedZeroInfNanPreserveFloat32 = true,
       .shaderSignedZeroInfNanPreserveFloat64 = false,
       .shaderDenormPreserveFloat16 = true,
-      .shaderDenormPreserveFloat32 = instance->drirc.misc.fake_fp32_denorm_preserve,
+      .shaderDenormPreserveFloat32 =
+         instance->drirc.misc.fake_fp32_denorm_preserve,
       .shaderDenormPreserveFloat64 = false,
       .shaderDenormFlushToZeroFloat16 = false,
       .shaderDenormFlushToZeroFloat32 = true,

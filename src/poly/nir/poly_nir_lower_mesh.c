@@ -60,7 +60,7 @@ load_param_offset(nir_builder *b, nir_def *p, uint32_t offset,
                                    nir_iadd_imm(b, p, offset), .align_mul = 4);
 }
 
-#define load_param(b, p, field, components, bit_size)                         \
+#define load_param(b, p, field, components, bit_size)                          \
    load_param_offset(b, p, offsetof(struct poly_mesh_params, field),           \
                      components, bit_size)
 
@@ -68,9 +68,9 @@ load_param_offset(nir_builder *b, nir_def *p, uint32_t offset,
 static nir_def *
 linear_id(nir_builder *b, nir_def *id, nir_def *count)
 {
-   nir_def *yz = nir_iadd(b, nir_channel(b, id, 1),
-                          nir_imul(b, nir_channel(b, id, 2),
-                                   nir_channel(b, count, 1)));
+   nir_def *yz =
+      nir_iadd(b, nir_channel(b, id, 1),
+               nir_imul(b, nir_channel(b, id, 2), nir_channel(b, count, 1)));
 
    return nir_iadd(b, nir_channel(b, id, 0),
                    nir_imul(b, yz, nir_channel(b, count, 0)));
@@ -116,10 +116,9 @@ gather_outputs(nir_builder *b, nir_intrinsic_instr *intr, void *data)
    if (sem.location == VARYING_SLOT_PRIMITIVE_INDICES)
       return false;
 
-   unsigned components =
-      nir_intrinsic_component(intr) +
-      (store ? util_last_bit(nir_intrinsic_write_mask(intr))
-             : intr->def.num_components);
+   unsigned components = nir_intrinsic_component(intr) +
+                         (store ? util_last_bit(nir_intrinsic_write_mask(intr))
+                                : intr->def.num_components);
 
    /* An output indexed indirectly takes all its slots, whole */
    nir_src *offset = nir_get_io_offset_src(intr);
@@ -172,8 +171,8 @@ output_offset(nir_builder *b, const struct poly_mesh_info *info,
    unsigned base =
       primitive ? record_primitive_base(info) : record_vertex_base(info);
 
-   nir_def *el = nir_iadd(b, nir_imul_imm(b, slot_index(b, mask, intr), count),
-                          index);
+   nir_def *el =
+      nir_iadd(b, nir_imul_imm(b, slot_index(b, mask, intr), count), index);
 
    return nir_iadd_imm(b, nir_imul_imm(b, el, 16),
                        base + (nir_intrinsic_component(intr) * 4));
@@ -209,8 +208,9 @@ static bool
 lower_output(nir_builder *b, nir_intrinsic_instr *intr,
              struct lower_mesh_state *s)
 {
-   bool primitive = intr->intrinsic == nir_intrinsic_store_per_primitive_output ||
-                    intr->intrinsic == nir_intrinsic_load_per_primitive_output;
+   bool primitive =
+      intr->intrinsic == nir_intrinsic_store_per_primitive_output ||
+      intr->intrinsic == nir_intrinsic_load_per_primitive_output;
    bool store = intr->intrinsic == nir_intrinsic_store_per_vertex_output ||
                 intr->intrinsic == nir_intrinsic_store_per_primitive_output;
 
@@ -236,8 +236,9 @@ lower_output(nir_builder *b, nir_intrinsic_instr *intr,
             nir_def *addr =
                record_address(b, s, index_offset(b, s->info, intr, index, c));
 
-            corners[c] = nir_u2uN(b, nir_load_global(b, 1, 8, addr, .align_mul = 1),
-                                  intr->def.bit_size);
+            corners[c] =
+               nir_u2uN(b, nir_load_global(b, 1, 8, addr, .align_mul = 1),
+                        intr->def.bit_size);
          }
 
          nir_def_rewrite_uses(&intr->def,
@@ -256,10 +257,9 @@ lower_output(nir_builder *b, nir_intrinsic_instr *intr,
                        .write_mask = nir_intrinsic_write_mask(intr),
                        .align_mul = 4);
    } else {
-      nir_def_rewrite_uses(&intr->def,
-                           nir_load_global(b, intr->def.num_components,
-                                           intr->def.bit_size, addr,
-                                           .align_mul = 4));
+      nir_def_rewrite_uses(
+         &intr->def, nir_load_global(b, intr->def.num_components,
+                                     intr->def.bit_size, addr, .align_mul = 4));
    }
 
    return true;
@@ -338,12 +338,13 @@ lower_mesh(nir_builder *b, nir_intrinsic_instr *intr, void *data)
       if (!s->task)
          return false;
 
-      repl = nir_iadd(b,
-                      nir_imul(b, s->workgroup_id,
-                               nir_imm_ivec3(b, b->shader->info.workgroup_size[0],
-                                             b->shader->info.workgroup_size[1],
-                                             b->shader->info.workgroup_size[2])),
-                      nir_load_local_invocation_id(b));
+      repl =
+         nir_iadd(b,
+                  nir_imul(b, s->workgroup_id,
+                           nir_imm_ivec3(b, b->shader->info.workgroup_size[0],
+                                         b->shader->info.workgroup_size[1],
+                                         b->shader->info.workgroup_size[2])),
+                  nir_load_local_invocation_id(b));
       break;
 
    case nir_intrinsic_load_draw_id:
@@ -364,8 +365,10 @@ load_record_slot(nir_builder *b, const struct poly_mesh_info *info,
                  nir_def *record, unsigned slot, nir_def *el, unsigned n)
 {
    bool per_primitive = info->primitive_outputs & BITFIELD64_BIT(slot);
-   uint64_t mask = per_primitive ? info->primitive_outputs : info->vertex_outputs;
-   unsigned el_count = per_primitive ? info->max_primitives : info->max_vertices;
+   uint64_t mask =
+      per_primitive ? info->primitive_outputs : info->vertex_outputs;
+   unsigned el_count =
+      per_primitive ? info->max_primitives : info->max_vertices;
    unsigned base =
       per_primitive ? record_primitive_base(info) : record_vertex_base(info);
 
@@ -439,8 +442,8 @@ build_rast_shader(const nir_shader *mesh, const struct poly_mesh_info *info,
       for (unsigned k = 0; k < 3; ++k) {
          nir_def *i = nir_iadd_imm(b, nir_imul_imm(b, primitive, 3), k);
          corners[k] = load_record_index(b, info, record, i);
-         pos[k] = load_record_slot(b, info, record, VARYING_SLOT_POS,
-                                   corners[k], 4);
+         pos[k] =
+            load_record_slot(b, info, record, VARYING_SLOT_POS, corners[k], 4);
       }
 
       nir_def *viewport = nir_imm_int(b, 0);
@@ -472,21 +475,20 @@ build_rast_shader(const nir_shader *mesh, const struct poly_mesh_info *info,
       }
 
       if (slot == VARYING_SLOT_CULL_PRIMITIVE) {
-         alive = nir_iand(b, alive, nir_ieq_imm(b, nir_channel(b, value, 0), 0));
+         alive =
+            nir_iand(b, alive, nir_ieq_imm(b, nir_channel(b, value, 0), 0));
       } else if (slot == VARYING_SLOT_POS) {
          position = value;
       } else if (slot != VARYING_SLOT_LAYER || !multiview) {
-         bool is_float = slot == VARYING_SLOT_PSIZ ||
-                         slot == VARYING_SLOT_CLIP_DIST0 ||
-                         slot == VARYING_SLOT_CLIP_DIST1 ||
-                         slot == VARYING_SLOT_CULL_DIST0 ||
-                         slot == VARYING_SLOT_CULL_DIST1;
+         bool is_float =
+            slot == VARYING_SLOT_PSIZ || slot == VARYING_SLOT_CLIP_DIST0 ||
+            slot == VARYING_SLOT_CLIP_DIST1 ||
+            slot == VARYING_SLOT_CULL_DIST0 || slot == VARYING_SLOT_CULL_DIST1;
 
-         nir_store_output(b, value, nir_imm_int(b, 0),
-                          .src_type = is_float ? nir_type_float32
-                                               : nir_type_uint32,
-                          .io_semantics.location = slot,
-                          .io_semantics.num_slots = 1);
+         nir_store_output(
+            b, value, nir_imm_int(b, 0),
+            .src_type = is_float ? nir_type_float32 : nir_type_uint32,
+            .io_semantics.location = slot, .io_semantics.num_slots = 1);
       }
    }
 
@@ -536,9 +538,9 @@ poly_nir_lower_mesh(nir_shader *mesh, bool task, bool multiview,
    struct gather_outputs g = {.info = info};
    nir_shader_intrinsics_pass(mesh, gather_outputs, nir_metadata_all, &g);
 
-   info->record_stride = record_primitive_base(info) +
-                         util_bitcount64(info->primitive_outputs) *
-                            info->max_primitives * 16;
+   info->record_stride =
+      record_primitive_base(info) +
+      util_bitcount64(info->primitive_outputs) * info->max_primitives * 16;
 
    *rast = build_rast_shader(mesh, info, g.components, multiview, false);
 
@@ -567,7 +569,8 @@ poly_nir_lower_mesh(nir_shader *mesh, bool task, bool multiview,
       .task = task,
       .native_workgroup_id = nir_load_workgroup_id(&b),
       .vertex_count = nir_local_variable_create(impl, glsl_uint_type(), NULL),
-      .primitive_count = nir_local_variable_create(impl, glsl_uint_type(), NULL),
+      .primitive_count =
+         nir_local_variable_create(impl, glsl_uint_type(), NULL),
       .draw_id = load_param(&b, p, draw_id, 1, 32),
    };
 
@@ -595,9 +598,9 @@ poly_nir_lower_mesh(nir_shader *mesh, bool task, bool multiview,
       w = linear_id(&b, s.workgroup_id, s.num_workgroups);
    }
 
-   s.record = nir_iadd(&b, load_param(&b, p, outputs, 1, 64),
-                       nir_imul_2x32_64(&b, w,
-                                        nir_imm_int(&b, info->record_stride)));
+   s.record =
+      nir_iadd(&b, load_param(&b, p, outputs, 1, 64),
+               nir_imul_2x32_64(&b, w, nir_imm_int(&b, info->record_stride)));
 
    nir_shader_intrinsics_pass(mesh, lower_mesh, nir_metadata_none, &s);
 
@@ -673,10 +676,9 @@ lower_task(nir_builder *b, nir_intrinsic_instr *intr, void *data)
       break;
 
    case nir_intrinsic_task_payload_atomic:
-      repl = nir_global_atomic(b, intr->def.bit_size,
-                               payload_address(b, s->payload, intr),
-                               intr->src[1].ssa,
-                               .atomic_op = nir_intrinsic_atomic_op(intr));
+      repl = nir_global_atomic(
+         b, intr->def.bit_size, payload_address(b, s->payload, intr),
+         intr->src[1].ssa, .atomic_op = nir_intrinsic_atomic_op(intr));
       break;
 
    case nir_intrinsic_task_payload_atomic_swap:
@@ -694,22 +696,25 @@ lower_task(nir_builder *b, nir_intrinsic_instr *intr, void *data)
       s->max_launch =
          MAX2(s->max_launch, launch_upper_bound(b->shader, s, grid));
 
-      nir_def *xy = nir_imul(b, nir_channel(b, grid, 0), nir_channel(b, grid, 1));
+      nir_def *xy =
+         nir_imul(b, nir_channel(b, grid, 0), nir_channel(b, grid, 1));
       nir_def *size64 = nir_imul_2x32_64(b, xy, nir_channel(b, grid, 2));
 
       nir_def *valid = nir_ball(b, nir_ule_imm(b, grid, 65535));
-      valid = nir_iand(b, valid,
-                       nir_ule_imm(b, size64, POLY_MAX_MESH_WORKGROUPS));
+      valid =
+         nir_iand(b, valid, nir_ule_imm(b, size64, POLY_MAX_MESH_WORKGROUPS));
 
       grid = nir_bcsel(b, valid, grid, nir_imm_zero(b, 3, 32));
-      nir_def *size = nir_bcsel(b, valid, nir_u2u32(b, size64), nir_imm_int(b, 0));
+      nir_def *size =
+         nir_bcsel(b, valid, nir_u2u32(b, size64), nir_imm_int(b, 0));
 
       nir_push_if(b, nir_ieq_imm(b, nir_load_local_invocation_index(b), 0));
       {
-         nir_store_global(b, nir_vec4(b, nir_channel(b, grid, 0),
-                                      nir_channel(b, grid, 1),
-                                      nir_channel(b, grid, 2), size),
-                          s->launch, .align_mul = 16);
+         nir_store_global(
+            b,
+            nir_vec4(b, nir_channel(b, grid, 0), nir_channel(b, grid, 1),
+                     nir_channel(b, grid, 2), size),
+            s->launch, .align_mul = 16);
       }
       nir_pop_if(b, NULL);
       nir_instr_remove(&intr->instr);

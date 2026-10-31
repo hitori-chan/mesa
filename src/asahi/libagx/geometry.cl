@@ -221,9 +221,8 @@ libagx_mesh_setup_indirect(global struct poly_mesh_params *p,
  */
 KERNEL(1024)
 libagx_mesh_setup_from_task(global struct poly_mesh_params *p,
-                            global struct poly_heap *heap, uint wg_x,
-                            uint wg_y, uint wg_z, uint stride_B,
-                            uint draw_vertices)
+                            global struct poly_heap *heap, uint wg_x, uint wg_y,
+                            uint wg_z, uint stride_B, uint draw_vertices)
 {
    local uint scratch[32];
    poly_prefix_sum(scratch, p->launches, p->task_count, 4 /* words */,

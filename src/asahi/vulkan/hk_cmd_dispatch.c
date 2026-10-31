@@ -163,8 +163,8 @@ hk_CmdDispatchBase(VkCommandBuffer commandBuffer, uint32_t baseGroupX,
 
 /* The common acceleration-structure builder's unaligned dispatch */
 void
-hk_cmd_dispatch_unaligned(VkCommandBuffer commandBuffer, uint32_t x,
-                          uint32_t y, uint32_t z)
+hk_cmd_dispatch_unaligned(VkCommandBuffer commandBuffer, uint32_t x, uint32_t y,
+                          uint32_t z)
 {
    VK_FROM_HANDLE(hk_cmd_buffer, cmd, commandBuffer);
    struct hk_descriptor_state *desc = &cmd->state.cs.descriptors;

@@ -1540,8 +1540,8 @@ hk_cmd_fill(struct hk_cmd_buffer *cmd, uint64_t addr, size_t range,
             uint32_t data)
 {
    if (util_is_aligned(addr, 16) && util_is_aligned(range, 16)) {
-      libagx_fill_uint4(cmd, agx_2d(range / 16, 1), AGX_BARRIER_ALL,
-                        addr, 0, data, data, data, data);
+      libagx_fill_uint4(cmd, agx_2d(range / 16, 1), AGX_BARRIER_ALL, addr, 0,
+                        data, data, data, data);
    } else {
       libagx_fill(cmd, agx_1d(range / 4), AGX_BARRIER_ALL, addr, data);
    }

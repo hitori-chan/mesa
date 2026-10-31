@@ -113,8 +113,7 @@ bool poly_nir_lower_mesh(struct nir_shader *mesh, bool task, bool multiview,
                          struct nir_shader **rast_conservative,
                          struct poly_mesh_info *info);
 
-bool poly_nir_lower_task(struct nir_shader *task,
-                         struct poly_mesh_info *info);
+bool poly_nir_lower_task(struct nir_shader *task, struct poly_mesh_info *info);
 
 struct poly_passthrough_gs_key {
    /* Bit mask of outputs written by the VS/TES, to be passed through */

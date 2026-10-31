@@ -12,11 +12,14 @@
 
 #include <vulkan/vulkan_core.h>
 
-nir_def *hk_mul_vec3_mat(nir_builder *b, nir_def *vec, nir_def *matrix[], bool translation);
+nir_def *hk_mul_vec3_mat(nir_builder *b, nir_def *vec, nir_def *matrix[],
+                         bool translation);
 
-void hk_load_wto_matrix(nir_builder *b, nir_def *instance_addr, nir_def **node_data, nir_def **out);
+void hk_load_wto_matrix(nir_builder *b, nir_def *instance_addr,
+                        nir_def **node_data, nir_def **out);
 
-nir_def *hk_load_vertex_position(nir_builder *b, nir_def *primitive_addr, uint32_t index);
+nir_def *hk_load_vertex_position(nir_builder *b, nir_def *primitive_addr,
+                                 uint32_t index);
 
 struct hk_ray_traversal_args;
 
@@ -39,9 +42,10 @@ struct hk_leaf_intersection {
    nir_def *opaque;
 };
 
-typedef void (*hk_aabb_intersection_cb)(nir_builder *b, struct hk_leaf_intersection *intersection,
-                                         const struct hk_ray_traversal_args *args,
-                                         const struct hk_ray_flags *ray_flags);
+typedef void (*hk_aabb_intersection_cb)(
+   nir_builder *b, struct hk_leaf_intersection *intersection,
+   const struct hk_ray_traversal_args *args,
+   const struct hk_ray_flags *ray_flags);
 
 struct hk_triangle_intersection {
    struct hk_leaf_intersection base;
@@ -51,14 +55,14 @@ struct hk_triangle_intersection {
    nir_def *barycentrics;
 };
 
-typedef void (*hk_triangle_intersection_cb)(nir_builder *b,
-                                             struct hk_triangle_intersection *intersection,
-                                             const struct hk_ray_traversal_args *args,
-                                             const struct hk_ray_flags *ray_flags);
+typedef void (*hk_triangle_intersection_cb)(
+   nir_builder *b, struct hk_triangle_intersection *intersection,
+   const struct hk_ray_traversal_args *args,
+   const struct hk_ray_flags *ray_flags);
 
 struct hk_ray_traversal_vars {
-   /* For each accepted hit, tmax will be set to the t value. This allows for automatic intersection
-    * culling.
+   /* For each accepted hit, tmax will be set to the t value. This allows for
+    * automatic intersection culling.
     */
    nir_deref_instr *tmax;
 
@@ -100,11 +104,12 @@ struct hk_ray_traversal_args {
    void *data;
 };
 
-/* Builds the ray traversal loop and returns whether traversal is incomplete, similar to
- * rayQueryProceedEXT. Traversal will only be considered incomplete, if one of the specified
- * callbacks breaks out of the traversal loop.
+/* Builds the ray traversal loop and returns whether traversal is incomplete,
+ * similar to rayQueryProceedEXT. Traversal will only be considered incomplete,
+ * if one of the specified callbacks breaks out of the traversal loop.
  */
-nir_def *hk_build_ray_traversal(nir_builder *b, const struct hk_ray_traversal_args *args);
+nir_def *hk_build_ray_traversal(nir_builder *b,
+                                const struct hk_ray_traversal_args *args);
 
 bool hk_nir_lower_ray_queries(struct nir_shader *shader);
 

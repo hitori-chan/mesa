@@ -1551,8 +1551,8 @@ hk_upload_mesh_params(struct hk_cmd_buffer *cmd, uint32_t draw_id,
 
    if (!agx_is_indirect(grid)) {
       uint32_t count[3] = {grid.count[0], grid.count[1], grid.count[2]};
-      uint32_t stride = task ? params.payload_stride + 16
-                             : mesh->info.mesh.record_stride;
+      uint32_t stride =
+         task ? params.payload_stride + 16 : mesh->info.mesh.record_stride;
 
       uint64_t total = (uint64_t)count[0] * count[1] * count[2];
       uint64_t alloc = 0;
@@ -4350,27 +4350,25 @@ hk_draw_mesh(struct hk_cmd_buffer *cmd, uint16_t draw_id, struct agx_grid grid)
       if (agx_is_indirect(grid)) {
          hk_mesh_workgroup(ts ?: main, wg);
 
-         libagx_mesh_setup_indirect(cmd, agx_1d(1),
-                                    AGX_BARRIER_ALL | AGX_PREGFX, params,
-                                    hk_heap(cmd), grid.ptr, wg[0], wg[1],
-                                    wg[2], info->record_stride,
-                                    hk_mesh_draw_vertices(info), ts != NULL);
+         libagx_mesh_setup_indirect(
+            cmd, agx_1d(1), AGX_BARRIER_ALL | AGX_PREGFX, params, hk_heap(cmd),
+            grid.ptr, wg[0], wg[1], wg[2], info->record_stride,
+            hk_mesh_draw_vertices(info), ts != NULL);
       }
 
       if (ts) {
          hk_mesh_workgroup(ts, wg);
          hk_dispatch_with_local_size(
             cmd, ccs, ts,
-            agx_grid_indirect_local(params +
-                                    offsetof(struct poly_mesh_params, task_grid)),
+            agx_grid_indirect_local(
+               params + offsetof(struct poly_mesh_params, task_grid)),
             agx_workgroup(wg[0], wg[1], wg[2]));
 
          hk_mesh_workgroup(main, wg);
-         libagx_mesh_setup_from_task(cmd, agx_1d(1024),
-                                     AGX_BARRIER_ALL | AGX_PREGFX, params,
-                                     hk_heap(cmd), wg[0], wg[1], wg[2],
-                                     info->record_stride,
-                                     hk_mesh_draw_vertices(info));
+         libagx_mesh_setup_from_task(
+            cmd, agx_1d(1024), AGX_BARRIER_ALL | AGX_PREGFX, params,
+            hk_heap(cmd), wg[0], wg[1], wg[2], info->record_stride,
+            hk_mesh_draw_vertices(info));
       }
 
       hk_mesh_workgroup(main, wg);
@@ -4380,12 +4378,12 @@ hk_draw_mesh(struct hk_cmd_buffer *cmd, uint16_t draw_id, struct agx_grid grid)
                                  offsetof(struct poly_mesh_params, mesh_grid)),
          agx_workgroup(wg[0], wg[1], wg[2]));
 
-      struct agx_draw draw = agx_draw_indirect(
-         params + offsetof(struct poly_mesh_params, draw));
+      struct agx_draw draw =
+         agx_draw_indirect(params + offsetof(struct poly_mesh_params, draw));
 
       cs->stats.calls++;
-      cs->current = (void *)agx_vdm_draw((uint32_t *)cs->current,
-                                         dev->dev.chip, draw, gfx->topology);
+      cs->current = (void *)agx_vdm_draw((uint32_t *)cs->current, dev->dev.chip,
+                                         draw, gfx->topology);
       cs->stats.cmds++;
    }
 }

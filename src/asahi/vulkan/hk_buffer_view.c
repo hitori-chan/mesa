@@ -53,7 +53,8 @@ hk_get_buffer_format_features(struct hk_physical_device *pdev,
 
    if (pdev->vk.supported_extensions.KHR_acceleration_structure &&
        vk_acceleration_struct_vtx_format_supported(vk_format))
-      features |= VK_FORMAT_FEATURE_2_ACCELERATION_STRUCTURE_VERTEX_BUFFER_BIT_KHR;
+      features |=
+         VK_FORMAT_FEATURE_2_ACCELERATION_STRUCTURE_VERTEX_BUFFER_BIT_KHR;
 
    return features;
 }

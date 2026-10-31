@@ -349,9 +349,9 @@ hk_hash_graphics_state(struct vk_physical_device *device,
       _mesa_blake3_update(&blake3_ctx, &key, sizeof(key));
    }
 
-   if (state && (stages & (VK_SHADER_STAGE_VERTEX_BIT |
-                           VK_SHADER_STAGE_FRAGMENT_BIT |
-                           VK_SHADER_STAGE_MESH_BIT_EXT))) {
+   if (state &&
+       (stages & (VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT |
+                  VK_SHADER_STAGE_MESH_BIT_EXT))) {
       const bool is_multiview = state->mv->view_mask != 0;
       _mesa_blake3_update(&blake3_ctx, &is_multiview, sizeof(is_multiview));
    }
@@ -1664,10 +1664,10 @@ hk_compile_shader(struct hk_device *dev, struct vk_shader_compile_info *info,
          if (!variants[v].in)
             continue;
 
-         result = hk_compile_nir(dev, pAllocator, variants[v].in, info->flags,
-                                 info->robustness, NULL, features,
-                                 variants[v].out, sw_stage, true, NULL,
-                                 info->set_layout_count);
+         result =
+            hk_compile_nir(dev, pAllocator, variants[v].in, info->flags,
+                           info->robustness, NULL, features, variants[v].out,
+                           sw_stage, true, NULL, info->set_layout_count);
 
          if (result != VK_SUCCESS) {
             hk_api_shader_destroy(&dev->vk, &obj->vk, pAllocator);

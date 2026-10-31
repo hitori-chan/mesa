@@ -40,7 +40,8 @@ static const struct vk_acceleration_structure_build_args hk_build_args = {
    .root_flags_offset = -1,
    .morton_sort_workgroup_size = 512,
    .morton_sort_kvs_per_thread = 2,
-   /* G15 stalls a core's other workgroups while one spins: the single dispatch's waits can hang */
+   /* G15 stalls a core's other workgroups while one spins: the single
+      dispatch's waits can hang */
    .morton_sort_per_step = true,
 };
 
@@ -174,13 +175,12 @@ hk_encode(VkCommandBuffer commandBuffer, struct vk_device *vk_dev,
          .geometry_type = type,
       };
 
-      disp->CmdPushConstants(commandBuffer, layout,
-                             VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push),
-                             &push);
+      disp->CmdPushConstants(commandBuffer, layout, VK_SHADER_STAGE_COMPUTE_BIT,
+                             0, sizeof(push), &push);
 
       /* Invocation 0 writes the header, also of an empty structure */
-      hk_cmd_dispatch_unaligned(commandBuffer,
-                                MAX2(state->leaf_node_count, 1), 1, 1);
+      hk_cmd_dispatch_unaligned(commandBuffer, MAX2(state->leaf_node_count, 1),
+                                1, 1);
    }
 }
 
@@ -260,7 +260,8 @@ hk_CmdBuildAccelerationStructuresKHR(
  */
 VKAPI_ATTR void VKAPI_CALL
 hk_CmdCopyAccelerationStructureKHR(
-   VkCommandBuffer commandBuffer, const VkCopyAccelerationStructureInfoKHR *pInfo)
+   VkCommandBuffer commandBuffer,
+   const VkCopyAccelerationStructureInfoKHR *pInfo)
 {
    VK_FROM_HANDLE(hk_cmd_buffer, cmd, commandBuffer);
    VK_FROM_HANDLE(vk_acceleration_structure, src, pInfo->src);
@@ -299,8 +300,8 @@ hk_cmd_serialize(struct hk_cmd_buffer *cmd, uint64_t src, uint64_t dst,
    hk_meta_begin(cmd, &save, VK_PIPELINE_BIND_POINT_COMPUTE);
    disp->CmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                          pipeline);
-   disp->CmdPushConstants(commandBuffer, layout, VK_SHADER_STAGE_COMPUTE_BIT,
-                          0, sizeof(push), &push);
+   disp->CmdPushConstants(commandBuffer, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                          sizeof(push), &push);
    hk_cmd_dispatch_unaligned(commandBuffer, DIV_ROUND_UP(max_size, 4), 1, 1);
    hk_meta_end(cmd, &save, VK_PIPELINE_BIND_POINT_COMPUTE);
 }
@@ -323,8 +324,7 @@ hk_CmdCopyAccelerationStructureToMemoryKHR(
    VK_FROM_HANDLE(vk_acceleration_structure, src, pInfo->src);
 
    hk_cmd_serialize(cmd, vk_acceleration_structure_get_va(src),
-                    pInfo->dst.deviceAddress,
-                    hk_max_serialized_size(src->size),
+                    pInfo->dst.deviceAddress, hk_max_serialized_size(src->size),
                     HK_COPY_MODE_SERIALIZE);
 }
 
@@ -355,7 +355,7 @@ hk_GetDeviceAccelerationStructureCompatibilityKHR(
       memcmp(pVersionInfo->pVersionData + VK_UUID_SIZE,
              pdev->vk.properties.pipelineCacheUUID, VK_UUID_SIZE) == 0;
 
-   *pCompatibility = compat
-                        ? VK_ACCELERATION_STRUCTURE_COMPATIBILITY_COMPATIBLE_KHR
-                        : VK_ACCELERATION_STRUCTURE_COMPATIBILITY_INCOMPATIBLE_KHR;
+   *pCompatibility =
+      compat ? VK_ACCELERATION_STRUCTURE_COMPATIBILITY_COMPATIBLE_KHR
+             : VK_ACCELERATION_STRUCTURE_COMPATIBILITY_INCOMPATIBLE_KHR;
 }
