@@ -487,7 +487,13 @@ hk_GetPhysicalDeviceImageFormatProperties2(
       maxArraySize = 2048;
       break;
    case VK_IMAGE_TYPE_3D:
-      maxExtent = (VkExtent3D){max_dim, max_dim, max_dim};
+      /* G15 stores, loads and copies no slice past 2048 of a deeper 3D image,
+       * and at 2049 slices reads every slice as the first (vk3d, 2026-10-31):
+       * Metal's limit too, while width and height reach 16384.
+       */
+      maxExtent = (VkExtent3D){
+         max_dim, max_dim,
+         pdev->dev.params.gpu_generation >= 15 ? 2048 : max_dim};
       maxArraySize = 1;
       break;
    default:
