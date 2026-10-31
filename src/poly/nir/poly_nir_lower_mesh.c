@@ -358,17 +358,55 @@ lower_mesh(nir_builder *b, nir_intrinsic_instr *intr, void *data)
    return true;
 }
 
+/* A slot's value for a vertex or primitive, from a record */
+static nir_def *
+load_record_slot(nir_builder *b, const struct poly_mesh_info *info,
+                 nir_def *record, unsigned slot, nir_def *el, unsigned n)
+{
+   bool per_primitive = info->primitive_outputs & BITFIELD64_BIT(slot);
+   uint64_t mask = per_primitive ? info->primitive_outputs : info->vertex_outputs;
+   unsigned el_count = per_primitive ? info->max_primitives : info->max_vertices;
+   unsigned base =
+      per_primitive ? record_primitive_base(info) : record_vertex_base(info);
+
+   unsigned slot_base =
+      base + (util_bitcount64(mask & BITFIELD64_MASK(slot)) * el_count * 16);
+
+   nir_def *offset = nir_iadd_imm(b, nir_imul_imm(b, el, 16), slot_base);
+   return nir_load_global(b, n, 32, nir_iadd(b, record, nir_u2u64(b, offset)),
+                          .align_mul = 16);
+}
+
+/* The vertex at index i of a record. Out-of-range indices are undefined: clamp
+ * them to stay within the record.
+ */
+static nir_def *
+load_record_index(nir_builder *b, const struct poly_mesh_info *info,
+                  nir_def *record, nir_def *i)
+{
+   nir_def *addr =
+      nir_iadd(b, record, nir_u2u64(b, nir_iadd_imm(b, i, RECORD_INDICES)));
+   nir_def *index =
+      nir_u2u32(b, nir_load_global(b, 1, 8, addr, .align_mul = 1));
+
+   return nir_umin(b, index, nir_imm_int(b, info->max_vertices - 1));
+}
+
 /*
  * The rasterization shader: a hardware vertex shader drawing the records. A
  * primitive past the count, or culled, is killed with a NaN position.
+ *
+ * The conservative variant widens each triangle as the geometry path's
+ * (poly_nir_lower_gs.c): a corner loads its triangle's three vertices.
  */
 static nir_shader *
 build_rast_shader(const nir_shader *mesh, const struct poly_mesh_info *info,
-                  const uint8_t *components, bool multiview)
+                  const uint8_t *components, bool multiview, bool conservative)
 {
    nir_builder b_ = nir_builder_init_simple_shader(
-      MESA_SHADER_VERTEX, mesh->options, "%s rast",
-      mesh->info.name ? mesh->info.name : "mesh");
+      MESA_SHADER_VERTEX, mesh->options, "%s rast%s",
+      mesh->info.name ? mesh->info.name : "mesh",
+      conservative ? " conservative" : "");
    nir_builder *b = &b_;
    nir_shader *s = b->shader;
 
@@ -390,37 +428,48 @@ build_rast_shader(const nir_shader *mesh, const struct poly_mesh_info *info,
       nir_load_global(b, 1, 32, nir_iadd_imm(b, record, 4), .align_mul = 4);
    nir_def *alive = nir_ult(b, primitive, count);
 
-   /* The corner's index sits at the vertex ID. Out-of-range indices are
-    * undefined: clamp them to stay within the record.
-    */
-   nir_def *index_addr =
-      nir_iadd(b, record, nir_u2u64(b, nir_iadd_imm(b, vertex, RECORD_INDICES)));
-   nir_def *index = nir_u2u32(b, nir_load_global(b, 1, 8, index_addr,
-                                                 .align_mul = 1));
-   nir_def *corner = nir_umin(b, index, nir_imm_int(b, info->max_vertices - 1));
+   /* The corner's index sits at the vertex ID */
+   nir_def *corner = load_record_index(b, info, record, vertex);
+
+   nir_def *corners[3], *weights[4];
+   if (conservative) {
+      assert(vpp == 3);
+
+      nir_def *pos[3];
+      for (unsigned k = 0; k < 3; ++k) {
+         nir_def *i = nir_iadd_imm(b, nir_imul_imm(b, primitive, 3), k);
+         corners[k] = load_record_index(b, info, record, i);
+         pos[k] = load_record_slot(b, info, record, VARYING_SLOT_POS,
+                                   corners[k], 4);
+      }
+
+      nir_def *viewport = nir_imm_int(b, 0);
+      if (info->primitive_outputs & VARYING_BIT_VIEWPORT) {
+         viewport = load_record_slot(b, info, record, VARYING_SLOT_VIEWPORT,
+                                     primitive, 1);
+      }
+
+      poly_conservative_weights(b, pos, nir_umod_imm(b, vertex, 3), viewport,
+                                weights);
+   }
 
    nir_def *position = NULL;
    uint64_t outputs = info->vertex_outputs | info->primitive_outputs;
 
    u_foreach_bit64(slot, outputs) {
       bool per_primitive = info->primitive_outputs & BITFIELD64_BIT(slot);
-      uint64_t mask =
-         per_primitive ? info->primitive_outputs : info->vertex_outputs;
-
-      unsigned el_count =
-         per_primitive ? info->max_primitives : info->max_vertices;
-      unsigned base = per_primitive ? record_primitive_base(info)
-                                    : record_vertex_base(info);
-      unsigned slot_base =
-         base + (util_bitcount64(mask & BITFIELD64_MASK(slot)) * el_count * 16);
-
-      nir_def *el = per_primitive ? primitive : corner;
-      nir_def *offset = nir_iadd_imm(b, nir_imul_imm(b, el, 16), slot_base);
-
       unsigned n = slot == VARYING_SLOT_POS ? 4 : components[slot];
-      nir_def *value = nir_load_global(b, n, 32, nir_iadd(b, record,
-                                                          nir_u2u64(b, offset)),
-                                       .align_mul = 16);
+      nir_def *value = load_record_slot(b, info, record, slot,
+                                        per_primitive ? primitive : corner, n);
+
+      if (conservative && !per_primitive) {
+         nir_def *values[3];
+         for (unsigned k = 0; k < 3; ++k)
+            values[k] = load_record_slot(b, info, record, slot, corners[k], n);
+
+         value = poly_conservative_output(b, slot, values, value, weights,
+                                          s->info.clip_distance_array_size);
+      }
 
       if (slot == VARYING_SLOT_CULL_PRIMITIVE) {
          alive = nir_iand(b, alive, nir_ieq_imm(b, nir_channel(b, value, 0), 0));
@@ -458,6 +507,9 @@ build_rast_shader(const nir_shader *mesh, const struct poly_mesh_info *info,
                        .io_semantics.num_slots = 1);
    }
 
+   if (conservative)
+      poly_conservative_store_test(b, weights);
+
    nir_shader_gather_info(s, b->impl);
 
    if (info->prim == MESA_PRIM_POINTS && position &&
@@ -470,7 +522,8 @@ build_rast_shader(const nir_shader *mesh, const struct poly_mesh_info *info,
 
 bool
 poly_nir_lower_mesh(nir_shader *mesh, bool task, bool multiview,
-                    nir_shader **rast, struct poly_mesh_info *info)
+                    nir_shader **rast, nir_shader **rast_conservative,
+                    struct poly_mesh_info *info)
 {
    nir_function_impl *impl = nir_shader_get_entrypoint(mesh);
 
@@ -487,7 +540,18 @@ poly_nir_lower_mesh(nir_shader *mesh, bool task, bool multiview,
                          util_bitcount64(info->primitive_outputs) *
                             info->max_primitives * 16;
 
-   *rast = build_rast_shader(mesh, info, g.components, multiview);
+   *rast = build_rast_shader(mesh, info, g.components, multiview, false);
+
+   /* Conservative rasterization widens filled triangles only */
+   if (rast_conservative) {
+      bool triangles = info->prim == MESA_PRIM_TRIANGLES &&
+                       (info->vertex_outputs & VARYING_BIT_POS);
+
+      *rast_conservative =
+         triangles
+            ? build_rast_shader(mesh, info, g.components, multiview, true)
+            : NULL;
+   }
 
    /* The counts are stored at the end, so a shader that does not set them
     * outputs nothing

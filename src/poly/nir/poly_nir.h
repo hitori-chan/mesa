@@ -55,6 +55,17 @@ struct poly_gs_info {
 #define POLY_VARYING_SLOT_CONSERVATIVE_BOX   VARYING_SLOT_TESS_LEVEL_OUTER
 #define POLY_VARYING_SLOT_CONSERVATIVE_EDGES VARYING_SLOT_TESS_LEVEL_INNER
 
+void poly_conservative_weights(struct nir_builder *b, nir_def **pos,
+                               nir_def *corner, nir_def *viewport,
+                               nir_def **weights);
+
+nir_def *poly_conservative_output(struct nir_builder *b, gl_varying_slot slot,
+                                  nir_def **corners, nir_def *value,
+                                  nir_def **weights,
+                                  unsigned clip_distance_array_size);
+
+void poly_conservative_store_test(struct nir_builder *b, nir_def **weights);
+
 bool poly_nir_lower_gs(struct nir_shader *gs, struct nir_shader **gs_count,
                        struct nir_shader **gs_copy,
                        struct nir_shader **gs_copy_conservative,
@@ -99,6 +110,7 @@ struct poly_mesh_info {
 
 bool poly_nir_lower_mesh(struct nir_shader *mesh, bool task, bool multiview,
                          struct nir_shader **rast,
+                         struct nir_shader **rast_conservative,
                          struct poly_mesh_info *info);
 
 bool poly_nir_lower_task(struct nir_shader *task,

@@ -316,7 +316,8 @@ hk_hash_graphics_state(struct vk_physical_device *device,
    }
 
    if (state && (stages & (VK_SHADER_STAGE_VERTEX_BIT |
-                           VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT))) {
+                           VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT |
+                           VK_SHADER_STAGE_MESH_BIT_EXT))) {
       const bool conservative = hk_may_rasterize_conservative(NULL, state);
       _mesa_blake3_update(&blake3_ctx, &conservative, sizeof(conservative));
    }
@@ -1583,13 +1584,16 @@ hk_compile_shader(struct hk_device *dev, struct vk_shader_compile_info *info,
    } else if (sw_stage == MESA_SHADER_MESH) {
       struct hk_shader *main_variant = &obj->variants[HK_MESH_VARIANT_MAIN];
       struct hk_shader *rast_variant = &obj->variants[HK_MESH_VARIANT_RAST];
-      nir_shader *rast = NULL;
+      struct hk_shader *cons_variant =
+         &obj->variants[HK_MESH_VARIANT_RAST_CONSERVATIVE];
+      nir_shader *rast = NULL, *rast_cons = NULL;
 
       bool task = !(info->flags & VK_SHADER_CREATE_NO_TASK_SHADER_BIT_EXT);
       bool multiview = state && state->mv && state->mv->view_mask;
+      bool conservative = hk_may_rasterize_conservative(dev, state);
 
       NIR_PASS(_, nir, poly_nir_lower_mesh, task, multiview, &rast,
-               &main_variant->info.mesh);
+               conservative ? &rast_cons : NULL, &main_variant->info.mesh);
 
       agx_preprocess_nir(nir);
       agx_preprocess_nir(rast);
@@ -1598,15 +1602,27 @@ hk_compile_shader(struct hk_device *dev, struct vk_shader_compile_info *info,
       hk_lower_hw_vs(rast, rast_variant,
                      main_variant->info.mesh.prim != MESA_PRIM_POINTS);
 
+      if (rast_cons) {
+         agx_preprocess_nir(rast_cons);
+         hk_lower_conservative_budget(rast_cons, cons_variant,
+                                      rast_variant->info.uvs.size);
+         hk_lower_hw_vs(rast_cons, cons_variant, true);
+         cons_variant->info.mesh = main_variant->info.mesh;
+      }
+
       struct {
          nir_shader *in;
          struct hk_shader *out;
       } variants[] = {
          {nir, main_variant},
          {rast, rast_variant},
+         {rast_cons, cons_variant},
       };
 
       for (unsigned v = 0; v < ARRAY_SIZE(variants); ++v) {
+         if (!variants[v].in)
+            continue;
+
          result = hk_compile_nir(dev, pAllocator, variants[v].in, info->flags,
                                  info->robustness, NULL, features,
                                  variants[v].out, sw_stage, true, NULL,
@@ -1616,6 +1632,7 @@ hk_compile_shader(struct hk_device *dev, struct vk_shader_compile_info *info,
             hk_api_shader_destroy(&dev->vk, &obj->vk, pAllocator);
             ralloc_free(nir);
             ralloc_free(rast);
+            ralloc_free(rast_cons);
             return result;
          }
 
@@ -1627,6 +1644,7 @@ hk_compile_shader(struct hk_device *dev, struct vk_shader_compile_info *info,
 
       ralloc_free(nir);
       ralloc_free(rast);
+      ralloc_free(rast_cons);
    } else if (sw_stage == MESA_SHADER_VERTEX ||
               sw_stage == MESA_SHADER_TESS_EVAL) {
 

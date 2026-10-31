@@ -548,7 +548,9 @@ hk_bound_hw_vs(struct hk_graphics_state *gfx)
    struct hk_api_shader *gs = gfx->shaders[MESA_SHADER_GEOMETRY];
    struct hk_api_shader *mesh = gfx->shaders[MESA_SHADER_MESH];
 
-   if (mesh)
+   if (mesh && gfx->conservative)
+      return &mesh->variants[HK_MESH_VARIANT_RAST_CONSERVATIVE];
+   else if (mesh)
       return &mesh->variants[HK_MESH_VARIANT_RAST];
    else if (gs && gfx->conservative)
       return &gs->variants[HK_GS_VARIANT_RAST_CONSERVATIVE];

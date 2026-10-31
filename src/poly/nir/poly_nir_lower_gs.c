@@ -707,12 +707,93 @@ mix_corners(nir_builder *b, nir_def **corners, nir_def *weights)
                    nir_replicate(b, nir_channel(b, weights, 2), n), v);
 }
 
-/*
- * Forward the outputs of a conservatively rasterized triangle: each corner is
- * widened in screen space, its outputs extrapolated on the triangle's plane by
- * their interpolation (flat outputs keep the corner's own), and the fragment
- * test's bounding box and edges are written as linear varyings.
+/* The conservative widening of a triangle corner, from its three corners'
+ * positions: weights[0..3] as poly_conservative_corner's "what" 0..3.
  */
+void
+poly_conservative_weights(nir_builder *b, nir_def **pos, nir_def *corner,
+                          nir_def *viewport, nir_def **weights)
+{
+   nir_def *params = nir_load_geometry_param_buffer_poly(b);
+
+   for (unsigned i = 0; i < 4; ++i) {
+      weights[i] =
+         poly_conservative_corner(b, params, pos[0], pos[1], pos[2], corner,
+                                  viewport, nir_imm_int(b, i));
+   }
+}
+
+/*
+ * The value of an output at a conservatively rasterized triangle corner: value
+ * is the corner's own, corners the triangle's three. It is extrapolated on the
+ * triangle's plane by its interpolation (flat outputs keep the corner's own).
+ */
+nir_def *
+poly_conservative_output(nir_builder *b, gl_varying_slot slot,
+                         nir_def **corners, nir_def *value, nir_def **weights,
+                         unsigned clip_distance_array_size)
+{
+   nir_def *status = nir_channel(b, weights[0], 3);
+
+   if (conservative_extrapolates(slot)) {
+      nir_def *mixed = mix_corners(b, corners, weights[0]);
+
+      if (slot == VARYING_SLOT_CLIP_DIST0 || slot == VARYING_SLOT_CLIP_DIST1) {
+         /* Culling tests each vertex's own cull distances */
+         nir_def *comps[4];
+         unsigned base = (slot - VARYING_SLOT_CLIP_DIST0) * 4;
+
+         for (unsigned c = 0; c < value->num_components; ++c) {
+            bool clip = base + c < clip_distance_array_size;
+            comps[c] = nir_channel(b, clip ? mixed : value, c);
+         }
+
+         mixed = nir_vec(b, comps, value->num_components);
+      } else if (slot != VARYING_SLOT_POS) {
+         nir_def *bit = nir_imm_int64(b, BITFIELD64_BIT(slot));
+         nir_def *flat_mask = load_geometry_param(b, flat_outputs);
+         nir_def *linear_mask = load_geometry_param(b, linear_outputs);
+         nir_def *flat = nir_ine_imm(b, nir_iand(b, flat_mask, bit), 0);
+         nir_def *linear = nir_ine_imm(b, nir_iand(b, linear_mask, bit), 0);
+
+         mixed =
+            nir_bcsel(b, linear, mix_corners(b, corners, weights[1]), mixed);
+         mixed = nir_bcsel(b, flat, value, mixed);
+      }
+
+      value = nir_bcsel(b, nir_feq_imm(b, status, 0.0), mixed, value);
+   }
+
+   /* Degenerate after snapping: cull */
+   if (slot == VARYING_SLOT_POS) {
+      nir_def *w = nir_bcsel(b, nir_feq_imm(b, status, 2.0),
+                             nir_imm_float(b, NAN), nir_channel(b, value, 3));
+      value = nir_vector_insert_imm(b, value, w, 3);
+   }
+
+   return value;
+}
+
+/* The fragment test's bounding box and edges, as linear varyings */
+void
+poly_conservative_store_test(nir_builder *b, nir_def **weights)
+{
+   nir_def *zero = nir_imm_int(b, 0);
+
+   nir_store_output(
+      b, weights[2], zero, .src_type = nir_type_float32,
+      .io_semantics.location = POLY_VARYING_SLOT_CONSERVATIVE_BOX);
+
+   nir_store_output(
+      b, nir_trim_vector(b, weights[3], 3), zero, .src_type = nir_type_float32,
+      .io_semantics.location = POLY_VARYING_SLOT_CONSERVATIVE_EDGES);
+
+   b->shader->info.outputs_written |=
+      BITFIELD64_BIT(POLY_VARYING_SLOT_CONSERVATIVE_BOX) |
+      BITFIELD64_BIT(POLY_VARYING_SLOT_CONSERVATIVE_EDGES);
+}
+
+/* Forward the outputs of a conservatively rasterized triangle */
 static void
 forward_conservative_outputs(nir_builder *b, nir_shader *shader,
                              struct lower_gs_rast_state *rs)
@@ -734,78 +815,25 @@ forward_conservative_outputs(nir_builder *b, nir_shader *shader,
                            nir_channel(b, nir_load_var(b, vp[0]), 0));
    }
 
-   nir_def *params = nir_load_geometry_param_buffer_poly(b);
    nir_def *weights[4];
-   for (unsigned i = 0; i < ARRAY_SIZE(weights); ++i) {
-      weights[i] =
-         poly_conservative_corner(b, params, pos[0], pos[1], pos[2],
-                                  rs->output_id, viewport, nir_imm_int(b, i));
-   }
-
-   nir_def *status = nir_channel(b, weights[0], 3);
-   nir_def *widened = nir_feq_imm(b, status, 0.0);
-   nir_def *flat_mask = load_geometry_param(b, flat_outputs);
-   nir_def *linear_mask = load_geometry_param(b, linear_outputs);
+   poly_conservative_weights(b, pos, rs->output_id, viewport, weights);
 
    u_foreach_bit64(slot, shader->info.outputs_written) {
       struct lower_output_to_var_slot *output = &outputs[slot];
-      nir_def *value = nir_load_var(b, output->selected_var);
 
-      if (conservative_extrapolates(slot)) {
-         nir_def *corners[3];
-         for (unsigned k = 0; k < 3; ++k)
-            corners[k] = nir_load_var(b, output->corner_var[k]);
+      nir_def *corners[3];
+      for (unsigned k = 0; k < 3; ++k)
+         corners[k] = nir_load_var(b, output->corner_var[k]);
 
-         nir_def *mixed = mix_corners(b, corners, weights[0]);
-
-         if (slot == VARYING_SLOT_CLIP_DIST0 ||
-             slot == VARYING_SLOT_CLIP_DIST1) {
-            /* Culling tests each vertex's own cull distances */
-            nir_def *comps[4];
-            unsigned base = (slot - VARYING_SLOT_CLIP_DIST0) * 4;
-
-            for (unsigned c = 0; c < value->num_components; ++c) {
-               bool clip = base + c < shader->info.clip_distance_array_size;
-               comps[c] = nir_channel(b, clip ? mixed : value, c);
-            }
-
-            mixed = nir_vec(b, comps, value->num_components);
-         } else if (slot != VARYING_SLOT_POS) {
-            nir_def *bit = nir_imm_int64(b, BITFIELD64_BIT(slot));
-            nir_def *flat = nir_ine_imm(b, nir_iand(b, flat_mask, bit), 0);
-            nir_def *linear = nir_ine_imm(b, nir_iand(b, linear_mask, bit), 0);
-
-            mixed =
-               nir_bcsel(b, linear, mix_corners(b, corners, weights[1]), mixed);
-            mixed = nir_bcsel(b, flat, value, mixed);
-         }
-
-         value = nir_bcsel(b, widened, mixed, value);
-      }
-
-      /* Degenerate after snapping: cull */
-      if (slot == VARYING_SLOT_POS) {
-         nir_def *w =
-            nir_bcsel(b, nir_feq_imm(b, status, 2.0), nir_imm_float(b, NAN),
-                      nir_channel(b, value, 3));
-         value = nir_vector_insert_imm(b, value, w, 3);
-      }
+      nir_def *value = poly_conservative_output(
+         b, slot, corners, nir_load_var(b, output->selected_var), weights,
+         shader->info.clip_distance_array_size);
 
       nir_store_output(b, value, zero, .src_type = output->type,
                        .io_semantics.location = slot);
    }
 
-   nir_store_output(
-      b, weights[2], zero, .src_type = nir_type_float32,
-      .io_semantics.location = POLY_VARYING_SLOT_CONSERVATIVE_BOX);
-
-   nir_store_output(
-      b, nir_trim_vector(b, weights[3], 3), zero, .src_type = nir_type_float32,
-      .io_semantics.location = POLY_VARYING_SLOT_CONSERVATIVE_EDGES);
-
-   shader->info.outputs_written |=
-      BITFIELD64_BIT(POLY_VARYING_SLOT_CONSERVATIVE_BOX) |
-      BITFIELD64_BIT(POLY_VARYING_SLOT_CONSERVATIVE_EDGES);
+   poly_conservative_store_test(b, weights);
 }
 
 /*

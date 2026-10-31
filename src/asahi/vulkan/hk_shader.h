@@ -208,6 +208,9 @@ enum hk_mesh_variant {
    /* Hardware vertex shader used for rasterization */
    HK_MESH_VARIANT_RAST,
 
+   /* Same, widening triangles for conservative rasterization */
+   HK_MESH_VARIANT_RAST_CONSERVATIVE,
+
    /* Main compute shader */
    HK_MESH_VARIANT_MAIN,
 
@@ -277,7 +280,10 @@ hk_variant_name(struct hk_api_shader *obj, struct hk_shader *variant)
       assert(i < ARRAY_SIZE(hk_gs_variant_name));
       return hk_gs_variant_name[i];
    } else if (obj->vk.stage == MESA_SHADER_MESH) {
-      return i == HK_MESH_VARIANT_RAST ? "Rasterization" : "Main";
+      return i == HK_MESH_VARIANT_RAST ? "Rasterization"
+             : i == HK_MESH_VARIANT_RAST_CONSERVATIVE
+                ? "Conservative rasterization"
+                : "Main";
    } else {
       assert(i < 2);
       return i == HK_VS_VARIANT_SW ? "Software" : "Hardware";

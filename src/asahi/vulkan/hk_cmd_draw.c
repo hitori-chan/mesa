@@ -1267,6 +1267,54 @@ hk_rast_prim(struct hk_cmd_buffer *cmd)
    }
 }
 
+/*
+ * The interpolation masks and, when widening, the conservative rasterization
+ * parameters the rasterization shader reads (poly_conservative_corner)
+ */
+static void
+hk_conservative_params(struct hk_cmd_buffer *cmd,
+                       struct poly_geometry_params *params)
+{
+   struct hk_graphics_state *gfx = &cmd->state.gfx;
+   struct vk_dynamic_graphics_state *dyn = &cmd->vk.dynamic_graphics_state;
+   struct hk_shader *fs = hk_only_variant(gfx->shaders[MESA_SHADER_FRAGMENT]);
+
+   params->flat_outputs = fs->info.fs.interp.flat;
+   params->linear_outputs = fs->info.fs.interp.linear;
+
+   if (gfx->conservative) {
+      struct hk_shader *rast = hk_bound_hw_vs(gfx);
+      unsigned samples =
+         gfx->render.tilebuffer.nr_samples ?: dyn->ms.rasterization_samples;
+      float extra = dyn->rs.extra_primitive_overestimation_size;
+
+      /* The fragment test keeps or kills whole pixels, so with MSAA the edges
+       * move out by a pixel to cover every sample of a pixel kept. Without the
+       * edge test, half a pixel: the rasterizer's own test of the centre.
+       */
+      bool edges = rast->info.conservative == AGX_CONSERVATIVE_BOX_EDGES;
+      params->conservative_r =
+         (edges && samples > 1 ? 1.0f : 0.5f) + extra + (1.0f / 256.0f);
+      params->conservative_extra = extra;
+
+      unsigned vp_count = MAX2(dyn->vp.viewport_count, 1);
+      float vp[HK_MAX_VIEWPORTS][4];
+
+      for (unsigned i = 0; i < vp_count; ++i) {
+         const VkViewport *v = &dyn->vp.viewports[i];
+
+         vp[i][0] = v->width * 0.5f;
+         vp[i][1] = v->height * 0.5f;
+         vp[i][2] = v->x + 0.5f * v->width;
+         vp[i][3] = v->y + 0.5f * v->height;
+      }
+
+      params->conservative_viewports =
+         hk_pool_upload(cmd, vp, vp_count * sizeof(vp[0]), 16);
+      params->conservative_viewport_count = vp_count;
+   }
+}
+
 static uint64_t
 hk_upload_geometry_params(struct hk_cmd_buffer *cmd, struct agx_draw draw)
 {
@@ -1274,9 +1322,7 @@ hk_upload_geometry_params(struct hk_cmd_buffer *cmd, struct agx_draw draw)
    struct hk_descriptor_state *desc = &cmd->state.gfx.descriptors;
    struct hk_graphics_state *gfx = &cmd->state.gfx;
    struct hk_api_shader *gs = gfx->shaders[MESA_SHADER_GEOMETRY];
-   struct hk_shader *fs = hk_only_variant(gfx->shaders[MESA_SHADER_FRAGMENT]);
    struct hk_shader *count = hk_count_gs_variant(gs);
-   struct vk_dynamic_graphics_state *dyn = &cmd->vk.dynamic_graphics_state;
 
    /* XXX: We should deduplicate this logic */
    bool indirect = agx_is_indirect(draw.b) ||
@@ -1292,40 +1338,7 @@ hk_upload_geometry_params(struct hk_cmd_buffer *cmd, struct agx_draw draw)
    struct poly_geometry_params params;
    poly_geometry_params_init(&params, mode, wg_size);
 
-   params.flat_outputs = fs->info.fs.interp.flat;
-   params.linear_outputs = fs->info.fs.interp.linear;
-
-   if (gfx->conservative) {
-      struct hk_shader *rast = hk_bound_hw_vs(gfx);
-      unsigned samples =
-         gfx->render.tilebuffer.nr_samples ?: dyn->ms.rasterization_samples;
-      float extra = dyn->rs.extra_primitive_overestimation_size;
-
-      /* The fragment test keeps or kills whole pixels, so with MSAA the edges
-       * move out by a pixel to cover every sample of a pixel kept. Without the
-       * edge test, half a pixel: the rasterizer's own test of the centre.
-       */
-      bool edges = rast->info.conservative == AGX_CONSERVATIVE_BOX_EDGES;
-      params.conservative_r =
-         (edges && samples > 1 ? 1.0f : 0.5f) + extra + (1.0f / 256.0f);
-      params.conservative_extra = extra;
-
-      unsigned vp_count = MAX2(dyn->vp.viewport_count, 1);
-      float vp[HK_MAX_VIEWPORTS][4];
-
-      for (unsigned i = 0; i < vp_count; ++i) {
-         const VkViewport *v = &dyn->vp.viewports[i];
-
-         vp[i][0] = v->width * 0.5f;
-         vp[i][1] = v->height * 0.5f;
-         vp[i][2] = v->x + 0.5f * v->width;
-         vp[i][3] = v->y + 0.5f * v->height;
-      }
-
-      params.conservative_viewports =
-         hk_pool_upload(cmd, vp, vp_count * sizeof(vp[0]), 16);
-      params.conservative_viewport_count = vp_count;
-   }
+   hk_conservative_params(cmd, &params);
 
    if (gfx->xfb_enabled) {
       for (unsigned i = 0; i < ARRAY_SIZE(gfx->xfb); ++i) {
@@ -3400,6 +3413,15 @@ hk_flush_dynamic_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
       gfx->descriptors.root.draw.mesh_params =
          hk_upload_mesh_params(cmd, draw_id, draw.b);
 
+      /* The conservative variant reads geometry parameters, only those */
+      if (gfx->conservative) {
+         struct poly_geometry_params params = {0};
+         hk_conservative_params(cmd, &params);
+
+         gfx->descriptors.root.draw.geometry_params =
+            hk_pool_upload(cmd, &params, sizeof(params), 8);
+      }
+
       gfx->descriptors.root_dirty = true;
    }
 
@@ -3541,12 +3563,14 @@ static bool
 hk_rast_conservative(struct hk_cmd_buffer *cmd)
 {
    struct vk_dynamic_graphics_state *dyn = &cmd->vk.dynamic_graphics_state;
+   enum mesa_prim prim = cmd->state.gfx.shaders[MESA_SHADER_MESH]
+                            ? hk_rast_prim(cmd)
+                            : hk_gs_in_prim(cmd);
 
    return dyn->rs.conservative_mode ==
              VK_CONSERVATIVE_RASTERIZATION_MODE_OVERESTIMATE_EXT &&
           dyn->rs.polygon_mode == VK_POLYGON_MODE_FILL &&
-          u_reduced_prim(hk_gs_in_prim(cmd)) == MESA_PRIM_TRIANGLES &&
-          !hk_rast_discard(cmd);
+          u_reduced_prim(prim) == MESA_PRIM_TRIANGLES && !hk_rast_discard(cmd);
 }
 
 static void
@@ -3557,12 +3581,27 @@ hk_handle_passthrough_gs(struct hk_cmd_buffer *cmd, struct agx_draw draw)
    struct vk_dynamic_graphics_state *dyn = &cmd->vk.dynamic_graphics_state;
    struct hk_api_shader *gs = gfx->shaders[MESA_SHADER_GEOMETRY];
 
-   /* Mesh pipelines have no geometry stage: unbind a passthrough left over */
-   if (gfx->shaders[MESA_SHADER_MESH]) {
-      gfx->conservative = false;
-
+   /* Mesh pipelines have no geometry stage: unbind a passthrough left over.
+    * Their rasterization shader has its own conservative variant.
+    */
+   struct hk_api_shader *mesh = gfx->shaders[MESA_SHADER_MESH];
+   if (mesh) {
       if (gs && gs->is_passthrough)
          hk_cmd_bind_graphics_shader(cmd, MESA_SHADER_GEOMETRY, NULL);
+
+      bool conservative = hk_rast_conservative(cmd);
+
+      if (conservative &&
+          !mesh->variants[HK_MESH_VARIANT_RAST_CONSERVATIVE].code_size) {
+         perf_debug(cmd, "Conservative rasterization not widened");
+         conservative = false;
+      }
+
+      /* The variant is per draw: relink when it changes */
+      if (gfx->conservative != conservative) {
+         gfx->conservative = conservative;
+         gfx->shaders_dirty |= BITFIELD_BIT(MESA_SHADER_MESH);
+      }
 
       return;
    }
