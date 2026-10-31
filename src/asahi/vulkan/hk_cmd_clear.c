@@ -68,6 +68,10 @@ hk_clear_image(struct hk_cmd_buffer *cmd, struct hk_image *image,
             format = PIPE_FORMAT_R16_UNORM;
          } else if (format == PIPE_FORMAT_Z32_FLOAT) {
             format = PIPE_FORMAT_R32_FLOAT;
+         } else if (format == PIPE_FORMAT_R64_UINT ||
+                    format == PIPE_FORMAT_R64_SINT) {
+            /* A 64-bit component takes the clear value's first two words */
+            format = PIPE_FORMAT_R32G32_UINT;
          }
 
          uint32_t c[4];

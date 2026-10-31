@@ -193,6 +193,10 @@ hk_image_view_plane_format(struct hk_image_view *view, unsigned view_plane)
    if (view->vk.aspects == VK_IMAGE_ASPECT_STENCIL_BIT)
       p_format = get_stencil_format(p_format);
 
+   /* R64 storage images are R32G32 to the hardware (hk_image.c) */
+   if (p_format == PIPE_FORMAT_R64_UINT || p_format == PIPE_FORMAT_R64_SINT)
+      p_format = PIPE_FORMAT_R32G32_UINT;
+
    return p_format;
 }
 
