@@ -55,6 +55,7 @@ static const struct debug_named_value agx_debug_options[] = {
    {"nolatency", AGX_DBG_NOLATENCY, "G15: schedule by register pressure alone, not to hide the textures' latency"},
    {"helpers",   AGX_DBG_HELPERS,   "G15: keep the quads' helper lanes to a fragment shader's end, not end them at its last sample"},
    {"noperspmul", AGX_DBG_NOPERSPMUL, "G15: project by dividing by the iterated 1/W, not with the coefficient-register multiply"},
+   {"exactfma",  AGX_DBG_EXACTFMA,  "G15: redo the exact fp32 fmas at the flush boundary in graphics shaders too"},
    DEBUG_NAMED_VALUE_END
 };
 /* clang-format on */
@@ -1320,6 +1321,16 @@ static bool
 agx_nir_lower_ffma32_exact_g15(nir_shader *nir)
 {
    if (mesa_shader_stage_is_compute(nir->info.stage) && nir->info.cs.ptr_size)
+      return false;
+
+   /* A graphics shader's exact fmas are D3D's precise dot products, which
+    * DXVK marks and inlines: Grim Dawn's light shader has 23, each with a
+    * compare, a branch and a cold block of about 65 operations that raises its
+    * register count. D3D flushes denormals, and the CTS's opfma cases, whose
+    * zero-result boundary the redo settles, are compute shaders.
+    */
+   if (!mesa_shader_stage_is_compute(nir->info.stage) &&
+       !(agx_compiler_debug & AGX_DBG_EXACTFMA))
       return false;
 
    struct util_dynarray fmas;
