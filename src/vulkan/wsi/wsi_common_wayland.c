@@ -86,6 +86,11 @@ struct dmabuf_feedback_format_table {
    } *data;
 };
 
+/* Most tranches a swapchain offers its modifiers from (see
+ * wsi_wl_surface_create_swapchain); a compositor sends two or three.
+ */
+#define WSI_WL_MAX_MODIFIER_LISTS 8
+
 struct dmabuf_feedback_tranche {
    dev_t target_device;
    uint32_t flags;
@@ -3944,6 +3949,9 @@ wsi_wl_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
    struct wsi_drm_image_params drm_image_params;
    uint32_t num_drm_modifiers = 0;
    const uint64_t *drm_modifiers = NULL;
+   /* The modifier lists to try, in order: the first is chain->drm_modifiers. */
+   uint32_t num_modifiers_of_list[WSI_WL_MAX_MODIFIER_LISTS];
+   const uint64_t *modifiers_of_list[WSI_WL_MAX_MODIFIER_LISTS];
    if (wsi_device->sw) {
       cpu_image_params = (struct wsi_cpu_image_params) {
          .base.image_type = WSI_IMAGE_TYPE_CPU,
@@ -3979,12 +3987,41 @@ wsi_wl_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
          if (f != NULL) {
             num_drm_modifiers = u_vector_length(&f->modifiers);
             drm_modifiers = u_vector_tail(&f->modifiers);
+            num_modifiers_of_list[0] = num_drm_modifiers;
+            modifiers_of_list[0] = drm_modifiers;
             if (num_drm_modifiers > 0)
                drm_image_params.num_modifier_lists = 1;
             else
                drm_image_params.num_modifier_lists = 0;
-            drm_image_params.num_modifiers = &num_drm_modifiers;
-            drm_image_params.modifiers = &drm_modifiers;
+
+            /* The first tranche is the compositor's first choice, not always
+             * a usable one: a scanout tranche may offer only a modifier the
+             * driver cannot give these usages (hk's compressed modifier for a
+             * swapchain with TRANSFER_DST), and Hyprland leaves LINEAR out of
+             * it. wsi_configure_native_image takes the first list with a
+             * modifier that works, so offer the other tranches' lists after
+             * it, rather than fail the swapchain.
+             */
+            if (num_drm_modifiers > 0 && wsi_wl_surface->wl_dmabuf_feedback &&
+                wsi_wl_surface->dmabuf_feedback.main_device != 0) {
+               util_dynarray_foreach(&wsi_wl_surface->dmabuf_feedback.tranches,
+                                     struct dmabuf_feedback_tranche, tranche) {
+                  struct wsi_wl_format *tf =
+                     find_format(&tranche->formats, pCreateInfo->imageFormat);
+                  uint32_t n = tf ? u_vector_length(&tf->modifiers) : 0;
+                  if (tf == f || n == 0 ||
+                      drm_image_params.num_modifier_lists ==
+                         WSI_WL_MAX_MODIFIER_LISTS)
+                     continue;
+
+                  num_modifiers_of_list[drm_image_params.num_modifier_lists] = n;
+                  modifiers_of_list[drm_image_params.num_modifier_lists++] =
+                     u_vector_tail(&tf->modifiers);
+               }
+            }
+
+            drm_image_params.num_modifiers = num_modifiers_of_list;
+            drm_image_params.modifiers = modifiers_of_list;
          }
       }
       buffer_type = WSI_WL_BUFFER_NATIVE;
