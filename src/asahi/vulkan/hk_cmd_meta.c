@@ -1452,10 +1452,15 @@ hk_CmdCopyBuffer2(VkCommandBuffer commandBuffer, const VkCopyBufferInfo2 *info)
    }
 }
 
+/* A compressed image is written by drawing: a multisampled one on every
+ * generation, any on G15, whose compute copies write with imgwci, which cannot
+ * write compressed memory
+ */
 static bool
 hk_copy_requires_gfx(struct hk_image *img)
 {
-   return img->vk.samples > 1 && img->planes[0].layout.compressed;
+   return img->planes[0].layout.compressed &&
+          (img->vk.samples > 1 || hk_meta_g15(img->vk.base.device));
 }
 
 static bool
