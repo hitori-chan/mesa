@@ -801,17 +801,24 @@ agx_emit_local_store_pixel(agx_builder *b, nir_intrinsic_instr *instr)
 
    /* G15's tile data is raw: unorm8 channels are packed two to a 16-bit
     * register, as Apple's fltnorm does before its tile stores, and stored as
-    * one 16- or 32-bit value (agx_nir_lower_tile_raw leaves these) */
+    * one 16- or 32-bit value (agx_nir_lower_tile_raw leaves these). An sRGB
+    * target's channels are sRGB-encoded but its alpha. */
    if (b->shader->key->dev.gpu_generation >= 15 &&
-       format == AGX_FORMAT_U8NORM) {
+       (format == AGX_FORMAT_U8NORM || format == AGX_FORMAT_SRGBA8)) {
       assert(mask == 0x3 || mask == 0xf);
+      bool srgb = format == AGX_FORMAT_SRGBA8;
       agx_index h[2];
 
       for (unsigned i = 0; i < util_last_bit(mask) / 2; i++) {
+         enum agx_pack_mode mode = !srgb ? AGX_PACK_MODE_RG8UNORM
+                                   : i == 0 ? AGX_PACK_MODE_RG8UNORM_SRGB
+                                            : AGX_PACK_MODE_RG8UNORM_SRGB_LINEAR;
+
          h[i] = agx_temp(b->shader, AGX_SIZE_16);
          agx_pack_unorm_to(b, h[i],
                            agx_extract_nir_src(b, instr->src[0], 2 * i),
-                           agx_extract_nir_src(b, instr->src[0], 2 * i + 1));
+                           agx_extract_nir_src(b, instr->src[0], 2 * i + 1),
+                           mode);
       }
 
       agx_index v = h[0];

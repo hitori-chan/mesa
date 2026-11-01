@@ -222,6 +222,10 @@ lower_store(nir_builder *b, nir_intrinsic_instr *intr)
       return true;
 
    case AIL_ISA_FORMAT_SRGBA8: {
+      /* Packed by the backend's pack_unorm, two channels an instruction */
+      if ((mask == 0x3 || mask == 0xf) && n >= util_last_bit(mask))
+         return false;
+
       nir_def *f = to_f32(b, value);
       if (n >= 3) {
          nir_def *rgb = nir_format_linear_to_srgb(b, channels(b, f, 0, 3));
