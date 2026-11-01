@@ -2228,6 +2228,17 @@ agx_expand_tex_to(agx_builder *b, nir_def *def, agx_index src, bool masked)
    agx_emit_split(b, packed_channels, src,
                   ALIGN_POT(nr_channels, 4) /* XXX: why not nr_channels */);
 
+   /* A result sampled at 32 bits for a 16-bit def (agx_emit_tex) */
+   if (src.size == AGX_SIZE_32 && def->bit_size == 16) {
+      for (unsigned i = 0; i < ALIGN_POT(nr_channels, 4); ++i) {
+         agx_index h = agx_temp(b->shader, AGX_SIZE_16);
+         agx_fmov_to(b, h, packed_channels[i]);
+         packed_channels[i] = h;
+      }
+
+      src.size = AGX_SIZE_16;
+   }
+
    for (unsigned i = 0; i < nr_channels; ++i) {
       unpacked_channels[i] =
          (mask & BITFIELD_BIT(i))
@@ -3580,7 +3591,12 @@ agx_emit_tex(agx_builder *b, nir_tex_instr *instr)
    if (g15 && b->shader->stage == MESA_SHADER_FRAGMENT)
       agx_wait_pixel_mask(b, 0x200);
 
-   agx_index tmp = agx_vec_temp(b->shader, dst.size, instr->is_sparse ? 8 : 4);
+   /* A gather's or a compare's 16-bit result is not tried on G15: those
+    * sample at 32 bits and narrow (agx_expand_tex_to) */
+   bool narrow = g15 && dst.size == AGX_SIZE_16 &&
+                 (instr->op == nir_texop_tg4 || !agx_is_null(compare));
+   agx_index tmp = agx_vec_temp(b->shader, narrow ? AGX_SIZE_32 : dst.size,
+                                instr->is_sparse ? 8 : 4);
    agx_instr *I = agx_texture_sample_to(
       b, tmp, coords, lod, bindless, texture, sampler, compare_offset,
       sampler_base, agx_tex_dim(instr->sampler_dim, instr->is_array), lod_mode,
@@ -4250,6 +4266,19 @@ agx_optimize_nir(nir_shader *nir, bool soft_fault, uint16_t *preamble_size,
     */
    NIR_PASS(_, nir, nir_opt_algebraic_late);
    NIR_PASS(_, nir, agx_nir_lower_fminmax);
+
+   /* G15 returns 16-bit texels where every use converts them to 16 bits (a
+    * mediump sampler's in GLES): half the texture unit's result width, as
+    * Apple's half-precision code samples. 16 bilinear taps a pixel ran at 245
+    * against 187 Gtexel/s (vkbench tex, 2026-11-01). */
+   if (g15) {
+      nir_opt_16bit_tex_image_options opts = {
+         .rounding_mode = nir_rounding_mode_undef,
+         .opt_tex_dest_types = nir_type_float,
+      };
+
+      NIR_PASS(_, nir, nir_opt_16bit_tex_image, &opts);
+   }
 
    /* Fuse add/sub/multiplies/shifts after running opt_algebraic_late to fuse
     * isub but before shifts are lowered.
