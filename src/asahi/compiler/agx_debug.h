@@ -34,6 +34,7 @@ enum agx_compiler_dbg {
    AGX_DBG_NOLATENCY   = BITFIELD_BIT(17),
    AGX_DBG_HELPERS     = BITFIELD_BIT(18),
    AGX_DBG_NOPERSPMUL  = BITFIELD_BIT(19),
+   AGX_DBG_EXACTFMA    = BITFIELD_BIT(20),
 };
 /* clang-format on */
 
