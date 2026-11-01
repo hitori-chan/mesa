@@ -67,6 +67,7 @@ agx_instr_accepts_uniform(enum agx_opcode op, unsigned src_index,
    /* G15: a uniform's size bits select another case of the destination
     * (agx_pack3.c) */
    case AGX_OPCODE_PACK_UNORM:
+   case AGX_OPCODE_UNPACK_UNORM:
       return false;
    case AGX_OPCODE_EXPORT:
    case AGX_OPCODE_PHI:
