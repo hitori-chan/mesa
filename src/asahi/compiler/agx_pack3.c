@@ -1420,19 +1420,21 @@ a3_iadd_op(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
 
 /* convert: src[0] is the G13 mode, src[1] the value */
 /* pack_unorm: the mode, the 16-bit destination and the two float sources
- * (AGX3.xml's pack_unorm), the mode left at the template's rg8unorm. The
- * sources' sizes share bits with the mode and the destination, so the
- * template is Apple's encoding of the first source's size. */
+ * (AGX3.xml's pack_unorm). The sources' sizes share bits 73 and 75 with the
+ * mode and the destination, so the template is Apple's encoding of the
+ * sources' size, and the IR's mode replaces the mode's bits 77:79 alone. */
 static void
 a3_pack_unorm(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
 {
    if (I->dest[0].size != AGX_SIZE_16)
       a3_fail(a, "pack_unorm's destination is not 16-bit");
 
-   bool wide = I->src[0].type != AGX_INDEX_IMMEDIATE
-                  ? I->src[0].size == AGX_SIZE_32
-                  : I->src[1].size == AGX_SIZE_32;
-   a3_begin(a, I, AGX3_PACK_UNORM, wide ? T_PACK_32 : T_PACK_16);
+   if (I->src[0].size != I->src[1].size)
+      a3_fail(a, "pack_unorm's sources differ in size");
+
+   a3_begin(a, I, AGX3_PACK_UNORM,
+            I->src[0].size == AGX_SIZE_32 ? T_PACK_32 : T_PACK_16);
+   a3_set(a, 0, (a->ops[0] & ~BITFIELD64_MASK(3)) | I->pack_mode);
    a3_set(a, 2, a3_src(a, 2, I->src[0], false));
    a3_set(a, 3, a3_src(a, 3, I->src[1], false));
 
