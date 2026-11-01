@@ -192,6 +192,10 @@ lower_store(nir_builder *b, nir_intrinsic_instr *intr)
       return true;
 
    case AIL_ISA_FORMAT_U8NORM:
+      /* Packed by the backend's pack_unorm, two channels an instruction */
+      if ((mask == 0x3 || mask == 0xf) && n >= util_last_bit(mask))
+         return false;
+
       store_byte_channels(b, intr,
                           nir_format_float_to_unorm(b, to_f32(b, value), bits8),
                           mask, base);
