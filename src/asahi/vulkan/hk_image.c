@@ -235,14 +235,20 @@ hk_can_compress(const struct agx_device *dev, VkFormat format, unsigned plane,
       return false;
 
    /* G15 compresses colour images, as Gallium, depth and stencil only with
-    * ASAHI_MESA_DEBUG=compresszs, and no image a copy writes: its copies write
-    * with imgwci, which cannot write a compressed image */
+    * ASAHI_MESA_DEBUG=compresszs, and no image a copy writes unless it is also
+    * a render target: its compute copies write with imgwci, which cannot write
+    * a compressed image, and a render target's copies are drawn instead
+    * (hk_copy_requires_gfx). D3D's render targets, DXVK's, are all created
+    * with TRANSFER_DST: Grim Dawn's frame spent 12 % more GPU time with them
+    * uncompressed (2026-11-02).
+    */
    if (dev->params.gpu_generation >= 15) {
       if (vk_format_is_depth_or_stencil(format) &&
           !(dev->debug & AGX_DBG_COMPRESSZS))
          return false;
 
-      if (usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) {
+      if ((usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) &&
+          !(usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)) {
          perf_debug_dev(dev, "No compression: G15 copy destination");
          return false;
       }
