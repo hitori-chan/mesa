@@ -184,7 +184,7 @@ agx_optimizer_inline_imm(agx_instr **defs, agx_instr *I, bool g15)
       if (I->op == AGX_OPCODE_ST_TILE && s == 0)
          continue;
       if (I->op == AGX_OPCODE_ITRCOORDS || I->op == AGX_OPCODE_RCP_CF ||
-          I->op == AGX_OPCODE_FMUL_CF)
+          I->op == AGX_OPCODE_FMUL_CF || I->op == AGX_OPCODE_PACK_UNORM)
          continue;
       if (I->op == AGX_OPCODE_ZS_EMIT && s != 0)
          continue;

@@ -795,6 +795,37 @@ agx_emit_local_store_pixel(agx_builder *b, nir_intrinsic_instr *instr)
       agx_wait_pixel_mask(b, 0xC);
    }
 
+   agx_index coords = explicit ? agx_src_index(&instr->src[2]) : agx_null();
+   unsigned mask = nir_intrinsic_write_mask(instr);
+   enum agx_format format = agx_format_for_pipe(nir_intrinsic_format(instr));
+
+   /* G15's tile data is raw: unorm8 channels are packed two to a 16-bit
+    * register, as Apple's fltnorm does before its tile stores, and stored as
+    * one 16- or 32-bit value (agx_nir_lower_tile_raw leaves these) */
+   if (b->shader->key->dev.gpu_generation >= 15 &&
+       format == AGX_FORMAT_U8NORM) {
+      assert(mask == 0x3 || mask == 0xf);
+      agx_index h[2];
+
+      for (unsigned i = 0; i < util_last_bit(mask) / 2; i++) {
+         h[i] = agx_temp(b->shader, AGX_SIZE_16);
+         agx_pack_unorm_to(b, h[i],
+                           agx_extract_nir_src(b, instr->src[0], 2 * i),
+                           agx_extract_nir_src(b, instr->src[0], 2 * i + 1));
+      }
+
+      agx_index v = h[0];
+      if (mask == 0xf) {
+         v = agx_temp(b->shader, AGX_SIZE_32);
+         agx_emit_collect_to(b, v, 2, h);
+      }
+
+      b->shader->out->tag_write_disable = false;
+      return agx_st_tile(b, v, agx_src_index(&instr->src[1]), coords,
+                         mask == 0xf ? AGX_FORMAT_I32 : AGX_FORMAT_I16, 0x1,
+                         nir_intrinsic_base(instr), explicit);
+   }
+
    /* Compact the registers according to the mask */
    agx_index compacted[4] = {agx_null()};
 
@@ -804,13 +835,10 @@ agx_emit_local_store_pixel(agx_builder *b, nir_intrinsic_instr *instr)
    }
 
    agx_index collected = agx_emit_collect(b, compact_count, compacted);
-   agx_index coords = explicit ? agx_src_index(&instr->src[2]) : agx_null();
 
    b->shader->out->tag_write_disable = false;
    return agx_st_tile(b, collected, agx_src_index(&instr->src[1]), coords,
-                      agx_format_for_pipe(nir_intrinsic_format(instr)),
-                      nir_intrinsic_write_mask(instr),
-                      nir_intrinsic_base(instr), explicit);
+                      format, mask, nir_intrinsic_base(instr), explicit);
 }
 
 /* G15: the sample mask is a value in cr0, applied by movmsk (AGX3.xml): the
