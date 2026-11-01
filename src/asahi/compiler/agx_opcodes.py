@@ -383,8 +383,15 @@ op("intl", (0x3E, 6, _), srcs = 2, imms = [])
 op("convert", (0x3E | L, 6, _), srcs = 2, imms = [ROUND]) 
 
 # G15: two float channels to 8-bit unorm in a 16-bit result, the first in the
-# low byte (Apple's fltnorm, pack rg8unorm, before its tile stores)
-op("pack_unorm", _, srcs = 2, is_float = True)
+# low byte (Apple's fltnorm, pack rg8unorm, before its tile stores). The mode
+# is the instruction's bits 77:79; srgb_linear encodes the first channel as
+# sRGB and leaves the second linear (an sRGB target's blue and alpha).
+PACK_MODE = enum("pack_mode", {
+   1: 'rg8unorm_srgb',
+   5: 'rg8unorm_srgb_linear',
+   6: 'rg8unorm',
+})
+op("pack_unorm", _, srcs = 2, imms = [PACK_MODE])
 
 # Sources are the coeffient register and the sample index (if applicable).
 # perspective is G15's flag on the iteration of W's coefficients, which its
