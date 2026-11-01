@@ -382,6 +382,10 @@ op("bitop", (0x7E, 6, _), srcs = 2, imms = [TRUTH_TABLE])
 op("intl", (0x3E, 6, _), srcs = 2, imms = [])
 op("convert", (0x3E | L, 6, _), srcs = 2, imms = [ROUND]) 
 
+# G15: two float channels to 8-bit unorm in a 16-bit result, the first in the
+# low byte (Apple's fltnorm, pack rg8unorm, before its tile stores)
+op("pack_unorm", _, srcs = 2, is_float = True)
+
 # Sources are the coeffient register and the sample index (if applicable).
 # perspective is G15's flag on the iteration of W's coefficients, which its
 # compiler follows with a reciprocal (G13 has iterproj instead).
