@@ -850,6 +850,7 @@ a3_memshift(const struct a3 *a, unsigned bytes)
 #define T_ST_TILE   "e70654000000012e00000000" /* tile_store i32 */
 #define T_PACK_16   "97045401020208a845c2"     /* pack rg8unorm, r0h, r1l */
 #define T_PACK_32   "97045400020008d045c2"     /* pack rg8unorm, r0, r1 */
+#define T_UNPACK    "17045400010210ea"         /* unpack rg8unorm, r0, r0h */
 #define T_LD_TILE   "670654000000012e01000000" /* tile_load 2, i32 */
 #define T_WAIT_PIX  "8702540c0800"             /* wait_pix 12, f1 */
 #define T_SIG_PIX   "0702540c0000"             /* signal_pix 12 */
@@ -1453,6 +1454,38 @@ a3_pack_unorm(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
    uint64_t v = a3_fix_carry(a, 1, c, agx3_reg_value(c, &r));
    if (v == UINT64_MAX)
       a3_fail(a, "no carry bits select pack_unorm's destination");
+
+   a3_set(a, 1, v);
+   a3_emit(a, emission);
+}
+
+/* unpack_unorm: the mode, the destination (two 16-bit floats, the halves of
+ * a 32-bit register) and the 16-bit source (AGX3.xml's unpack_unorm). The
+ * mode's bit 3 is the destination's, so the IR's mode replaces its bits
+ * 60:62 alone; the destination's case of two 16-bit values is its second. */
+static void
+a3_unpack_unorm(struct a3 *a, const agx_instr *I,
+                struct util_dynarray *emission)
+{
+   if (I->dest[0].size != AGX_SIZE_32 || I->src[0].size != AGX_SIZE_16 ||
+       I->dest[0].type != AGX_INDEX_REGISTER)
+      a3_fail(a, "unpack_unorm's operands are not a 32- and a 16-bit register");
+
+   a3_begin(a, I, AGX3_UNPACK_UNORM, T_UNPACK);
+   a3_set(a, 0, (a->ops[0] & ~BITFIELD64_MASK(3)) | I->pack_mode);
+   a3_set(a, 2, a3_reg(a, 2, I->src[0], 0, 0, 0));
+
+   const struct agx3_case *c = a->spec->cases + a->spec->case_start[1] + 1;
+   assert(a->spec->ncases[1] > 1 && c->kind == A3_REG);
+   /* the case's field holds the 32-bit register's number (the dense value
+    * of index and half) */
+   struct agx3_reg r = {
+      .index = I->dest[0].value >> 2,
+      .half = (I->dest[0].value >> 1) & 1,
+   };
+   uint64_t v = a3_fix_carry(a, 1, c, agx3_reg_value(c, &r));
+   if (v == UINT64_MAX)
+      a3_fail(a, "no carry bits select unpack_unorm's destination");
 
    a3_set(a, 1, v);
    a3_emit(a, emission);
@@ -3851,6 +3884,10 @@ a3_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
 
    case AGX_OPCODE_PACK_UNORM:
       a3_pack_unorm(&a, I, emission);
+      return;
+
+   case AGX_OPCODE_UNPACK_UNORM:
+      a3_unpack_unorm(&a, I, emission);
       return;
 
    case AGX_OPCODE_FADD:
