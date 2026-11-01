@@ -388,6 +388,7 @@ typedef struct {
       enum agx_atomic_opc atomic_opc;
       enum agx_lod_mode lod_mode;
       enum agx_simd_op simd_op;
+      enum agx_pack_mode pack_mode;
       struct agx_block *target;
 
       /* As a special case to workaround ordering issues when translating phis,
