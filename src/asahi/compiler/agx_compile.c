@@ -1011,6 +1011,55 @@ agx_emit_local_load_pixel(agx_builder *b, agx_index dest,
    agx_wait_pixel_mask(b, 0x8);
 
    unsigned nr_comps = instr->def.num_components;
+   enum agx_format format = agx_format_for_pipe(nir_intrinsic_format(instr));
+
+   /* G15's tile data is raw: unorm8 channels are unpacked two from a 16-bit
+    * register to 16-bit floats, as Apple's normflt does after its tile loads
+    * (agx_nir_lower_tile_raw leaves these). An sRGB target's channels are
+    * decoded but its alpha. */
+   if (b->shader->key->dev.gpu_generation >= 15 &&
+       (format == AGX_FORMAT_U8NORM || format == AGX_FORMAT_SRGBA8)) {
+      assert(nr_comps == 2 || nr_comps == 4);
+      bool srgb = format == AGX_FORMAT_SRGBA8;
+      agx_index raw =
+         agx_temp(b->shader, nr_comps == 4 ? AGX_SIZE_32 : AGX_SIZE_16);
+      agx_index halves[2] = {raw};
+      agx_index c[4];
+
+      agx_ld_tile_to(b, raw, agx_src_index(&instr->src[0]), agx_null(),
+                     nr_comps == 4 ? AGX_FORMAT_I32 : AGX_FORMAT_I16, 0x1,
+                     nir_intrinsic_base(instr), false);
+      if (nr_comps == 4) {
+         halves[0] = agx_temp(b->shader, AGX_SIZE_16);
+         halves[1] = agx_temp(b->shader, AGX_SIZE_16);
+         agx_subdivide_to(b, halves[0], raw, 0);
+         agx_subdivide_to(b, halves[1], raw, 1);
+      }
+
+      for (unsigned i = 0; i < nr_comps / 2; i++) {
+         enum agx_pack_mode mode =
+            !srgb    ? AGX_PACK_MODE_RG8UNORM
+            : i == 0 ? AGX_PACK_MODE_RG8UNORM_SRGB
+                     : AGX_PACK_MODE_RG8UNORM_SRGB_LINEAR;
+         agx_index pair = agx_temp(b->shader, AGX_SIZE_32);
+
+         agx_unpack_unorm_to(b, pair, halves[i], mode);
+         for (unsigned j = 0; j < 2; j++) {
+            agx_index h = agx_temp(b->shader, AGX_SIZE_16);
+            agx_subdivide_to(b, h, pair, j);
+
+            c[2 * i + j] = h;
+            if (dest.size == AGX_SIZE_32) {
+               c[2 * i + j] = agx_temp(b->shader, AGX_SIZE_32);
+               agx_fmov_to(b, c[2 * i + j], h);
+            }
+         }
+      }
+
+      agx_emit_collect_to(b, dest, nr_comps, c);
+      return;
+   }
+
    agx_ld_tile_to(b, dest, agx_src_index(&instr->src[0]), agx_null(),
                   agx_format_for_pipe(nir_intrinsic_format(instr)),
                   BITFIELD_MASK(nr_comps), nir_intrinsic_base(instr), false);
