@@ -357,6 +357,10 @@ lower_load(nir_builder *b, nir_intrinsic_instr *intr)
 
    case AIL_ISA_FORMAT_U8NORM:
    case AIL_ISA_FORMAT_S8NORM:
+      /* Unpacked by the backend's unpack_unorm, two channels an instruction */
+      if (format == AIL_ISA_FORMAT_U8NORM && (k == 2 || k == 4))
+         return false;
+
       res = agx_nir_unpack_isa_format(
          b, unpack_bytes(b, load_bytes(b, intr, k, base), k), format, k);
       break;
@@ -368,6 +372,9 @@ lower_load(nir_builder *b, nir_intrinsic_instr *intr)
       break;
 
    case AIL_ISA_FORMAT_SRGBA8:
+      if (k == 2 || k == 4)
+         return false;
+
       res = agx_nir_unpack_isa_format(
          b, unpack_bytes(b, load_bytes(b, intr, 4, base), 4), format, k);
       break;
