@@ -393,6 +393,11 @@ PACK_MODE = enum("pack_mode", {
 })
 op("pack_unorm", _, srcs = 2, imms = [PACK_MODE])
 
+# G15: the reverse (Apple's normflt, unpack rg8unorm, after its tile loads):
+# the two bytes of a 16-bit source to two 16-bit floats, the halves of the
+# 32-bit result, in the same modes
+op("unpack_unorm", _, srcs = 1, imms = [PACK_MODE])
+
 # Sources are the coeffient register and the sample index (if applicable).
 # perspective is G15's flag on the iteration of W's coefficients, which its
 # compiler follows with a reciprocal (G13 has iterproj instead).
