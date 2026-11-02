@@ -784,6 +784,14 @@ hk_image_view_init(struct hk_device *dev, struct hk_image_view *view,
       view->plane_count = 1;
       view->planes[0].image_plane =
          hk_image_aspects_to_plane(image, view->vk.aspects);
+
+      /* vk_meta views depth and stencil as colour for its drawn copies: a
+       * 1-byte view of D32_SFLOAT_S8_UINT is the stencil plane
+       */
+      if (view->vk.aspects == VK_IMAGE_ASPECT_COLOR_BIT &&
+          image->vk.format == VK_FORMAT_D32_SFLOAT_S8_UINT &&
+          vk_format_get_blocksize(view->vk.view_format) == 1)
+         view->planes[0].image_plane = 1;
    } else {
       /* For other formats, retrieve the plane count from the aspect mask
        * and then walk through the aspect mask to map each image plane
