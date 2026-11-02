@@ -26,6 +26,8 @@ format_for_bitsize(unsigned bitsize)
       return PIPE_FORMAT_R16_UINT;
    case 32:
       return PIPE_FORMAT_R32_UINT;
+   case 64:
+      return PIPE_FORMAT_R32G32_UINT; /* G15's 64-bit max and min */
    default:
       UNREACHABLE("should have been lowered");
    }
