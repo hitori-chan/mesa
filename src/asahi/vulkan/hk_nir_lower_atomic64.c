@@ -13,9 +13,10 @@
  * a 64-bit min and max without a result, and no 64-bit compare-exchange, so
  * every 64-bit operation takes one of the device's HK_ATOMIC64_LOCKS 32-bit
  * locks, hashed from its address: it reads and writes the value's halves
- * with 32-bit atomics, which the L2 serves, and releases the lock. Even min
- * and max take it, or one landing between another operation's read and
- * write would be lost. Each lane retries in one loop and leaves it once it
+ * with 32-bit atomics, which the L2 serves, and releases the lock. A shader
+ * whose 64-bit atomics are all min and max without a result keeps them on
+ * G15's own form; with any other there, they take the lock too, or one
+ * landing between another operation's read and write would be lost. Each lane retries in one loop and leaves it once it
  * has had the lock, so the lanes of a SIMD group never wait on each other.
  * No acquire fence: the lock's compare-exchange returns a result, which the
  * lane waits for before the reads. No release fence either: a G15 device
@@ -68,6 +69,21 @@ static nir_def *
 atomic32(nir_builder *b, nir_def *addr, nir_def *data, nir_atomic_op op)
 {
    return nir_global_atomic(b, 32, addr, data, .atomic_op = op);
+}
+
+static bool
+is_native(nir_intrinsic_instr *intr)
+{
+   switch (nir_intrinsic_atomic_op(intr)) {
+   case nir_atomic_op_imax:
+   case nir_atomic_op_imin:
+   case nir_atomic_op_umax:
+   case nir_atomic_op_umin:
+      return intr->intrinsic == nir_intrinsic_global_atomic &&
+             nir_def_is_unused(&intr->def);
+   default:
+      return false;
+   }
 }
 
 static bool
@@ -142,6 +158,28 @@ lower(nir_builder *b, nir_intrinsic_instr *intr, void *data_)
 bool
 hk_nir_lower_atomic64(nir_shader *nir)
 {
+   /* G15's own 64-bit max and min, without a result, need no lock. A shader
+    * whose 64-bit atomics are all such stays native (a visibility buffer's
+    * max); with any other, they take the lock too, or one landing between a
+    * locked operation's read and write would be lost. */
+   bool other = false;
+   nir_foreach_function_impl(impl, nir) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if ((intr->intrinsic == nir_intrinsic_global_atomic ||
+                 intr->intrinsic == nir_intrinsic_global_atomic_swap) &&
+                intr->def.bit_size == 64 && !is_native(intr))
+               other = true;
+         }
+      }
+   }
+
+   if (!other)
+      return false;
+
    bool progress =
       nir_shader_intrinsics_pass(nir, lower, nir_metadata_none, NULL);
 
