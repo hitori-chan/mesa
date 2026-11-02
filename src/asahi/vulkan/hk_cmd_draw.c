@@ -588,6 +588,22 @@ hk_merge_render_iview(struct hk_rendering_state *render,
    }
 }
 
+/*
+ * The depth and stencil stores are forced (below), so an attachment whose
+ * contents the pass must keep is loaded, and the store writes back what was
+ * there: VK_ATTACHMENT_STORE_OP_NONE without a clear, as the colour
+ * attachments' STORE_OP_NONE workaround in hk_build_bg_eot. DXVK binds a
+ * depth buffer a pass does not use with LOAD_OP_NONE and STORE_OP_NONE; the
+ * store of the tile's undefined depth overwrote it (Grim Dawn's menu lost its
+ * depth clear, and the fills tested against it vanished).
+ */
+static bool
+hk_zs_keep(const VkRenderingAttachmentInfo *att)
+{
+   return att->storeOp == VK_ATTACHMENT_STORE_OP_NONE &&
+          att->loadOp != VK_ATTACHMENT_LOAD_OP_CLEAR;
+}
+
 static void
 hk_pack_zls_control(struct agx_zls_control_packed *packed,
                     struct ail_layout *z_layout, struct ail_layout *s_layout,
@@ -606,8 +622,8 @@ hk_pack_zls_control(struct agx_zls_control_packed *packed,
                     z->resolveMode != VK_RESOLVE_MODE_NONE || partial_render ||
                     true;
 
-      zls.z_load = z->loadOp == VK_ATTACHMENT_LOAD_OP_LOAD || partial_render ||
-                   incomplete_render_area;
+      zls.z_load = z->loadOp == VK_ATTACHMENT_LOAD_OP_LOAD || hk_zs_keep(z) ||
+                   partial_render || incomplete_render_area;
    }
 
    if (s) {
@@ -621,8 +637,8 @@ hk_pack_zls_control(struct agx_zls_control_packed *packed,
                     s->resolveMode != VK_RESOLVE_MODE_NONE || partial_render ||
                     true;
 
-      zls.s_load = s->loadOp == VK_ATTACHMENT_LOAD_OP_LOAD || partial_render ||
-                   incomplete_render_area;
+      zls.s_load = s->loadOp == VK_ATTACHMENT_LOAD_OP_LOAD || hk_zs_keep(s) ||
+                   partial_render || incomplete_render_area;
    }
 
    agx_pack_zls_control(packed, z_layout, s_layout, &zls);
