@@ -1352,10 +1352,13 @@ hk_meta_copy_get_image_properties(struct hk_image *img)
          props.stencil.component_mask = BITFIELD_MASK(1);
          break;
       case VK_FORMAT_D32_SFLOAT_S8_UINT:
-         props.depth.view_format = VK_FORMAT_R32G32_UINT;
+         /* Two planes, not interleaved: hk_image stores the depth as
+          * D32_SFLOAT and the stencil as S8_UINT
+          */
+         props.depth.view_format = VK_FORMAT_R32_UINT;
          props.depth.component_mask = BITFIELD_BIT(0);
-         props.stencil.view_format = VK_FORMAT_R32G32_UINT;
-         props.stencil.component_mask = BITFIELD_BIT(1);
+         props.stencil.view_format = VK_FORMAT_R8_UINT;
+         props.stencil.component_mask = BITFIELD_BIT(0);
          break;
       case VK_FORMAT_D16_UNORM:
          props.depth.view_format = VK_FORMAT_R16_UINT;
