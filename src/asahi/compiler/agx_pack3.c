@@ -842,6 +842,8 @@ a3_memshift(const struct a3 *a, unsigned bytes)
 #define T_ATG       "670354010002000002000004"     /* threadgroup_atomic add */
 #define T_ADEV      "6701540000048182000000008003" /* device_atomic add */
 #define T_ADEV_RET  "6701540000048182000600008003" /* ... 3, st0, add */
+/* T_ADEV with bit 70, the 64-bit form (Metal's atomic_ulong max sets it) */
+#define T_ADEV64    "6701540000048182400000008003" /* device_atomic imax */
 #define T_GET_STACK "0c80094300800000"         /* get_stack 2, 2, r0, ^st0 */
 #define T_LDTPS     "6f0054000000112000000000" /* ldtps 0, i32, x, r0, 0 */
 #define T_STTPS     "ef005400000011080000"     /* sttps i32, x, r0, 0 */
@@ -1749,11 +1751,54 @@ a3_atomic_stack(unsigned scratch_B)
    return DIV_ROUND_UP(scratch_B, 4);
 }
 
+/* atomic's 64-bit form (device_atomic64): max and min without a result, the
+ * data a register pair, the index in 64-bit elements (compute-program.md:
+ * Metal emits nothing else; with a result it is not run) */
+static void
+a3_atomic64(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
+{
+   unsigned op = 0;
+
+   switch (I->atomic_opc) {
+   case AGX_ATOMIC_OPC_IMAX:
+      op = 0;
+      break;
+   case AGX_ATOMIC_OPC_IMIN:
+      op = 1;
+      break;
+   case AGX_ATOMIC_OPC_UMAX:
+      op = 2;
+      break;
+   case AGX_ATOMIC_OPC_UMIN:
+      op = 3;
+      break;
+   default:
+      a3_fail(a, "no 64-bit atomic but max and min");
+   }
+
+   if (!agx_is_null(I->dest[0]))
+      a3_fail(a, "a 64-bit atomic returns nothing");
+
+   a3_begin(a, I, AGX3_DEVICE_ATOMIC64, T_ADEV64);
+   a3_set(a, ADEV_DATA, a3_reg(a, ADEV_DATA, I->src[0], 0, 0, 0));
+   a3_set(a, ADEV_BASE, a3_membase(a, ADEV_BASE, I->src[1]));
+   a3_set(a, ADEV_INDEX, a3_memidx(a, ADEV_INDEX, I->src[2]));
+   a3_set(a, ADEV_OP, op);
+   a3_set(a, ADEV_SHIFT, a3_memshift(a, 3));
+   a3_set(a, ADEV_OFFSET, 0);
+   a3_emit(a, emission);
+}
+
 static void
 a3_atomic(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
 {
    bool result = !agx_is_null(I->dest[0]);
    unsigned o = result ? 2 : 0;
+
+   if (I->src[0].size == AGX_SIZE_64) {
+      a3_atomic64(a, I, emission);
+      return;
+   }
 
    if (result) {
       a3_begin(a, I, AGX3_DEVICE_ATOMIC_RET, T_ADEV_RET);
