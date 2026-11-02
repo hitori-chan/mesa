@@ -1176,16 +1176,18 @@ fail:
       radv_bo_destroy(device, NULL, gsvs_ring_bo);
    if (tess_rings_bo && tess_rings_bo != queue->tess_rings_bo)
       radv_bo_destroy(device, NULL, tess_rings_bo);
+   if (mesh_scratch_ring_bo && mesh_scratch_ring_bo != queue->mesh_scratch_ring_bo)
+      radv_bo_destroy(device, NULL, mesh_scratch_ring_bo);
    if (task_rings_bo && task_rings_bo != queue->task_rings_bo)
       radv_bo_destroy(device, NULL, task_rings_bo);
    if (ge_rings_bo && ge_rings_bo != queue->ge_rings_bo)
       radv_bo_destroy(device, NULL, ge_rings_bo);
    if (gds_bo && gds_bo != queue->gds_bo) {
-      ws->buffer_make_resident(ws, queue->gds_bo, false);
+      ws->buffer_make_resident(ws, gds_bo, false);
       radv_bo_destroy(device, NULL, gds_bo);
    }
    if (gds_oa_bo && gds_oa_bo != queue->gds_oa_bo) {
-      ws->buffer_make_resident(ws, queue->gds_oa_bo, false);
+      ws->buffer_make_resident(ws, gds_oa_bo, false);
       radv_bo_destroy(device, NULL, gds_oa_bo);
    }
 

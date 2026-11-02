@@ -970,8 +970,8 @@ create_gs_rast_shader(const nir_shader *gs, const struct lower_gs_state *state,
       }
    }
 
-   nir_shader_intrinsics_pass(shader, lower_to_gs_rast,
-                              nir_metadata_control_flow, &rs);
+   NIR_PASS(_, shader, nir_shader_intrinsics_pass, lower_to_gs_rast,
+            nir_metadata_control_flow, &rs);
 
    b->cursor = nir_after_impl(b->impl);
    if (gs->xfb_info) {
@@ -1453,8 +1453,8 @@ poly_nir_lower_gs(nir_shader *gs, nir_shader **gs_count, nir_shader **gs_copy,
     * appropriately, instead of assuming everything is vec4.
     */
    uint8_t component_counts[NUM_TOTAL_VARYING_SLOTS] = {0};
-   nir_shader_intrinsics_pass(gs, collect_components, nir_metadata_all,
-                              component_counts);
+   NIR_PASS(_, gs, nir_shader_intrinsics_pass, collect_components,
+            nir_metadata_all, component_counts);
 
    /* If geometry shader instancing is used, lower it away before linking
     * anything. Otherwise, smash the invocation ID to zero.
@@ -1465,8 +1465,8 @@ poly_nir_lower_gs(nir_shader *gs, nir_shader **gs_count, nir_shader **gs_copy,
       nir_function_impl *impl = nir_shader_get_entrypoint(gs);
       nir_builder b = nir_builder_at(nir_before_impl(impl));
 
-      nir_shader_intrinsics_pass(gs, rewrite_invocation_id,
-                                 nir_metadata_control_flow, nir_imm_int(&b, 0));
+      NIR_PASS(_, gs, nir_shader_intrinsics_pass, rewrite_invocation_id,
+               nir_metadata_control_flow, nir_imm_int(&b, 0));
    }
 
    /* After tessellation, the primitive ID is the patch index the TES writes */
@@ -1595,7 +1595,7 @@ poly_nir_lower_gs(nir_shader *gs, nir_shader **gs_count, nir_shader **gs_copy,
             nir_metadata_none, &gs_state);
 
    /* Clean up after all that lowering we did */
-   nir_lower_global_vars_to_local(gs);
+   NIR_PASS(_, gs, nir_lower_global_vars_to_local);
    do {
       progress = false;
       NIR_PASS(progress, gs, nir_lower_var_copies);

@@ -15,7 +15,6 @@
 #include "nir_builder.h"
 #include "nir_builder_opcodes.h"
 #include "nir_intrinsics.h"
-#include "nir_shader_compiler_options.h"
 #include "shader_enums.h"
 
 #define JAY_NIR_SNAPSHOT(name)  BRW_NIR_SNAPSHOT(name)
@@ -924,6 +923,7 @@ jay_process_nir(const struct intel_device_info *devinfo,
       /* Do this lowering before jay_populate_prog_data(). */
       JAY_NIR_PASS(nir_opt_frag_coord_to_pixel_coord);
       JAY_NIR_PASS(nir_lower_frag_coord_to_pixel_coord);
+      JAY_NIR_PASS(nir_lower_alu_to_scalar, NULL, NULL);
       JAY_NIR_PASS(nir_opt_barycentric, true);
       JAY_NIR_PASS(nir_opt_constant_folding);
 
@@ -1094,7 +1094,6 @@ jay_select_simd(const struct intel_device_info *devinfo, nir_shader *nir)
    }
 
    unsigned modes = (32 | 16 | 8) & ~unsupported_modes;
-   assert(modes && "some SIMD mode must be supported");
 
    /* Skip undesirable modes when possible */
    if (modes & ~undesirable_modes) {
@@ -1145,24 +1144,6 @@ jay_process_nir_for_simd(const struct intel_device_info *devinfo,
 
    JAY_NIR_PASS(nir_opt_algebraic_late);
    JAY_NIR_PASS(intel_nir_opt_peephole_imul32x16);
-
-   /* If multi-polygon is used with this shader, we cannot set
-    * nir_divergence_single_prim_per_subgroup. However, if multi-polygon is
-    * disabled, we need to set nir_divergence_single_prim_per_subgroup to match
-    * the convergent definitions in the backend. Getting that wrong would result
-    * in nonsensical shuffles of convergent values after the backend optimizer
-    * runs - better just get the divergence correct in the first place.
-    *
-    * However, multi-polygon is a per-shader decision, while shader compiler
-    * options are global. Hence we override the settings on a per-shader basis.
-    *
-    * Also, we don't currently enable multi-polygon ever (but hopefully we will
-    * someday and we share options with brw) so we're just smashing it on here.
-    */
-   struct nir_shader_compiler_options options = *nir->options;
-   options.divergence_analysis_options |=
-      nir_divergence_single_prim_per_subgroup;
-   nir->options = &options;
 
    nir_divergence_analysis(nir);
    JAY_NIR_PASS(nir_shader_phi_pass, lower_after_lcssa,
@@ -1245,9 +1226,4 @@ jay_process_nir_for_simd(const struct intel_device_info *devinfo,
 
    /* This must be the very last pass since nir_print itself will reindex! */
    nj_index_ssa_defs(nir);
-
-   /* We set this to something on the stack, we're done using it but make
-    * sure we don't use-after-free.
-    */
-   nir->options = NULL;
 }

@@ -1562,9 +1562,8 @@ hk_compile_shader(struct hk_device *dev, struct vk_shader_compile_info *info,
          nir->info.internal &&
          dev->vk.enabled_extensions.EXT_conservative_rasterization;
 
-      NIR_PASS(_, nir, poly_nir_lower_gs, &count, &rast,
-               conservative ? &rast_cons : NULL, &pre_gs,
-               &count_variant->info.gs);
+      poly_nir_lower_gs(nir, &count, &rast, conservative ? &rast_cons : NULL,
+                        &pre_gs, &count_variant->info.gs);
 
       agx_preprocess_nir(count);
       agx_preprocess_nir(rast);

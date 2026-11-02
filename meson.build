@@ -501,6 +501,7 @@ with_platform_wayland = _platforms.contains('wayland')
 with_platform_haiku = _platforms.contains('haiku')
 with_platform_windows = _platforms.contains('windows')
 with_platform_macos = _platforms.contains('macos')
+with_platform_display = system_has_kms_drm and not with_platform_android
 
 with_gfxstream_emulated_android = with_gfxstream_vk and with_platform_android and host_machine.system() == 'linux'
 if with_gfxstream_emulated_android
@@ -1863,7 +1864,7 @@ if dep_zlib.found()
   pre_args += '-DHAVE_ZLIB'
 endif
 
-if host_machine.system() == 'windows' or with_platform_android
+if not with_platform_display
   dep_display_info = null_dep
 else
   dep_display_info = dependency('libdisplay-info', version : '>= 0.1.1',
@@ -2402,6 +2403,125 @@ _shader_replacement = get_option('custom-shader-replacement')
 if _shader_replacement == ''
 else
   pre_args += '-DCUSTOM_SHADER_REPLACEMENT'
+endif
+
+with_apitrace = get_option('apitrace')
+dep_apitrace = []
+# the tracer keeps pointers into the libraries with traced entry points, which
+# must not be unloaded
+ld_args_apitrace = with_apitrace and not with_platform_windows ? ['-Wl,-z,nodelete'] : []
+if with_apitrace
+  if host_machine.system() == 'darwin'
+    error('The apitrace option is not supported on this platform')
+  endif
+  if with_glx == 'xlib'
+    error('The apitrace option is not supported with xlib-based GLX')
+  endif
+  if with_platform_windows and with_egl
+    error('The apitrace option traces only WGL on Windows, build with -Degl=disabled')
+  endif
+  cmake = import('cmake')
+  apitrace_opts = cmake.subproject_options()
+  apitrace_opts.add_cmake_defines({'ENABLE_TESTS': false})
+  apitrace_opts.add_cmake_defines({'ENABLE_WAFFLE': false})
+  apitrace_opts.add_cmake_defines({'ENABLE_CLI': false})
+  apitrace_opts.add_cmake_defines({'ENABLE_GUI': false})
+  apitrace_opts.add_cmake_defines({'ENABLE_X11': with_glx == 'dri'})
+  apitrace_opts.add_cmake_defines({'ENABLE_EGL': with_egl})
+  apitrace_opts.add_cmake_defines({'CMAKE_POSITION_INDEPENDENT_CODE': true})
+  # apitrace enables LTO by default; the objects can't be linked into Mesa's
+  # non-LTO libraries (see cmake-lto-optout.patch)
+  apitrace_opts.add_cmake_defines({'CMAKE_INTERPROCEDURAL_OPTIMIZATION': false})
+  if meson.is_cross_build()
+    apitrace_opts.add_cmake_defines({
+      'CMAKE_C_FLAGS' : '',
+      'CMAKE_CXX_FLAGS' : '',
+      'CMAKE_EXE_LINKER_FLAGS' : '',
+      'CMAKE_MODULE_LINKER_FLAGS' : '',
+      'CMAKE_SHARED_LINKER_FLAGS' : '',
+      'CMAKE_DISABLE_FIND_PACKAGE_PkgConfig' : true,
+    })
+  endif
+  if with_platform_android
+    apitrace_ndk = ''
+    foreach arg : cc.cmd_array()
+      if arg.contains('/toolchains/llvm/')
+        apitrace_ndk = arg.split('/toolchains/llvm/')[0]
+      endif
+    endforeach
+    if apitrace_ndk == ''
+      error('The apitrace option needs an NDK compiler to locate the NDK')
+    endif
+    apitrace_android_abi = {
+      'aarch64' : 'arm64-v8a',
+      'arm' : 'armeabi-v7a',
+      'x86' : 'x86',
+      'x86_64' : 'x86_64',
+    }
+    apitrace_opts.add_cmake_defines({
+      'CMAKE_ANDROID_NDK' : apitrace_ndk,
+      'CMAKE_ANDROID_ARCH_ABI' : apitrace_android_abi[host_machine.cpu_family()],
+      'CMAKE_SYSTEM_VERSION' : get_option('platform-sdk-version').to_string(),
+    })
+  endif
+  apitrace_opts.set_install(false)
+  apitrace = cmake.subproject('apitrace', options: apitrace_opts)
+  pre_args += '-DHAVE_APITRACE'
+  dep_apitrace_headers = []
+  foreach t : ['gltrace_common', 'glproc']
+    dep_apitrace += apitrace.dependency(t)
+    dep_apitrace_headers += apitrace.dependency(t).partial_dependency(includes : true)
+  endforeach
+  apitrace_libs = ['glhelpers', 'trace', 'common', 'os', 'crc32c', 'snappy',
+                   'guids', 'highlight', 'zstd_seekable']
+  # apitrace builds libbacktrace only for ELF
+  if not with_platform_windows
+    apitrace_libs += 'backtrace'
+  endif
+  # apitrace uses the system Brotli when pkg-config finds it, otherwise it
+  # builds its bundled copy, which has to be linked explicitly
+  dep_brotlidec = dependency('libbrotlidec', version : '>= 1.0.7', required : false)
+  if dep_brotlidec.found()
+    dep_apitrace += dep_brotlidec
+  else
+    apitrace_libs += ['brotli_dec', 'brotli_common']
+  endif
+  foreach t : apitrace_libs
+    dep_apitrace += apitrace.dependency(t)
+  endforeach
+  # meson doesn't order users of a cmake dependency after the targets that
+  # generate its headers, so depend on glproc here; drop this and
+  # cmake-glproc-header-sources.patch once this is fixed:
+  # https://github.com/mesonbuild/meson/issues/16275
+  apitrace_glproc_h = custom_target(
+    'apitrace_glproc.h',
+    output : 'apitrace_glproc.h',
+    command : [
+      prog_python, '-c', 'import sys; open(sys.argv[1], "w").close()',
+      '@OUTPUT@',
+    ],
+    depends : apitrace.target('glproc'),
+  )
+  apitrace_gen_py = files('src/mesa/main/apitrace_gen.py')
+  apitrace_mesa_xml = files('src/mesa/glapi/glapi/gen/gl_and_es_API.xml')
+  apitrace_source_dir = meson.project_source_root() / 'subprojects' / 'apitrace'
+  apitrace_gen_args = []
+  apitrace_cpp_args = ['-DNDEBUG'] + cpp.get_supported_arguments(
+    '-Wno-sign-compare', '-fno-strict-aliasing')
+  # msvc has no gnu++17
+  apitrace_override_options = ['cpp_std=gnu++17,c++17']
+  if with_egl
+    apitrace_gen_args += '--egl'
+  endif
+  if with_glx == 'dri'
+    apitrace_gen_args += '--glx'
+    apitrace_cpp_args += '-DHAVE_X11'
+  else
+    apitrace_cpp_args += '-DEGL_NO_X11'
+  endif
+  if with_platform_windows
+    apitrace_gen_args += '--wgl'
+  endif
 endif
 
 allow_fallback_for_perfetto = get_option('allow-fallback-for').contains('perfetto')
