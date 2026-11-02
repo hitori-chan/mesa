@@ -848,6 +848,9 @@ a3_memshift(const struct a3 *a, unsigned bytes)
 #define T_BARRIER   "070454610300"             /* threadgroup_barrier */
 #define T_ST_VAR    "5706540000404800"         /* st_var ^cr0, 0, 0 */
 #define T_ST_TILE   "e70654000000012e00000000" /* tile_store i32 */
+#define T_PACK_16   "97045401020208a845c2"     /* pack rg8unorm, r0h, r1l */
+#define T_PACK_32   "97045400020008d045c2"     /* pack rg8unorm, r0, r1 */
+#define T_UNPACK    "17045400010210ea"         /* unpack rg8unorm, r0, r0h */
 #define T_LD_TILE   "670654000000012e01000000" /* tile_load 2, i32 */
 #define T_WAIT_PIX  "8702540c0800"             /* wait_pix 12, f1 */
 #define T_SIG_PIX   "0702540c0000"             /* signal_pix 12 */
@@ -1417,6 +1420,77 @@ a3_iadd_op(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
 }
 
 /* convert: src[0] is the G13 mode, src[1] the value */
+/* pack_unorm: the mode, the 16-bit destination and the two float sources
+ * (AGX3.xml's pack_unorm). The sources' sizes share bits 73 and 75 with the
+ * mode and the destination, so the template is Apple's encoding of the
+ * sources' size, and the IR's mode replaces the mode's bits 77:79 alone. */
+static void
+a3_pack_unorm(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
+{
+   if (I->dest[0].size != AGX_SIZE_16)
+      a3_fail(a, "pack_unorm's destination is not 16-bit");
+
+   if (I->src[0].size != I->src[1].size)
+      a3_fail(a, "pack_unorm's sources differ in size");
+
+   a3_begin(a, I, AGX3_PACK_UNORM,
+            I->src[0].size == AGX_SIZE_32 ? T_PACK_32 : T_PACK_16);
+   a3_set(a, 0, (a->ops[0] & ~BITFIELD64_MASK(3)) | I->pack_mode);
+   a3_set(a, 2, a3_src(a, 2, I->src[0], false));
+   a3_set(a, 3, a3_src(a, 3, I->src[1], false));
+
+   /* The destination's general register case (its fourth: bit 9 set), whose
+    * bits 10 and 11 carry the second source's bits 73 and 75, as Apple's
+    * encodings hold them; the first case ("one element") holds them clear */
+   if (I->dest[0].type != AGX_INDEX_REGISTER)
+      a3_fail(a, "pack_unorm's destination is not a register");
+
+   const struct agx3_case *c = a->spec->cases + a->spec->case_start[1] + 3;
+   assert(a->spec->ncases[1] > 3 && c->kind == A3_REG);
+   struct agx3_reg r = {
+      .index = I->dest[0].value >> 1,
+      .half = I->dest[0].value & 1,
+   };
+   uint64_t v = a3_fix_carry(a, 1, c, agx3_reg_value(c, &r));
+   if (v == UINT64_MAX)
+      a3_fail(a, "no carry bits select pack_unorm's destination");
+
+   a3_set(a, 1, v);
+   a3_emit(a, emission);
+}
+
+/* unpack_unorm: the mode, the destination (two 16-bit floats, the halves of
+ * a 32-bit register) and the 16-bit source (AGX3.xml's unpack_unorm). The
+ * mode's bit 3 is the destination's, so the IR's mode replaces its bits
+ * 60:62 alone; the destination's case of two 16-bit values is its second. */
+static void
+a3_unpack_unorm(struct a3 *a, const agx_instr *I,
+                struct util_dynarray *emission)
+{
+   if (I->dest[0].size != AGX_SIZE_32 || I->src[0].size != AGX_SIZE_16 ||
+       I->dest[0].type != AGX_INDEX_REGISTER)
+      a3_fail(a, "unpack_unorm's operands are not a 32- and a 16-bit register");
+
+   a3_begin(a, I, AGX3_UNPACK_UNORM, T_UNPACK);
+   a3_set(a, 0, (a->ops[0] & ~BITFIELD64_MASK(3)) | I->pack_mode);
+   a3_set(a, 2, a3_reg(a, 2, I->src[0], 0, 0, 0));
+
+   const struct agx3_case *c = a->spec->cases + a->spec->case_start[1] + 1;
+   assert(a->spec->ncases[1] > 1 && c->kind == A3_REG);
+   /* the case's field holds the 32-bit register's number (the dense value
+    * of index and half) */
+   struct agx3_reg r = {
+      .index = I->dest[0].value >> 2,
+      .half = (I->dest[0].value >> 1) & 1,
+   };
+   uint64_t v = a3_fix_carry(a, 1, c, agx3_reg_value(c, &r));
+   if (v == UINT64_MAX)
+      a3_fail(a, "no carry bits select unpack_unorm's destination");
+
+   a3_set(a, 1, v);
+   a3_emit(a, emission);
+}
+
 static void
 a3_convert(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
 {
@@ -3806,6 +3880,14 @@ a3_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
 
    case AGX_OPCODE_CONVERT:
       a3_convert(&a, I, emission);
+      return;
+
+   case AGX_OPCODE_PACK_UNORM:
+      a3_pack_unorm(&a, I, emission);
+      return;
+
+   case AGX_OPCODE_UNPACK_UNORM:
+      a3_unpack_unorm(&a, I, emission);
       return;
 
    case AGX_OPCODE_FADD:

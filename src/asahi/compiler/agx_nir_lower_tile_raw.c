@@ -192,6 +192,10 @@ lower_store(nir_builder *b, nir_intrinsic_instr *intr)
       return true;
 
    case AIL_ISA_FORMAT_U8NORM:
+      /* Packed by the backend's pack_unorm, two channels an instruction */
+      if ((mask == 0x3 || mask == 0xf) && n >= util_last_bit(mask))
+         return false;
+
       store_byte_channels(b, intr,
                           nir_format_float_to_unorm(b, to_f32(b, value), bits8),
                           mask, base);
@@ -218,6 +222,10 @@ lower_store(nir_builder *b, nir_intrinsic_instr *intr)
       return true;
 
    case AIL_ISA_FORMAT_SRGBA8: {
+      /* Packed by the backend's pack_unorm, two channels an instruction */
+      if ((mask == 0x3 || mask == 0xf) && n >= util_last_bit(mask))
+         return false;
+
       nir_def *f = to_f32(b, value);
       if (n >= 3) {
          nir_def *rgb = nir_format_linear_to_srgb(b, channels(b, f, 0, 3));
@@ -349,6 +357,10 @@ lower_load(nir_builder *b, nir_intrinsic_instr *intr)
 
    case AIL_ISA_FORMAT_U8NORM:
    case AIL_ISA_FORMAT_S8NORM:
+      /* Unpacked by the backend's unpack_unorm, two channels an instruction */
+      if (format == AIL_ISA_FORMAT_U8NORM && (k == 2 || k == 4))
+         return false;
+
       res = agx_nir_unpack_isa_format(
          b, unpack_bytes(b, load_bytes(b, intr, k, base), k), format, k);
       break;
@@ -360,6 +372,9 @@ lower_load(nir_builder *b, nir_intrinsic_instr *intr)
       break;
 
    case AIL_ISA_FORMAT_SRGBA8:
+      if (k == 2 || k == 4)
+         return false;
+
       res = agx_nir_unpack_isa_format(
          b, unpack_bytes(b, load_bytes(b, intr, 4, base), 4), format, k);
       break;

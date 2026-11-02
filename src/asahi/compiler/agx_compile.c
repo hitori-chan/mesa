@@ -795,6 +795,44 @@ agx_emit_local_store_pixel(agx_builder *b, nir_intrinsic_instr *instr)
       agx_wait_pixel_mask(b, 0xC);
    }
 
+   agx_index coords = explicit ? agx_src_index(&instr->src[2]) : agx_null();
+   unsigned mask = nir_intrinsic_write_mask(instr);
+   enum agx_format format = agx_format_for_pipe(nir_intrinsic_format(instr));
+
+   /* G15's tile data is raw: unorm8 channels are packed two to a 16-bit
+    * register, as Apple's fltnorm does before its tile stores, and stored as
+    * one 16- or 32-bit value (agx_nir_lower_tile_raw leaves these). An sRGB
+    * target's channels are sRGB-encoded but its alpha. */
+   if (b->shader->key->dev.gpu_generation >= 15 &&
+       (format == AGX_FORMAT_U8NORM || format == AGX_FORMAT_SRGBA8)) {
+      assert(mask == 0x3 || mask == 0xf);
+      bool srgb = format == AGX_FORMAT_SRGBA8;
+      agx_index h[2];
+
+      for (unsigned i = 0; i < util_last_bit(mask) / 2; i++) {
+         enum agx_pack_mode mode = !srgb ? AGX_PACK_MODE_RG8UNORM
+                                   : i == 0 ? AGX_PACK_MODE_RG8UNORM_SRGB
+                                            : AGX_PACK_MODE_RG8UNORM_SRGB_LINEAR;
+
+         h[i] = agx_temp(b->shader, AGX_SIZE_16);
+         agx_pack_unorm_to(b, h[i],
+                           agx_extract_nir_src(b, instr->src[0], 2 * i),
+                           agx_extract_nir_src(b, instr->src[0], 2 * i + 1),
+                           mode);
+      }
+
+      agx_index v = h[0];
+      if (mask == 0xf) {
+         v = agx_temp(b->shader, AGX_SIZE_32);
+         agx_emit_collect_to(b, v, 2, h);
+      }
+
+      b->shader->out->tag_write_disable = false;
+      return agx_st_tile(b, v, agx_src_index(&instr->src[1]), coords,
+                         mask == 0xf ? AGX_FORMAT_I32 : AGX_FORMAT_I16, 0x1,
+                         nir_intrinsic_base(instr), explicit);
+   }
+
    /* Compact the registers according to the mask */
    agx_index compacted[4] = {agx_null()};
 
@@ -804,13 +842,10 @@ agx_emit_local_store_pixel(agx_builder *b, nir_intrinsic_instr *instr)
    }
 
    agx_index collected = agx_emit_collect(b, compact_count, compacted);
-   agx_index coords = explicit ? agx_src_index(&instr->src[2]) : agx_null();
 
    b->shader->out->tag_write_disable = false;
    return agx_st_tile(b, collected, agx_src_index(&instr->src[1]), coords,
-                      agx_format_for_pipe(nir_intrinsic_format(instr)),
-                      nir_intrinsic_write_mask(instr),
-                      nir_intrinsic_base(instr), explicit);
+                      format, mask, nir_intrinsic_base(instr), explicit);
 }
 
 /* G15: the sample mask is a value in cr0, applied by movmsk (AGX3.xml): the
@@ -976,6 +1011,55 @@ agx_emit_local_load_pixel(agx_builder *b, agx_index dest,
    agx_wait_pixel_mask(b, 0x8);
 
    unsigned nr_comps = instr->def.num_components;
+   enum agx_format format = agx_format_for_pipe(nir_intrinsic_format(instr));
+
+   /* G15's tile data is raw: unorm8 channels are unpacked two from a 16-bit
+    * register to 16-bit floats, as Apple's normflt does after its tile loads
+    * (agx_nir_lower_tile_raw leaves these). An sRGB target's channels are
+    * decoded but its alpha. */
+   if (b->shader->key->dev.gpu_generation >= 15 &&
+       (format == AGX_FORMAT_U8NORM || format == AGX_FORMAT_SRGBA8)) {
+      assert(nr_comps == 2 || nr_comps == 4);
+      bool srgb = format == AGX_FORMAT_SRGBA8;
+      agx_index raw =
+         agx_temp(b->shader, nr_comps == 4 ? AGX_SIZE_32 : AGX_SIZE_16);
+      agx_index halves[2] = {raw};
+      agx_index c[4];
+
+      agx_ld_tile_to(b, raw, agx_src_index(&instr->src[0]), agx_null(),
+                     nr_comps == 4 ? AGX_FORMAT_I32 : AGX_FORMAT_I16, 0x1,
+                     nir_intrinsic_base(instr), false);
+      if (nr_comps == 4) {
+         halves[0] = agx_temp(b->shader, AGX_SIZE_16);
+         halves[1] = agx_temp(b->shader, AGX_SIZE_16);
+         agx_subdivide_to(b, halves[0], raw, 0);
+         agx_subdivide_to(b, halves[1], raw, 1);
+      }
+
+      for (unsigned i = 0; i < nr_comps / 2; i++) {
+         enum agx_pack_mode mode =
+            !srgb    ? AGX_PACK_MODE_RG8UNORM
+            : i == 0 ? AGX_PACK_MODE_RG8UNORM_SRGB
+                     : AGX_PACK_MODE_RG8UNORM_SRGB_LINEAR;
+         agx_index pair = agx_temp(b->shader, AGX_SIZE_32);
+
+         agx_unpack_unorm_to(b, pair, halves[i], mode);
+         for (unsigned j = 0; j < 2; j++) {
+            agx_index h = agx_temp(b->shader, AGX_SIZE_16);
+            agx_subdivide_to(b, h, pair, j);
+
+            c[2 * i + j] = h;
+            if (dest.size == AGX_SIZE_32) {
+               c[2 * i + j] = agx_temp(b->shader, AGX_SIZE_32);
+               agx_fmov_to(b, c[2 * i + j], h);
+            }
+         }
+      }
+
+      agx_emit_collect_to(b, dest, nr_comps, c);
+      return;
+   }
+
    agx_ld_tile_to(b, dest, agx_src_index(&instr->src[0]), agx_null(),
                   agx_format_for_pipe(nir_intrinsic_format(instr)),
                   BITFIELD_MASK(nr_comps), nir_intrinsic_base(instr), false);
@@ -2092,6 +2176,17 @@ agx_expand_tex_to(agx_builder *b, nir_def *def, agx_index src, bool masked)
    /* Hardware writes the masked components contiguously, expand out for NIR */
    agx_emit_split(b, packed_channels, src,
                   ALIGN_POT(nr_channels, 4) /* XXX: why not nr_channels */);
+
+   /* A result sampled at 32 bits for a 16-bit def (agx_emit_tex) */
+   if (src.size == AGX_SIZE_32 && def->bit_size == 16) {
+      for (unsigned i = 0; i < ALIGN_POT(nr_channels, 4); ++i) {
+         agx_index h = agx_temp(b->shader, AGX_SIZE_16);
+         agx_fmov_to(b, h, packed_channels[i]);
+         packed_channels[i] = h;
+      }
+
+      src.size = AGX_SIZE_16;
+   }
 
    for (unsigned i = 0; i < nr_channels; ++i) {
       unpacked_channels[i] =
@@ -3445,7 +3540,12 @@ agx_emit_tex(agx_builder *b, nir_tex_instr *instr)
    if (g15 && b->shader->stage == MESA_SHADER_FRAGMENT)
       agx_wait_pixel_mask(b, 0x200);
 
-   agx_index tmp = agx_vec_temp(b->shader, dst.size, instr->is_sparse ? 8 : 4);
+   /* A gather's or a compare's 16-bit result is not tried on G15: those
+    * sample at 32 bits and narrow (agx_expand_tex_to) */
+   bool narrow = g15 && dst.size == AGX_SIZE_16 &&
+                 (instr->op == nir_texop_tg4 || !agx_is_null(compare));
+   agx_index tmp = agx_vec_temp(b->shader, narrow ? AGX_SIZE_32 : dst.size,
+                                instr->is_sparse ? 8 : 4);
    agx_instr *I = agx_texture_sample_to(
       b, tmp, coords, lod, bindless, texture, sampler, compare_offset,
       sampler_base, agx_tex_dim(instr->sampler_dim, instr->is_array), lod_mode,
@@ -4115,6 +4215,19 @@ agx_optimize_nir(nir_shader *nir, bool soft_fault, uint16_t *preamble_size,
     */
    NIR_PASS(_, nir, nir_opt_algebraic_late);
    NIR_PASS(_, nir, agx_nir_lower_fminmax);
+
+   /* G15 returns 16-bit texels where every use converts them to 16 bits (a
+    * mediump sampler's in GLES): half the texture unit's result width, as
+    * Apple's half-precision code samples. 16 bilinear taps a pixel ran at 245
+    * against 187 Gtexel/s (vkbench tex, 2026-11-01). */
+   if (g15) {
+      nir_opt_16bit_tex_image_options opts = {
+         .rounding_mode = nir_rounding_mode_undef,
+         .opt_tex_dest_types = nir_type_float,
+      };
+
+      NIR_PASS(_, nir, nir_opt_16bit_tex_image, &opts);
+   }
 
    /* Fuse add/sub/multiplies/shifts after running opt_algebraic_late to fuse
     * isub but before shifts are lowered.
