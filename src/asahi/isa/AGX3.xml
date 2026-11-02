@@ -1005,6 +1005,14 @@
     <value value="15">xor</value>
   </enum>
 
+  <!-- The 64-bit atomicdev form's operations (Apple's encoder: its ops 4-7) -->
+  <enum kind="atomic_op64" name="64-bit atomic operation">
+    <value value="0">imax</value>
+    <value value="1">imin</value>
+    <value value="2">umax</value>
+    <value value="3">umin</value>
+  </enum>
+
   <!--
    iter's implicit coordinates (f32interp bits 48:49 51): the pixel centre
    or a sample (bit 2 set, bits 0:1 the sample index)
@@ -2323,6 +2331,15 @@
       <immediate name="reg" bit="0:6" shift="1"/>
       <modifier name="lu" bit="7"/>
       <property name="size32"/>
+    </case>
+  </encoding>
+
+  <!-- The 64-bit atomic's data: the pair's first 32-bit register, 7 lu -->
+  <encoding name="atomreg64">
+    <case>
+      <immediate name="reg" bit="0:6" shift="1"/>
+      <modifier name="lu" bit="7"/>
+      <property name="size64"/>
     </case>
   </encoding>
 
@@ -4911,6 +4928,24 @@
     <src kind="atombase" bit="40:46 104 76 77"/>
     <src kind="atomidx" bit="54:69 79 105 106"/>
     <modifier name="op" bit="97:100" kind="atomic_op"/>
+    <modifier name="shift" bit="101:103" kind="memshift"/>
+    <immediate name="offset" bit="80:95" kind="signed"/>
+    <immediate name="c" bit="71:72"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <!--
+   device_atomic's 64-bit form (bit 70), without a result: the data a
+   register pair, the index in 64-bit elements (shift 3), and only max and
+   min (Metal's atomic_ulong max and min; 99:100 change nothing on the Mac)
+  -->
+  <ins name="device_atomic64" display="device_atomic" length="14">
+    <exact bit="0:10 70 73:75 96 99:100">000000100101100111</exact>
+    <src kind="atomreg64" bit="47:53 78"/>
+    <src kind="atombase" bit="40:46 104 76 77"/>
+    <src kind="atomidx" bit="54:69 79 105 106"/>
+    <modifier name="op" bit="97:98" kind="atomic_op64"/>
     <modifier name="shift" bit="101:103" kind="memshift"/>
     <immediate name="offset" bit="80:95" kind="signed"/>
     <immediate name="c" bit="71:72"/>
