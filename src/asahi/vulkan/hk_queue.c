@@ -257,11 +257,17 @@ union drm_asahi_cmd {
  * on the CTS once lossless compression is enabled. This needs to be
  * investigated before we can reenable this mechanism. We are likely missing a
  * cache flush or barrier somewhere.
+ *
+ * G15 batches by default: dEQP-VK flaked no more batched than not over
+ * three alternated runs. Each ioctl is a round trip to the host under muvm.
  */
 static inline unsigned
 max_commands_per_submit(struct hk_device *dev)
 {
-   return HK_PERF(dev, BATCH) ? 64 : 1;
+   if (HK_PERF(dev, NOBATCH))
+      return 1;
+
+   return HK_PERF(dev, BATCH) || dev->dev.params.gpu_generation >= 15 ? 64 : 1;
 }
 
 static VkResult
