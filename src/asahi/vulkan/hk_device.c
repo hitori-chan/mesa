@@ -44,6 +44,7 @@ static const struct debug_named_value hk_perf_options[] = {
    {"nobarrier", HK_PERF_NOBARRIER,"Ignore pipeline barriers"},
    {"batch",     HK_PERF_BATCH,    "Batch submissions"},
    {"norobust",  HK_PERF_NOROBUST, "Disable robustness"},
+   {"nobatch",   HK_PERF_NOBATCH,  "One command per submission"},
    DEBUG_NAMED_VALUE_END
 };
 /* clang-format on */
