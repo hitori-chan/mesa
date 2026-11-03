@@ -274,6 +274,9 @@ struct hk_graphics_state {
    /* G15: the viewports last emitted were a mesh line draw's (hk_vp_lines) */
    bool vp_lines;
 
+   /* G15: the occlusion query 2 word last emitted */
+   uint32_t tib_written;
+
    /* Provoking vertex 0, 1, or 2. Usually 0 or 2 for FIRST/LAST. 1 can only be
     * set for tri fans.
     */
