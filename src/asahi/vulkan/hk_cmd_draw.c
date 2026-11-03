@@ -669,6 +669,32 @@ hk_pack_zls_control(struct agx_zls_control_packed *packed,
    agx_pack_zls_control(packed, z_layout, s_layout, &zls);
 }
 
+/* G15: an attachment's bound level over the pass's layers, as Metal lists a
+ * render target's written range (AGX::ResourceGroupUsage::
+ * setAndBindRenderTarget, AGXMetalG15X_M1 0x2127b8574) */
+static void
+hk_add_slc_range(struct hk_render_registers *cr, uint64_t va,
+                 const struct ail_layout *layout, unsigned level,
+                 uint32_t layers)
+{
+   for (unsigned i = 0; i < cr->slc_count; ++i) {
+      if (cr->slc[i].va == va)
+         return;
+   }
+
+   if (cr->slc_count >= ARRAY_SIZE(cr->slc))
+      return;
+
+   uint64_t size_B = ail_get_level_size_B(layout, level);
+   if (layers > 1)
+      size_B += (uint64_t)(layers - 1) * layout->layer_stride_B;
+
+   cr->slc[cr->slc_count++] = (struct hk_slc_range){
+      .va = va,
+      .size_B = size_B,
+   };
+}
+
 VKAPI_ATTR void VKAPI_CALL
 hk_CmdBeginRendering(VkCommandBuffer commandBuffer,
                      const VkRenderingInfo *pRenderingInfo)
@@ -897,6 +923,39 @@ hk_CmdBeginRendering(VkCommandBuffer commandBuffer,
       }
 
       render->cr.isp_bgobjvals |= attach_s->clearValue.depthStencil.stencil;
+   }
+
+   struct hk_device *dev = hk_cmd_buffer_device(cmd);
+   if (dev->dev.params.gpu_generation >= 15 && !HK_PERF(dev, NOSLC)) {
+      for (unsigned i = 0; i < render->color_att_count; ++i) {
+         struct hk_image_view *view = render->color_att[i].iview;
+         if (!view)
+            continue;
+
+         struct hk_image *image =
+            container_of(view->vk.image, struct hk_image, vk);
+         uint8_t image_plane = view->planes[0].image_plane;
+         struct ail_layout *layout = &image->planes[image_plane].layout;
+         unsigned level = view->vk.base_mip_level;
+
+         hk_add_slc_range(&render->cr,
+                          hk_image_base_address(image, image_plane) +
+                             ail_get_layer_level_B(
+                                layout, view->vk.base_array_layer, level),
+                          layout, level, layer_count);
+      }
+
+      if (z_layout) {
+         hk_add_slc_range(&render->cr, render->cr.depth.buffer, z_layout,
+                          render->depth_att.iview->vk.base_mip_level,
+                          layer_count);
+      }
+
+      if (s_layout) {
+         hk_add_slc_range(&render->cr, render->cr.stencil.buffer, s_layout,
+                          render->stencil_att.iview->vk.base_mip_level,
+                          layer_count);
+      }
    }
 
    hk_pack_zls_control(&render->cr.zls_control, z_layout, s_layout, attach_z,
