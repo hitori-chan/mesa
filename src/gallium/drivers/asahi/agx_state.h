@@ -392,6 +392,9 @@ struct agx_batch {
    uint32_t clear, draw, load, resolve, feedback;
    bool initialized;
 
+   /* G15: the occlusion query 2 word last emitted */
+   uint32_t tib_written;
+
    uint64_t uploaded_clear_color[PIPE_MAX_COLOR_BUFS];
    double clear_depth;
    unsigned clear_stencil;

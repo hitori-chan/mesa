@@ -2227,6 +2227,7 @@ hk_get_fast_linked_locked_fs(struct hk_device *dev, struct hk_shader *shader,
 
    struct hk_linked_shader *linked =
       hk_fast_link(dev, true, shader, prolog, epilog, key->nr_samples_shaded);
+   linked->b.tib_written = agx_fs_epilog_tib_written(&key->epilog, &linked->b);
 
    struct hk_fast_link_key *key_clone =
       ralloc_memdup(shader->linked.ht, key, sizeof(*key));
@@ -2698,6 +2699,7 @@ hk_flush_ppp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
    bool linked_fs_dirty = IS_LINKED_DIRTY(FRAGMENT);
 
    bool varyings_dirty = gfx->dirty & HK_DIRTY_VARYINGS;
+   uint32_t tib_written = g15 && fs && linked_fs ? linked_fs->b.tib_written : 0;
 
    bool face_dirty =
       IS_DIRTY(DS_DEPTH_TEST_ENABLE) || IS_DIRTY(DS_DEPTH_WRITE_ENABLE) ||
@@ -2739,6 +2741,7 @@ hk_flush_ppp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
                          gfx->descriptors.root_dirty,
 
       .occlusion_query = gfx->dirty & HK_DIRTY_OCCLUSION,
+      .occlusion_query_2 = g15 && tib_written != gfx->tib_written,
       .output_size = hw_vs_dirty,
       .viewport_count = 1, /* irrelevant */
    };
@@ -2950,6 +2953,14 @@ hk_flush_ppp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
       agx_ppp_push(&ppp, FRAGMENT_OCCLUSION_QUERY, cfg) {
          cfg.index = gfx->occlusion.index;
       }
+   }
+
+   if (dirty.occlusion_query_2) {
+      agx_ppp_push(&ppp, FRAGMENT_OCCLUSION_QUERY_2, cfg) {
+         cfg.unknown = tib_written;
+      }
+
+      gfx->tib_written = tib_written;
    }
 
    if (dirty.output_size) {
