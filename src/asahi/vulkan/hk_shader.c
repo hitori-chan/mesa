@@ -1180,8 +1180,32 @@ kill_psiz_write(nir_builder *b, nir_intrinsic_instr *intr, void *data)
    return true;
 }
 
+/* G15 clips at the viewport and gives the new vertices the provoking vertex's
+ * flat values, so a clipped primitive's fragments read wrong barycentrics and
+ * per-vertex inputs. Every draw gets a guard band: gl_Position.xy over
+ * HK_GUARD_BAND here and the viewport's scale times it (hk_flush_vp_state), so
+ * the hardware clips that much further out and the implicit scissor keeps the
+ * viewport. Exact, the factor being a power of two. Every draw, not only those
+ * that read their vertices: the same primitive must cover the same pixels
+ * whatever its fragment shader.
+ */
+static bool
+lower_guard_band(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   if (intr->intrinsic != nir_intrinsic_store_output ||
+       nir_intrinsic_io_semantics(intr).location != VARYING_SLOT_POS ||
+       nir_intrinsic_component(intr) > 1)
+      return false;
+
+   b->cursor = nir_before_instr(&intr->instr);
+   nir_src_rewrite(&intr->src[0],
+                   nir_fmul_imm(b, intr->src[0].ssa, 1.0 / HK_GUARD_BAND));
+   return true;
+}
+
 static void
-hk_lower_hw_vs(nir_shader *nir, struct hk_shader *shader, bool kill_psiz)
+hk_lower_hw_vs(nir_shader *nir, struct hk_shader *shader, bool kill_psiz,
+               bool g15)
 {
    /* Point size must be clamped, excessively large points don't render
     * properly on G13.
@@ -1196,6 +1220,11 @@ hk_lower_hw_vs(nir_shader *nir, struct hk_shader *shader, bool kill_psiz)
    }
 
    NIR_PASS(_, nir, nir_lower_io_to_scalar, nir_var_shader_out, NULL, NULL);
+   if (g15) {
+      NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_guard_band,
+               nir_metadata_control_flow, NULL);
+   }
+
    NIR_PASS(_, nir, agx_nir_lower_cull_distance_vs);
 
    NIR_PASS(_, nir, agx_nir_lower_uvs, &shader->info.uvs);
@@ -1351,7 +1380,8 @@ hk_compile_nir(struct hk_device *dev, const VkAllocationCallbacks *pAllocator,
    uint64_t outputs = nir->info.outputs_written;
    if (sw_stage == MESA_SHADER_VERTEX || sw_stage == MESA_SHADER_TESS_EVAL) {
       if (hw) {
-         hk_lower_hw_vs(nir, shader, kill_psiz);
+         hk_lower_hw_vs(nir, shader, kill_psiz,
+                        dev->dev.params.gpu_generation >= 15);
       } else {
          NIR_PASS(_, nir, poly_nir_lower_vs_before_gs);
          nir->info.stage = MESA_SHADER_COMPUTE;
@@ -1600,7 +1630,7 @@ hk_compile_shader(struct hk_device *dev, struct vk_shader_compile_info *info,
       agx_preprocess_nir(pre_gs);
 
       struct hk_shader *shader = &obj->variants[HK_GS_VARIANT_RAST];
-      hk_lower_hw_vs(rast, shader, false);
+      hk_lower_hw_vs(rast, shader, false, dev->dev.params.gpu_generation >= 15);
       shader->info.gs = count_variant->info.gs;
       main_variant->info.gs = count_variant->info.gs;
 
@@ -1611,7 +1641,8 @@ hk_compile_shader(struct hk_device *dev, struct vk_shader_compile_info *info,
          agx_preprocess_nir(rast_cons);
          hk_lower_conservative_budget(rast_cons, cons_variant,
                                       shader->info.uvs.size);
-         hk_lower_hw_vs(rast_cons, cons_variant, false);
+         hk_lower_hw_vs(rast_cons, cons_variant, false,
+                        dev->dev.params.gpu_generation >= 15);
          cons_variant->info.gs = count_variant->info.gs;
       }
 
@@ -1670,13 +1701,15 @@ hk_compile_shader(struct hk_device *dev, struct vk_shader_compile_info *info,
 
       rast_variant->info.mesh = main_variant->info.mesh;
       hk_lower_hw_vs(rast, rast_variant,
-                     main_variant->info.mesh.prim != MESA_PRIM_POINTS);
+                     main_variant->info.mesh.prim != MESA_PRIM_POINTS,
+                     dev->dev.params.gpu_generation >= 15);
 
       if (rast_cons) {
          agx_preprocess_nir(rast_cons);
          hk_lower_conservative_budget(rast_cons, cons_variant,
                                       rast_variant->info.uvs.size);
-         hk_lower_hw_vs(rast_cons, cons_variant, true);
+         hk_lower_hw_vs(rast_cons, cons_variant, true,
+                        dev->dev.params.gpu_generation >= 15);
          cons_variant->info.mesh = main_variant->info.mesh;
       }
 
