@@ -121,6 +121,7 @@ agx_fast_link(struct agx_linked_shader *linked, struct agx_device *dev,
       linked->pix_wait_mask |= part->info.pix_wait_mask;
       linked->pix_signal_mask |= part->info.pix_signal_mask;
       linked->writes_zs |= part->info.writes_zs;
+      linked->writes_memory |= part->info.writes_memory;
       linked->cr_count = MAX2(linked->cr_count, part->info.cr_count);
 
       nr_gprs = MAX2(nr_gprs, part->info.nr_gprs);
