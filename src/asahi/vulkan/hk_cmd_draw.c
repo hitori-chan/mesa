@@ -2387,6 +2387,17 @@ hk_g15_stencil_always(struct hk_cmd_buffer *cmd)
           !hk_stencil_test_enabled(cmd) && !z_write;
 }
 
+/* A G15 mesh draw of lines, its viewports 1/256 px lower (hk_flush_vp_state) */
+static bool
+hk_vp_lines(struct hk_cmd_buffer *cmd)
+{
+   struct hk_graphics_state *gfx = &cmd->state.gfx;
+
+   return hk_cmd_buffer_device(cmd)->dev.params.gpu_generation >= 15 &&
+          gfx->object_type == AGX_OBJECT_TYPE_LINE &&
+          gfx->shaders[MESA_SHADER_MESH] != NULL;
+}
+
 static void
 hk_flush_vp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
 {
@@ -2397,6 +2408,17 @@ hk_flush_vp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
     * discard the app may not supply any, but we can just program garbage.
     */
    unsigned count = MAX2(dyn->vp.viewport_count, 1);
+
+   /* G15 breaks a tie at the diamonds' corners the other way from
+    * dEQP-VK's mesh lines: a vertical line from one row edge to another
+    * through the pixel centres fills a row early, as Metal's do. Vulkan's
+    * Bresenham rule allows that (a fragment one pixel off, one more or
+    * fewer), and the vertex pipeline's line cases accept it, a row edge's
+    * lines too; misc.max_lines does not. A mesh draw's line viewports go
+    * 1/256 px towards the higher rows, off those corners.
+    */
+   struct hk_graphics_state *gfx = &cmd->state.gfx;
+   gfx->vp_lines = hk_vp_lines(cmd);
 
    unsigned minx[HK_MAX_VIEWPORTS] = {0}, miny[HK_MAX_VIEWPORTS] = {0};
    unsigned maxx[HK_MAX_VIEWPORTS] = {0}, maxy[HK_MAX_VIEWPORTS] = {0};
@@ -2511,6 +2533,9 @@ hk_flush_vp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
          cfg.translate_x = vp->x + 0.5f * vp->width;
          cfg.translate_y = vp->y + 0.5f * vp->height;
          cfg.translate_z = vp->minDepth;
+
+         if (gfx->vp_lines)
+            cfg.translate_y += 1.0f / 256;
 
          cfg.scale_x = vp->width * 0.5f;
          cfg.scale_y = vp->height * 0.5f;
@@ -3583,7 +3608,8 @@ hk_flush_dynamic_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
        IS_DIRTY(VP_SCISSOR_COUNT) || IS_DIRTY(VP_VIEWPORTS) ||
        IS_DIRTY(VP_VIEWPORT_COUNT) ||
        IS_DIRTY(VP_DEPTH_CLIP_NEGATIVE_ONE_TO_ONE) ||
-       IS_DIRTY(RS_DEPTH_CLIP_ENABLE) || IS_DIRTY(RS_DEPTH_CLAMP_ENABLE)) {
+       IS_DIRTY(RS_DEPTH_CLIP_ENABLE) || IS_DIRTY(RS_DEPTH_CLAMP_ENABLE) ||
+       gfx->vp_lines != hk_vp_lines(cmd)) {
 
       hk_flush_vp_state(cmd, cs, &out);
    }
