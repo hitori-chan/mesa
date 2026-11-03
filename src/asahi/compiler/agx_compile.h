@@ -149,6 +149,9 @@ struct agx_shader_info {
    /* Does the shader control the sample mask? */
    bool writes_sample_mask;
 
+   /* Does the fragment shader write memory (side effects)? */
+   bool writes_memory;
+
    /* Does the shader write depth or stencil (zs_emit)? */
    bool writes_zs;
 
