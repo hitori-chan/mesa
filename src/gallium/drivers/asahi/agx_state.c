@@ -2366,6 +2366,9 @@ asahi_fast_link(struct agx_context *ctx, struct agx_uncompiled_shader *so,
    agx_fast_link(linked, dev, so->type == MESA_SHADER_FRAGMENT, &key->main->b,
                  &prolog->b, &epilog->b, key->nr_samples_shaded);
 
+   if (so->type == MESA_SHADER_FRAGMENT)
+      linked->tib_written = agx_fs_epilog_tib_written(&key->epilog.fs, linked);
+
    /* Cache the fast linked program */
    union asahi_shader_key *cloned_key =
       ralloc_memdup(so->linked_shaders, key, sizeof(*key));
@@ -3804,6 +3807,7 @@ agx_batch_init_state(struct agx_batch *batch)
 
    agx_ppp_fini(&out, &ppp);
    batch->vdm.current = out;
+   batch->tib_written = 0;
 
    /* Mark it as initialized now, since agx_batch_writes() will check this. */
    batch->initialized = true;
@@ -4005,6 +4009,9 @@ agx_encode_state(struct agx_batch *batch, uint8_t *out)
                                       : is_lines ? AGX_OBJECT_TYPE_LINE
                                                  : AGX_OBJECT_TYPE_TRIANGLE;
 
+   bool g15 = dev->params.gpu_generation >= 15;
+   uint32_t tib_written = g15 ? ctx->linked.fs->tib_written : 0;
+
    struct AGX_PPP_HEADER dirty = {
       .fragment_control =
          IS_DIRTY(ZS) || IS_DIRTY(RS) || IS_DIRTY(PRIM) || IS_DIRTY(QUERY),
@@ -4025,11 +4032,11 @@ agx_encode_state(struct agx_batch *batch, uint8_t *out)
          (IS_DIRTY(FS) || varyings_dirty || IS_DIRTY(SAMPLE_MASK)) &&
          !ctx->linked.fs->no_op,
       .occlusion_query = IS_DIRTY(QUERY),
+      .occlusion_query_2 = g15 && tib_written != batch->tib_written,
       .output_size = IS_DIRTY(VS_PROG),
       .viewport_count = 1, /* irrelevant */
    };
 
-   bool g15 = dev->params.gpu_generation >= 15;
    bool fc, fc2;
    size_t size =
       agx_ppp_update_size_gen(&dirty, dev->params.gpu_generation, &fc, &fc2);
@@ -4188,6 +4195,14 @@ agx_encode_state(struct agx_batch *batch, uint8_t *out)
             cfg.index = agx_get_oq_index(batch, ctx->occlusion_query);
          }
       }
+   }
+
+   if (dirty.occlusion_query_2) {
+      agx_ppp_push(&ppp, FRAGMENT_OCCLUSION_QUERY_2, cfg) {
+         cfg.unknown = tib_written;
+      }
+
+      batch->tib_written = tib_written;
    }
 
    if (dirty.output_size) {

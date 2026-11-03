@@ -42,6 +42,14 @@ struct agx_linked_shader {
    /* Whether the program writes depth or stencil (G15's fragment state) */
    bool writes_zs;
 
+   /* Whether the program writes memory (side effects) */
+   bool writes_memory;
+
+   /* G15: the tile buffer words the program overwrites in full, its occlusion
+    * query 2 word (agx_fs_epilog_tib_written)
+    */
+   uint32_t tib_written;
+
    /* Size in bytes of the linked program (G15's entry program wants it) */
    unsigned main_size;
 
@@ -346,6 +354,8 @@ struct agx_fs_epilog_key {
 
 void agx_nir_vs_prolog(struct nir_builder *b, const void *key_);
 void agx_nir_fs_epilog(struct nir_builder *b, const void *key_);
+uint32_t agx_fs_epilog_tib_written(const struct agx_fs_epilog_key *key,
+                                   const struct agx_linked_shader *linked);
 void agx_nir_fs_prolog(struct nir_builder *b, const void *key_);
 
 bool agx_nir_gather_vs_inputs(nir_shader *s,
