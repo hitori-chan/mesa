@@ -582,6 +582,83 @@ agx_nir_fs_epilog(nir_builder *b, const void *key_)
    b->shader->info.fs.uses_sample_shading = key->link.sample_shading;
 }
 
+/*
+ * G15: the tile buffer words (32-bit, of one sample) that a fragment program
+ * linked with this epilog overwrites in full, as Apple's occlusion query 2
+ * word gives them (agxsGetShaderPassInfo): bit w for word w, the top word's
+ * bit repeated up to bit 16. Under an opaque draw the hardware drops earlier
+ * work only for the words it marks, the background's load among them; 0 marks
+ * none. A word is written when each render target byte in it belongs to a
+ * target the epilog stores in full: its location written, every component in
+ * the colour mask, blending off, not spilled. A program that reads the tile
+ * buffer, discards, writes memory or runs a logic op or alpha-to-coverage
+ * marks none, and so does one at 2 or 4 samples: there a marked word fails
+ * dEQP-VK's sample location, raster sample and sampled image cases (78 of a
+ * tenth), as if a draw covering part of a pixel dropped the samples it leaves
+ * (not traced).
+ */
+uint32_t
+agx_fs_epilog_tib_written(const struct agx_fs_epilog_key *key,
+                          const struct agx_linked_shader *linked)
+{
+   if (linked->no_op || linked->writes_memory || key->nr_samples > 1 ||
+       key->blend.logicop_enable || key->blend.alpha_to_coverage)
+      return 0;
+
+   agx_unpack(NULL, &linked->fragment_control, FRAGMENT_CONTROL, fc);
+   if (fc.pass_type != AGX_PASS_TYPE_OPAQUE)
+      return 0;
+
+   struct agx_tilebuffer_layout tib =
+      agx_build_tilebuffer_layout(key->rt_formats, ARRAY_SIZE(key->rt_formats),
+                                  key->nr_samples, true, key->g15);
+   unsigned words = DIV_ROUND_UP(tib.sample_size_B, 4);
+   if (words > 17)
+      return 0;
+
+   const unsigned replace = agx_pack_blend_standard(
+      PIPE_BLEND_ADD, PIPE_BLENDFACTOR_ONE, PIPE_BLENDFACTOR_ZERO,
+      PIPE_BLEND_ADD, PIPE_BLENDFACTOR_ONE, PIPE_BLENDFACTOR_ZERO);
+   uint64_t held = 0, written = 0;
+
+   for (unsigned rt = 0; rt < ARRAY_SIZE(key->rt_formats); ++rt) {
+      enum pipe_format format = key->rt_formats[rt];
+      if (format == PIPE_FORMAT_NONE || tib.spilled[rt])
+         continue;
+
+      unsigned offset = agx_tilebuffer_offset_B(&tib, rt);
+      unsigned size =
+         util_format_get_blocksize(agx_tilebuffer_physical_format(&tib, rt));
+      uint64_t bytes = BITFIELD64_RANGE(offset, size);
+      held |= bytes;
+
+      struct agx_blend_rt_key blend = key->blend.rt[rt];
+      unsigned need = BITFIELD_MASK(util_format_get_nr_components(format));
+      int loc = key->remap[rt];
+
+      if (loc >= 0 && (key->link.loc_written & BITFIELD_BIT(loc)) &&
+          !blend.advanced_blend && blend.mode == replace &&
+          (blend.colormask & need) == need)
+         written |= bytes;
+   }
+
+   /* No target held: nothing to drop */
+   if (!held)
+      return 0;
+
+   uint32_t out = 0;
+   for (unsigned w = 0; w < words; ++w) {
+      uint64_t word = BITFIELD64_RANGE(4 * w, 4) & held;
+      if ((written & word) == word)
+         out |= BITFIELD_BIT(w);
+   }
+
+   if (out & BITFIELD_BIT(words - 1))
+      out |= BITFIELD_MASK(17) & ~BITFIELD_MASK(words);
+
+   return out;
+}
+
 struct lower_epilog_ctx {
    struct agx_fs_epilog_link_info *info;
    nir_variable *masked_samples;
