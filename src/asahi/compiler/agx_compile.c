@@ -795,6 +795,33 @@ agx_emit_load_vary(agx_builder *b, agx_index dest, nir_intrinsic_instr *instr)
    agx_emit_cached_split(b, dest, components);
 }
 
+/* G15: whether a fragment shader iterates a perspective input off the pixel
+ * centre, which agx_nir_lower_interpolation projects from the input's
+ * coefficients (a load_coefficients_agx of a perspective input) */
+static bool
+agx_g15_projects_off_centre(nir_shader *nir)
+{
+   nir_foreach_function_impl(impl, nir) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+
+            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic != nir_intrinsic_load_coefficients_agx)
+               continue;
+
+            enum glsl_interp_mode mode = nir_intrinsic_interp_mode(intr);
+            if (mode != INTERP_MODE_NOPERSPECTIVE && mode != INTERP_MODE_FLAT &&
+                mode != INTERP_MODE_EXPLICIT)
+               return true;
+         }
+      }
+   }
+
+   return false;
+}
+
 static void
 agx_wait_pixel_mask(agx_builder *b, uint32_t mask)
 {
@@ -5351,6 +5378,13 @@ agx_compile_shader_nir_impl(nir_shader *nir, struct agx_shader_key *key,
          nir->info.uses_wide_subgroup_intrinsics ||
          nir->info.fs.needs_coarse_quad_helper_invocations ||
          nir->info.writes_memory || agx_fs_reads_vertices(&info->varyings.fs);
+
+      /* G15: a merged pair of a strip's or fan's triangles projects a
+       * perspective input iterated at a sample, the centroid or an offset
+       * wrong (dEQP-VK's barycentric weights cases, whose reference
+       * pipelines interpolate so, pass whole without merging) */
+      if (key->dev.gpu_generation >= 15 && agx_g15_projects_off_centre(nir))
+         info->disable_tri_merging = true;
 
       /* Writing the sample mask requires tag writes */
       info->tag_write_disable &= !info->writes_sample_mask;
