@@ -1060,6 +1060,8 @@ hk_lower_nir(struct hk_device *dev, nir_shader *nir,
             shared_var_info);
    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_shared,
             nir_address_format_32bit_offset);
+   if (dev->dev.params.gpu_generation >= 15)
+      NIR_PASS(_, nir, hk_nir_lower_shared_atomic64);
 
    /* The payload lives in global memory (poly_nir_lower_mesh.c) */
    if (mesa_shader_stage_is_mesh(nir->info.stage)) {
