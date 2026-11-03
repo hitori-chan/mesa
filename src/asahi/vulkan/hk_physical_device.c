@@ -56,10 +56,8 @@ hk_get_device_extensions(const struct agx_device *dev,
    bool rq = dev->debug & AGX_DBG_RAYQUERY;
    bool g15 = dev->params.gpu_generation >= 15;
 
-   /* Task and mesh shaders as compute (hk_draw_mesh), behind a flag while
-    * the CTS's mesh_shader.ext.misc.max_lines fails
-    */
-   bool mesh = g15 && (dev->debug & AGX_DBG_MESH);
+   /* Task and mesh shaders as compute (hk_draw_mesh) */
+   bool mesh = g15;
 
    *ext = (struct vk_device_extension_table){
       .KHR_acceleration_structure = rq,
