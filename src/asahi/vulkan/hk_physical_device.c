@@ -354,7 +354,7 @@ hk_get_device_features(
       .uniformAndStorageBuffer8BitAccess = true,
       .storagePushConstant8 = true,
       .shaderBufferInt64Atomics = dev->params.gpu_generation >= 15,
-      .shaderSharedInt64Atomics = false,
+      .shaderSharedInt64Atomics = dev->params.gpu_generation >= 15,
       .shaderFloat16 = true,
       .shaderInt8 = true,
       .descriptorIndexing = true,
