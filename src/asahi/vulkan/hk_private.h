@@ -20,6 +20,11 @@
 #define HK_MIN_TEXEL_BUFFER_ALIGNMENT    16
 #define HK_MIN_UBO_ALIGNMENT             64
 #define HK_MAX_VIEWPORTS                 16
+
+/* G15's guard band: how many times the viewport the hardware clips at
+ * (hk_shader.c)
+ */
+#define HK_GUARD_BAND                    4
 #define HK_MAX_DESCRIPTOR_SIZE           96
 #define HK_MAX_PUSH_DESCRIPTORS          32
 #define HK_MAX_DESCRIPTOR_SET_SIZE       (1u << 30)
