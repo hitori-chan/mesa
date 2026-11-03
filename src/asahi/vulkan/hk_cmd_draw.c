@@ -2541,6 +2541,12 @@ hk_flush_vp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
          cfg.scale_x = vp->width * 0.5f;
          cfg.scale_y = vp->height * 0.5f;
          cfg.scale_z = vp->maxDepth - vp->minDepth;
+
+         /* G15's guard band (hk_shader.c) */
+         if (hk_cmd_buffer_device(cmd)->dev.params.gpu_generation >= 15) {
+            cfg.scale_x *= HK_GUARD_BAND;
+            cfg.scale_y *= HK_GUARD_BAND;
+         }
       }
    }
 
