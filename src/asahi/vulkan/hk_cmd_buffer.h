@@ -271,6 +271,9 @@ struct hk_graphics_state {
    enum agx_primitive topology;
    enum agx_object_type object_type;
 
+   /* G15: the viewports last emitted were a mesh line draw's (hk_vp_lines) */
+   bool vp_lines;
+
    /* Provoking vertex 0, 1, or 2. Usually 0 or 2 for FIRST/LAST. 1 can only be
     * set for tri fans.
     */
