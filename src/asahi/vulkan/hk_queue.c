@@ -332,8 +332,10 @@ queue_submit_looped(struct hk_device *dev, struct drm_asahi_submit *submit,
       unsigned base_offs = offs;
       unsigned cdm_count = 0, vdm_count = 0;
 
-      /* We need to fix up the barriers since barriers are ioctl-relative */
-      for (unsigned i = 0; i < count; ++i) {
+      /* We need to fix up the barriers since barriers are ioctl-relative. A
+       * command's attachments go before it, in the same ioctl.
+       */
+      for (unsigned i = 0; i < count;) {
          struct drm_asahi_cmd_header *cmd = (void *)(cmdbuf + offs);
          offs += sizeof(*cmd) + cmd->size;
 
@@ -341,6 +343,10 @@ queue_submit_looped(struct hk_device *dev, struct drm_asahi_submit *submit,
             vdm_count++;
          else if (cmd->cmd_type == DRM_ASAHI_CMD_COMPUTE)
             cdm_count++;
+         else
+            continue;
+
+         i++;
 
          if (cmd->vdm_barrier != DRM_ASAHI_BARRIER_NONE) {
             assert(cmd->vdm_barrier >= submitted_vdm);
@@ -360,6 +366,9 @@ queue_submit_looped(struct hk_device *dev, struct drm_asahi_submit *submit,
        */
       if (last && !first) {
          struct drm_asahi_cmd_header *cmd = (void *)(cmdbuf + base_offs);
+         while (cmd->cmd_type != DRM_ASAHI_CMD_RENDER &&
+                cmd->cmd_type != DRM_ASAHI_CMD_COMPUTE)
+            cmd = (void *)((uint8_t *)cmd + sizeof(*cmd) + cmd->size);
 
          if (cmd->vdm_barrier == DRM_ASAHI_BARRIER_NONE)
             cmd->vdm_barrier = 0;
@@ -844,6 +853,25 @@ queue_submit(struct hk_device *dev, struct hk_queue *queue,
             dev->dev.params.gpu_generation >= 15 && cs->type == HK_CS_VDM;
          if (g15_render)
             header.size += sizeof(struct drm_asahi_cmd_render_g15);
+
+         /* G15: the pass's attachments, for the next render command */
+         if (g15_render && cs->cr.slc_count) {
+            struct drm_asahi_cmd_header att = {
+               .cmd_type = DRM_ASAHI_SET_FRAGMENT_ATTACHMENTS,
+               .size = sizeof(struct drm_asahi_attachment) * cs->cr.slc_count,
+               .vdm_barrier = DRM_ASAHI_BARRIER_NONE,
+               .cdm_barrier = DRM_ASAHI_BARRIER_NONE,
+            };
+            util_dynarray_append(&payload, att);
+
+            for (unsigned j = 0; j < cs->cr.slc_count; ++j) {
+               struct drm_asahi_attachment a = {
+                  .pointer = cs->cr.slc[j].va,
+                  .size = cs->cr.slc[j].size_B,
+               };
+               util_dynarray_append(&payload, a);
+            }
+         }
 
          util_dynarray_append(&payload, header);
 
