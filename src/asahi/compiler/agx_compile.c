@@ -5111,8 +5111,10 @@ agx_compile_shader_nir_impl(nir_shader *nir, struct agx_shader_key *key,
           "then the specialized shader is compiled");
 
    /* If required, tag writes will be enabled by instruction selection */
-   if (nir->info.stage == MESA_SHADER_FRAGMENT)
+   if (nir->info.stage == MESA_SHADER_FRAGMENT) {
       info->tag_write_disable = !nir->info.writes_memory;
+      info->writes_memory = nir->info.writes_memory;
+   }
 
    NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_printf_buffer,
             nir_metadata_control_flow, NULL);
