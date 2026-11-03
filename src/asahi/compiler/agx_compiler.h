@@ -454,7 +454,8 @@ typedef struct {
     * (agx3_end_helpers) */
    bool g15_end_helpers : 1;
 
-   unsigned padding : 1;
+   /* G15: a bias in q5.6 in a uniform, for F28 (AGX_TEXTURE_FLAG_BIAS_Q56) */
+   bool g15_bias_q56 : 1;
 } agx_instr;
 
 static inline void
