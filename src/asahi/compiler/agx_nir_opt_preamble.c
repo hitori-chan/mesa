@@ -7,6 +7,8 @@
 #include "compiler/nir/nir_builder.h"
 #include "util/macros.h"
 #include "agx_compiler.h"
+#include "agx_debug.h"
+#include "agx_nir_texture.h"
 #include "nir.h"
 #include "nir_builder_opcodes.h"
 #include "nir_intrinsics.h"
@@ -457,6 +459,145 @@ lower_preamble(nir_builder *b, nir_intrinsic_instr *intr, void *data)
    return true;
 }
 
+/* G15: the store of the preamble's value at base, or NULL */
+static nir_intrinsic_instr *
+find_store_preamble(nir_function_impl *preamble, unsigned base)
+{
+   nir_foreach_block(block, preamble) {
+      nir_foreach_instr(instr, block) {
+         if (instr->type != nir_instr_type_intrinsic)
+            continue;
+         nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+         if (intr->intrinsic == nir_intrinsic_store_preamble &&
+             nir_intrinsic_preamble_class(intr) == nir_preamble_class_general &&
+             nir_intrinsic_base(intr) == base)
+            return intr;
+      }
+   }
+   return NULL;
+}
+
+/* G15: whether the packer takes tex's bias in F28 (agx_pack3.c's
+ * a3_tex_code, its LOD form A3_LOD_BIAS_F28): a 2D, 2D array, 3D, cube or
+ * cube array sample with no minimum LOD and no offset in the LOD word */
+static bool
+g15_bias_in_f28(nir_tex_instr *tex)
+{
+   if (tex->op != nir_texop_txb ||
+       nir_tex_instr_src_index(tex, nir_tex_src_min_lod) >= 0 ||
+       nir_tex_instr_src_index(tex, nir_tex_src_lod_bias_min_agx) >= 0)
+      return false;
+
+   switch (tex->sampler_dim) {
+   case GLSL_SAMPLER_DIM_2D:
+   case GLSL_SAMPLER_DIM_CUBE:
+      break;
+   case GLSL_SAMPLER_DIM_3D:
+      if (tex->is_array)
+         return false;
+      break;
+   default:
+      return false;
+   }
+
+   /* An offset goes in F42 only as a constant without a compare (the packed
+    * offset, backend2, once agx_nir_lower_texture has run) */
+   int oi = nir_tex_instr_src_index(tex, nir_tex_src_backend2);
+   if (oi < 0)
+      oi = nir_tex_instr_src_index(tex, nir_tex_src_offset);
+   return oi < 0 || (nir_src_is_const(tex->src[oi].src) &&
+                     nir_tex_instr_src_index(tex, nir_tex_src_comparator) < 0);
+}
+
+/* G15: a bias the preamble computes reaches the sample as F28's uniform,
+ * q5.6 in the uniform's low half, as Apple's compiler gives it: its preamble
+ * converts the bias once (pack_smpir mode 0xa, the q5.6 moved to the low
+ * half, the high half cleared; the QuartzCore corpus's 0x1A3 fragment
+ * programs, smp.md), where Mesa packed it into cr3 at every sample. The
+ * preamble stores the converted bias beside the f16 one, stored or pushed
+ * (rounded to the nearest 1/64, clamped to the 12-bit field), and the
+ * sample's bias source becomes its load, flagged AGX_TEXTURE_FLAG_BIAS_Q56. Before the main
+ * shader's other preamble loads are lowered. */
+static bool
+agx_nir_g15_bias_q56(nir_shader *nir, unsigned *size)
+{
+   nir_function_impl *preamble = nir_shader_get_preamble(nir);
+   if (!preamble || (agx_compiler_debug & AGX_DBG_BIASCR))
+      return false;
+
+   nir_function_impl *impl = nir_shader_get_entrypoint(nir);
+   int16_t q56[512];
+   memset(q56, ~0, sizeof(q56));
+   bool progress = false;
+
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr(instr, block) {
+         if (instr->type != nir_instr_type_tex)
+            continue;
+
+         nir_tex_instr *tex = nir_instr_as_tex(instr);
+         int bi = nir_tex_instr_src_index(tex, nir_tex_src_bias);
+         if (bi < 0 || !g15_bias_in_f28(tex))
+            continue;
+
+         nir_intrinsic_instr *load = nir_src_as_intrinsic(tex->src[bi].src);
+         if (!load || load->intrinsic != nir_intrinsic_load_preamble ||
+             load->def.bit_size != 16 || load->def.num_components != 1 ||
+             nir_intrinsic_preamble_class(load) != nir_preamble_class_general)
+            continue;
+
+         unsigned base = nir_intrinsic_base(load);
+         if (base >= ARRAY_SIZE(q56))
+            continue;
+
+         if (q56[base] < 0) {
+            /* the F28 uniform is 9 bits in 16-bit units, but a texture takes
+             * uniforms below 256 (agx_instr_accepts_uniform) */
+            if (*size >= 256)
+               continue;
+
+            /* The bias the preamble stores, or a pushed one (the GL driver's
+             * sampler bias), which a G15 preamble reads from its register
+             * (agx_emit_load_preamble) */
+            nir_intrinsic_instr *store = find_store_preamble(preamble, base);
+            nir_builder b;
+            nir_def *v;
+            if (store) {
+               b = nir_builder_at(nir_after_instr(&store->instr));
+               v = store->src[0].ssa;
+            } else if (base + 2 <= 2 * AGX_G15_PUSH_WORDS) {
+               b = nir_builder_at(nir_before_impl(preamble));
+               v = nir_load_preamble(
+                  &b, 1, 16, .base = base,
+                  .preamble_class = nir_preamble_class_general);
+            } else {
+               continue;
+            }
+
+            nir_def *f = nir_fmul_imm(&b, nir_f2f32(&b, v), 64.0);
+            nir_def *q = nir_f2i32(&b, nir_fround_even(&b, f));
+            q = nir_imin(&b, nir_imax(&b, q, nir_imm_int(&b, -2048)),
+                         nir_imm_int(&b, 2047));
+            nir_store_preamble(&b, nir_i2i16(&b, q), .base = *size,
+                               .preamble_class = nir_preamble_class_general);
+            q56[base] = (*size)++;
+         }
+
+         nir_builder b = nir_builder_at(nir_before_instr(&tex->instr));
+         nir_def *q = nir_load_preamble(
+            &b, 1, 16, .base = q56[base],
+            .preamble_class = nir_preamble_class_general);
+         nir_src_rewrite(&tex->src[bi].src, q);
+         tex->backend_flags |= AGX_TEXTURE_FLAG_BIAS_Q56;
+         progress = true;
+      }
+   }
+
+   nir_progress(progress, impl, nir_metadata_control_flow);
+   nir_progress(progress, preamble, nir_metadata_control_flow);
+   return progress;
+}
+
 bool
 agx_nir_opt_preamble(nir_shader *nir, unsigned *sizes, bool g15)
 {
@@ -468,6 +609,9 @@ agx_nir_opt_preamble(nir_shader *nir, unsigned *sizes, bool g15)
    }
 
    NIR_PASS(progress, nir, nir_opt_preamble, &options, sizes);
+
+   if (g15 && progress)
+      NIR_PASS(_, nir, agx_nir_g15_bias_q56, &sizes[0]);
 
    int16_t heap[512];
    memset(heap, ~0, sizeof(heap));

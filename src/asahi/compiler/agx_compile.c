@@ -57,6 +57,7 @@ static const struct debug_named_value agx_debug_options[] = {
    {"noperspmul", AGX_DBG_NOPERSPMUL, "G15: project by dividing by the iterated 1/W, not with the coefficient-register multiply"},
    {"exactfma",  AGX_DBG_EXACTFMA,  "G15: redo the exact fp32 fmas at the flush boundary in graphics shaders too"},
    {"crquad0",   AGX_DBG_CRQUAD0,   "G15: give a 1D or 2D texture with a LOD word cr0, not the next free quad of crs"},
+   {"biascr",    AGX_DBG_BIASCR,    "G15: pack a uniform bias into cr3 at every sample, not into F28's uniform in the preamble"},
    DEBUG_NAMED_VALUE_END
 };
 /* clang-format on */
@@ -3603,6 +3604,16 @@ agx_emit_tex(agx_builder *b, nir_tex_instr *instr)
       sampler_base, agx_tex_dim(instr->sampler_dim, instr->is_array), lod_mode,
       0, !agx_is_null(packed_offset), !agx_is_null(compare),
       instr->op == nir_texop_lod, agx_gather_for_nir(instr), instr->is_sparse);
+
+   /* G15: a q5.6 bias names its uniform, which F28 takes */
+   if (instr->backend_flags & AGX_TEXTURE_FLAG_BIAS_Q56) {
+      int bi = nir_tex_instr_src_index(instr, nir_tex_src_bias);
+      nir_intrinsic_instr *load = nir_src_as_intrinsic(instr->src[bi].src);
+      assert(g15 && lod_mode == AGX_LOD_MODE_AUTO_LOD_BIAS && load &&
+             load->intrinsic == nir_intrinsic_load_preamble);
+      I->src[1] = agx_uniform(nir_intrinsic_base(load), AGX_SIZE_16);
+      I->g15_bias_q56 = true;
+   }
 
    if (instr->op == nir_texop_txf || instr->op == nir_texop_txf_ms) {
       I->op = AGX_OPCODE_TEXTURE_LOAD;
