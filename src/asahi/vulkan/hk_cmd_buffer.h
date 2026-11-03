@@ -165,6 +165,13 @@ struct hk_bg_eot {
    struct agx_counts_packed counts;
 };
 
+/* G15: one of a render pass's attachments, as its 3D job's SLC range */
+struct hk_slc_range {
+   uint64_t va, size_B;
+};
+
+#define HK_SLC_RANGES (HK_MAX_RTS + 2)
+
 struct hk_render_registers {
    uint32_t width, height, layers;
    uint32_t zls_width, zls_height;
@@ -199,6 +206,11 @@ struct hk_render_registers {
       struct hk_bg_eot main;
       struct hk_bg_eot partial;
    } eot;
+
+   /* G15: the attachments, sent as DRM_ASAHI_SET_FRAGMENT_ATTACHMENTS: the
+    * kernel lists them as the 3D job's SLC ranges by macOS's rule */
+   struct hk_slc_range slc[HK_SLC_RANGES];
+   uint32_t slc_count;
 };
 
 struct hk_rendering_state {
