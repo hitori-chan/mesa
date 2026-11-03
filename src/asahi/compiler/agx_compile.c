@@ -56,6 +56,7 @@ static const struct debug_named_value agx_debug_options[] = {
    {"helpers",   AGX_DBG_HELPERS,   "G15: keep the quads' helper lanes to a fragment shader's end, not end them at its last sample"},
    {"noperspmul", AGX_DBG_NOPERSPMUL, "G15: project by dividing by the iterated 1/W, not with the coefficient-register multiply"},
    {"exactfma",  AGX_DBG_EXACTFMA,  "G15: redo the exact fp32 fmas at the flush boundary in graphics shaders too"},
+   {"crquad0",   AGX_DBG_CRQUAD0,   "G15: give a 1D or 2D texture with a LOD word cr0, not the next free quad of crs"},
    DEBUG_NAMED_VALUE_END
 };
 /* clang-format on */
