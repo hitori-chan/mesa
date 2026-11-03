@@ -882,6 +882,8 @@ a3_memshift(const struct a3 *a, unsigned bytes)
    "15000c38b0000001000110000100" /* texture_sample 2D, level in cr3 */
 #define T_TEX_BIASW                                                            \
    "05000cb8b0240400000010000100" /* texture_sample 2D, bias in cr3 */
+/* QuartzCore 0x1A3 fragment 0238: texture_sample 2D, the bias in F28's u6l */
+#define T_TEX_BIASF28 "05000cb8b0000764010010000100"
 
 /* Operand positions (AGX3.xml order) */
 enum {
@@ -1033,6 +1035,8 @@ enum {
    TEX_Q3 = 13,
    TEX_OFFSET = 14,
    TEX_MODE = 15,
+   /* texture_sample_mode's F28 bits past 59:63 */
+   TEX_MODE_LODH = 19,
    /* a gather's component sits where the others' mask does */
    TEX_COMPONENT = TEX_MASK,
    SPECLM_SAMPLES = 0,
@@ -2037,7 +2041,7 @@ a3_tex_lod_word(const agx_instr *I)
       I->op == AGX_OPCODE_TEXTURE_LOAD || I->op == AGX_OPCODE_IMAGE_LOAD;
 
    if (I->lod_mode == AGX_LOD_MODE_AUTO_LOD_BIAS)
-      return true;
+      return !I->g15_bias_q56;
    if (I->lod_mode != AGX_LOD_MODE_LOD_MIN)
       return false;
    if (lod.type != AGX_INDEX_IMMEDIATE)
@@ -2213,10 +2217,18 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
                  lod.type == AGX_INDEX_IMMEDIATE && lod.value == 0;
    bool lodw = a3_tex_lod_word(I);
    bool bias = I->lod_mode == AGX_LOD_MODE_AUTO_LOD_BIAS;
+   /* A q5.6 bias in a uniform goes in F28 (agx_nir_g15_bias_q56): its 9-bit
+    * index in 16-bit units at bits 59:63 and 89:92 (the QuartzCore corpus's
+    * f31 over all its uniform F28s) */
+   bool f28u = bias && I->g15_bias_q56;
 
-   if (!auto_lod && !imm_level && !level0 && !lodw && !grad)
+   if (!auto_lod && !imm_level && !level0 && !lodw && !grad && !f28u)
       a3_fail(a, "texture LOD other than automatic, a level, a bias or "
                  "gradients");
+   if (f28u && (lod.type != AGX_INDEX_UNIFORM || lod.size != AGX_SIZE_16 ||
+                lod.value >= 256 || off_word || gather || load))
+      a3_fail(a, "q5.6 bias not in a 16-bit uniform, or with an offset in the "
+                 "LOD word");
    if (gather && (load || lodw || grad))
       a3_fail(a, "gather of a fetch or at a LOD");
    if (load && auto_lod)
@@ -2232,7 +2244,7 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
    /* The forms with a mode code: compares, a LOD word, gradients and an
     * offset in the LOD word (the code table); the others by name */
    bool coded =
-      I->shadow || lodw || grad || off_word ||
+      I->shadow || lodw || grad || off_word || f28u ||
       (gather && (I->dim == AGX_DIM_CUBE || I->dim == AGX_DIM_CUBE_ARRAY));
    enum agx3_instr instr = A3_NONE;
    const char *tmpl = load ? T_TEX_LOAD : auto_lod ? T_TEX_AUTO : T_TEX_L0;
@@ -2240,6 +2252,7 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
 
    if (coded) {
       enum a3_tex_lod form = grad ? A3_LOD_GRAD
+                             : f28u ? A3_LOD_BIAS_F28
                              : lodw
                                 ? (bias ? A3_LOD_BIAS_WORD : A3_LOD_LEVEL_WORD)
                              : (auto_lod || gather) ? A3_LOD_AUTO
@@ -2273,6 +2286,8 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
          tmpl = T_TEX_LEVELW;
       else if (lodw && bias)
          tmpl = T_TEX_BIASW;
+      else if (f28u)
+         tmpl = T_TEX_BIASF28;
    } else if (gather) {
       /* whatever the stage: a gather reads one level */
       instr =
@@ -2398,8 +2413,17 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
       a3_set(a, TEX_LOD, imm_level ? lod.value << 6 : 0);
    if (I->offset && !off_word)
       a3_set(a, TEX_OFFSET, offset.value);
-   if (coded)
+   /* F28 as a uniform: bit 58 of the code (the immediate form's code plus
+    * 0x400 for every form the encoder tree has, f37 = 3), the index's low 5
+    * bits at 59:63 */
+   if (f28u)
+      a3_set(a, TEX_MODE, (code + 0x400) | (lod.value & 0x1f) << 11);
+   else if (coded)
       a3_set(a, TEX_MODE, code);
+
+   /* and its high 4 bits at 89:92 */
+   if (f28u)
+      a3_set(a, TEX_MODE_LODH, lod.value >> 5);
 
    a3_emit(a, emission);
 
