@@ -3161,6 +3161,9 @@
     <modifier name="sparse" bit="81" display="sparse"/>
     <modifier name="rtex" bit="83" display="rtex"/>
     <modifier name="rsmp" bit="82" display="rsmp"/>
+    <!-- F28's bits past 59:63 (the mode's top 5 bits): a uniform index's
+         89:92, an immediate's 89:94 and 20 -->
+    <immediate name="lodh" bit="89:94 20"/>
   </ins>
 
   <!-- A fetch with its mode code (bits 48:63), as texture_sample_mode: the
