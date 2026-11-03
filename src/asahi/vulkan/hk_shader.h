@@ -395,6 +395,7 @@ bool hk_nir_lower_descriptors(
 bool hk_nir_lower_image_loads_g15(nir_shader *nir);
 
 bool hk_nir_lower_atomic64(nir_shader *nir);
+bool hk_nir_lower_shared_atomic64(nir_shader *nir);
 bool hk_nir_lower_image_r64(nir_shader *nir);
 
 VkResult hk_compile_shader(struct hk_device *dev,
