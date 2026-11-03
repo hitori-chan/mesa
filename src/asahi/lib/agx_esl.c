@@ -397,6 +397,13 @@ agx_esl_from_usc(struct util_dynarray *out, const uint8_t *usc,
       esl_speclm_imageblock(out, &tile);
       esl_ldshdr(out, main_va, code ? code->main_size : 0);
 
+      /* Apple's background entry releases fence 0x200, as every fragment
+       * entry here does (esl_pixrel): a draw's fragments wait on it before
+       * they sample, so they need not wait for the whole background (its
+       * load). The program keeps its waits and its release of 0xC at its
+       * thread's end. */
+      agx3_emit_signal_pix(out, ESL_PIX_BOTH);
+
       /* a program that loads render targets has its coordinates in cr (a
        * clearing one has none, demo15's) */
       if (code && (code->cr_count || code->stack_size))
