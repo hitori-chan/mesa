@@ -30,6 +30,151 @@ libagx_predicate_indirect(global uint32_t *out, constant uint32_t *in,
 }
 
 /*
+ * VK_EXT_device_generated_commands: hk_cmd_dgc.c records a draw or dispatch for
+ * each possible sequence, on its own root table and arguments. These kernels
+ * fill those from the application's sequences before the first of them runs.
+ */
+static uint
+libagx_dgc_sequences(constant struct libagx_dgc_params *p)
+{
+   if (p->count)
+      return min(*((constant uint32_t *)p->count), p->max_sequences);
+   else
+      return p->max_sequences;
+}
+
+static uint64_t
+libagx_dgc_read64(constant uint32_t *p)
+{
+   return ((uint64_t)p[1] << 32) | p[0];
+}
+
+/* Sequences past the count draw or dispatch nothing */
+KERNEL(32)
+libagx_dgc_args(constant struct libagx_dgc_params *p)
+{
+   uint seq = cl_global_id.x;
+   global uint32_t *out = (global uint32_t *)p->args;
+   out += seq * p->draw_words;
+
+   if (seq < libagx_dgc_sequences(p)) {
+      constant uint8_t *in = (constant uint8_t *)p->stream;
+      in += (seq * p->stride_B) + p->draw_src_B;
+
+      for (uint i = 0; i < p->draw_words; ++i) {
+         out[i] = ((constant uint32_t *)in)[i];
+      }
+   } else {
+      for (uint i = 0; i < p->draw_words; ++i) {
+         out[i] = 0;
+      }
+   }
+}
+
+/* A root table for each view of each sequence, in order */
+KERNEL(32)
+libagx_dgc_roots(constant struct libagx_dgc_params *p)
+{
+   uint id = cl_global_id.x;
+   uint seq = id / p->views;
+
+   if (seq >= libagx_dgc_sequences(p))
+      return;
+
+   global uint8_t *root = (global uint8_t *)p->roots;
+   root += id * p->root_size_B;
+
+   constant uint8_t *in = (constant uint8_t *)p->stream;
+   in += seq * p->stride_B;
+
+   global uint8_t *push = root + p->push_B;
+
+   for (uint i = 0; i < p->nr_copies; ++i) {
+      constant struct libagx_dgc_copy *c = &p->copies[i];
+
+      for (uint b = 0; b < c->size_B; b += 4) {
+         *((global uint32_t *)(push + c->dst_B + b)) =
+            *((constant uint32_t *)(in + c->src_B + b));
+      }
+   }
+
+   if (p->sequence_index_B >= 0)
+      *((global uint32_t *)(push + p->sequence_index_B)) = seq;
+
+   /* As agx_calculate_vbo_clamp */
+   for (uint i = 0; i < p->nr_attribs; ++i) {
+      constant struct libagx_dgc_attrib *a = &p->attribs[i];
+      constant uint32_t *vb = (constant uint32_t *)(in + a->src_B);
+      uint64_t addr = libagx_dgc_read64(vb);
+      uint32_t size_B = vb[2], stride_B = vb[3];
+      uint32_t subtracted_B = a->offset_B + a->element_B;
+      uint64_t base = AGX_ZERO_PAGE_ADDRESS;
+      uint32_t clamp = 0;
+
+      if (size_B >= subtracted_B) {
+         base = addr + a->offset_B;
+         clamp = stride_B ? ((size_B - subtracted_B) / stride_B) : 0xffffffff;
+      }
+
+      global uint64_t *bases = (global uint64_t *)(root + p->attrib_base_B);
+      global uint32_t *clamps = (global uint32_t *)(root + p->attrib_clamps_B);
+      global uint32_t *strides = (global uint32_t *)(root + p->attrib_strides_B);
+
+      bases[a->slot] = base;
+      clamps[a->slot] = clamp;
+      strides[a->slot] = stride_B / a->interchange_B;
+   }
+}
+
+KERNEL(32)
+libagx_dgc_vdm(constant struct libagx_dgc_params *p,
+               constant struct libagx_dgc_vdm *vdm, uint32_t restart,
+               enum agx_chip chip)
+{
+   constant struct libagx_dgc_vdm *e = &vdm[cl_global_id.x];
+
+   constant uint8_t *in = (constant uint8_t *)p->stream;
+   constant uint32_t *ib = (constant uint32_t *)(in + (e->sequence * p->stride_B) +
+                                                 p->index_src_B);
+
+   uint64_t addr = AGX_ZERO_PAGE_ADDRESS;
+   uint32_t size_B = 4;
+   enum agx_index_size index_size = AGX_INDEX_SIZE_U32;
+
+   if (e->sequence < libagx_dgc_sequences(p)) {
+      uint32_t el_B = libagx_dgc_index_size_B(ib[3], p->index_dx);
+
+      if (ib[2]) {
+         addr = libagx_dgc_read64(ib);
+         size_B = ib[2];
+      }
+
+      index_size = el_B == 2   ? AGX_INDEX_SIZE_U16
+                   : el_B == 4 ? AGX_INDEX_SIZE_U32
+                               : AGX_INDEX_SIZE_U8;
+   }
+
+   global uint32_t *out = (global uint32_t *)e->target;
+
+   if (restart) {
+      agx_push(out, VDM_STATE, cfg) {
+         cfg.restart_index_present = true;
+      }
+
+      agx_push(out, VDM_STATE_RESTART_INDEX, cfg) {
+         cfg.value = index_size == AGX_INDEX_SIZE_U16   ? 0xffff
+                     : index_size == AGX_INDEX_SIZE_U32 ? 0xffffffff
+                                                        : 0xff;
+      }
+   }
+
+   struct agx_draw draw =
+      agx_draw_indexed_indirect(e->args, addr, size_B, index_size, restart);
+
+   agx_vdm_draw(out, chip, draw, e->topology);
+}
+
+/*
  * Indexing/offseting is in software if necessary so we strip all
  * indexing/offset information.
  */
@@ -38,8 +183,23 @@ libagx_draw_without_adj(global VkDrawIndirectCommand *out,
                         global VkDrawIndirectCommand *in,
                         global struct poly_vertex_params *vp,
                         uint64_t index_buffer, uint64_t index_buffer_range_el,
-                        int index_size_B, enum mesa_prim prim)
+                        int index_size_B, enum mesa_prim prim,
+                        constant uint32_t *dgc_index, uint32_t dgc_index_dx,
+                        uint32_t dgc_unrolled)
 {
+   if (dgc_index) {
+      uint32_t el_B = libagx_dgc_index_size_B(dgc_index[3], dgc_index_dx);
+
+      index_buffer_range_el = dgc_unrolled
+                                 ? (index_buffer_range_el * index_size_B) / el_B
+                                 : dgc_index[2] / el_B;
+      if (!dgc_unrolled)
+         index_buffer = (((uint64_t)dgc_index[1]) << 32) | dgc_index[0];
+
+      index_size_B = el_B;
+      vp->index_size_B = el_B;
+   }
+
    *out = (VkDrawIndirectCommand){
       .vertexCount = libagx_remap_adj_count(in->vertexCount, prim),
       .instanceCount = in->instanceCount,

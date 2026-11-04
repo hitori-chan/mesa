@@ -210,6 +210,22 @@ hk_CmdDispatchIndirect(VkCommandBuffer commandBuffer, VkBuffer _buffer,
    dispatch(cmd, agx_grid_indirect(dispatch_addr), false);
 }
 
+/* A dispatch of VK_EXT_device_generated_commands, its group counts at addr */
+void
+hk_cmd_dispatch_dgc(struct hk_cmd_buffer *cmd, uint64_t addr)
+{
+   struct hk_descriptor_state *desc = &cmd->state.cs.descriptors;
+   if (desc->push_dirty)
+      hk_cmd_buffer_flush_push_descriptors(cmd, desc);
+
+   desc->root.cs.base_group[0] = 0;
+   desc->root.cs.base_group[1] = 0;
+   desc->root.cs.base_group[2] = 0;
+   desc->root.cs.group_count_addr = addr;
+
+   dispatch(cmd, agx_grid_indirect(addr), false);
+}
+
 /* A ray-tracing pipeline's kernel (hk_rt_pipeline.c) reads its
  * VkTraceRaysIndirectCommand2KHR at params. A direct grid counts rays; an
  * indirect one is an indirect-local grid: rays, then the workgroup.
