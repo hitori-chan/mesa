@@ -130,6 +130,8 @@ struct agx_velem_key {
    bool instanced;
 };
 
+#define AGX_SW_INDEX_SIZE_DYNAMIC (0xff)
+
 struct agx_vs_prolog_key {
    struct agx_velem_key attribs[AGX_MAX_VBUFS];
 
@@ -144,7 +146,9 @@ struct agx_vs_prolog_key {
     */
    bool static_vi;
 
-   /* If !hw and the draw call is indexed, the index size */
+   /* If !hw and the draw call is indexed, the index size, or
+    * AGX_SW_INDEX_SIZE_DYNAMIC to read it from the vertex parameters.
+    */
    uint8_t sw_index_size_B;
 
    /* For a triangle strip with adjacency, whether its first vertex provokes */
@@ -155,6 +159,11 @@ struct agx_vs_prolog_key {
 
    /* Robustness settings for the vertex fetch */
    struct agx_robustness robustness;
+
+   /* If nonzero, the strides are read at this offset of the root table, 32 bits
+    * for each attribute slot, instead of from attribs.
+    */
+   uint16_t dynamic_strides_B;
 };
 
 /* Fragment test of conservative rasterization, against what the widened
