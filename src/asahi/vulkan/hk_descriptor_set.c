@@ -6,6 +6,7 @@
  */
 #include "hk_descriptor_set.h"
 #include "asahi/lib/agx_bo.h"
+#include "util/format/format_utils.h"
 #include "util/half_float.h"
 #include "vulkan/vulkan_core.h"
 
@@ -56,8 +57,8 @@ write_desc(struct hk_descriptor_set *set, uint32_t binding, uint32_t elem,
 
 /* The format a G15 custom border is packed for: the view's (a combined
  * descriptor), else the sampler's. A stencil view reads its S8 plane, also the
- * stencil of a combined format. A sampler made without one, written alone,
- * gets the border's 32-bit words as they are (not verified).
+ * stencil of a combined format. NONE: a sampler made without one, written
+ * alone, as Direct3D's always are (g15_pack_border_no_format).
  */
 static enum pipe_format
 g15_border_format(const struct hk_sampler *sampler, struct hk_image_view *view,
@@ -74,7 +75,36 @@ g15_border_format(const struct hk_sampler *sampler, struct hk_image_view *view,
 
    return vk_border_color_is_int(sampler->vk.border_color)
              ? PIPE_FORMAT_R32G32B32A32_UINT
-             : PIPE_FORMAT_R32G32B32A32_FLOAT;
+             : PIPE_FORMAT_NONE;
+}
+
+/* G15 reads a border word as the view's format says, from its low bits, and the
+ * view is not known here. One float border for the views games sample: a word's
+ * low 8 bits the channel as unorm8 (RGBA8, BC1-5, BC7, exact), its low 12 bits
+ * the nearest unorm12 with those (an sRGB view's, within 3 %), its high bits the
+ * float32 (a 32-bit float view's, within 2^-11). Wrong: 16-bit channels, and a
+ * format with another order (BGRA8 swaps red and blue).
+ */
+static void
+g15_pack_border_no_format(struct agx_border_packed *out, const uint32_t in[4])
+{
+   uint32_t word[4];
+
+   for (unsigned i = 0; i < 4; i++) {
+      float f = uif(in[i]);
+      uint32_t u8 = _mesa_float_to_unorm(f, 8);
+      int32_t u12 = _mesa_float_to_unorm(f, 12);
+      uint32_t high = CLAMP((u12 - (int32_t)u8 + 128) >> 8, 0, 15);
+
+      word[i] = (in[i] & 0xfffff000) | high << 8 | u8;
+   }
+
+   agx_pack(out, BORDER, cfg) {
+      cfg.channel_0 = word[0];
+      cfg.channel_1 = word[1];
+      cfg.channel_2 = word[2];
+      cfg.channel_3 = word[3];
+   }
 }
 
 /* G15's opaque black puts its 1 in the format's last channel, the red of an
@@ -182,8 +212,15 @@ write_sampled_image_view_desc_g15(struct hk_descriptor_set *set,
 
          /* The custom border, read by the hardware after the state */
          if (sampler->has_border) {
-            agx_pack_border(&desc[plane].border, sampler->custom_border.uint32,
-                            g15_border_format(sampler, view, plane));
+            enum pipe_format format = g15_border_format(sampler, view, plane);
+
+            if (format != PIPE_FORMAT_NONE) {
+               agx_pack_border(&desc[plane].border,
+                               sampler->custom_border.uint32, format);
+            } else {
+               g15_pack_border_no_format(&desc[plane].border,
+                                         sampler->custom_border.uint32);
+            }
          } else if (view) {
             g15_opaque_black_as_custom(&desc[plane], view, plane);
          }
