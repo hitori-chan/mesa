@@ -3658,6 +3658,7 @@ hk_flush_dynamic_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
       out = agx_push_vertex_shader_word_1(out, dev->dev.params.gpu_generation,
                                           dev->dev.shader_base, pipeline);
       agx_push_packed(out, hw_vs->info.uvs.vdm, VDM_STATE_VERTEX_OUTPUTS);
+      cs->writes_layer |= hw_vs->info.uvs.components[VARYING_SLOT_LAYER] != 0;
 
       agx_push(out, VDM_STATE_VERTEX_UNKNOWN, cfg) {
          cfg.flat_shading_control = translate_vdm_vertex(gfx->provoking);
