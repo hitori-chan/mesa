@@ -197,6 +197,15 @@ struct wsi_image {
    uint32_t query_pool_busy;
 };
 
+/* A display server on another machine's clock (wsi_foreign_clock_to_local) */
+struct wsi_foreign_clock {
+   bool checked;
+   bool foreign;
+   int64_t offset_ns;
+   int64_t late_min_ns;
+   uint32_t window;
+};
+
 struct wsi_presentation_timing {
    uint64_t present_id;
    uint64_t target_time;
@@ -461,6 +470,9 @@ wsi_destroy_image(const struct wsi_swapchain *chain,
 VkResult
 wsi_swapchain_wait_for_present_semaphore(const struct wsi_swapchain *chain,
                                          uint64_t present_id, uint64_t timeout);
+
+uint64_t
+wsi_foreign_clock_to_local(struct wsi_foreign_clock *clock, uint64_t server_ns, uint64_t local_now_ns);
 
 void
 wsi_swapchain_present_timing_notify_completion(struct wsi_swapchain *chain,
