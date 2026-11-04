@@ -799,8 +799,14 @@ lower_robustness(nir_builder *b, nir_intrinsic_instr *intr, UNUSED void *data)
     * out-of-bounds, giving hardware-level robustness2 behaviour.
     */
    unsigned c = size_components - 1;
+
+   /* A buffer's texel index becomes a row of a 2D image, and an index of 0xFFF0
+    * a row within a tall view's rows or close to a short one's (G15 reads
+    * memory there, not zero): use the row the sampled path's index of -1 gets.
+    */
+   unsigned oob_coord = dim == GLSL_SAMPLER_DIM_BUF ? 0xFFFFFF00 : 0xFFF0;
    nir_def *r =
-      nir_bcsel(b, oob, nir_imm_int(b, 0xFFF0), nir_channel(b, coord, c));
+      nir_bcsel(b, oob, nir_imm_int(b, oob_coord), nir_channel(b, coord, c));
 
    nir_src_rewrite(&intr->src[1], nir_vector_insert_imm(b, coord, r, c));
    return true;
