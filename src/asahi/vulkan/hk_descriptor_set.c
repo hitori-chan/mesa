@@ -51,6 +51,19 @@ write_desc(struct hk_descriptor_set *set, uint32_t binding, uint32_t elem,
 {
    ASSERTED uint32_t dst_size;
    void *dst = desc_ubo_data(set, binding, elem, &dst_size);
+   const struct hk_descriptor_set_binding_layout *layout =
+      &set->layout->binding[binding];
+
+   /* vkd3d-proton writes a typed null descriptor to every set of a heap, also
+    * to a mutable binding whose list holds buffers alone, with no room for it.
+    * It stays in its slot, as zeros: a null buffer.
+    */
+   if (layout->type == VK_DESCRIPTOR_TYPE_MUTABLE_EXT &&
+       desc_size > layout->stride) {
+      memset(dst, 0, layout->stride);
+      return;
+   }
+
    assert(desc_size <= dst_size);
    memcpy(dst, desc_data, desc_size);
 }
@@ -399,6 +412,18 @@ write_buffer_desc(struct hk_descriptor_set *set,
                   uint32_t elem, bool read_only)
 {
    const struct hk_buffer_address desc = get_buffer_address(info, read_only);
+
+   /* vkd3d-proton writes a null buffer to every set of a heap, also to a mutable
+    * binding that holds images. A shader reads that slot as a texture, which
+    * faults on a buffer's address and size: write a null texture there.
+    */
+   if (set_is_g15(set) && info->buffer == VK_NULL_HANDLE &&
+       set->layout->binding[binding].type == VK_DESCRIPTOR_TYPE_MUTABLE_EXT &&
+       set->layout->binding[binding].stride >=
+          sizeof(struct hk_storage_image_descriptor_g15)) {
+      write_storage_desc_g15(set, binding, elem, NULL, NULL, NULL);
+      return;
+   }
 
    write_desc(set, binding, elem, &desc, sizeof(desc));
 }
