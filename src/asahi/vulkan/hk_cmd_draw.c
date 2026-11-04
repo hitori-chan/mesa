@@ -3156,8 +3156,10 @@ hk_flush_dynamic_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
       gfx->uses_blend_constant = uses_blend_constant(&dyn->cb);
    }
 
-   if (IS_DIRTY(MS_SAMPLE_MASK)) {
-      desc->root.draw.api_sample_mask = dyn->ms.sample_mask;
+   if (IS_DIRTY(MS_SAMPLE_MASK) || IS_DIRTY(MS_RASTERIZATION_SAMPLES)) {
+      /* The fragment shader's input coverage has no bits past the samples */
+      desc->root.draw.api_sample_mask =
+         dyn->ms.sample_mask & BITFIELD_MASK(MAX2(dyn->ms.rasterization_samples, 1));
       desc->root_dirty = true;
    }
 
