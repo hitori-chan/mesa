@@ -160,6 +160,14 @@ hk_dispatch_imm_writes(struct hk_cmd_buffer *cmd, struct hk_cs *cs)
    libagx_write_u32s(cmd, agx_1d(count), AGX_BARRIER_ALL | AGX_POSTGFX, params);
 }
 
+/* What the stream behind this render reads or reports comes after its retire */
+static void
+hk_post_gfx_wait_stores(struct hk_cmd_buffer *cmd)
+{
+   if (cmd->current_cs.post_gfx)
+      cmd->current_cs.post_gfx->cr.wait_stores = true;
+}
+
 void
 hk_queue_write(struct hk_cmd_buffer *cmd, uint64_t address, uint32_t value,
                bool after_gfx)
@@ -455,6 +463,7 @@ hk_CmdWriteTimestamp2(VkCommandBuffer commandBuffer,
 
       libagx_copy_timestamp(cmd, agx_1d(1), AGX_BARRIER_ALL | AGX_POSTGFX,
                             report_addr, cs->timestamp.end.addr);
+      hk_post_gfx_wait_stores(cmd);
    } else {
       cs->timestamp.end = (struct agx_timestamp_req){
          .addr = report_addr,
@@ -543,6 +552,13 @@ hk_cmd_begin_end_query(struct hk_cmd_buffer *cmd, struct hk_query_pool *pool,
    if (end) {
       perf_debug(cmd, "Query ending, type %u", pool->vk.query_type);
       hk_queue_write(cmd, hk_query_available_addr(pool, query), 1, graphics);
+
+      /* A render's reports land after it retires, its occlusion counts among
+       * them: an availability ordered at the retire was seen before the count
+       * it covers (dEQP-VK.query_pool.occlusion_query.get_results_*_wait_*).
+       */
+      if (graphics)
+         hk_post_gfx_wait_stores(cmd);
    }
 }
 
@@ -714,4 +730,8 @@ hk_CmdCopyQueryPoolResults(VkCommandBuffer commandBuffer, VkQueryPool queryPool,
    };
 
    libagx_copy_query_struct(cmd, agx_1d(queryCount), AGX_BARRIER_ALL, info);
+
+   /* It reads what a render reported, which lands after the render retires */
+   if (cmd->current_cs.cs)
+      cmd->current_cs.cs->cr.wait_stores = true;
 }
