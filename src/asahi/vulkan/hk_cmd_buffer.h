@@ -258,6 +258,24 @@ struct hk_graphics_state {
    uint64_t draw_params;
    uint64_t draw_id_ptr;
 
+   /* During VK_EXT_device_generated_commands (hk_cmd_dgc.c) */
+   struct {
+      /* The sequences bind vertex buffers: the prolog reads the strides from
+       * the root table.
+       */
+      bool dynamic_strides;
+
+      /* The sequences bind index buffers */
+      bool index_token, index_dx;
+      uint32_t sequence;
+
+      /* The current sequence's VkBindIndexBufferIndirectCommandEXT */
+      uint64_t index_addr;
+
+      /* Of struct libagx_dgc_vdm */
+      struct util_dynarray *vdm;
+   } dgc;
+
    uint32_t shaders_dirty;
    struct hk_api_shader *shaders[MESA_SHADER_MESH + 1];
 
@@ -524,6 +542,12 @@ struct hk_cmd_buffer {
    struct {
       struct hk_graphics_state gfx;
       struct hk_compute_state cs;
+
+      /* During VK_EXT_device_generated_commands: where the next root tables
+       * go, for the kernels to fill.
+       */
+      struct agx_ptr dgc_roots;
+      uint32_t dgc_roots_left;
       struct hk_rt_state rt;
    } state;
 
@@ -928,6 +952,10 @@ void hk_cmd_copy(struct hk_cmd_buffer *cmd, uint64_t dst, uint64_t src,
                  size_t size);
 void hk_cmd_fill(struct hk_cmd_buffer *cmd, uint64_t addr, size_t range,
                  uint32_t data);
+void hk_cmd_dispatch_dgc(struct hk_cmd_buffer *cmd, uint64_t addr);
+void hk_draw(struct hk_cmd_buffer *cmd, uint16_t draw_id, struct agx_draw draw);
+void hk_draw_mesh(struct hk_cmd_buffer *cmd, uint16_t draw_id,
+                  struct agx_grid grid);
 void hk_cmd_dispatch_unaligned(VkCommandBuffer commandBuffer, uint32_t x,
                                uint32_t y, uint32_t z);
 
