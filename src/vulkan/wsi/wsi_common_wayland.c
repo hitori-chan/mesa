@@ -196,6 +196,8 @@ struct wsi_wl_surface {
 struct wsi_wl_swapchain {
    struct wsi_swapchain base;
 
+   struct wsi_foreign_clock server_clock;
+
    struct wsi_wl_surface *wsi_wl_surface;
    struct wp_tearing_control_v1 *tearing_control;
    struct wp_fifo_v1 *fifo;
@@ -325,6 +327,7 @@ wsi_wl_convert_wayland_to_swapchain_time(struct wsi_wl_swapchain *chain,
 
    clockid_t src = chain->wsi_wl_surface->display->presentation_clock_id;
    clockid_t dst = vk_time_domain_to_clock_id(chain->base.present_timing.time_domain);
+   int64_t foreign_offset = chain->server_clock.foreign ? chain->server_clock.offset_ns : 0;
 
    if (chain_to_wayland) {
       src = dst;
@@ -333,7 +336,7 @@ wsi_wl_convert_wayland_to_swapchain_time(struct wsi_wl_swapchain *chain,
 
    /* Common case, most compositors: Nothing to do if both time domains match. */
    if (src == dst)
-      return in_timestamp;
+      return in_timestamp + (chain_to_wayland ? -foreign_offset : 0);
 
    /* Get reference time of src and dst time domain, with max 10 usecs error. */
    do {
@@ -354,7 +357,7 @@ wsi_wl_convert_wayland_to_swapchain_time(struct wsi_wl_swapchain *chain,
    /* Remap */
    int64_t delta_ns = (int64_t)in_timestamp - (int64_t)timestamps[0];
    uint64_t target_timestamp = timestamps[1] + delta_ns;
-   return target_timestamp;
+   return target_timestamp + (chain_to_wayland ? -foreign_offset : 0);
 }
 
 /* Given a time base and a refresh period, find the next
@@ -3131,6 +3134,12 @@ presentation_handle_presented(void *data,
        * or FRR so just report "Unknown" instead. */
       wsi_swapchain_present_timing_update_refresh_rate(&chain->base, refresh, 0, 0);
    }
+
+   /* The compositor's clock of that ID may be another machine's */
+   struct timespec server_now;
+   if (clock_gettime(chain->wsi_wl_surface->display->presentation_clock_id, &server_now) == 0)
+      presentation_time = wsi_foreign_clock_to_local(&chain->server_clock, presentation_time,
+                                                     timespec_to_nsec(&server_now));
 
    /* Convert whatever Wayland provides to swapchain time domain. */
    presentation_time = wsi_wl_convert_wayland_to_swapchain_time(chain, presentation_time, false);

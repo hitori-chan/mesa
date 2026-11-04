@@ -1853,6 +1853,37 @@ wsi_swapchain_find_present_timing_serial_locked(struct wsi_swapchain *chain, uin
    return NULL;
 }
 
+/* A presentation time from the display server, in the local clock of the same ID. A server across a VM's boundary
+ * (muvm forwards X11 and Wayland to the host's) stamps with the host's clock, hours from the guest's: an application
+ * calibrating the reports against the local clock then waits for that long, or for what is left of it after its
+ * arithmetic wraps. The same clock reads within a second of the event; any other is another machine's, and the offset
+ * is the event's smallest lateness over a window, which follows any drift and heals a late first event. */
+uint64_t
+wsi_foreign_clock_to_local(struct wsi_foreign_clock *clock, uint64_t server_ns, uint64_t local_now_ns)
+{
+   int64_t late = (int64_t)local_now_ns - (int64_t)server_ns;
+
+   if (!clock->checked) {
+      clock->checked = true;
+      clock->foreign = llabs(late) > 1000000000ll;
+      clock->offset_ns = late;
+      clock->late_min_ns = late;
+   }
+
+   if (!clock->foreign)
+      return server_ns;
+
+   clock->late_min_ns = MIN2(clock->late_min_ns, late);
+   clock->offset_ns = MIN2(clock->offset_ns, clock->late_min_ns);
+   if (++clock->window == 1024) {
+      clock->offset_ns = clock->late_min_ns;
+      clock->late_min_ns = late;
+      clock->window = 0;
+   }
+
+   return server_ns + clock->offset_ns;
+}
+
 void
 wsi_swapchain_present_timing_notify_completion(struct wsi_swapchain *chain,
                                                uint64_t timing_serial,
