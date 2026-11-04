@@ -413,6 +413,9 @@ struct hk_cs {
    /* Whether there is more than just the root chunk */
    bool stream_linked;
 
+   /* Whether a draw's vertex stage picks a layer */
+   bool writes_layer;
+
    /* Whether the sampler heap is required. Although we always must maintain the
     * heap for correctness, it's often not necessary since we can push lots of
     * samplers (especially for GL/DX11-era engines).
