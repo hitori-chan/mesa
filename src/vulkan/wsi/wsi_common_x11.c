@@ -1318,6 +1318,7 @@ struct x11_swapchain {
    uint64_t                                     send_sbc;
    uint64_t                                     last_present_msc;
    uint64_t                                     next_present_ust_lower_bound;
+   struct wsi_foreign_clock                     server_clock;
    uint32_t                                     stamp;
    uint32_t                                     sent_image_count;
 
@@ -1730,7 +1731,9 @@ x11_handle_dri3_present_event(struct x11_swapchain *chain,
        *   presenting before targetTime (although the error is minimized to just 1 ms).
        * - For stable msc estimation on native X11, we intentionally add a bit of jitter,
        *   such that this clamping will never falsely claim a stable MSC rate. */
-      uint64_t ust = MAX2(complete->ust, chain->next_present_ust_lower_bound);
+      uint64_t local_ust = complete->ust ?
+         wsi_foreign_clock_to_local(&chain->server_clock, complete->ust * 1000, os_time_get_nano()) / 1000 : 0;
+      uint64_t ust = MAX2(local_ust, chain->next_present_ust_lower_bound);
 
       if (complete->kind == XCB_PRESENT_COMPLETE_KIND_PIXMAP) {
          unsigned i, j;
@@ -3403,7 +3406,8 @@ x11_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
    chain->base.present_mode = present_mode;
    chain->base.image_count = num_images;
 
-   /* This is what Xserver is using. We cannot really query it, but we rely on it working. */
+   /* This is what Xserver is using. We cannot really query it, but we rely on it working;
+    * wsi_foreign_clock_to_local() brings a server on another machine's clock into it. */
    chain->base.present_timing.time_domain = VK_TIME_DOMAIN_CLOCK_MONOTONIC_KHR;
 
    chain->conn = conn;
