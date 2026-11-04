@@ -732,12 +732,11 @@ agx_open_device(void *memctx, struct agx_device *dev)
          return false;
       }
 
-      dev->scratch_bo = bo;
-
-      /* The contents of the scratch page are undefined, but making them nonzero
-       * helps fuzz for bugs where we incorrectly read from the write section.
+      /* Zeros, as a new BO: an unbound page of a sparse buffer written and read
+       * through its read-write alias (a Direct3D 12 UAV) reads this page, and
+       * Vulkan's residencyNonResidentStrict wants zeros there.
        */
-      memset(agx_bo_map(dev->scratch_bo), 0xCA, AIL_PAGESIZE);
+      dev->scratch_bo = bo;
    }
 
    void *bo = agx_bo_create(dev, LIBAGX_PRINTF_BUFFER_SIZE, 0, AGX_BO_WRITEBACK,
