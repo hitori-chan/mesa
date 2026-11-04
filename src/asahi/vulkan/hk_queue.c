@@ -153,15 +153,17 @@ asahi_fill_vdm_command(struct hk_device *dev, struct hk_cs *cs,
    c->layers = cs->cr.layers;
 
    /* Drawing max size will OOM and fail submission. But vkd3d-proton does this
-    * for emulating no-attachment rendering. Clamp to something reasonable and
-    * hope this is good enough in practice. This only affects a case that would
-    * otherwise be guaranteed broken.
+    * for emulating no-attachment rendering. Each layer of it is a tile pointer
+    * cache of 40 MiB on five clusters, and 32 do not fit the kernel's heap
+    * (test_rasterizer_ordered_views: ENOSPC), so a pass whose draws cannot pick
+    * a layer gets one. Clamp the rest to something reasonable and hope this is
+    * good enough in practice.
     *
     * XXX: Hack for vkd3d-proton.
     */
    if (c->layers == 2048 && c->width_px == 16384 && c->height_px == 16384) {
       mesa_log(MESA_LOG_WARN, MESA_LOG_TAG, "Clamping massive framebuffer");
-      c->layers = 32;
+      c->layers = cs->writes_layer ? 32 : 1;
    }
 
    c->ppp_multisamplectl = cs->ppp_multisamplectl;
