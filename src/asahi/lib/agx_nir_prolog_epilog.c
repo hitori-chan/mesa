@@ -144,6 +144,28 @@ agx_nir_lower_non_monolithic_uniforms(nir_shader *nir, unsigned nr)
 }
 
 static bool
+lower_dynamic_stride(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   const struct agx_vs_prolog_key *key = data;
+
+   if (intr->intrinsic != nir_intrinsic_load_vbo_stride_agx)
+      return false;
+
+   b->cursor = nir_before_instr(&intr->instr);
+
+   unsigned nr = DIV_ROUND_UP(BITSET_LAST_BIT(key->component_mask), 4);
+   nir_def *root =
+      nir_load_preamble(b, 1, 64, .base = AGX_ABI_VUNI_COUNT_VK(nr));
+   nir_def *offset_B = nir_iadd_imm(b, nir_imul_imm(b, intr->src[0].ssa, 4),
+                                    key->dynamic_strides_B);
+
+   nir_def_replace(
+      &intr->def,
+      nir_load_global_constant(b, 1, 32, nir_iadd(b, root, nir_u2u64(b, offset_B))));
+   return true;
+}
+
+static bool
 lower_adjacency(nir_builder *b, nir_intrinsic_instr *intr, void *data)
 {
    const struct agx_vs_prolog_key *key = data;
@@ -172,6 +194,34 @@ lower_adjacency(nir_builder *b, nir_intrinsic_instr *intr, void *data)
 
    nir_def_replace(&intr->def, id);
    return true;
+}
+
+/*
+ * An index size read at run time puts control flow around the vertex ID's
+ * load, and exports belong in the last block. Their sources, written at the top
+ * level, dominate it.
+ */
+static void
+sink_exports(nir_shader *nir)
+{
+   nir_function_impl *impl = nir_shader_get_entrypoint(nir);
+   nir_block *last = nir_impl_last_block(impl);
+
+   nir_foreach_block(block, impl) {
+      if (block == last)
+         continue;
+
+      nir_foreach_instr_safe(instr, block) {
+         if (instr->type == nir_instr_type_intrinsic &&
+             nir_instr_as_intrinsic(instr)->intrinsic ==
+                nir_intrinsic_export_agx) {
+
+            nir_instr_move(nir_after_block(last), instr);
+         }
+      }
+   }
+
+   nir_progress(true, impl, nir_metadata_control_flow);
 }
 
 void
@@ -212,7 +262,13 @@ agx_nir_vs_prolog(nir_builder *b, const void *key_)
 
    /* Now lower the resulting program using the key */
    if (!key->static_vi) {
-      agx_nir_lower_vbo(b->shader, key->attribs, key->robustness, false);
+      agx_nir_lower_vbo(b->shader, key->attribs, key->robustness,
+                        key->dynamic_strides_B != 0);
+
+      if (key->dynamic_strides_B) {
+         nir_shader_intrinsics_pass(b->shader, lower_dynamic_stride,
+                                    nir_metadata_control_flow, (void *)key);
+      }
 
       /* Clean up redundant vertex ID loads */
       if (!key->hw || key->adjacency) {
@@ -228,8 +284,13 @@ agx_nir_vs_prolog(nir_builder *b, const void *key_)
       nir_shader_intrinsics_pass(b->shader, lower_adjacency,
                                  nir_metadata_control_flow, (void *)key);
    }
-   nir_inline_sysval(b->shader, nir_intrinsic_load_index_size_poly,
-                     key->sw_index_size_B);
+   if (key->sw_index_size_B == AGX_SW_INDEX_SIZE_DYNAMIC) {
+      poly_nir_lower_sysvals(b->shader);
+      sink_exports(b->shader);
+   } else {
+      nir_inline_sysval(b->shader, nir_intrinsic_load_index_size_poly,
+                        key->sw_index_size_B);
+   }
 
    /* Finally, lower uniforms according to our ABI */
    unsigned nr = DIV_ROUND_UP(BITSET_LAST_BIT(key->component_mask), 4);
