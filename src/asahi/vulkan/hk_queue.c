@@ -76,6 +76,12 @@ queue_submit_empty(struct hk_device *dev, struct hk_queue *queue,
    return VK_SUCCESS;
 }
 
+static bool
+g15_barrier_retire(struct hk_device *dev)
+{
+   return dev->dev.params.gpu_generation >= 15 && !HK_PERF(dev, HOSTBARRIER);
+}
+
 static void
 asahi_fill_cdm_command(struct hk_device *dev, struct hk_cs *cs,
                        struct drm_asahi_cmd_compute *cmd)
@@ -868,6 +874,12 @@ queue_submit(struct hk_device *dev, struct hk_queue *queue,
             }
          }
 
+         /* A report behind the last render would hold this one back until that
+          * render's post-process, and this one cannot read it.
+          */
+         if (g15_render && g15_barrier_retire(dev) && !queue->compute_pending)
+            header.cdm_barrier = DRM_ASAHI_BARRIER_NONE;
+
          util_dynarray_append(&payload, header);
 
          if (cs->type == HK_CS_CDM) {
@@ -882,6 +894,19 @@ queue_submit(struct hk_device *dev, struct hk_queue *queue,
 
             struct drm_asahi_cmd_compute cmd;
             asahi_fill_cdm_command(dev, cs, &cmd);
+
+            /* A wait for the render before it, across kinds, lasts until the
+             * firmware's post-process, which the frames of a game with dozens
+             * of switches spend most of their time in. A retired render's
+             * attachments are as good as a later pass sees them; its end
+             * timestamps and its vertex stage's stores are not there yet.
+             */
+            if (g15_barrier_retire(dev) && !cs->cr.wait_stores &&
+                !queue->vertex_stores)
+               cmd.flags |= DRM_ASAHI_COMPUTE_BARRIER_RETIRE;
+
+            queue->vertex_stores = false;
+            queue->compute_pending |= !cs->post_gfx;
             util_dynarray_append(&payload, cmd);
             nr_cdm++;
          } else {
@@ -893,6 +918,12 @@ queue_submit(struct hk_device *dev, struct hk_queue *queue,
 
             struct drm_asahi_cmd_render cmd;
             asahi_fill_vdm_command(dev, cs, &cmd);
+
+            if (g15_barrier_retire(dev))
+               cmd.flags |= DRM_ASAHI_RENDER_BARRIER_RETIRE;
+
+            queue->vertex_stores |= cs->cr.vertex_stores;
+            queue->compute_pending = false;
             util_dynarray_append(&payload, cmd);
 
             if (g15_render) {
