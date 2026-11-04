@@ -214,7 +214,9 @@ hk_AllocateMemory(VkDevice device, const VkMemoryAllocateInfo *pAllocateInfo,
       if (type->propertyFlags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT)
          flags |= AGX_BO_WRITEBACK;
 
-      mem->bo = agx_bo_create(&dev->dev, aligned_size, 0, flags, "App memory");
+      /* Direct3D 12's placed resources sit at offsets of 64 KiB in a heap, and their addresses
+       * are expected to keep that alignment (vkd3d-proton's test_suballocate_va_alignment). */
+      mem->bo = agx_bo_create(&dev->dev, aligned_size, 64 * 1024, flags, "App memory");
       if (!mem->bo) {
          result = vk_error(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY);
          goto fail_alloc;
