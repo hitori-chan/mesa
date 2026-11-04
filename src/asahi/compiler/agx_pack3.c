@@ -19,7 +19,7 @@
 
 #include <setjmp.h>
 #include "util/bitscan.h"
-#include "util/simple_mtx.h"
+#include "util/u_atomic.h"
 #include "util/u_debug.h"
 #include "agx3_pack.h"
 #include "agx_builder.h"
@@ -4157,10 +4157,15 @@ a3_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
  * same packer: registers and uniforms are 32-bit, numbered as rN/uN.
  */
 
-/* The drivers build an entry program for every pipeline they emit, and the
- * packer checks each instruction it packs, so the building blocks keep their
- * encodings by their operands: direct-mapped, key 0 empty */
-#define A3_MEMO_BITS 10
+/* The drivers build an entry program for every USC word list they emit, from
+ * every thread recording, and the packer checks each instruction it packs, so
+ * the building blocks keep their encodings by their operands. An entry never
+ * changes once its key is published, so a hit takes no lock: a mutex here made
+ * 1.6 M futex calls a second under nine threads recording. Key 0 is empty, the
+ * first key to a slot keeps it, and a key that finds no slot is packed. */
+#define A3_MEMO_BITS   12
+#define A3_MEMO_PROBES 4
+#define A3_MEMO_CLAIMED UINT64_MAX
 
 enum a3_memo_tag {
    A3_MEMO_MOV_IMM = 1,
@@ -4176,8 +4181,6 @@ static struct {
    uint8_t length;
    uint8_t code[AGX3_MAX_BYTES];
 } a3_memo[1 << A3_MEMO_BITS];
-
-static simple_mtx_t a3_memo_lock = SIMPLE_MTX_INITIALIZER;
 
 static unsigned
 a3_memo_slot(uint64_t key)
@@ -4196,15 +4199,21 @@ static void
 a3_memo_pack(struct util_dynarray *out, uint64_t key, const agx_instr *I)
 {
    unsigned slot = a3_memo_slot(key);
+   unsigned mask = ARRAY_SIZE(a3_memo) - 1;
 
-   simple_mtx_lock(&a3_memo_lock);
-   if (a3_memo[slot].key == key) {
-      memcpy(util_dynarray_grow_bytes(out, 1, a3_memo[slot].length),
-             a3_memo[slot].code, a3_memo[slot].length);
-      simple_mtx_unlock(&a3_memo_lock);
-      return;
+   for (unsigned i = 0; i < A3_MEMO_PROBES; ++i) {
+      unsigned s = (slot + i) & mask;
+      uint64_t found = p_atomic_read(&a3_memo[s].key);
+
+      if (found == key) {
+         memcpy(util_dynarray_grow_bytes(out, 1, a3_memo[s].length),
+                a3_memo[s].code, a3_memo[s].length);
+         return;
+      }
+
+      if (found == 0)
+         break;
    }
-   simple_mtx_unlock(&a3_memo_lock);
 
    size_t at = out->size;
    agx3_pack_instr(out, NULL, I, 0);
@@ -4213,11 +4222,16 @@ a3_memo_pack(struct util_dynarray *out, uint64_t key, const agx_instr *I)
    if (length > AGX3_MAX_BYTES)
       return;
 
-   simple_mtx_lock(&a3_memo_lock);
-   a3_memo[slot].key = key;
-   a3_memo[slot].length = length;
-   memcpy(a3_memo[slot].code, (uint8_t *)out->data + at, length);
-   simple_mtx_unlock(&a3_memo_lock);
+   for (unsigned i = 0; i < A3_MEMO_PROBES; ++i) {
+      unsigned s = (slot + i) & mask;
+
+      if (p_atomic_cmpxchg(&a3_memo[s].key, 0, A3_MEMO_CLAIMED) == 0) {
+         a3_memo[s].length = length;
+         memcpy(a3_memo[s].code, (uint8_t *)out->data + at, length);
+         p_atomic_set(&a3_memo[s].key, key);
+         return;
+      }
+   }
 }
 
 /* mov_imm's immediate is a plain operand: the memo keeps the encoding with 0,
@@ -4235,12 +4249,30 @@ agx3_emit_mov_imm(struct util_dynarray *out, unsigned reg, uint32_t imm)
 
    const struct agx3_pack_spec *spec = agx3_spec(AGX3_MOV_IMM32);
    uint8_t *code = (uint8_t *)out->data + at;
-   unsigned length = out->size - at;
+   uint64_t word;
+
+   /* This runs for every buffer of every draw: only the immediate's fields,
+    * all in the first 8 bytes */
+   memcpy(&word, code, sizeof(word));
+
+   for (unsigned f = spec->op_start[MOV_IMM_IMM];
+        f < spec->op_start[MOV_IMM_IMM + 1]; f++) {
+      const struct agx3_field *field = &spec->fields[f];
+
+      assert(field->start + field->size <= 64);
+      word |= (uint64_t)((imm >> field->vpos) & BITFIELD_MASK(field->size))
+              << field->start;
+   }
+
+   memcpy(code, &word, sizeof(word));
+
+#ifndef NDEBUG
    uint64_t ops[A3_MAX_OPS];
+   unsigned length = out->size - at;
 
    agx3_unpack(code, spec, length, ops);
-   ops[MOV_IMM_IMM] = imm;
-   agx3_pack(code, spec, length, ops);
+   assert(ops[MOV_IMM_IMM] == imm);
+#endif
 }
 
 void
