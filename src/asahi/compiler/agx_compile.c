@@ -1845,6 +1845,41 @@ agx_lower_g15_tex_base(agx_context *ctx)
    }
 }
 
+/* G15: a preload inside the reserved pairs (a vertex shader's IDs, r4 to r6 from
+ * its prolog) moves out of them, after the other preloads and before anything
+ * writes a register. The pairs are written before each texture instruction that
+ * names them, past register allocation, which keeps them free.
+ */
+static void
+agx_move_preloads_off_tex_base(agx_context *ctx)
+{
+   agx_block *block = agx_start_block(ctx);
+   agx_instr *first = NULL;
+
+   agx_foreach_instr_in_block(block, I) {
+      if (I->op != AGX_OPCODE_PRELOAD) {
+         first = I;
+         break;
+      }
+   }
+
+   agx_builder b = agx_init_builder(
+      ctx, first ? agx_before_instr(first) : agx_after_block(block));
+
+   agx_foreach_instr_in_block_safe(block, I) {
+      if (I->op != AGX_OPCODE_PRELOAD)
+         break;
+
+      unsigned reg = I->src[0].value;
+      unsigned end = reg + agx_size_align_16(I->src[0].size);
+
+      if (reg < AGX_G15_TEX_BASE_REG + 8 && end > AGX_G15_TEX_BASE_REG) {
+         agx_mov_to(&b, I->dest[0], I->src[0]);
+         agx_remove_instruction(I);
+      }
+   }
+}
+
 /* G15: a preamble runs in the entry program, which cannot read back the
  * uniforms it writes; it reads pushed word N from register N +
  * AGX_G15_PUSH_REG instead, where the entry program loaded it (agx_esl.c) */
@@ -4842,6 +4877,9 @@ agx_compile_function_nir(nir_shader *nir, nir_function_impl *impl,
 
    if (agx_should_dump(nir, AGX_DBG_SHADERS))
       agx_print_shader(ctx, stdout);
+
+   if (ctx->g15_tex_base)
+      agx_move_preloads_off_tex_base(ctx);
 
    agx_ra(ctx);
    if (ctx->ra_failed) {
