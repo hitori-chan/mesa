@@ -177,7 +177,8 @@ agx_pack_buffer_texture_g15(void *out, enum pipe_format format,
       cfg.swizzle_b = agx_channel_from_pipe(swizzle[2]);
       cfg.swizzle_a = agx_channel_from_pipe(swizzle[3]);
       cfg.width = AGX_TEXTURE_BUFFER_WIDTH;
-      cfg.height = MAX2(DIV_ROUND_UP(size_el, cfg.width), 1);
+      cfg.height = CLAMP(DIV_ROUND_UP(size_el, cfg.width), 1,
+                         AGX_TEXTURE_BUFFER_MAX_HEIGHT);
       cfg.srgb = (desc->colorspace == UTIL_FORMAT_COLORSPACE_SRGB);
       cfg.srgb_2_channel = cfg.srgb && util_format_colormask(desc) == 0x3;
       cfg.address = address;
@@ -208,7 +209,8 @@ agx_pack_buffer_pbe_g15(void *out, enum pipe_format format, uint64_t address,
       agx_pbe_g15_format(&cfg, format);
       cfg.buffer = address;
       cfg.width = AGX_TEXTURE_BUFFER_WIDTH;
-      cfg.height = MAX2(DIV_ROUND_UP(size_el, cfg.width), 1);
+      cfg.height = CLAMP(DIV_ROUND_UP(size_el, cfg.width), 1,
+                         AGX_TEXTURE_BUFFER_MAX_HEIGHT);
       cfg.stride = (stride_B >> 4) - 1;
    }
 
