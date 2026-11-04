@@ -9,6 +9,7 @@
 #include "asahi/compiler/agx_nir_texture.h"
 #include "asahi/lib/agx_device.h"
 #include "asahi/lib/agx_nir_lower_vbo.h"
+#include "asahi/libagx/libagx_dgc.h"
 #include "util/disk_cache.h"
 #include "util/mesa-blake3.h"
 #include "util/os_misc.h"
@@ -177,6 +178,7 @@ hk_get_device_extensions(const struct agx_device *dev,
       .EXT_depth_clip_control = false,
       .EXT_depth_clip_enable = true,
       .EXT_descriptor_indexing = true,
+      .EXT_device_generated_commands = true,
 #ifdef VK_USE_PLATFORM_DISPLAY_KHR
       .EXT_display_control = false,
 #endif
@@ -717,6 +719,10 @@ hk_get_device_features(
       .shaderImageFloat32Atomics = dev->params.gpu_generation >= 15,
       .shaderImageFloat32AtomicAdd = dev->params.gpu_generation >= 15,
 
+      /* VK_EXT_device_generated_commands */
+      .deviceGeneratedCommands = true,
+      .dynamicGeneratedPipelineLayout = true,
+
       /* VK_EXT_shader_module_identifier */
       .shaderModuleIdentifier = true,
 
@@ -1209,6 +1215,24 @@ hk_get_device_properties(const struct agx_device *dev,
       .sampleLocationCoordinateRange[1] = 0.9375f,
       .sampleLocationSubPixelBits = 4,
       .variableSampleLocations = false,
+
+      /* VK_EXT_device_generated_commands: no execution sets yet */
+      .maxIndirectPipelineCount = 1 << 12,
+      .maxIndirectShaderObjectCount = 0,
+      .maxIndirectSequenceCount = 1 << 20,
+      .maxIndirectCommandsTokenCount = LIBAGX_DGC_MAX_COPIES,
+      .maxIndirectCommandsTokenOffset = 2047,
+      .maxIndirectCommandsIndirectStride = 2048,
+      .supportedIndirectCommandsInputModes =
+         VK_INDIRECT_COMMANDS_INPUT_MODE_VULKAN_INDEX_BUFFER_EXT |
+         VK_INDIRECT_COMMANDS_INPUT_MODE_DXGI_INDEX_BUFFER_EXT,
+      .supportedIndirectCommandsShaderStages =
+         VK_SHADER_STAGE_ALL_GRAPHICS | VK_SHADER_STAGE_COMPUTE_BIT |
+         VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT,
+      .supportedIndirectCommandsShaderStagesPipelineBinding = 0,
+      .supportedIndirectCommandsShaderStagesShaderBinding = 0,
+      .deviceGeneratedCommandsTransformFeedback = false,
+      .deviceGeneratedCommandsMultiDrawIndirectCount = false,
 
       /* VK_EXT_shader_object */
       .shaderBinaryVersion = 0,
