@@ -728,6 +728,9 @@ hk_reserve_scratch(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
    }
 }
 
+/* Room for a draw's USC words on the stack */
+#define HK_USC_WORDS_STACK 512
+
 /* G15: the entry program for a USC word list (agx_esl.h): its VA, 0 when G15
  * cannot build it yet */
 uint64_t
@@ -735,8 +738,9 @@ hk_upload_esl_va(struct hk_cmd_buffer *cmd, const struct agx_esl_code *code,
                  enum agx_esl_stage stage, const uint8_t *usc)
 {
    struct hk_device *dev = hk_cmd_buffer_device(cmd);
+   uint8_t stack[1024];
    struct util_dynarray esl;
-   util_dynarray_init(&esl, NULL);
+   util_dynarray_init_from_stack(&esl, stack, sizeof(stack));
 
    uint64_t va = 0;
    if (agx_esl_from_usc(&esl, usc, dev->dev.shader_base, code, stage)) {
@@ -785,7 +789,20 @@ hk_upload_usc_words(struct hk_cmd_buffer *cmd, struct hk_shader *s,
 
    size_t usc_size =
       agx_usc_size(constant_push_ranges + push_ranges + stage_ranges + 4);
-   struct agx_ptr t = hk_pool_usc_alloc(cmd, usc_size, 64);
+
+   /* G15 reads the words back to build the entry program and the GPU never
+    * sees them. The pool's mapping is write-combined, each read a trip to
+    * memory, so they stay on the stack.
+    */
+   alignas(16) uint8_t stack[HK_USC_WORDS_STACK];
+   bool g15 = dev->dev.params.gpu_generation >= 15;
+   struct agx_ptr t = {0};
+
+   if (g15 && usc_size <= sizeof(stack))
+      t.cpu = stack;
+   else
+      t = hk_pool_usc_alloc(cmd, usc_size, 64);
+
    if (!t.cpu)
       return 0;
 
@@ -862,7 +879,7 @@ hk_upload_usc_words(struct hk_cmd_buffer *cmd, struct hk_shader *s,
 
    agx_usc_push_blob(&b, linked->usc.data, linked->usc.size);
 
-   if (dev->dev.params.gpu_generation >= 15)
+   if (g15)
       return hk_upload_esl(cmd, s, linked, t.cpu);
 
    return agx_usc_addr(&dev->dev, t.gpu);
@@ -890,18 +907,26 @@ hk_dispatch_precomp(struct hk_cmd_buffer *cmd, struct agx_grid grid,
    if (!cs)
       return;
 
-   struct agx_ptr t = hk_pool_usc_alloc(cmd, agx_usc_size(15), 64);
    uint64_t uploaded_data = hk_pool_upload(cmd, data, data_size, 4);
-
-   agx_usc_words_precomp(t.cpu, &prog->b, uploaded_data, data_size);
-   uint32_t usc = agx_usc_addr(&dev->dev, t.gpu);
+   uint32_t usc;
 
    /* G15 launches the kernel's entry program, built from the words */
    if (dev->dev.params.gpu_generation >= 15) {
+      uint32_t words[HK_USC_WORDS_STACK / sizeof(uint32_t)];
+      assert(agx_usc_size(15) <= sizeof(words));
+
+      agx_usc_words_precomp(words, &prog->b, uploaded_data, data_size);
+
       struct agx_esl_code code =
          agx_esl_code_for_precomp(prog->ptr, dev->dev.libagx_programs[idx]);
 
-      usc = hk_upload_esl_code(cmd, &code, AGX_ESL_COMPUTE, t.cpu);
+      usc =
+         hk_upload_esl_code(cmd, &code, AGX_ESL_COMPUTE, (const uint8_t *)words);
+   } else {
+      struct agx_ptr t = hk_pool_usc_alloc(cmd, agx_usc_size(15), 64);
+
+      agx_usc_words_precomp(t.cpu, &prog->b, uploaded_data, data_size);
+      usc = agx_usc_addr(&dev->dev, t.gpu);
    }
 
    hk_dispatch_with_usc_launch(dev, cs, prog->b.launch, usc, grid,
