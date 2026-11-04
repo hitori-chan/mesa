@@ -315,7 +315,6 @@ queue_submit_looped(struct hk_device *dev, struct drm_asahi_submit *submit,
 {
    uint8_t *cmdbuf = (uint8_t *)(uintptr_t)submit->cmdbuf;
    uint32_t offs = 0;
-   unsigned submitted_vdm = 0, submitted_cdm = 0;
    unsigned commands_remaining = command_count;
 
    uint64_t out_syncs =
@@ -334,31 +333,28 @@ queue_submit_looped(struct hk_device *dev, struct drm_asahi_submit *submit,
       unsigned base_offs = offs;
       unsigned cdm_count = 0, vdm_count = 0;
 
-      /* We need to fix up the barriers since barriers are ioctl-relative. A
-       * command's attachments go before it, in the same ioctl.
+      /* Barriers are ioctl-relative, and every command waits on all those
+       * before it: that is its index in this ioctl. Its index in the whole
+       * buffer may not fit the header's 16 bits. A command's attachments go
+       * before it, in the same ioctl.
        */
       for (unsigned i = 0; i < count;) {
          struct drm_asahi_cmd_header *cmd = (void *)(cmdbuf + offs);
          offs += sizeof(*cmd) + cmd->size;
 
-         if (cmd->cmd_type == DRM_ASAHI_CMD_RENDER)
-            vdm_count++;
-         else if (cmd->cmd_type == DRM_ASAHI_CMD_COMPUTE)
-            cdm_count++;
-         else
+         if (cmd->cmd_type != DRM_ASAHI_CMD_RENDER &&
+             cmd->cmd_type != DRM_ASAHI_CMD_COMPUTE)
             continue;
 
+         cmd->vdm_barrier = vdm_count;
+         cmd->cdm_barrier = cdm_count;
+
+         if (cmd->cmd_type == DRM_ASAHI_CMD_RENDER)
+            vdm_count++;
+         else
+            cdm_count++;
+
          i++;
-
-         if (cmd->vdm_barrier != DRM_ASAHI_BARRIER_NONE) {
-            assert(cmd->vdm_barrier >= submitted_vdm);
-            cmd->vdm_barrier -= submitted_vdm;
-         }
-
-         if (cmd->cdm_barrier != DRM_ASAHI_BARRIER_NONE) {
-            assert(cmd->cdm_barrier >= submitted_cdm);
-            cmd->cdm_barrier -= submitted_cdm;
-         }
       }
 
       /* We can't signal the out-syncobjs until all prior work finishes. Since
@@ -396,9 +392,6 @@ queue_submit_looped(struct hk_device *dev, struct drm_asahi_submit *submit,
       VkResult result = queue_submit_single(dev, &submit_ioctl, ring_idx);
       if (result != VK_SUCCESS)
          return result;
-
-      submitted_cdm += cdm_count;
-      submitted_vdm += vdm_count;
    }
 
    return VK_SUCCESS;
