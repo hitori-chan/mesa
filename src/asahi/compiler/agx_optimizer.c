@@ -260,11 +260,18 @@ agx_optimizer_not(agx_instr *I, agx_instr *use)
 }
 
 static bool
-agx_optimizer_fmov_rev(agx_instr *I, agx_instr *use)
+agx_optimizer_fmov_rev(agx_instr *I, agx_instr *use, bool g15)
 {
    if (!agx_is_fmov(use))
       return false;
    if (use->src[0].neg || use->src[0].abs)
+      return false;
+
+   /* G15's float unary operations have no saturate bit in the forms known. */
+   if (g15 && use->saturate && I->op != AGX_OPCODE_FADD &&
+       I->op != AGX_OPCODE_FMUL && I->op != AGX_OPCODE_FFMA &&
+       I->op != AGX_OPCODE_HADD && I->op != AGX_OPCODE_HMUL &&
+       I->op != AGX_OPCODE_HFMA)
       return false;
 
    /* We can fold f2f16 into 32-bit instructions, but we can't fold f2f32 into
@@ -684,7 +691,8 @@ agx_optimizer_backward(agx_context *ctx)
          }
 
          /* Destination has a single use, try to propagate */
-         if (info.is_float && agx_optimizer_fmov_rev(I, use)) {
+         bool g15 = ctx->key && ctx->key->dev.gpu_generation >= 15;
+         if (info.is_float && agx_optimizer_fmov_rev(I, use, g15)) {
             agx_remove_instruction(use);
             continue;
          }
