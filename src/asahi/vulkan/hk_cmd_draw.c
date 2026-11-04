@@ -4018,6 +4018,11 @@ hk_flush_gfx_state(struct hk_cmd_buffer *cmd, uint32_t draw_id,
       hk_flush_index(cmd, cs);
 
    hk_flush_dynamic_state(cmd, cs, draw_id, draw);
+
+   struct hk_shader *hw_vs = hk_bound_hw_vs(gfx);
+   cs->cr.vertex_stores |=
+      gfx->xfb_enabled || (hw_vs && hw_vs->b.info.writes_memory);
+
    return cs;
 }
 
