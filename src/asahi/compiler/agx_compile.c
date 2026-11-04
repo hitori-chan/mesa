@@ -4195,6 +4195,105 @@ set_speculate(nir_builder *b, nir_instr *instr, UNUSED void *_)
    return false;
 }
 
+/*
+ * D3D11.3 16.8.2: a derivative in varying control flow reads its neighbours'
+ * values, and shaders rely on that for a value computed outside the branch.
+ * nir_opt_sink takes an input or a coordinate into the branch, where a disabled
+ * lane's register stays unwritten and reads 0. G15: bring what a quad shuffle or
+ * an implicit LOD reads back above the outermost varying branch. What depends on
+ * the branch (a phi, an image load) stays, as undefined as on any GPU.
+ */
+struct hoist_above_cf {
+   nir_cf_node *top;
+   unsigned budget;
+};
+
+static bool
+cf_holds_block(nir_cf_node *top, nir_block *block)
+{
+   for (nir_cf_node *n = block->cf_node.parent; n; n = n->parent) {
+      if (n == top)
+         return true;
+   }
+
+   return false;
+}
+
+static bool
+can_hoist_src_cb(nir_src *src, void *data)
+{
+   struct hoist_above_cf *h = data;
+   nir_instr *instr = nir_def_instr(src->ssa);
+
+   if (!cf_holds_block(h->top, instr->block))
+      return true;
+
+   if (h->budget-- == 0 || !nir_instr_can_speculate(instr))
+      return false;
+
+   return nir_foreach_src(instr, can_hoist_src_cb, h);
+}
+
+static bool
+hoist_src_cb(nir_src *src, void *data)
+{
+   struct hoist_above_cf *h = data;
+   nir_instr *instr = nir_def_instr(src->ssa);
+
+   if (cf_holds_block(h->top, instr->block)) {
+      nir_foreach_src(instr, hoist_src_cb, h);
+      nir_instr_move(nir_before_cf_node(h->top), instr);
+   }
+
+   return true;
+}
+
+static bool
+hoist_lane_reads_g15(nir_builder *b, nir_instr *instr, UNUSED void *data)
+{
+   nir_src *src;
+
+   if (instr->type == nir_instr_type_intrinsic) {
+      nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+
+      if (intr->intrinsic != nir_intrinsic_quad_swap_horizontal &&
+          intr->intrinsic != nir_intrinsic_quad_swap_vertical)
+         return false;
+
+      src = &intr->src[0];
+   } else if (instr->type == nir_instr_type_tex) {
+      nir_tex_instr *tex = nir_instr_as_tex(instr);
+      int coord = nir_tex_instr_src_index(tex, nir_tex_src_coord);
+
+      if (coord < 0 || (tex->op != nir_texop_tex && tex->op != nir_texop_txb))
+         return false;
+
+      src = &tex->src[coord].src;
+   } else {
+      return false;
+   }
+
+   struct hoist_above_cf h = {.budget = 256};
+
+   for (nir_cf_node *n = instr->block->cf_node.parent; n; n = n->parent) {
+      if (n->type == nir_cf_node_loop ||
+          (n->type == nir_cf_node_if &&
+           nir_src_is_divergent(&nir_cf_node_as_if(n)->condition)))
+         h.top = n;
+   }
+
+   if (!h.top || !can_hoist_src_cb(src, &h))
+      return false;
+
+   hoist_src_cb(src, &h);
+
+   /* The swap too: its result in the branch needs no lane the branch disabled */
+   if (instr->type == nir_instr_type_intrinsic)
+      nir_instr_move(nir_before_cf_node(h.top), instr);
+
+   return true;
+}
+
 static void
 agx_optimize_nir(nir_shader *nir, bool soft_fault, uint16_t *preamble_size,
                  uint8_t *ts_count, uint8_t *ss_count, bool g15)
@@ -4407,6 +4506,13 @@ agx_optimize_nir(nir_shader *nir, bool soft_fault, uint16_t *preamble_size,
 
    NIR_PASS(_, nir, nir_opt_sink, move_all);
    NIR_PASS(_, nir, nir_opt_move, move_all);
+
+   if (g15 && nir->info.stage == MESA_SHADER_FRAGMENT) {
+      nir_divergence_analysis(nir);
+      NIR_PASS(_, nir, nir_shader_instructions_pass, hoist_lane_reads_g15,
+               nir_metadata_control_flow, NULL);
+   }
+
    NIR_PASS(progress, nir, nir_lower_all_phis_to_scalar);
 
    /* After lowering phis to scalar, we must copy prop/DCE for correctness. RA
