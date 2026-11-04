@@ -205,6 +205,31 @@ lower_buffer_texture(nir_builder *b, nir_tex_instr *tex)
  * requires the index to be a clamped integer. Lower tex_src_coord into
  * tex_src_backend1 for array textures by type-converting and clamping.
  */
+/*
+ * G15's out-of-bounds fetch: the fetch itself goes to LOD and layer 0 and its
+ * result is replaced. A channel the descriptor's swizzle makes 1 (the alpha of a
+ * format without one) reads 1 and every other 0, which the hardware's border does
+ * not give: its opaque black puts an integer 1 in an R8's only channel.
+ */
+static nir_def *
+txf_out_of_bounds_g15(nir_builder *b, nir_def *ptr, nir_def *def,
+                      nir_alu_type type)
+{
+   nir_def *ones = libagx_txf_out_of_bounds_ones_g15(b, ptr);
+   bool is_float = nir_alu_type_get_base_type(type) == nir_type_float;
+   nir_def *one = is_float ? nir_imm_floatN_t(b, 1.0, def->bit_size)
+                           : nir_imm_intN_t(b, 1, def->bit_size);
+   nir_def *zero = nir_imm_intN_t(b, 0, def->bit_size);
+   nir_def *channels[NIR_MAX_VEC_COMPONENTS];
+
+   for (unsigned i = 0; i < def->num_components; ++i) {
+      channels[i] =
+         nir_bcsel(b, nir_i2b(b, nir_iand_imm(b, ones, BITFIELD_BIT(i))), one, zero);
+   }
+
+   return nir_vec(b, channels, def->num_components);
+}
+
 static bool
 lower_regular_texture(nir_builder *b, nir_instr *instr, void *data)
 {
@@ -232,6 +257,7 @@ lower_regular_texture(nir_builder *b, nir_instr *instr, void *data)
 
    /* Apply txf workaround, see libagx_lower_txf_robustness */
    bool is_txf = ((tex->op == nir_texop_txf) || (tex->op == nir_texop_txf_ms));
+   nir_def *txf_valid = NULL;
 
    if (is_txf &&
        (has_nonzero_lod(tex) || tex->is_array ||
@@ -247,13 +273,36 @@ lower_regular_texture(nir_builder *b, nir_instr *instr, void *data)
       unsigned lidx = coord->num_components - 1;
       nir_def *layer = nir_channel(b, coord, lidx);
 
-      nir_def *replaced = libagx_lower_txf_robustness(
-         b, texture_descriptor_ptr(b, tex),
-         nir_imm_bool(b, has_nonzero_lod(tex)), lod,
-         nir_imm_bool(b, min_lod != NULL), min_lod ?: nir_undef(b, 1, 16),
-         nir_imm_bool(b, tex->is_array), layer, nir_channel(b, coord, 0));
+      if (!g15) {
+         nir_def *replaced = libagx_lower_txf_robustness(
+            b, texture_descriptor_ptr(b, tex),
+            nir_imm_bool(b, has_nonzero_lod(tex)), lod,
+            nir_imm_bool(b, min_lod != NULL), min_lod ?: nir_undef(b, 1, 16),
+            nir_imm_bool(b, tex->is_array), layer, nir_channel(b, coord, 0));
 
-      coord = nir_vector_insert_imm(b, coord, replaced, 0);
+         coord = nir_vector_insert_imm(b, coord, replaced, 0);
+      } else if (!tex->is_sparse) {
+         nir_def *valid = libagx_txf_in_bounds_g15(
+            b, texture_descriptor_ptr(b, tex),
+            nir_imm_bool(b, has_nonzero_lod(tex)), lod,
+            nir_imm_bool(b, min_lod != NULL), min_lod ?: nir_undef(b, 1, 16),
+            nir_imm_bool(b, tex->is_array), layer);
+
+         if (tex->is_array) {
+            nir_def *safe = nir_bcsel(b, valid, layer,
+                                      nir_imm_intN_t(b, 0, layer->bit_size));
+            coord = nir_vector_insert_imm(b, coord, safe, lidx);
+         }
+
+         lod_idx = nir_tex_instr_src_index(tex, nir_tex_src_lod);
+         if (lod_idx >= 0) {
+            nir_def *safe = nir_bcsel(b, valid, lod,
+                                      nir_imm_intN_t(b, 0, lod->bit_size));
+            nir_src_rewrite(&tex->src[lod_idx].src, safe);
+         }
+
+         txf_valid = valid;
+      }
    }
 
    /* The layer is always the last component of the NIR coordinate, split it off
@@ -407,6 +456,15 @@ lower_regular_texture(nir_builder *b, nir_instr *instr, void *data)
                             nir_iadd_imm(b, nir_u2u16(b, sampler), 1));
    }
 
+   if (txf_valid) {
+      nir_def *ptr = texture_descriptor_ptr(b, tex);
+      b->cursor = nir_after_instr(&tex->instr);
+      nir_def_rewrite_uses_after(
+         &tex->def, nir_bcsel(b, txf_valid, &tex->def,
+                              txf_out_of_bounds_g15(b, ptr, &tex->def,
+                                                    tex->dest_type)));
+   }
+
    return true;
 }
 
@@ -555,7 +613,7 @@ lower_1d_image(nir_builder *b, nir_intrinsic_instr *intr)
  * libagx_lower_txf_robustness for more info.
  */
 static bool
-lower_image_load_robustness(nir_builder *b, nir_intrinsic_instr *intr)
+lower_image_load_robustness(nir_builder *b, nir_intrinsic_instr *intr, bool g15)
 {
    if (nir_intrinsic_access(intr) & ACCESS_IN_BOUNDS)
       return false;
@@ -578,6 +636,30 @@ lower_image_load_robustness(nir_builder *b, nir_intrinsic_instr *intr)
    nir_def *layer = nir_channel(b, coord, lidx);
 
    /* image_load is effectively the same as txf, reuse the txf lower */
+   if (g15) {
+      if (intr->intrinsic == nir_intrinsic_bindless_image_sparse_load)
+         return false;
+
+      nir_def *valid = libagx_txf_in_bounds_g15(
+         b, nir_load_from_texture_handle_agx(b, intr->src[0].ssa),
+         nir_imm_bool(b, false /* lower LOD */), lod,
+         nir_imm_bool(b, false /* lower min LOD */), lod,
+         nir_imm_bool(b, true /* lower layer */), layer);
+
+      nir_def *safe =
+         nir_bcsel(b, valid, layer, nir_imm_intN_t(b, 0, layer->bit_size));
+      nir_src_rewrite(&intr->src[1], nir_vector_insert_imm(b, coord, safe, lidx));
+
+      nir_def *ptr = nir_load_from_texture_handle_agx(b, intr->src[0].ssa);
+      b->cursor = nir_after_instr(&intr->instr);
+      nir_def_rewrite_uses_after(
+         &intr->def, nir_bcsel(b, valid, &intr->def,
+                               txf_out_of_bounds_g15(b, ptr, &intr->def,
+                                                     nir_intrinsic_dest_type(intr))));
+      b->cursor = nir_before_instr(&intr->instr);
+      return true;
+   }
+
    nir_def *replaced = libagx_lower_txf_robustness(
       b, nir_load_from_texture_handle_agx(b, intr->src[0].ssa),
       nir_imm_bool(b, false /* lower LOD */), lod,
@@ -607,7 +689,7 @@ lower_images(nir_builder *b, nir_intrinsic_instr *intr, void *data)
       if (intr->intrinsic == nir_intrinsic_image_load ||
           intr->intrinsic == nir_intrinsic_bindless_image_load ||
           intr->intrinsic == nir_intrinsic_bindless_image_sparse_load) {
-         lower_image_load_robustness(b, intr);
+         lower_image_load_robustness(b, intr, *g15);
       }
 
       switch (nir_intrinsic_image_dim(intr)) {
