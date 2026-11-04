@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 
+#include "libagx_dgc.h"
 #include "poly/geometry.h"
 #include "poly/tessellator.h"
 
@@ -16,8 +17,18 @@ libagx_tess_setup_indirect(
    uint64_t vertex_outputs /* bitfield */,
 
    /* Tess control invocation counter if active, else zero */
-   global uint32_t *tcs_statistic)
+   global uint32_t *tcs_statistic,
+
+   /* A sequence's index buffer, else null */
+   constant uint32_t *dgc_index, uint32_t dgc_index_dx)
 {
+   if (dgc_index) {
+      in_index_size_B = libagx_dgc_index_size_B(dgc_index[3], dgc_index_dx);
+      in_index_buffer = (((uint64_t)dgc_index[1]) << 32) | dgc_index[0];
+      in_index_buffer_range_el = dgc_index[2] / in_index_size_B;
+      vp->index_size_B = in_index_size_B;
+   }
+
    uint count = indirect[0], instance_count = indirect[1];
    unsigned in_patches = count / p->input_patch_size;
 
