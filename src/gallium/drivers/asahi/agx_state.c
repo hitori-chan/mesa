@@ -5171,7 +5171,7 @@ agx_draw_patches(struct agx_context *ctx, const struct pipe_draw_info *info,
       libagx_tess_setup_indirect(batch, agx_1d(1), AGX_BARRIER_ALL, state,
                                  grids, vertex_state, indirect_ptr, 0, 0,
                                  0 /* XXX: Index buffer */,
-                                 ctx->vs->b.info.outputs, tcs_statistic);
+                                 ctx->vs->b.info.outputs, tcs_statistic, 0, 0);
 
       vs_grid = agx_grid_indirect_local(grids + 0 * grid_stride);
       tcs_grid = agx_grid_indirect_local(grids + 1 * grid_stride);

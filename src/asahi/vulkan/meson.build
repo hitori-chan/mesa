@@ -10,6 +10,7 @@ hk_files = files(
   'hk_cmd_buffer.c',
   'hk_cmd_buffer.h',
   'hk_cmd_clear.c',
+  'hk_cmd_dgc.c',
   'hk_cmd_dispatch.c',
   'hk_cmd_draw.c',
   'hk_cmd_meta.c',

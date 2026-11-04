@@ -5,6 +5,7 @@
  */
 
 #include "compiler/libcl/libcl_vk.h"
+#include "libagx_dgc.h"
 #include "poly/cl/restart.h"
 #include "poly/geometry.h"
 #include "poly/prim.h"
@@ -90,10 +91,18 @@ libagx_unroll_restart(global struct poly_heap *heap, uint64_t index_buffer,
                       constant uint *in_draw, global uint32_t *out_draw,
                       uint32_t max_draws, uint32_t restart_index,
                       uint32_t index_buffer_size_el, uint32_t index_size_log2,
-                      uint32_t flatshade_first, uint mode__11)
+                      uint32_t flatshade_first, uint mode__11,
+                      constant uint32_t *dgc_index, uint32_t dgc_index_dx)
 {
    uint32_t index_size_B = 1 << index_size_log2;
    enum mesa_prim mode = poly_uncompact_prim(mode__11);
+
+   if (dgc_index) {
+      index_size_B = libagx_dgc_index_size_B(dgc_index[3], dgc_index_dx);
+      index_buffer = (((uint64_t)dgc_index[1]) << 32) | dgc_index[0];
+      index_buffer_size_el = dgc_index[2] / index_size_B;
+      restart_index = 0xffffffff >> (32 - (index_size_B * 8));
+   }
 
    POLY_DECL_UNROLL_RESTART_SCRATCH(scratch, 1024);
    poly_unroll_restart(out_draw, heap, in_draw, index_buffer,
@@ -111,8 +120,25 @@ libagx_gs_setup_indirect(
    uint32_t index_size_B /* 0 if no index bffer */,
    uint32_t index_buffer_range_el,
    uint32_t prim /* Input primitive type, enum mesa_prim */,
-   int is_prefix_summing, uint max_indices, enum poly_gs_shape shape)
+   int is_prefix_summing, uint max_indices, enum poly_gs_shape shape,
+   constant uint32_t *dgc_index /* A sequence's index buffer, else null */,
+   uint32_t dgc_index_dx, uint32_t dgc_unrolled /* Restarts unrolled to the heap */)
 {
+   if (dgc_index) {
+      uint32_t el_B = libagx_dgc_index_size_B(dgc_index[3], dgc_index_dx);
+
+      if (dgc_unrolled) {
+         index_buffer_range_el =
+            (((uint64_t)index_buffer_range_el) * index_size_B) / el_B;
+      } else {
+         index_buffer = (((uint64_t)dgc_index[1]) << 32) | dgc_index[0];
+         index_buffer_range_el = dgc_index[2] / el_B;
+      }
+
+      index_size_B = el_B;
+      vp->index_size_B = el_B;
+   }
+
    poly_gs_setup_indirect(index_buffer, draw, vp, p, heap,
                           vs_outputs, index_size_B, index_buffer_range_el, prim,
                           is_prefix_summing, max_indices, shape);
