@@ -141,8 +141,13 @@ hk_CreateBuffer(VkDevice device, const VkBufferCreateInfo *pCreateInfo,
             flags |= AGX_VA_FIXED;
       }
 
+      /* Direct3D 12's reserved resources are 64 KiB aligned, and applications
+       * rely on their virtual addresses being so.
+       */
+      const uint32_t va_align = bda_fixed_addr ? alignment : 64 * 1024;
+
       buffer->va =
-         agx_va_alloc(&dev->dev, vma_size_B, alignment, flags, bda_fixed_addr);
+         agx_va_alloc(&dev->dev, vma_size_B, va_align, flags, bda_fixed_addr);
 
       if (!buffer->va) {
          vk_buffer_destroy(&dev->vk, pAllocator, &buffer->vk);
