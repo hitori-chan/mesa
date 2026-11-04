@@ -382,11 +382,14 @@ find_regs_simple(struct ra_ctx *rctx, enum ra_class cls, unsigned count,
  *
  * Precondition: such a region exists.
  *
- * Postcondition: at least one register in the returned region is already free.
+ * Postcondition: at least one register in the returned region is already free,
+ * or (only for a value bound below the register file) the region holds whole
+ * values which may move anywhere. *region_size is the region's size, larger
+ * than size only when those values are.
  */
 static unsigned
 find_best_region_to_evict(struct ra_ctx *rctx, unsigned size, unsigned bound,
-                          BITSET_WORD *already_evicted)
+                          BITSET_WORD *already_evicted, unsigned *region_size)
 {
    assert(util_is_power_of_two_or_zero(size) && "precondition");
    assert((bound % size) == 0 &&
@@ -397,6 +400,8 @@ find_best_region_to_evict(struct ra_ctx *rctx, unsigned size, unsigned bound,
 
    unsigned best_base = ~0;
    unsigned best_moves = invert ? 0 : ~0;
+
+   *region_size = size;
 
    for (unsigned base = 0; base + size <= bound; base += size) {
       /* The first k registers are preallocated and unevictable, so must be
@@ -448,34 +453,41 @@ find_best_region_to_evict(struct ra_ctx *rctx, unsigned size, unsigned bound,
 
    /* G15: a value bound below the register file may find every register
     * there taken. Take a full region of whole values that may move anywhere:
-    * there are enough free registers above for them, as for any region.
+    * there are enough free registers above for them, as for any region. The
+    * values there may be larger than this one: it takes the start of the region
+    * and the rest is free for what moves.
     */
    if (best_base >= bound && bound < rctx->bound[RA_GPR]) {
-      unsigned base = ~0;
+      for (unsigned region = size; region <= 16 && region <= bound;
+           region *= 2) {
+         unsigned base = ~0;
 
-      for (unsigned reg = reserved_size(rctx->shader); reg < bound;) {
-         /* Free only in a region skipped above */
-         if (!BITSET_TEST(rctx->used_regs[RA_GPR], reg)) {
-            base = ~0;
-            reg++;
-            continue;
+         for (unsigned reg = reserved_size(rctx->shader); reg < bound;) {
+            /* Free only in a region skipped above */
+            if (!BITSET_TEST(rctx->used_regs[RA_GPR], reg)) {
+               base = ~0;
+               reg++;
+               continue;
+            }
+
+            unsigned ssa = rctx->reg_to_ssa[reg];
+            unsigned end = reg + rctx->ncomps[ssa];
+
+            if ((reg % region) == 0)
+               base = reg;
+
+            bool movable = !BITSET_TEST(already_evicted, reg) &&
+                           ra_bound(rctx, RA_GPR, ssa) == rctx->bound[RA_GPR];
+
+            if (base == ~0 || !movable || end > base + region) {
+               base = ~0;
+            } else if (end == base + region) {
+               *region_size = region;
+               return base;
+            }
+
+            reg = end;
          }
-
-         unsigned ssa = rctx->reg_to_ssa[reg];
-         unsigned end = reg + rctx->ncomps[ssa];
-
-         if ((reg % size) == 0)
-            base = reg;
-
-         bool movable = !BITSET_TEST(already_evicted, reg) &&
-                        ra_bound(rctx, RA_GPR, ssa) == rctx->bound[RA_GPR];
-
-         if (base == ~0 || !movable || end > base + size)
-            base = ~0;
-         else if (end == base + size)
-            return base;
-
-         reg = end;
       }
    }
 
@@ -554,11 +566,12 @@ assign_regs_by_copying(struct ra_ctx *rctx, agx_index dest, const agx_instr *I,
       /* We need to shuffle some variables to make room. Look for a range of
        * the register file that is partially blocked.
        */
+      unsigned region_size;
       unsigned new_reg = find_best_region_to_evict(
-         rctx, nr, ra_bound(rctx, RA_GPR, ssa), clobbered);
+         rctx, nr, ra_bound(rctx, RA_GPR, ssa), clobbered, &region_size);
 
       /* Blocked registers need to get reassigned. Add them to the worklist. */
-      for (unsigned i = 0; i < nr; ++i) {
+      for (unsigned i = 0; i < region_size; ++i) {
          if (BITSET_TEST(rctx->used_regs[RA_GPR], new_reg + i)) {
             unsigned blocked_reg = new_reg + i;
             uint32_t blocked_ssa = rctx->reg_to_ssa[blocked_reg];
@@ -584,9 +597,14 @@ assign_regs_by_copying(struct ra_ctx *rctx, agx_index dest, const agx_instr *I,
       }
 
       /* We are going to allocate to this range, so it is now fully used. Mark
-       * it as such so we don't reassign here later.
+       * it as such so we don't reassign here later. What the variable does not
+       * take of a larger region is free.
        */
       BITSET_SET_COUNT(rctx->used_regs[RA_GPR], new_reg, nr);
+      if (region_size > nr) {
+         BITSET_CLEAR_COUNT(rctx->used_regs[RA_GPR], new_reg + nr,
+                            region_size - nr);
+      }
 
       /* The first iteration is special: it is the original allocation of a
        * variable. All subsequent iterations pick a new register for a blocked
