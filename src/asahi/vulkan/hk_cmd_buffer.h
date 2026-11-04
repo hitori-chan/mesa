@@ -186,6 +186,10 @@ struct hk_render_registers {
     * vertex stage waits until those stores are visible */
    bool wait_stores;
 
+   /* G15: a vertex stage in the pass stored to memory, which lands after the
+    * pass has retired */
+   bool vertex_stores;
+
    struct {
       uint32_t dimensions;
       uint64_t buffer, meta;
@@ -455,6 +459,11 @@ struct hk_cs {
     */
    struct util_dynarray imm_writes;
 
+   /* G15: a stream of what queries report behind a render. Only later compute
+    * streams read it, so the next render need not wait for it. Implies CDM.
+    */
+   bool post_gfx;
+
    /* Statistics */
    struct {
       uint32_t calls, cmds, flushes, merged;
@@ -513,6 +522,9 @@ hk_cs_merge_cdm(struct hk_cs *a, const struct hk_cs *b)
    a->scratch.cs.preamble |= b->scratch.cs.preamble;
 
    a->timestamp = b->timestamp;
+
+   a->cr.wait_stores |= b->cr.wait_stores;
+   a->post_gfx &= b->post_gfx;
 
    a->stats.calls += b->stats.calls;
    a->stats.cmds += b->stats.cmds;
@@ -702,6 +714,7 @@ hk_cmd_buffer_get_cs_general(struct hk_cmd_buffer *cmd, struct hk_cs **ptr,
          .chunk = root,
          .current = root.cpu,
          .end = root.cpu + initial_size,
+         .post_gfx = ptr == &cmd->current_cs.post_gfx,
       };
 
       list_inithead(&cs->node);
