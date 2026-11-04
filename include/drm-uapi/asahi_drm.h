@@ -800,6 +800,15 @@ enum drm_asahi_render_flags {
 	DRM_ASAHI_RENDER_WAIT_STORES = (1U << 3),
 
 	/**
+	 * @DRM_ASAHI_RENDER_BARRIER_RETIRE: A barrier on the queue's compute
+	 * work is met once that work has retired, not once its stores are
+	 * visible. A wait across kinds otherwise lasts until the firmware's
+	 * post-process, about 150 us on G15. Kernels that do not know it ignore
+	 * it on G15.
+	 */
+	DRM_ASAHI_RENDER_BARRIER_RETIRE = (1U << 4),
+
+	/**
 	 * @DRM_ASAHI_RENDER_DBIAS_IS_INT: Use integer depth bias formula.
 	 *
 	 * Graphics specifications contain two alternate formulas for depth
@@ -1147,6 +1156,21 @@ struct drm_asahi_cmd_render_g15 {
 };
 
 /**
+ * enum drm_asahi_compute_flags - Flags for compute commands
+ */
+enum drm_asahi_compute_flags {
+	/**
+	 * @DRM_ASAHI_COMPUTE_BARRIER_RETIRE: A barrier on the queue's render
+	 * work is met once that work has retired, not once its stores and end
+	 * timestamps are visible. A wait across kinds otherwise lasts until the
+	 * firmware's post-process, about 100 us on G15. Leave it clear for a
+	 * command that reads a render's timestamps or its vertex stage's stores.
+	 * Kernels that do not know it ignore it on G15.
+	 */
+	DRM_ASAHI_COMPUTE_BARRIER_RETIRE = (1U << 0),
+};
+
+/**
  * struct drm_asahi_cmd_compute - Command to submit compute
  *
  * This command submits a control stream consisting of compute dispatches. There
@@ -1154,7 +1178,7 @@ struct drm_asahi_cmd_render_g15 {
  * single compute command, although timestamps are at command granularity.
  */
 struct drm_asahi_cmd_compute {
-	/** @flags: MBZ */
+	/** @flags: Combination of drm_asahi_compute_flags; G13's MBZ */
 	__u32 flags;
 
 	/** @sampler_count: Number of samplers in the sampler heap. */
