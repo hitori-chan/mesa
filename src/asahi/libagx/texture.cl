@@ -168,6 +168,47 @@ libagx_lower_txf_robustness(constant struct agx_texture_packed *ptr,
    return valid ? x : 0xFFF0;
 }
 
+/* The channels a G15 descriptor's swizzle makes 1, as bits */
+uint
+libagx_txf_out_of_bounds_ones_g15(constant struct agx_texture_packed *ptr)
+{
+   agx_unpack(NULL, ptr, TEXTURE_G15, d);
+
+   return (d.swizzle_r == AGX_CHANNEL_1 ? 1 : 0) |
+          (d.swizzle_g == AGX_CHANNEL_1 ? 2 : 0) |
+          (d.swizzle_b == AGX_CHANNEL_1 ? 4 : 0) |
+          (d.swizzle_a == AGX_CHANNEL_1 ? 8 : 0);
+}
+
+/*
+ * G15's check for the same, its descriptor laid out differently: the shader
+ * fetches with LOD and layer 0 instead and replaces the result
+ * (txf_out_of_bounds_g15). A cube's depth counts cubes.
+ */
+bool
+libagx_txf_in_bounds_g15(constant struct agx_texture_packed *ptr,
+                         bool check_lod, ushort lod, bool check_min_lod,
+                         ushort min_lod, bool check_layer, uint layer)
+{
+   agx_unpack(NULL, ptr, TEXTURE_G15, d);
+
+   bool valid = true;
+
+   if (check_lod)
+      valid &= lod <= (d.extended ? d.last_level - d.first_level : 0);
+
+   if (check_min_lod)
+      valid &= lod >= min_lod;
+
+   if (check_layer && d.layout != AGX_LAYOUT_LINEAR) {
+      bool cube = d.dimension == AGX_TEXTURE_DIMENSION_CUBE ||
+                  d.dimension == AGX_TEXTURE_DIMENSION_CUBE_ARRAY;
+      valid &= layer < (cube ? d.depth * 6 : d.depth);
+   }
+
+   return valid;
+}
+
 uint32_t
 libagx_twiddle_coordinates(ushort2 coord, uint16_t tile_w_px,
                            uint16_t tile_h_px, uint32_t aligned_width_px)
