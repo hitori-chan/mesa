@@ -204,7 +204,8 @@ hk_CreateSampler(VkDevice device,
     * wrong but at least we can make noise to lint for errors in the driconf.
     */
    static bool warned_custom_border = false;
-   if (HK_PERF(dev, NOBORDER) && custom_border && !warned_custom_border) {
+   if (HK_PERF(dev, NOBORDER) && custom_border && !warned_custom_border &&
+       dev->dev.params.gpu_generation < 15) {
       fprintf(stderr, "custom border colour used, but emulation is disabled\n");
       fprintf(stderr, "border %u\n", info->borderColor);
       fprintf(stderr, "unnorm %X\n", info->unnormalizedCoordinates);
