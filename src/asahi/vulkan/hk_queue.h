@@ -30,6 +30,14 @@ struct hk_queue {
        */
       uint64_t timeline_value;
    } drm;
+
+   /* G15: the queue's last render stored from its vertex stage, and no compute
+    * command has waited for those stores yet */
+   bool vertex_stores;
+
+   /* G15: compute work no later render has waited for, a report behind a
+    * render not counted */
+   bool compute_pending;
 };
 
 static inline struct hk_device *
