@@ -698,6 +698,84 @@ agx_usc_words_precomp(GLOBAL uint32_t *out, CONST struct agx_shader *s,
    agx_usc_push_blob(&b, s->usc.data, s->usc.size);
 }
 
+/* VK_EXT_device_generated_commands (hk_cmd_dgc.c) */
+#define LIBAGX_DGC_MAX_COPIES  (32)
+#define LIBAGX_DGC_MAX_ATTRIBS (16)
+
+/* DXGI_FORMAT_R16_UINT and R32_UINT, or VkIndexType */
+static inline uint32_t
+libagx_dgc_index_size_B(uint32_t type, uint32_t dx)
+{
+   if (dx)
+      return type == 57 ? 2 : 4;
+
+   return type == 0 ? 2 : type == 1 ? 4 : 1;
+}
+
+struct libagx_dgc_copy {
+   uint16_t dst_B;
+   uint16_t src_B;
+   uint16_t size_B;
+   uint16_t pad;
+};
+static_assert(sizeof(struct libagx_dgc_copy) == 8);
+
+struct libagx_dgc_attrib {
+   /* The sequence's VkBindVertexBufferIndirectCommandEXT */
+   uint16_t src_B;
+   uint16_t slot;
+   uint16_t offset_B;
+   uint8_t element_B;
+   uint8_t interchange_B;
+};
+static_assert(sizeof(struct libagx_dgc_attrib) == 8);
+
+struct libagx_dgc_params {
+   uint64_t stream;
+   uint64_t count;
+   uint64_t roots;
+   uint64_t args;
+   uint32_t stride_B;
+   uint32_t max_sequences;
+   uint32_t views;
+   uint32_t root_size_B;
+   uint32_t push_B;
+   int32_t sequence_index_B;
+   uint32_t draw_src_B;
+   uint32_t draw_words;
+   uint32_t index_src_B;
+   uint32_t index_dx;
+   uint32_t attrib_base_B;
+   uint32_t attrib_clamps_B;
+   uint32_t attrib_strides_B;
+   uint32_t nr_copies;
+   uint32_t nr_attribs;
+   uint32_t pad;
+   struct libagx_dgc_copy copies[LIBAGX_DGC_MAX_COPIES];
+   struct libagx_dgc_attrib attribs[LIBAGX_DGC_MAX_ATTRIBS];
+};
+
+/* A draw whose index buffer comes from the sequence: its VDM words */
+struct libagx_dgc_vdm {
+   uint64_t target;
+   uint64_t args;
+   uint32_t sequence;
+   uint32_t topology;
+};
+static_assert(sizeof(struct libagx_dgc_vdm) == 24);
+
+static inline unsigned
+libagx_dgc_vdm_size(enum agx_chip chip, bool restart)
+{
+   struct agx_draw draw = agx_draw_indexed_indirect(0, 0, 0, 0, 0);
+   unsigned size_B = agx_vdm_draw_size(chip, draw);
+
+   if (restart)
+      size_B += AGX_VDM_STATE_LENGTH + AGX_VDM_STATE_RESTART_INDEX_LENGTH;
+
+   return size_B;
+}
+
 /* This prototype is sufficient for sizing the output */
 static inline unsigned
 libagx_draw_robust_index_vdm_size(enum agx_chip chip)
