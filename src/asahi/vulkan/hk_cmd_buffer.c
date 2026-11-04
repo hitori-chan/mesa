@@ -602,7 +602,17 @@ hk_cmd_buffer_upload_root(struct hk_cmd_buffer *cmd,
    struct hk_descriptor_state *desc = hk_get_descriptors_state(cmd, bind_point);
    struct hk_root_descriptor_table *root = &desc->root;
 
-   struct agx_ptr root_ptr = hk_pool_alloc(cmd, sizeof(*root), 8);
+   struct agx_ptr root_ptr;
+
+   if (cmd->state.dgc_roots_left) {
+      root_ptr = cmd->state.dgc_roots;
+      cmd->state.dgc_roots.cpu = (uint8_t *)root_ptr.cpu + sizeof(*root);
+      cmd->state.dgc_roots.gpu += sizeof(*root);
+      cmd->state.dgc_roots_left--;
+   } else {
+      root_ptr = hk_pool_alloc(cmd, sizeof(*root), 8);
+   }
+
    if (!root_ptr.gpu)
       return 0;
 
