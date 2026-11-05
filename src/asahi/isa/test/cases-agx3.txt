@@ -1596,3 +1596,6 @@ f7002a00015000500000 spectpr  2, 20, 20
 7700aa0841000000     speclm   1, 4, 4, imageblock, 0
 77012a84f7ff23000400 ldshdr   0x11fffbc200, 2
 f7002a00010000000000 spectpr  2, 0, 0
+870454050000         yield    5
+870454020400         yield    r1l
+870454050200         yield    u2h
