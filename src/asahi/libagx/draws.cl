@@ -11,15 +11,18 @@
 /*
  * To implement drawIndirectCount generically, we dispatch a kernel to
  * clone-and-patch the indirect buffer, predicating out draws as appropriate.
- * A draw is 4 words, 5 indexed, 3 for mesh tasks.
+ * A draw is 4 words, 5 indexed, 3 for mesh tasks or a dispatch. Without a
+ * count every draw is enabled. Under VK_EXT_conditional_rendering (cond not
+ * 0) a zero word at cond, or a nonzero one if inverted, disables them all.
  */
 KERNEL(32)
 libagx_predicate_indirect(global uint32_t *out, constant uint32_t *in,
-                          constant uint32_t *draw_count, uint32_t stride_el,
-                          uint32_t words)
+                          constant uint32_t *draw_count, constant uint32_t *cond,
+                          uint32_t cond_inv, uint32_t stride_el, uint32_t words)
 {
    uint draw = cl_global_id.x;
-   bool enabled = draw < *draw_count;
+   bool enabled = (!draw_count || draw < *draw_count) &&
+                  (!cond || (*cond != 0) != (cond_inv != 0));
    out += draw * words;
    in += draw * stride_el;
 
@@ -37,7 +40,10 @@ libagx_predicate_indirect(global uint32_t *out, constant uint32_t *in,
 static uint
 libagx_dgc_sequences(constant struct libagx_dgc_params *p)
 {
-   if (p->count)
+   if (p->cond &&
+       (*((constant uint32_t *)p->cond) != 0) == (p->cond_inv != 0))
+      return 0;
+   else if (p->count)
       return min(*((constant uint32_t *)p->count), p->max_sequences);
    else
       return p->max_sequences;
