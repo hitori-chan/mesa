@@ -233,12 +233,10 @@ agx_bo_alloc(struct agx_device *dev, size_t size, size_t align,
    return bo;
 }
 
-static void
+static void *
 agx_bo_mmap(struct agx_device *dev, struct agx_bo *bo, void *fixed_addr,
             size_t size)
 {
-   assert(bo->_map == NULL && "not double mapped");
-
    struct drm_asahi_gem_mmap_offset gem_mmap_offset = {.handle =
                                                           bo->uapi_handle};
    int ret, flags;
@@ -247,17 +245,35 @@ agx_bo_mmap(struct agx_device *dev, struct agx_bo *bo, void *fixed_addr,
    if (ret) {
       fprintf(stderr, "DRM_IOCTL_ASAHI_MMAP_BO failed: %m\n");
       assert(0);
+      return NULL;
    }
 
    flags = MAP_SHARED | (fixed_addr ? MAP_FIXED : 0);
-   bo->_map = os_mmap(fixed_addr, size, PROT_READ | PROT_WRITE, flags, dev->fd,
-                      gem_mmap_offset.offset);
-   if (bo->_map == MAP_FAILED) {
-      bo->_map = NULL;
-      fprintf(
-         stderr, "mmap failed: result=%p size=0x%llx fd=%i offset=0x%llx %m\n",
-         bo->_map, (long long)size, dev->fd, (long long)gem_mmap_offset.offset);
+   void *map = os_mmap(fixed_addr, size, PROT_READ | PROT_WRITE, flags, dev->fd,
+                       gem_mmap_offset.offset);
+   if (map == MAP_FAILED) {
+      fprintf(stderr, "mmap failed: size=0x%llx fd=%i offset=0x%llx %m\n",
+              (long long)size, dev->fd, (long long)gem_mmap_offset.offset);
+      return NULL;
    }
+
+   return map;
+}
+
+void *
+agx_bo_map_slow(struct agx_bo *bo)
+{
+   struct agx_device *dev = bo->dev;
+
+   simple_mtx_lock(&dev->mmap_lock);
+   void *map = bo->_map;
+   if (!map) {
+      map = dev->ops.bo_mmap(dev, bo, NULL, bo->size);
+      p_atomic_set(&bo->_map, map);
+   }
+   simple_mtx_unlock(&dev->mmap_lock);
+
+   return map;
 }
 
 struct agx_bo *
@@ -609,6 +625,7 @@ agx_open_device(void *memctx, struct agx_device *dev)
 
    util_sparse_array_init(&dev->bo_map, sizeof(struct agx_bo), 512);
    pthread_mutex_init(&dev->bo_map_lock, NULL);
+   simple_mtx_init(&dev->mmap_lock, mtx_plain);
 
    simple_mtx_init(&dev->bo_cache.lock, mtx_plain);
    list_inithead(&dev->bo_cache.lru);
