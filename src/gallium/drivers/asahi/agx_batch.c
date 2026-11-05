@@ -887,6 +887,11 @@ agx_batch_submit(struct agx_context *ctx, struct agx_batch *batch,
    u_rwlock_rdunlock(&screen->destroy_lock);
 
    if (ret) {
+      /* The kernel took none of the batch: what it wrote is lost, which a
+       * robust context learns as a reset.
+       */
+      ctx->any_faults = true;
+
       if (compute) {
          fprintf(stderr, "DRM_IOCTL_ASAHI_SUBMIT compute failed: %m\n");
       }
@@ -899,8 +904,6 @@ agx_batch_submit(struct agx_context *ctx, struct agx_batch *batch,
             c->width_px, c->height_px, c->utile_width_px, c->utile_height_px,
             c->layers, c->samples);
       }
-
-      assert(0);
    }
 
    if (ret == ENODEV)
