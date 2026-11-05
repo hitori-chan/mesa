@@ -735,6 +735,11 @@ struct libagx_dgc_params {
    uint64_t count;
    uint64_t roots;
    uint64_t args;
+
+   /* VK_EXT_conditional_rendering's predicate or 0, as in
+    * libagx_predicate_indirect
+    */
+   uint64_t cond;
    uint32_t stride_B;
    uint32_t max_sequences;
    uint32_t views;
@@ -750,7 +755,7 @@ struct libagx_dgc_params {
    uint32_t attrib_strides_B;
    uint32_t nr_copies;
    uint32_t nr_attribs;
-   uint32_t pad;
+   uint32_t cond_inv;
    struct libagx_dgc_copy copies[LIBAGX_DGC_MAX_COPIES];
    struct libagx_dgc_attrib attribs[LIBAGX_DGC_MAX_ATTRIBS];
 };
