@@ -82,8 +82,9 @@ typedef struct {
                               enum agx_bo_flags flags);
    int (*bo_bind)(struct agx_device *dev, struct drm_asahi_gem_bind_op *ops,
                   uint32_t count);
-   void (*bo_mmap)(struct agx_device *dev, struct agx_bo *bo, void *fixed_addr,
-                   size_t size);
+   /* A new mapping of the BO, NULL on failure; the BO's own is agx_bo_map's */
+   void *(*bo_mmap)(struct agx_device *dev, struct agx_bo *bo, void *fixed_addr,
+                    size_t size);
    ssize_t (*get_params)(struct agx_device *dev, void *buf, size_t size);
    int (*submit)(struct agx_device *dev, struct drm_asahi_submit *submit,
                  struct agx_submit_virt *virt);
@@ -150,6 +151,9 @@ struct agx_device {
 
    pthread_mutex_t bo_map_lock;
    struct util_sparse_array bo_map;
+
+   /* Serializes the BOs' first maps (agx_bo_map) */
+   simple_mtx_t mmap_lock;
    uint32_t max_handle;
 
    struct {
@@ -211,19 +215,17 @@ agx_rw_addr_to_ro(struct agx_device *dev, uint64_t addr)
    return addr + dev->sparse_ro_offset;
 }
 
-static inline void *
-agx_bo_map_placed(struct agx_bo *bo, void *fixed_addr)
-{
-   if (!bo->_map)
-      bo->dev->ops.bo_mmap(bo->dev, bo, fixed_addr, bo->size);
+void *agx_bo_map_slow(struct agx_bo *bo);
 
-   return bo->_map;
-}
-
+/* The driver's mapping of a BO, made on first use and kept until the BO is
+ * freed. Threads may map one BO at once: Vulkan binds images to one memory
+ * object from several threads, and each bind maps it.
+ */
 static inline void *
 agx_bo_map(struct agx_bo *bo)
 {
-   return agx_bo_map_placed(bo, NULL);
+   void *map = p_atomic_read(&bo->_map);
+   return likely(map) ? map : agx_bo_map_slow(bo);
 }
 
 static inline bool
