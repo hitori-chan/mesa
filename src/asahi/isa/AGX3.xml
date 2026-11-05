@@ -4990,6 +4990,21 @@
   </ins>
 
   <!--
+   yield (libLLVM 32023's llvm.agx3.yield, scheduled on AGEN as WriteYield):
+   the SIMD group gives its issue slot to the core's others for a while, the
+   amount a 16-bit register, a uniform or an 8-bit immediate. Apple's
+   compiler (AGXCompilerCore, InsertYieldsPass) puts it in a compute
+   kernel's compare-exchange spin loop: after 8 misses, yield 1, 2, 3... up
+   to 16384 (__yield_tame_backoff).
+  -->
+  <ins name="yield" display="yield" length="6">
+    <exact bit="0:11 35:47">0000000000000010010000111</exact>
+    <src kind="src9" bit="24:34"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <!--
    The entry program's own instructions (Apple's entry state loader; Mesa's
    agx_esl.c emits them, metal-compute.md), from libLLVM 32023's encoder and
    noopwafel's demo15. speclm sets up threadgroup memory: the sample count's
