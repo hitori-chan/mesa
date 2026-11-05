@@ -1507,6 +1507,9 @@ hk_create_drm_physical_device(struct vk_instance *_instance,
    if (result != VK_SUCCESS)
       goto fail_agx_device;
 
+   pdev->sampled_views_as_arrays = pdev->dev.params.gpu_generation >= 15 &&
+                                   instance->drirc.misc.sampled_views_as_arrays;
+
    hk_physical_device_init_pipeline_cache(pdev);
 
    const char *hk_sysmem = os_get_option("HK_SYSMEM");
