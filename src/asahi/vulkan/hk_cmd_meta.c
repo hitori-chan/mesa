@@ -116,6 +116,12 @@ hk_meta_begin(struct hk_cmd_buffer *cmd, struct hk_meta_save *save,
    static_assert(sizeof(save->push) == sizeof(desc->root.push));
    memcpy(save->push, desc->root.push, sizeof(save->push));
 
+   /* Conditional rendering predicates none of meta's draws and dispatches but
+    * vkCmdClearAttachments'.
+    */
+   save->cond_addr = cmd->state.cond.addr;
+   cmd->state.cond.addr = 0;
+
    cmd->in_meta = true;
 }
 
@@ -185,6 +191,7 @@ hk_meta_end(struct hk_cmd_buffer *cmd, struct hk_meta_save *save,
    }
 
    memcpy(desc->root.push, save->push, sizeof(save->push));
+   cmd->state.cond.addr = save->cond_addr;
    cmd->in_meta = false;
 }
 
@@ -1602,6 +1609,7 @@ hk_CmdClearAttachments(VkCommandBuffer commandBuffer, uint32_t attachmentCount,
 
    struct hk_meta_save save;
    hk_meta_begin(cmd, &save, VK_PIPELINE_BIND_POINT_GRAPHICS);
+   cmd->state.cond.addr = save.cond_addr;
    vk_meta_clear_attachments(&cmd->vk, &dev->meta, &render_info,
                              attachmentCount, pAttachments, rectCount, pRects);
    hk_meta_end(cmd, &save, VK_PIPELINE_BIND_POINT_GRAPHICS);
