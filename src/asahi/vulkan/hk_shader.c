@@ -102,8 +102,9 @@ shared_var_info(const struct glsl_type *type, unsigned *size, unsigned *align)
 uint64_t
 hk_physical_device_compiler_flags(const struct hk_physical_device *pdev)
 {
-   /* This could be optimized but it doesn't matter */
-   return pdev->dev.debug;
+   /* This could be optimized but it doesn't matter. The debug flags take the
+    * low bits; a driconf option that changes the code takes a high one */
+   return pdev->dev.debug | ((uint64_t)pdev->sampled_views_as_arrays << 63);
 }
 
 const nir_shader_compiler_options *
@@ -883,6 +884,61 @@ should_lower_robust(const nir_intrinsic_instr *intr, const void *_)
           intr->intrinsic == nir_intrinsic_image_deref_atomic_swap;
 }
 
+/*
+ * G15 reads every level of a texture as level 0, fetched or sampled, when the
+ * texture instruction and the descriptor disagree on being an array
+ * (vkdimprobe), and Direct3D reads a plain view through an array declaration
+ * and the reverse. So for Direct3D 12 (driconf hk_sampled_views_as_arrays) a
+ * sampled 1D or 2D view is an array of one on G15 (pack_texture_g15), and a
+ * plain read of one becomes an array read of layer 0, as a cube is a cube
+ * array of one.
+ */
+static bool
+lower_2d_as_array(nir_builder *b, nir_tex_instr *tex, void *data)
+{
+   if (tex->is_array || (tex->sampler_dim != GLSL_SAMPLER_DIM_1D &&
+                         tex->sampler_dim != GLSL_SAMPLER_DIM_2D &&
+                         tex->sampler_dim != GLSL_SAMPLER_DIM_MS))
+      return false;
+
+   switch (tex->op) {
+   case nir_texop_lod:
+      /* An array's LOD query takes no layer */
+      tex->is_array = true;
+      return true;
+
+   case nir_texop_tex:
+   case nir_texop_txb:
+   case nir_texop_txl:
+   case nir_texop_txd:
+   case nir_texop_txf:
+   case nir_texop_txf_ms:
+   case nir_texop_tg4:
+      break;
+
+   default:
+      return false;
+   }
+
+   b->cursor = nir_before_instr(&tex->instr);
+   nir_def *coord = nir_steal_tex_src(tex, nir_tex_src_coord);
+   bool integer = tex->op == nir_texop_txf || tex->op == nir_texop_txf_ms;
+   nir_def *zero = integer ? nir_imm_intN_t(b, 0, coord->bit_size)
+                           : nir_imm_floatN_t(b, 0.0, coord->bit_size);
+   nir_def *comps[4];
+
+   for (unsigned i = 0; i < coord->num_components; ++i)
+      comps[i] = nir_channel(b, coord, i);
+
+   comps[coord->num_components] = zero;
+   nir_tex_instr_add_src(tex, nir_tex_src_coord,
+                         nir_vec(b, comps, coord->num_components + 1));
+   tex->coord_components++;
+   tex->is_array = true;
+   tex->backend_flags |= AGX_TEXTURE_FLAG_LAYER_ZERO;
+   return true;
+}
+
 static void
 hk_lower_nir(struct hk_device *dev, nir_shader *nir,
              const struct vk_pipeline_robustness_state *rs, bool is_multiview,
@@ -947,6 +1003,12 @@ hk_lower_nir(struct hk_device *dev, nir_shader *nir,
    /* G15 samples a cube in cube array mode (pack_texture_g15), seamless */
    if (dev->dev.params.gpu_generation >= 15)
       NIR_PASS(_, nir, agx_nir_lower_cube_g15);
+
+   /* ... and with Direct3D 12 a plain 1D or 2D view as an array of one */
+   if (hk_device_physical(dev)->sampled_views_as_arrays) {
+      NIR_PASS(_, nir, nir_shader_tex_pass, lower_2d_as_array,
+               nir_metadata_control_flow, NULL);
+   }
 
    struct hk_instance *instance = hk_physical_device_instance(
       (struct hk_physical_device *)dev->vk.physical);

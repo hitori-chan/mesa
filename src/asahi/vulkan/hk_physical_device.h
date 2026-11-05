@@ -54,6 +54,10 @@ struct hk_physical_device {
    const struct vk_sync_type *sync_types[2];
 
    simple_mtx_t debug_compile_lock;
+
+   /* G15: sampled plain views and reads as arrays of one (driconf
+    * hk_sampled_views_as_arrays); part of the shader cache's key */
+   bool sampled_views_as_arrays;
 };
 
 VK_DEFINE_HANDLE_CASTS(hk_physical_device, vk.base, VkPhysicalDevice,
