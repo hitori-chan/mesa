@@ -208,6 +208,7 @@ hk_get_device_extensions(const struct agx_device *dev,
       .EXT_mesh_shader = mesh,
       .EXT_multi_draw = true,
       .EXT_mutable_descriptor_type = true,
+      .EXT_nested_command_buffer = true,
       .EXT_non_seamless_cube_map = true,
       .EXT_pipeline_creation_cache_control = true,
       .EXT_pipeline_creation_feedback = true,
@@ -564,7 +565,7 @@ hk_get_device_features(
 
       /* VK_EXT_conditional_rendering */
       .conditionalRendering = true,
-      .inheritedConditionalRendering = false,
+      .inheritedConditionalRendering = true,
 
       /* VK_EXT_custom_border_color */
       .customBorderColors = true,
@@ -674,6 +675,14 @@ hk_get_device_features(
 
       /* VK_EXT_mutable_descriptor_type */
       .mutableDescriptorType = true,
+
+      /* VK_EXT_nested_command_buffer: secondaries are recorded as
+       * vk_cmd_queue lists and replayed into the primary, a nested one
+       * among them.
+       */
+      .nestedCommandBuffer = true,
+      .nestedCommandBufferRendering = true,
+      .nestedCommandBufferSimultaneousUse = true,
 
       /* VK_EXT_non_seamless_cube_map */
       .nonSeamlessCubeMap = true,
@@ -1180,6 +1189,9 @@ hk_get_device_properties(const struct agx_device *dev,
 
       /* VK_EXT_multi_draw */
       .maxMultiDrawCount = UINT16_MAX,
+
+      /* VK_EXT_nested_command_buffer */
+      .maxCommandBufferNestingLevel = UINT32_MAX,
 
       /* VK_KHR_pipeline_binary
        *
