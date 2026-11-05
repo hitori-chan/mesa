@@ -235,6 +235,20 @@ pack_texture_g15(struct hk_image_view *view, unsigned view_plane,
        * depth counts cubes */
       if (cfg.dimension == AGX_TEXTURE_DIMENSION_CUBE)
          cfg.dimension = AGX_TEXTURE_DIMENSION_CUBE_ARRAY;
+
+      /* With Direct3D 12 a sampled plain view is an array of one too
+       * (lower_2d_as_array): G15 reads every level as level 0 when the texture
+       * instruction and the descriptor disagree on being an array, and
+       * Direct3D reads a plain view through an array declaration and the
+       * reverse */
+      struct hk_device *dev = (struct hk_device *)view->vk.base.device;
+      if (usage == HK_DESC_USAGE_SAMPLED &&
+          hk_device_physical(dev)->sampled_views_as_arrays) {
+         if (cfg.dimension == AGX_TEXTURE_DIMENSION_2D)
+            cfg.dimension = AGX_TEXTURE_DIMENSION_2D_ARRAY;
+         else if (cfg.dimension == AGX_TEXTURE_DIMENSION_2D_MULTISAMPLED)
+            cfg.dimension = AGX_TEXTURE_DIMENSION_2D_ARRAY_MULTISAMPLED;
+      }
       cfg.layout = agx_translate_layout(layout->tiling);
       cfg.channels = ail_pixel_format[p_format].channels;
       cfg.type = ail_pixel_format[p_format].type;

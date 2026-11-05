@@ -257,10 +257,12 @@ lower_regular_texture(nir_builder *b, nir_instr *instr, void *data)
 
    /* Apply txf workaround, see libagx_lower_txf_robustness */
    bool is_txf = ((tex->op == nir_texop_txf) || (tex->op == nir_texop_txf_ms));
+   bool layer_zero = tex->backend_flags & AGX_TEXTURE_FLAG_LAYER_ZERO;
+   bool check_layer = tex->is_array && !layer_zero;
    nir_def *txf_valid = NULL;
 
    if (is_txf &&
-       (has_nonzero_lod(tex) || tex->is_array ||
+       (has_nonzero_lod(tex) || check_layer ||
         nir_tex_instr_src_index(tex, nir_tex_src_min_lod) >= 0) &&
        !(tex->backend_flags & AGX_TEXTURE_FLAG_NO_CLAMP)) {
 
@@ -278,7 +280,7 @@ lower_regular_texture(nir_builder *b, nir_instr *instr, void *data)
             b, texture_descriptor_ptr(b, tex),
             nir_imm_bool(b, has_nonzero_lod(tex)), lod,
             nir_imm_bool(b, min_lod != NULL), min_lod ?: nir_undef(b, 1, 16),
-            nir_imm_bool(b, tex->is_array), layer, nir_channel(b, coord, 0));
+            nir_imm_bool(b, check_layer), layer, nir_channel(b, coord, 0));
 
          coord = nir_vector_insert_imm(b, coord, replaced, 0);
       } else if (!tex->is_sparse) {
@@ -286,9 +288,9 @@ lower_regular_texture(nir_builder *b, nir_instr *instr, void *data)
             b, texture_descriptor_ptr(b, tex),
             nir_imm_bool(b, has_nonzero_lod(tex)), lod,
             nir_imm_bool(b, min_lod != NULL), min_lod ?: nir_undef(b, 1, 16),
-            nir_imm_bool(b, tex->is_array), layer);
+            nir_imm_bool(b, check_layer), layer);
 
-         if (tex->is_array) {
+         if (check_layer) {
             nir_def *safe = nir_bcsel(b, valid, layer,
                                       nir_imm_intN_t(b, 0, layer->bit_size));
             coord = nir_vector_insert_imm(b, coord, safe, lidx);
@@ -340,7 +342,8 @@ lower_regular_texture(nir_builder *b, nir_instr *instr, void *data)
        * For txf, we drop out-of-bounds components rather than clamp, see the
        * above txf robustness workaround.
        */
-      if (!(tex->backend_flags & AGX_TEXTURE_FLAG_NO_CLAMP) && !is_txf) {
+      if (!(tex->backend_flags & AGX_TEXTURE_FLAG_NO_CLAMP) && !is_txf &&
+          !layer_zero) {
          nir_def *txs = nir_get_texture_size(b, tex);
          nir_def *nr_layers = nir_channel(b, txs, lidx);
          nir_def *max_layer = nir_iadd_imm(b, nr_layers, -1);
