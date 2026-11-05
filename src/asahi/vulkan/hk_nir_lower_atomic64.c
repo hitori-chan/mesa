@@ -37,6 +37,13 @@
  * after them. A fragment shader's helper lanes skip it: their
  * atomics do nothing and return undefined (nir_lower_helper_writes), so the
  * lock's compare-exchange would never succeed for them.
+ *
+ * A lane that misses the lock backs off as Apple's compiler has a compute
+ * kernel's compare-exchange loop do (AGXCompilerCore 26A434's
+ * InsertYieldsPass, __yield_tame_backoff): after 8 misses, each miss yields
+ * the SIMD group's issue slot for 1, 2, 3... up to 16384. Without it, a
+ * SIMD group spinning on a lock its holder's group must issue to release
+ * stalls them both.
  */
 
 static nir_def *
@@ -134,6 +141,13 @@ lower(nir_builder *b, nir_intrinsic_instr *intr, void *data_)
       nir_local_variable_create(b->impl, glsl_uint64_t_type(), "atomic64");
    nir_store_var(b, result, nir_imm_int64(b, 0), 1);
 
+   nir_variable *misses =
+      nir_local_variable_create(b->impl, glsl_uint_type(), "atomic64_misses");
+   nir_variable *amount = nir_local_variable_create(
+      b->impl, glsl_uint16_t_type(), "atomic64_yield");
+   nir_store_var(b, misses, nir_imm_int(b, 0), 1);
+   nir_store_var(b, amount, nir_imm_intN_t(b, 1, 16), 1);
+
    bool fs = b->shader->info.stage == MESA_SHADER_FRAGMENT;
    if (fs)
       nir_push_if(b, nir_inot(b, nir_is_helper_invocation(b, 1)));
@@ -174,6 +188,17 @@ lower(nir_builder *b, nir_intrinsic_instr *intr, void *data_)
 
          nir_store_var(b, result, nir_pack_64_2x32_split(b, lo, hi), 1);
          nir_jump(b, nir_jump_break);
+      }
+      nir_pop_if(b, NULL);
+
+      nir_def *m = nir_load_var(b, misses);
+      nir_store_var(b, misses, nir_iadd_imm(b, m, 1), 1);
+      nir_push_if(b, nir_uge_imm(b, m, 8));
+      {
+         nir_def *a = nir_load_var(b, amount);
+         nir_yield_agx(b, a);
+         nir_store_var(b, amount, nir_umin_imm(b, nir_iadd_imm(b, a, 1), 16384),
+                       1);
       }
       nir_pop_if(b, NULL);
    }
