@@ -2725,6 +2725,11 @@ barrier("fence_helper_exit_agx")
 # src[] = { value }.
 intrinsic("doorbell_agx", src_comp=[1])
 
+# G15's yield: the SIMD group lets the core's others issue for a while, in a
+# spin loop that waits on another SIMD group.
+# src[] = { amount (16-bit) }.
+intrinsic("yield_agx", src_comp=[1])
+
 # src[] = { index, stack_address }.
 intrinsic("stack_map_agx", src_comp=[1, 1])
 
