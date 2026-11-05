@@ -155,6 +155,19 @@ hk_CmdDispatchBase(VkCommandBuffer commandBuffer, uint32_t baseGroupX,
       .z = groupCountZ,
    };
 
+   if (cmd->state.cond.addr) {
+      if (groupCountX == 0 || groupCountY == 0 || groupCountZ == 0)
+         return;
+
+      uint64_t in = hk_pool_upload(cmd, &group_count, sizeof(group_count), 8);
+      uint64_t addr = hk_predicate_args(cmd, in, 0, 1, sizeof(group_count),
+                                        3, false);
+
+      desc->root.cs.group_count_addr = addr;
+      dispatch(cmd, agx_grid_indirect(addr), false);
+      return;
+   }
+
    desc->root.cs.group_count_addr =
       hk_pool_upload(cmd, &group_count, sizeof(group_count), 8);
 
@@ -205,6 +218,12 @@ hk_CmdDispatchIndirect(VkCommandBuffer commandBuffer, VkBuffer _buffer,
     */
    uint64_t dispatch_addr = hk_buffer_address(buffer, offset, false);
    assert(dispatch_addr != 0);
+
+   if (cmd->state.cond.addr) {
+      dispatch_addr = hk_predicate_args(cmd, dispatch_addr, 0, 1,
+                                        sizeof(VkDispatchIndirectCommand), 3,
+                                        false);
+   }
 
    desc->root.cs.group_count_addr = dispatch_addr;
    dispatch(cmd, agx_grid_indirect(dispatch_addr), false);

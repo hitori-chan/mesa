@@ -91,7 +91,8 @@ hk_CmdPreprocessGeneratedCommandsEXT(
 }
 
 static struct libagx_dgc_params
-hk_dgc_params(struct hk_indirect_commands_layout *layout,
+hk_dgc_params(struct hk_cmd_buffer *cmd,
+              struct hk_indirect_commands_layout *layout,
               const VkGeneratedCommandsInfoEXT *info, uint64_t roots,
               uint64_t args, unsigned views, unsigned draw_src_B,
               unsigned draw_words)
@@ -101,6 +102,8 @@ hk_dgc_params(struct hk_indirect_commands_layout *layout,
       .count = info->sequenceCountAddress,
       .roots = roots,
       .args = args,
+      .cond = cmd->state.cond.addr,
+      .cond_inv = cmd->state.cond.inverted,
       .stride_B = layout->vk.stride,
       .max_sequences = info->maxSequenceCount,
       .views = views,
@@ -197,8 +200,9 @@ hk_dgc_graphics(struct hk_cmd_buffer *cmd,
    if (!roots.gpu || !args.gpu)
       return;
 
-   struct libagx_dgc_params p = hk_dgc_params(
-      layout, info, roots.gpu, args.gpu, views, layout->vk.draw_src_offset_B, words);
+   struct libagx_dgc_params p =
+      hk_dgc_params(cmd, layout, info, roots.gpu, args.gpu, views,
+                    layout->vk.draw_src_offset_B, words);
 
    if (vb_token)
       hk_dgc_attribs(cmd, layout, &p);
@@ -293,7 +297,7 @@ hk_dgc_compute(struct hk_cmd_buffer *cmd,
       return;
 
    struct libagx_dgc_params p =
-      hk_dgc_params(layout, info, roots.gpu, args.gpu, 1,
+      hk_dgc_params(cmd, layout, info, roots.gpu, args.gpu, 1,
                     layout->vk.dispatch_src_offset_B, 3);
 
    uint64_t params = hk_pool_upload(cmd, &p, sizeof(p), 8);

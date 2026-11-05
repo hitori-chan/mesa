@@ -561,6 +561,14 @@ struct hk_cmd_buffer {
       struct agx_ptr dgc_roots;
       uint32_t dgc_roots_left;
       struct hk_rt_state rt;
+
+      /* VK_EXT_conditional_rendering: the predicate's address while it is
+       * active, else 0. hk_meta_begin suspends it.
+       */
+      struct {
+         uint64_t addr;
+         bool inverted;
+      } cond;
    } state;
 
    /* Recording a resolve pass (of a render pass or vkCmdResolveImage) */
@@ -952,6 +960,7 @@ struct hk_meta_save {
    struct hk_descriptor_set *desc0;
    bool has_push_desc0;
    enum agx_visibility_mode occlusion;
+   uint64_t cond_addr;
    struct hk_push_descriptor_set push_desc0;
    VkQueryPipelineStatisticFlags pipeline_stats_flags;
    uint8_t push[HK_MAX_PUSH_SIZE];
@@ -966,6 +975,9 @@ void hk_cmd_copy(struct hk_cmd_buffer *cmd, uint64_t dst, uint64_t src,
 void hk_cmd_fill(struct hk_cmd_buffer *cmd, uint64_t addr, size_t range,
                  uint32_t data);
 void hk_cmd_dispatch_dgc(struct hk_cmd_buffer *cmd, uint64_t addr);
+uint64_t hk_predicate_args(struct hk_cmd_buffer *cmd, uint64_t in,
+                           uint64_t count, uint32_t n, uint32_t stride_B,
+                           uint32_t words, bool gfx);
 void hk_draw(struct hk_cmd_buffer *cmd, uint16_t draw_id, struct agx_draw draw);
 void hk_draw_mesh(struct hk_cmd_buffer *cmd, uint16_t draw_id,
                   struct agx_grid grid);
