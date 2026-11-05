@@ -843,25 +843,26 @@ a3_memshift(const struct a3 *a, unsigned bytes)
 #define T_ADEV     "6701540000048182000000008003" /* device_atomic add */
 #define T_ADEV_RET "6701540000048182000600008003" /* ... 3, st0, add */
 /* T_ADEV with bit 70, the 64-bit form (Metal's atomic_ulong max sets it) */
-#define T_ADEV64    "6701540000048182400000008003" /* device_atomic imax */
-#define T_GET_STACK "0c80094300800000"         /* get_stack 2, 2, r0, ^st0 */
-#define T_LDTPS     "6f0054000000112000000000" /* ldtps 0, i32, x, r0, 0 */
-#define T_STTPS     "ef005400000011080000"     /* sttps i32, x, r0, 0 */
-#define T_BARRIER   "070454610300"             /* threadgroup_barrier */
-#define T_ST_VAR    "5706540000404800"         /* st_var ^cr0, 0, 0 */
-#define T_ST_TILE   "e70654000000012e00000000" /* tile_store i32 */
-#define T_PACK_16   "97045401020208a845c2"     /* pack rg8unorm, r0h, r1l */
-#define T_PACK_32   "97045400020008d045c2"     /* pack rg8unorm, r0, r1 */
-#define T_UNPACK    "17045400010210ea"         /* unpack rg8unorm, r0, r0h */
-#define T_LD_TILE   "670654000000012e01000000" /* tile_load 2, i32 */
-#define T_WAIT_PIX  "8702540c0800"             /* wait_pix 12, f1 */
-#define T_SIG_PIX   "0702540c0000"             /* signal_pix 12 */
-#define T_LDCF      "1f0354000002"             /* ldcf 2, r0, 0 */
-#define T_ITER      "2f055400020000021000"     /* iter r0, cf0, center */
-#define T_ITER_COORDS "2f055404030202022000"   /* iter $r2, cf1, ^r2 */
-#define T_ITRCOORDS   "af04540403080a03"       /* itrcoords r2, $r2, sample */
-#define T_ZS_EMIT     "d70454000003"           /* zs_emit ^cr0, 0, z */
-#define T_MOVMSK      "570454000000"           /* movmsk ^cr0, 0 */
+#define T_ADEV64      "6701540000048182400000008003" /* device_atomic imax */
+#define T_GET_STACK   "0c80094300800000"         /* get_stack 2, 2, r0, ^st0 */
+#define T_LDTPS       "6f0054000000112000000000" /* ldtps 0, i32, x, r0, 0 */
+#define T_STTPS       "ef005400000011080000"     /* sttps i32, x, r0, 0 */
+#define T_BARRIER     "070454610300"             /* threadgroup_barrier */
+#define T_YIELD       "870454000000"             /* yield 0 */
+#define T_ST_VAR      "5706540000404800"         /* st_var ^cr0, 0, 0 */
+#define T_ST_TILE     "e70654000000012e00000000" /* tile_store i32 */
+#define T_PACK_16     "97045401020208a845c2"     /* pack rg8unorm, r0h, r1l */
+#define T_PACK_32     "97045400020008d045c2"     /* pack rg8unorm, r0, r1 */
+#define T_UNPACK      "17045400010210ea"         /* unpack rg8unorm, r0, r0h */
+#define T_LD_TILE     "670654000000012e01000000" /* tile_load 2, i32 */
+#define T_WAIT_PIX    "8702540c0800"             /* wait_pix 12, f1 */
+#define T_SIG_PIX     "0702540c0000"             /* signal_pix 12 */
+#define T_LDCF        "1f0354000002"             /* ldcf 2, r0, 0 */
+#define T_ITER        "2f055400020000021000"     /* iter r0, cf0, center */
+#define T_ITER_COORDS "2f055404030202022000"     /* iter $r2, cf1, ^r2 */
+#define T_ITRCOORDS   "af04540403080a03"         /* itrcoords r2, $r2, sample */
+#define T_ZS_EMIT     "d70454000003"             /* zs_emit ^cr0, 0, z */
+#define T_MOVMSK      "570454000000"             /* movmsk ^cr0, 0 */
 #define T_PACK_IMGWIR                                                          \
    "9705540400080000d0401000" /* pack_imgwir cr2, 0, u2l, 0, 0, 4 */
 /* Apple's end-of-tile layer pack (pack_imgwir cr2, 2, ^r4l, 0x204, 0, 0) */
@@ -955,6 +956,7 @@ enum {
    TPS_OFFSET = 5,
    BARRIER_FLAGS = 0,
    BARRIER_WAIT = 1,
+   YIELD_AMOUNT = 0,
    ST_VAR_CR = 0,
    ST_VAR_SLOT = 1,
    ST_VAR_G = 2,
@@ -4120,6 +4122,12 @@ a3_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
    case AGX_OPCODE_JMP_EXEC_NONE:
    case AGX_OPCODE_JMP_EXEC_NONE_AFTER:
       a3_jmp(&a, I, AGX3_JMP_EXEC_NONE, emission, fixups);
+      return;
+
+   case AGX_OPCODE_YIELD:
+      a3_begin(&a, I, AGX3_YIELD, T_YIELD);
+      a3_set(&a, YIELD_AMOUNT, a3_src9(&a, YIELD_AMOUNT, I->src[0]));
+      a3_emit(&a, emission);
       return;
 
    case AGX_OPCODE_WAIT:
