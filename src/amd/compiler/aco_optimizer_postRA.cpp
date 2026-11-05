@@ -725,6 +725,23 @@ num_encoded_alu_operands(const aco_ptr<Instruction>& instr)
    return 0;
 }
 
+bool
+instr_overwrites(Instruction* instr, PhysReg reg, unsigned size)
+{
+   for (Definition def : instr->definitions) {
+      if (def.physReg() + def.size() > reg && reg + size > def.physReg())
+         return true;
+   }
+   if (instr->isPseudo() && instr->pseudo().needs_scratch_reg) {
+      PhysReg scratch_reg = instr->pseudo().scratch_sgpr;
+      if (scratch_reg >= reg && reg + size > scratch_reg)
+         return true;
+   }
+   if (instr->isCall())
+      return true;
+   return false;
+}
+
 void
 try_reassign_split_vector(pr_opt_ctx& ctx, aco_ptr<Instruction>& instr)
 {
@@ -807,10 +824,18 @@ try_reassign_split_vector(pr_opt_ctx& ctx, aco_ptr<Instruction>& instr)
             continue;
          }
 
-         /* Don't propagate misaligned SGPRs.
-          * Note: No ALU instruction can take a variable larger than 64bit.
-          */
+         /* Don't propagate misaligned SGPRs. */
          if (op.regClass() == s2 && reg.reg() % 2 != 0)
+            break;
+         if (op.regClass().type() == RegType::sgpr && op.size() >= 3 && reg.reg() % 4 != 0)
+            break;
+
+         /* WMMA accumulators aren't late kill, but they can't partially overlap. */
+         bool late_kill =
+            op.isLateKill() || (instr_info.classes[(int)instr->opcode] == instr_class::wmma &&
+                                i == 2 && instr->definitions[0].physReg() != reg);
+
+         if (late_kill && instr_overwrites(instr.get(), reg, op.size()))
             break;
 
          /* Sub dword operands might need updates to SDWA/opsel,
@@ -826,30 +851,13 @@ try_reassign_split_vector(pr_opt_ctx& ctx, aco_ptr<Instruction>& instr)
 
          /* Use the p_split_vector operand register directly.
           *
-          * Note: this might violate register assignment rules to some extend
+          * Note: this might violate register assignment rules to some extent
           *       in case the definition does not get recolored, eventually.
           */
          instr->operands[i].setFixed(reg);
          break;
       }
    }
-}
-
-bool
-instr_overwrites(Instruction* instr, PhysReg reg, unsigned size)
-{
-   for (Definition def : instr->definitions) {
-      if (def.physReg() + def.size() > reg && reg + size > def.physReg())
-         return true;
-   }
-   if (instr->isPseudo() && instr->pseudo().needs_scratch_reg) {
-      PhysReg scratch_reg = instr->pseudo().scratch_sgpr;
-      if (scratch_reg >= reg && reg + size > scratch_reg)
-         return true;
-   }
-   if (instr->isCall())
-      return true;
-   return false;
 }
 
 bool

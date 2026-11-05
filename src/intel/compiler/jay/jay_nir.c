@@ -1150,12 +1150,11 @@ jay_process_nir_for_simd(const struct intel_device_info *devinfo,
                 nir_metadata_control_flow, NULL);
 
    /* Late postprocess while remaining in SSA */
-   /* Run fsign lowering again after the last time brw_nir_optimize is called.
-    * As is the case with conversion lowering (below), brw_nir_optimize can
-    * create additional fsign instructions.
+   /* Run algebraic lowering after the last brw_nir_optimize call, which
+    * can recreate operations such as fsign.
     */
    JAY_NIR_PASS(jay_nir_lower_bfloat_math);
-   JAY_NIR_PASS(jay_nir_lower_fsign, devinfo->verx10);
+   JAY_NIR_PASS(jay_nir_lower_algebraic, devinfo->verx10);
    JAY_NIR_PASS(jay_nir_lower_bool);
    JAY_NIR_PASS(nir_opt_cse);
    JAY_NIR_PASS(nir_opt_dce);
@@ -1195,6 +1194,11 @@ jay_process_nir_for_simd(const struct intel_device_info *devinfo,
    JAY_NIR_PASS(nir_shader_phi_pass, lower_after_lcssa,
                 nir_metadata_control_flow, NULL);
    JAY_NIR_PASS(jay_nir_lower_bool);
+
+   if (JAY_NIR_PASS(intel_nir_lower_local_ids)) {
+      JAY_NIR_PASS(nir_opt_copy_prop);
+      JAY_NIR_PASS(nir_opt_dce);
+   }
 
    /* Run divergence analysis at the end */
    nir_sweep(nir);

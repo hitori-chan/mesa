@@ -87,7 +87,7 @@ void si_flush_gfx_cs(struct si_context *ctx, unsigned flags, struct pipe_fence_h
       return;
 
    /* The amdgpu kernel driver synchronizes execution for shared DMABUFs between
-    * processes on DRM >= 3.39.0, so we don't have to wait at the end of IBs to
+    * processes so we don't have to wait at the end of IBs to
     * make sure everything is idle.
     *
     * The amdgpu winsys synchronizes execution for buffers shared by different
@@ -96,7 +96,7 @@ void si_flush_gfx_cs(struct si_context *ctx, unsigned flags, struct pipe_fence_h
     * Interop with AMDVLK, RADV, or OpenCL within the same process requires
     * explicit fences or glFinish.
     */
-   if (sscreen->info.is_amdgpu && sscreen->info.drm_minor >= 39)
+   if (sscreen->info.is_amdgpu)
       flags |= RADEON_FLUSH_START_NEXT_GFX_IB_NOW;
 
    if (ctx->gfx_level <= GFX7) {
@@ -199,7 +199,7 @@ void si_flush_gfx_cs(struct si_context *ctx, unsigned flags, struct pipe_fence_h
       submission_id = ctx->ds_queue.submission_id;
    }
 
-   if (unlikely(ctx->sqtt.data))
+   if (unlikely(si_is_sqtt_active(ctx)))
       si_sqtt_describe_flush(ctx);
 
    /* Flush the CS. */
@@ -445,7 +445,7 @@ void si_begin_new_gfx_cs(struct si_context *ctx, bool first_cs)
       return;
    }
 
-   if (unlikely(ctx->sqtt.data))
+   if (unlikely(si_is_sqtt_active(ctx)))
       si_sqtt_describe_begin(ctx, &ctx->gfx_cs);
 
    if (ctx->has_tessellation) {

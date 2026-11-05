@@ -1402,10 +1402,6 @@ zink_screen_init_compiler(struct zink_screen *screen)
       if (screen->info.fma_feats.shaderFmaFloat64)
          screen->nir_options.float_mul_add64 |= nir_float_muladd_support_has_ffma;
    }
-   /* fuse mul and add in NIR like radeonsi */
-   if (zink_driverid(screen) == VK_DRIVER_ID_MESA_RADV &&
-       (screen->nir_options.float_mul_add32 & nir_float_muladd_support_has_ffma))
-      screen->nir_options.float_mul_add32 |= nir_float_muladd_support_fuse;
 }
 
 struct nir_shader *
@@ -4110,8 +4106,11 @@ compile_module(struct zink_screen *screen, struct zink_shader *zs, nir_shader *n
    prune_io(nir);
 
    /* fuse mul and add into ffma_weak like radeonsi */
-   if (zink_driverid(screen) == VK_DRIVER_ID_MESA_RADV)
+   if (zink_driverid(screen) == VK_DRIVER_ID_MESA_RADV) {
       NIR_PASS(_, nir, zink_nir_fuse_ffma_weak);
+      NIR_PASS(_, nir, nir_opt_dce);
+      NIR_PASS(_, nir, nir_opt_cse);
+   }
 
    if (zink_debug & (ZINK_DEBUG_NIR | ZINK_DEBUG_SPIRV))
       nir_index_ssa_defs(nir_shader_get_entrypoint(nir));
