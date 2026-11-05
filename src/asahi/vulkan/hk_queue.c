@@ -300,10 +300,12 @@ queue_submit_single(struct hk_device *dev, struct drm_asahi_submit *submit,
    if (dev->dev.is_virtio)
       u_rwlock_rdunlock(&dev->external_bos.lock);
 
-   /* XXX: don't trap */
+   /* The kernel took none of the work: its syncobjs never signal, so the
+    * queue is lost rather than left for a wait that never ends.
+    */
    if (ret) {
-      fprintf(stderr, "DRM_IOCTL_ASAHI_SUBMIT failed: %m\n");
-      assert(0);
+      return vk_errorf(dev, VK_ERROR_DEVICE_LOST,
+                       "DRM_IOCTL_ASAHI_SUBMIT failed: %s", strerror(errno));
    }
 
    return VK_SUCCESS;
