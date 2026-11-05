@@ -474,6 +474,9 @@ memory_barrier("device_barrier_2", 3, 2, 9)
 op("doorbell", (0x60020 | 0x28 << 32, 6, _), dests = 0,
       can_eliminate = False, can_reorder = False, imms = [IMM])
 
+# G15's yield: the SIMD group gives its issue slot away for a while (agx_pack3)
+op("yield", _, dests = 0, srcs = 1, can_eliminate = False, can_reorder = False)
+
 op("stack_unmap", (0x00075, 8, _), dests = 1, srcs = 0, can_eliminate = False, can_reorder = False, imms = [IMM])
 op("stack_map",   (0x10075, 8, _), dests = 0, srcs = 1, can_eliminate = False, can_reorder = False, imms = [IMM])
 
