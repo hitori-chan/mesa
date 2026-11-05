@@ -4301,6 +4301,36 @@ hk_draw(struct hk_cmd_buffer *cmd, uint16_t draw_id, struct agx_draw draw_)
    }
 }
 
+/*
+ * VK_EXT_conditional_rendering: a kernel copies n commands' arguments of the
+ * given words from in, stride_B apart, packed at the address returned, each
+ * zeroed if the predicate fails or, with a count, past *count. A draw's run
+ * before the render pass's graphics, a dispatch's in the compute stream. The
+ * predicate is read at each command, which the extension allows.
+ */
+uint64_t
+hk_predicate_args(struct hk_cmd_buffer *cmd, uint64_t in, uint64_t count,
+                  uint32_t n, uint32_t stride_B, uint32_t words, bool gfx)
+{
+   uint64_t out = hk_pool_alloc(cmd, words * 4 * n, 4).gpu;
+
+   libagx_predicate_indirect(cmd, agx_1d(n),
+                             gfx ? AGX_BARRIER_ALL | AGX_PREGFX
+                                 : AGX_BARRIER_ALL,
+                             out, in, count, cmd->state.cond.addr,
+                             cmd->state.cond.inverted, stride_B / 4, words);
+   return out;
+}
+
+/* A direct command's arguments under conditional rendering */
+static uint64_t
+hk_predicate_direct(struct hk_cmd_buffer *cmd, const void *data, size_t size_B,
+                    uint32_t n, bool gfx)
+{
+   uint64_t in = hk_pool_upload(cmd, data, size_B * n, 4);
+   return hk_predicate_args(cmd, in, 0, n, size_B, size_B / 4, gfx);
+}
+
 VKAPI_ATTR void VKAPI_CALL
 hk_CmdDraw(VkCommandBuffer commandBuffer, uint32_t vertexCount,
            uint32_t instanceCount, uint32_t firstVertex, uint32_t firstInstance)
@@ -4308,7 +4338,10 @@ hk_CmdDraw(VkCommandBuffer commandBuffer, uint32_t vertexCount,
    VK_FROM_HANDLE(hk_cmd_buffer, cmd, commandBuffer);
    struct agx_draw draw;
 
-   if (HK_TEST_INDIRECTS) {
+   if (vertexCount == 0 || instanceCount == 0)
+      return;
+
+   if (HK_TEST_INDIRECTS || cmd->state.cond.addr) {
       uint32_t data[] = {
          vertexCount,
          instanceCount,
@@ -4316,7 +4349,11 @@ hk_CmdDraw(VkCommandBuffer commandBuffer, uint32_t vertexCount,
          firstInstance,
       };
 
-      draw = agx_draw_indirect(hk_pool_upload(cmd, data, sizeof(data), 4));
+      if (cmd->state.cond.addr)
+         draw = agx_draw_indirect(
+            hk_predicate_direct(cmd, data, sizeof(data), 1, true));
+      else
+         draw = agx_draw_indirect(hk_pool_upload(cmd, data, sizeof(data), 4));
    } else {
       draw = (struct agx_draw){
          .b = agx_3d(vertexCount, instanceCount, 1),
@@ -4335,6 +4372,34 @@ hk_CmdDrawMultiEXT(VkCommandBuffer commandBuffer, uint32_t drawCount,
                    uint32_t stride)
 {
    VK_FROM_HANDLE(hk_cmd_buffer, cmd, commandBuffer);
+
+   if (cmd->state.cond.addr && drawCount && instanceCount) {
+      VkDrawIndirectCommand *data =
+         malloc(sizeof(VkDrawIndirectCommand) * drawCount);
+      if (!data) {
+         vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
+         return;
+      }
+
+      for (unsigned i = 0; i < drawCount; ++i) {
+         data[i] = (VkDrawIndirectCommand){
+            .vertexCount = pVertexInfo->vertexCount,
+            .instanceCount = instanceCount,
+            .firstVertex = pVertexInfo->firstVertex,
+            .firstInstance = firstInstance,
+         };
+         pVertexInfo = ((void *)pVertexInfo) + stride;
+      }
+
+      uint64_t args =
+         hk_predicate_direct(cmd, data, sizeof(*data), drawCount, true);
+      free(data);
+
+      for (unsigned i = 0; i < drawCount; ++i)
+         hk_draw(cmd, i, agx_draw_indirect(args + sizeof(*data) * i));
+
+      return;
+   }
 
    for (unsigned i = 0; i < drawCount; ++i) {
       struct agx_draw draw = {
@@ -4358,7 +4423,17 @@ hk_draw_indexed(VkCommandBuffer commandBuffer, uint16_t draw_id,
    struct agx_draw draw;
    struct hk_addr_range buf = cmd->state.gfx.index.buffer;
 
-   if (HK_TEST_INDIRECTS && draw_id == 0) {
+   if (cmd->state.cond.addr) {
+      if (indexCount == 0 || instanceCount == 0)
+         return;
+
+      uint32_t data[] = {
+         indexCount, instanceCount, firstIndex, vertexOffset, firstInstance,
+      };
+      uint64_t addr = hk_predicate_direct(cmd, data, sizeof(data), 1, true);
+
+      draw = agx_draw_indexed_indirect(addr, buf.addr, buf.range, 0, 0);
+   } else if (HK_TEST_INDIRECTS && draw_id == 0) {
       uint32_t data[] = {
          indexCount, instanceCount, firstIndex, vertexOffset, firstInstance,
       };
@@ -4389,6 +4464,42 @@ hk_CmdDrawMultiIndexedEXT(VkCommandBuffer commandBuffer, uint32_t drawCount,
                           uint32_t instanceCount, uint32_t firstInstance,
                           uint32_t stride, const int32_t *pVertexOffset)
 {
+   VK_FROM_HANDLE(hk_cmd_buffer, cmd, commandBuffer);
+
+   if (cmd->state.cond.addr && drawCount && instanceCount) {
+      VkDrawIndexedIndirectCommand *data =
+         malloc(sizeof(VkDrawIndexedIndirectCommand) * drawCount);
+      if (!data) {
+         vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
+         return;
+      }
+
+      for (unsigned i = 0; i < drawCount; ++i) {
+         data[i] = (VkDrawIndexedIndirectCommand){
+            .indexCount = pIndexInfo->indexCount,
+            .instanceCount = instanceCount,
+            .firstIndex = pIndexInfo->firstIndex,
+            .vertexOffset = pVertexOffset != NULL ? *pVertexOffset
+                                                  : pIndexInfo->vertexOffset,
+            .firstInstance = firstInstance,
+         };
+         pIndexInfo = ((void *)pIndexInfo) + stride;
+      }
+
+      uint64_t args =
+         hk_predicate_direct(cmd, data, sizeof(*data), drawCount, true);
+      free(data);
+
+      struct hk_addr_range buf = cmd->state.gfx.index.buffer;
+      for (unsigned i = 0; i < drawCount; ++i) {
+         hk_draw(cmd, i,
+                 agx_draw_indexed_indirect(args + sizeof(*data) * i, buf.addr,
+                                           buf.range, 0, 0));
+      }
+
+      return;
+   }
+
    for (unsigned i = 0; i < drawCount; ++i) {
       const uint32_t vertex_offset =
          pVertexOffset != NULL ? *pVertexOffset : pIndexInfo->vertexOffset;
@@ -4432,10 +4543,16 @@ VKAPI_ATTR void VKAPI_CALL
 hk_CmdDrawIndirect(VkCommandBuffer commandBuffer, VkBuffer _buffer,
                    VkDeviceSize offset, uint32_t drawCount, uint32_t stride)
 {
+   VK_FROM_HANDLE(hk_cmd_buffer, cmd, commandBuffer);
    VK_FROM_HANDLE(hk_buffer, buffer, _buffer);
+   uint64_t addr = hk_buffer_address_ro(buffer, offset);
 
-   hk_draw_indirect_inner(commandBuffer, hk_buffer_address_ro(buffer, offset),
-                          drawCount, stride);
+   if (cmd->state.cond.addr && drawCount) {
+      addr = hk_predicate_args(cmd, addr, 0, drawCount, stride, 4, true);
+      stride = sizeof(VkDrawIndirectCommand);
+   }
+
+   hk_draw_indirect_inner(commandBuffer, addr, drawCount, stride);
 }
 
 static void
@@ -4475,10 +4592,16 @@ hk_CmdDrawIndexedIndirect(VkCommandBuffer commandBuffer, VkBuffer _buffer,
                           VkDeviceSize offset, uint32_t drawCount,
                           uint32_t stride)
 {
+   VK_FROM_HANDLE(hk_cmd_buffer, cmd, commandBuffer);
    VK_FROM_HANDLE(hk_buffer, buffer, _buffer);
+   uint64_t addr = hk_buffer_address_ro(buffer, offset);
 
-   hk_draw_indexed_indirect_inner(
-      commandBuffer, hk_buffer_address_ro(buffer, offset), drawCount, stride);
+   if (cmd->state.cond.addr && drawCount) {
+      addr = hk_predicate_args(cmd, addr, 0, drawCount, stride, 5, true);
+      stride = sizeof(VkDrawIndexedIndirectCommand);
+   }
+
+   hk_draw_indexed_indirect_inner(commandBuffer, addr, drawCount, stride);
 }
 
 /*
@@ -4507,7 +4630,9 @@ hk_draw_indirect_count(VkCommandBuffer commandBuffer, VkBuffer _buffer,
 
    libagx_predicate_indirect(cmd, agx_1d(maxDrawCount),
                              AGX_BARRIER_ALL | AGX_PREGFX, patched, in,
-                             count_addr, stride / 4, out_stride / 4);
+                             count_addr, cmd->state.cond.addr,
+                             cmd->state.cond.inverted, stride / 4,
+                             out_stride / 4);
 
    if (indexed) {
       hk_draw_indexed_indirect_inner(commandBuffer, patched, maxDrawCount,
@@ -4621,6 +4746,18 @@ hk_CmdDrawMeshTasksEXT(VkCommandBuffer commandBuffer, uint32_t groupCountX,
 {
    VK_FROM_HANDLE(hk_cmd_buffer, cmd, commandBuffer);
 
+   if (cmd->state.cond.addr) {
+      if (groupCountX == 0 || groupCountY == 0 || groupCountZ == 0)
+         return;
+
+      VkDrawMeshTasksIndirectCommandEXT data = {
+         groupCountX, groupCountY, groupCountZ};
+      hk_draw_mesh(cmd, 0,
+                   agx_grid_indirect(
+                      hk_predicate_direct(cmd, &data, sizeof(data), 1, true)));
+      return;
+   }
+
    hk_draw_mesh(cmd, 0, agx_3d(groupCountX, groupCountY, groupCountZ));
 }
 
@@ -4632,6 +4769,11 @@ hk_CmdDrawMeshTasksIndirectEXT(VkCommandBuffer commandBuffer, VkBuffer _buffer,
    VK_FROM_HANDLE(hk_cmd_buffer, cmd, commandBuffer);
    VK_FROM_HANDLE(hk_buffer, buffer, _buffer);
    uint64_t base = hk_buffer_address_ro(buffer, offset);
+
+   if (cmd->state.cond.addr && drawCount) {
+      base = hk_predicate_args(cmd, base, 0, drawCount, stride, 3, true);
+      stride = sizeof(VkDrawMeshTasksIndirectCommandEXT);
+   }
 
    for (unsigned draw_id = 0; draw_id < drawCount; ++draw_id) {
       hk_draw_mesh(cmd, draw_id, agx_grid_indirect(base + stride * draw_id));
@@ -4662,7 +4804,9 @@ hk_CmdDrawMeshTasksIndirectCountEXT(VkCommandBuffer commandBuffer,
 
    libagx_predicate_indirect(cmd, agx_1d(maxDrawCount),
                              AGX_BARRIER_ALL | AGX_PREGFX, patched, in,
-                             count_addr, stride / 4, out_stride / 4);
+                             count_addr, cmd->state.cond.addr,
+                             cmd->state.cond.inverted, stride / 4,
+                             out_stride / 4);
 
    for (unsigned draw_id = 0; draw_id < maxDrawCount; ++draw_id) {
       hk_draw_mesh(cmd, draw_id,
@@ -4787,11 +4931,20 @@ hk_CmdBeginConditionalRenderingEXT(
    VkCommandBuffer commandBuffer,
    const VkConditionalRenderingBeginInfoEXT *pConditionalRenderingBegin)
 {
-   UNREACHABLE("stub");
+   VK_FROM_HANDLE(hk_cmd_buffer, cmd, commandBuffer);
+   VK_FROM_HANDLE(hk_buffer, buffer, pConditionalRenderingBegin->buffer);
+
+   /* Read where the GPU writes it, as hk_CmdDispatchIndirect does */
+   cmd->state.cond.addr =
+      hk_buffer_address(buffer, pConditionalRenderingBegin->offset, false);
+   cmd->state.cond.inverted = pConditionalRenderingBegin->flags &
+                              VK_CONDITIONAL_RENDERING_INVERTED_BIT_EXT;
 }
 
 VKAPI_ATTR void VKAPI_CALL
 hk_CmdEndConditionalRenderingEXT(VkCommandBuffer commandBuffer)
 {
-   UNREACHABLE("stub");
+   VK_FROM_HANDLE(hk_cmd_buffer, cmd, commandBuffer);
+
+   cmd->state.cond.addr = 0;
 }
