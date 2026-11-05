@@ -848,6 +848,7 @@ a3_memshift(const struct a3 *a, unsigned bytes)
 #define T_LDTPS     "6f0054000000112000000000" /* ldtps 0, i32, x, r0, 0 */
 #define T_STTPS     "ef005400000011080000"     /* sttps i32, x, r0, 0 */
 #define T_BARRIER   "070454610300"             /* threadgroup_barrier */
+#define T_YIELD     "870454000000"             /* yield 0 */
 #define T_ST_VAR    "5706540000404800"         /* st_var ^cr0, 0, 0 */
 #define T_ST_TILE   "e70654000000012e00000000" /* tile_store i32 */
 #define T_PACK_16   "97045401020208a845c2"     /* pack rg8unorm, r0h, r1l */
@@ -955,6 +956,7 @@ enum {
    TPS_OFFSET = 5,
    BARRIER_FLAGS = 0,
    BARRIER_WAIT = 1,
+   YIELD_AMOUNT = 0,
    ST_VAR_CR = 0,
    ST_VAR_SLOT = 1,
    ST_VAR_G = 2,
@@ -4120,6 +4122,12 @@ a3_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
    case AGX_OPCODE_JMP_EXEC_NONE:
    case AGX_OPCODE_JMP_EXEC_NONE_AFTER:
       a3_jmp(&a, I, AGX3_JMP_EXEC_NONE, emission, fixups);
+      return;
+
+   case AGX_OPCODE_YIELD:
+      a3_begin(&a, I, AGX3_YIELD, T_YIELD);
+      a3_set(&a, YIELD_AMOUNT, a3_src9(&a, YIELD_AMOUNT, I->src[0]));
+      a3_emit(&a, emission);
       return;
 
    case AGX_OPCODE_WAIT:

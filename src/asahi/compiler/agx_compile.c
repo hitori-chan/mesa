@@ -2970,6 +2970,9 @@ agx_emit_intrinsic(agx_builder *b, nir_intrinsic_instr *instr)
       return agx_quad_ballot_to(b, dst, agx_src_index(&instr->src[0]));
    }
 
+   case nir_intrinsic_yield_agx:
+      return agx_yield(b, agx_src_index(&instr->src[0]));
+
    case nir_intrinsic_doorbell_agx: {
       return agx_doorbell(b, nir_src_as_uint(instr->src[0]));
    }
@@ -5311,6 +5314,7 @@ agx_compile_shader_nir_impl(nir_shader *nir, struct agx_shader_key *key,
             nir_metadata_control_flow, NULL);
 
    NIR_PASS(_, nir, nir_lower_frag_coord_to_pixel_coord);
+
    NIR_PASS(_, nir, nir_lower_vars_to_ssa);
 
    /* G15's tile accesses move raw data. A fragment program's stores write
