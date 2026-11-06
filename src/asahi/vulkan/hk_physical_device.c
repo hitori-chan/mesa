@@ -832,7 +832,12 @@ hk_get_device_properties(const struct agx_device *dev,
       .maxStorageBufferRange = INT32_MAX,
       .maxPushConstantsSize = HK_MAX_PUSH_SIZE,
       .maxMemoryAllocationCount = 4096,
-      .maxSamplerAllocationCount = 4000,
+      /* Samplers share the heap's entries by their state, and G15 keeps a
+       * custom border in the descriptor: neither count is the heap's.
+       * vkd3d-proton turns custom borders transparent black past either.
+       */
+      .maxSamplerAllocationCount =
+         dev->params.gpu_generation >= 15 ? (1 << 20) : 4000,
       .bufferImageGranularity = 0x400,
       .sparseAddressSpaceSize = HK_SPARSE_ADDR_SPACE_SIZE,
       .maxBoundDescriptorSets = HK_MAX_SETS,
@@ -1101,7 +1106,8 @@ hk_get_device_properties(const struct agx_device *dev,
       .conservativeRasterizationPostDepthCoverage = false,
 
       /* VK_EXT_custom_border_color */
-      .maxCustomBorderColorSamplers = 4000,
+      .maxCustomBorderColorSamplers =
+         dev->params.gpu_generation >= 15 ? (1 << 20) : 4000,
 
       /* VK_EXT_extended_dynamic_state3 */
       .dynamicPrimitiveTopologyUnrestricted = true,
