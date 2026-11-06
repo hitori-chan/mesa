@@ -12,6 +12,7 @@
 #include "hk_physical_device.h"
 
 #include "asahi/lib/agx_bo.h"
+#include "wsi_common.h"
 #include "util/os_misc.h"
 #include "util/u_atomic.h"
 
@@ -122,6 +123,41 @@ hk_remove_ext_bo(struct hk_device *dev, struct agx_bo *bo)
    }
 }
 
+/* Under virtio every submit hands the host the external BOs, which it syncs
+ * the submit on: it waits for their fences and adds its own. A swapchain image
+ * on every submit would make the window system's read of the image shown wait
+ * for the application's work on the next ones, and that work for the read. The
+ * WSI says when the application may reference an image, from its acquire to
+ * its present or release, so the image is external only then, as the
+ * dma-buf's fences are on the native WSI: the frame's writes, then the
+ * window system's read.
+ *
+ * A deferred submit still finds its image: before the WSI gives the image
+ * back, the present waits for its submits to be pending, when it copies its
+ * waits' payloads or exports the sync file it puts on the dma-buf.
+ */
+void
+hk_wsi_set_memory_ownership(VkDevice device, VkDeviceMemory memory,
+                            VkBool32 ownership)
+{
+   VK_FROM_HANDLE(hk_device, dev, device);
+   VK_FROM_HANDLE(hk_device_memory, mem, memory);
+
+   if (!dev->dev.is_virtio || !mem->wsi)
+      return;
+
+   u_rwlock_wrlock(&dev->external_bos.lock);
+   if (mem->wsi_owned != !!ownership) {
+      mem->wsi_owned = ownership;
+
+      if (ownership)
+         hk_add_ext_bo_locked(dev, mem->bo);
+      else
+         hk_remove_ext_bo_locked(dev, mem->bo);
+   }
+   u_rwlock_wrunlock(&dev->external_bos.lock);
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL
 hk_GetMemoryFdPropertiesKHR(VkDevice device,
                             VkExternalMemoryHandleTypeFlagBits handleType,
@@ -171,6 +207,8 @@ hk_AllocateMemory(VkDevice device, const VkMemoryAllocateInfo *pAllocateInfo,
       vk_find_struct_const(pAllocateInfo->pNext, IMPORT_MEMORY_FD_INFO_KHR);
    const VkExportMemoryAllocateInfo *export_info =
       vk_find_struct_const(pAllocateInfo->pNext, EXPORT_MEMORY_ALLOCATE_INFO);
+   const struct wsi_memory_allocate_info *wsi_info =
+      vk_find_struct_const(pAllocateInfo->pNext, WSI_MEMORY_ALLOCATE_INFO_MESA);
    const VkMemoryType *type = &pdev->mem_types[pAllocateInfo->memoryTypeIndex];
 
    VkExternalMemoryHandleTypeFlagBits handle_types = 0;
@@ -230,7 +268,9 @@ hk_AllocateMemory(VkDevice device, const VkMemoryAllocateInfo *pAllocateInfo,
    if (ret)
       return VK_ERROR_UNKNOWN;
 
-   if (mem->bo->flags & (AGX_BO_SHAREABLE | AGX_BO_SHARED))
+   mem->wsi = wsi_info != NULL && !HK_PERF(dev, ALLEXT);
+   mem->wsi_owned = false;
+   if ((mem->bo->flags & (AGX_BO_SHAREABLE | AGX_BO_SHARED)) && !mem->wsi)
       hk_add_ext_bo(dev, mem->bo);
 
    if (fd_info && fd_info->handleType) {
@@ -289,7 +329,8 @@ hk_FreeMemory(VkDevice device, VkDeviceMemory _mem,
    struct hk_memory_heap *heap = &pdev->mem_heaps[type->heapIndex];
    p_atomic_add(&heap->used, -((int64_t)mem->bo->size));
 
-   if (mem->bo->flags & (AGX_BO_SHAREABLE | AGX_BO_SHARED))
+   if ((mem->bo->flags & (AGX_BO_SHAREABLE | AGX_BO_SHARED)) &&
+       (!mem->wsi || mem->wsi_owned))
       hk_remove_ext_bo(dev, mem->bo);
 
    /* Freeing mapped memory unmaps it */
