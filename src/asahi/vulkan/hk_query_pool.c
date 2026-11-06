@@ -553,10 +553,11 @@ hk_cmd_begin_end_query(struct hk_cmd_buffer *cmd, struct hk_query_pool *pool,
       perf_debug(cmd, "Query ending, type %u", pool->vk.query_type);
       hk_queue_write(cmd, hk_query_available_addr(pool, query), 1, graphics);
 
-      /* An occlusion report is in memory when the render retires, the others
-       * come from the vertex stage.
+      /* A render's reports land after it retires, its occlusion counts among
+       * them: an availability ordered at the retire was seen before the count
+       * it covers (dEQP-VK.query_pool.occlusion_query.get_results_*_wait_*).
        */
-      if (graphics && pool->vk.query_type != VK_QUERY_TYPE_OCCLUSION)
+      if (graphics)
          hk_post_gfx_wait_stores(cmd);
    }
 }
@@ -730,7 +731,7 @@ hk_CmdCopyQueryPoolResults(VkCommandBuffer commandBuffer, VkQueryPool queryPool,
 
    libagx_copy_query_struct(cmd, agx_1d(queryCount), AGX_BARRIER_ALL, info);
 
-   /* It reads what a render reported at its end, an occlusion report earlier */
-   if (cmd->current_cs.cs && pool->vk.query_type != VK_QUERY_TYPE_OCCLUSION)
+   /* It reads what a render reported, which lands after the render retires */
+   if (cmd->current_cs.cs)
       cmd->current_cs.cs->cr.wait_stores = true;
 }
