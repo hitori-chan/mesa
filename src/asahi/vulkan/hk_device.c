@@ -48,6 +48,7 @@ static const struct debug_named_value hk_perf_options[] = {
    {"noeotresolve", HK_PERF_NOEOTRESOLVE, "Resolve in a pass of its own"},
    {"noslc",     HK_PERF_NOSLC,    "G15: no SLC ranges for a render pass's attachments"},
    {"hostbarrier", HK_PERF_HOSTBARRIER, "G15: barriers across kinds wait for the firmware's post-process"},
+   {"allext",    HK_PERF_ALLEXT,   "virtio: every swapchain image on every submit"},
    DEBUG_NAMED_VALUE_END
 };
 /* clang-format on */
