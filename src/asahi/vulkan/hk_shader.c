@@ -560,35 +560,33 @@ lower_load_global_constant_offset_instr(nir_builder *b,
    if (intrin->intrinsic == nir_intrinsic_load_global_constant_bounded) {
       nir_scalar offs = nir_scalar_resolved(offset, 0);
       if (nir_scalar_is_const(offs)) {
-         /* Calculate last byte loaded */
-         unsigned offs_imm = nir_scalar_as_uint(offs) + load_size;
+         /* The last byte loaded */
+         unsigned last = nir_scalar_as_uint(offs) + load_size - 1;
 
          /* Simplify the bounds check. Uniform buffers are bounds checked at
-          * 64B granularity, so `bound` is a multiple of K = 64. Then
+          * K = 64B granularity (robustUniformBufferAccessSizeAlignment), so a
+          * load may return data while last < round_up(bound, K). Then
           *
-          * offs_imm < bound <==> round_down(offs_imm, K) < bound. Proof:
+          * last < round_up(bound, K) <==> round_down(last, K) < bound. Proof:
           *
-          * "=>" round_down(offs_imm, K) <= offs_imm < bound.
+          *      Let a, c be integers s.t. round_down(last, K) = Ka and
+          *      round_up(bound, K) = Kc, so Ka <= last < K(a + 1).
           *
-          * "<=" Let a, b be integer s.t. offs_imm = K a + b with b < K.
-          *      Note round_down(offs_imm, K) = Ka.
+          *      last < Kc <==> a < c, since Kc is a multiple of K.
+          *      a < c = ceil(bound / K) <==> Ka < bound.
           *
-          *      Let c be integer s.t. bound = Kc.
-          *      We have Ka < Kc => a < c.
-          *      b < K => Ka + b < K(a + 1).
-          *
-          *      a < c with integers => a + 1 <= c.
-          *      offs_imm < K(a + 1) <= Kc = bound.
-          *      Hence offs_imm < bound.
+          * The end of the load, last + 1, does not work in place of last: a
+          * load of bytes [64, 72) would pass with bound = 64.
           */
          assert(align_mul == 64);
-         offs_imm &= ~(align_mul - 1);
+         unsigned first = last & ~(align_mul - 1);
 
-         /* Bounds checks are `offset > bound ? 0 : val` so if offset = 0,
-          * the bounds check is useless.
+         /* Bounds checks are `offset > bound ? 0 : val`, so the check is
+          * first + 1 <= bound. With first = 0 it holds for any descriptor but
+          * a null one, whose zero page reads 0, so it is useless.
           */
-         if (offs_imm) {
-            val = bounds_check(b, val, nir_imm_int(b, offs_imm), bound);
+         if (first) {
+            val = bounds_check(b, val, nir_imm_int(b, first + 1), bound);
          }
       } else {
          offset = nir_iadd_imm(b, offset, load_size);
