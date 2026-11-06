@@ -121,6 +121,9 @@ struct hk_root_descriptor_table {
       } cs;
    };
 
+   /* The device's locks for 64-bit atomics (hk_nir_lower_atomic64.c) */
+   uint64_t atomic64_locks;
+
    /* Client push constants */
    uint8_t push[HK_MAX_PUSH_SIZE];
 

@@ -2954,6 +2954,9 @@ agx_emit_intrinsic(agx_builder *b, nir_intrinsic_instr *instr)
       return agx_quad_ballot_to(b, dst, agx_src_index(&instr->src[0]));
    }
 
+   case nir_intrinsic_yield_agx:
+      return agx_yield(b, agx_src_index(&instr->src[0]));
+
    case nir_intrinsic_doorbell_agx: {
       return agx_doorbell(b, nir_src_as_uint(instr->src[0]));
    }
@@ -5295,6 +5298,11 @@ agx_compile_shader_nir_impl(nir_shader *nir, struct agx_shader_key *key,
             nir_metadata_control_flow, NULL);
 
    NIR_PASS(_, nir, nir_lower_frag_coord_to_pixel_coord);
+
+   /* G15: a compute loop spinning on memory yields, as Apple's do */
+   if (key->dev.gpu_generation >= 15 && mesa_shader_stage_is_compute(nir->info.stage))
+      NIR_PASS(_, nir, agx_nir_insert_yields);
+
    NIR_PASS(_, nir, nir_lower_vars_to_ssa);
 
    /* G15's tile accesses move raw data. A fragment program's stores write
