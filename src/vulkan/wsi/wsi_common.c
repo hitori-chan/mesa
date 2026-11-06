@@ -1607,6 +1607,23 @@ wsi_DestroySwapchainKHR(VkDevice _device,
    swapchain->destroy(swapchain, alloc);
 }
 
+/* The application owns an image from its acquire to its present or release.
+ * A blit's destination, the memory the window system reads, goes with it: the
+ * present's blit writes it while the image is owned, and nothing else does.
+ */
+static void
+wsi_image_set_ownership(const struct wsi_swapchain *chain,
+                        const struct wsi_image *image, bool ownership)
+{
+   if (!chain->wsi->set_memory_ownership)
+      return;
+
+   chain->wsi->set_memory_ownership(chain->device, image->memory, ownership);
+   if (image->blit.memory != VK_NULL_HANDLE)
+      chain->wsi->set_memory_ownership(chain->device, image->blit.memory,
+                                       ownership);
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL
 wsi_ReleaseSwapchainImagesKHR(VkDevice _device,
                               const VkReleaseSwapchainImagesInfoKHR *pReleaseInfo)
@@ -1628,12 +1645,11 @@ wsi_ReleaseSwapchainImagesKHR(VkDevice _device,
    if (result != VK_SUCCESS)
       return result;
 
-   if (swapchain->wsi->set_memory_ownership) {
-      for (uint32_t i = 0; i < pReleaseInfo->imageIndexCount; i++) {
-         uint32_t image_index = pReleaseInfo->pImageIndices[i];
-         VkDeviceMemory mem = swapchain->get_wsi_image(swapchain, image_index)->memory;
-         swapchain->wsi->set_memory_ownership(swapchain->device, mem, false);
-      }
+   for (uint32_t i = 0; i < pReleaseInfo->imageIndexCount; i++) {
+      uint32_t image_index = pReleaseInfo->pImageIndices[i];
+      wsi_image_set_ownership(swapchain,
+                              swapchain->get_wsi_image(swapchain, image_index),
+                              false);
    }
 
    return VK_SUCCESS;
@@ -2363,8 +2379,7 @@ wsi_common_acquire_next_image2(const struct wsi_device *wsi,
          return signal_result;
    }
 
-   if (wsi->set_memory_ownership)
-      wsi->set_memory_ownership(swapchain->device, image->memory, true);
+   wsi_image_set_ownership(swapchain, image, true);
 
    return result;
 }
@@ -2957,10 +2972,9 @@ wsi_common_queue_present(const struct wsi_device *wsi,
       if (results[i] != VK_SUCCESS && results[i] != VK_SUBOPTIMAL_KHR)
          continue;
 
-      if (wsi->set_memory_ownership) {
-         VkDeviceMemory mem = swapchain->get_wsi_image(swapchain, image_index)->memory;
-         wsi->set_memory_ownership(swapchain->device, mem, false);
-      }
+      wsi_image_set_ownership(swapchain,
+                              swapchain->get_wsi_image(swapchain, image_index),
+                              false);
    }
 
    for (uint32_t i = 0; i < pPresentInfo->swapchainCount; i++) {
