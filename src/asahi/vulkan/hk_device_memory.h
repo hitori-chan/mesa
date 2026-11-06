@@ -22,10 +22,19 @@ struct hk_device_memory {
    struct agx_bo *bo;
 
    void *map;
+
+   /* A swapchain's memory, external under virtio: the host syncs a submit on
+    * it only while the application owns it (hk_wsi_set_memory_ownership).
+    */
+   bool wsi;
+   bool wsi_owned;
 };
 
 VK_DEFINE_NONDISP_HANDLE_CASTS(hk_device_memory, vk.base, VkDeviceMemory,
                                VK_OBJECT_TYPE_DEVICE_MEMORY)
+
+void hk_wsi_set_memory_ownership(VkDevice device, VkDeviceMemory memory,
+                                 VkBool32 ownership);
 
 extern const VkExternalMemoryProperties hk_opaque_fd_mem_props;
 extern const VkExternalMemoryProperties hk_dma_buf_mem_props;
