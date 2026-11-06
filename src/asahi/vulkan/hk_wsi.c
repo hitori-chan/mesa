@@ -5,6 +5,7 @@
  * SPDX-License-Identifier: MIT
  */
 #include "hk_wsi.h"
+#include "hk_device_memory.h"
 #include "hk_instance.h"
 #include "wsi_common.h"
 
@@ -55,6 +56,8 @@ hk_init_wsi(struct hk_physical_device *pdev)
    pdev->wsi_device.supports_scanout = false;
    pdev->wsi_device.supports_modifiers = true;
    pdev->wsi_device.can_present_on_device = hk_wsi_can_present_on_device;
+   if (pdev->dev.is_virtio)
+      pdev->wsi_device.set_memory_ownership = hk_wsi_set_memory_ownership;
 
    pdev->vk.wsi_device = &pdev->wsi_device;
 
