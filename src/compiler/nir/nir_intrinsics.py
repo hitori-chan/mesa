@@ -2720,6 +2720,11 @@ barrier("fence_helper_exit_agx")
 # src[] = { value }.
 intrinsic("doorbell_agx", src_comp=[1])
 
+# G15's yield: the SIMD group lets the core's others issue for a while, in a
+# spin loop that waits on another SIMD group.
+# src[] = { amount (16-bit) }.
+intrinsic("yield_agx", src_comp=[1])
+
 # src[] = { index, stack_address }.
 intrinsic("stack_map_agx", src_comp=[1, 1])
 
@@ -2820,6 +2825,10 @@ system_value("msaa_rate_intel", 1)
 
 # Raw fragment shading rate provided to the FS payload.
 system_value("frag_shading_rate_intel", 2)
+
+# Scalar component of local invocation ID.
+intrinsic("load_local_invocation_id_intel", dest_comp=1, bit_sizes=[32], indices=[COMPONENT],
+          flags=[CAN_ELIMINATE, CAN_REORDER])
 
 # Load a relocatable 32-bit value
 intrinsic("load_reloc_const_intel", dest_comp=1, bit_sizes=[32],
@@ -2986,11 +2995,7 @@ load("inline_data_intel", [1], [BASE, RANGE], [CAN_ELIMINATE, CAN_REORDER])
 
 # Load push data on Intel VS,TCS,TES,GS,FS stages
 # src[] = { offset }
-#
-# We use the ACCESS index mostly for ACCESS_NON_UNIFORM, this allows us to
-# preserve the semantic of load_push_constant which is always uniform
-# regardless of the offset source.
-load("push_data_intel", [1], [BASE, RANGE, ACCESS], [CAN_ELIMINATE, CAN_REORDER])
+load("push_data_intel", [1], [BASE, RANGE], [CAN_ELIMINATE, CAN_REORDER])
 
 # Dynamic tesselation parameters (see intel_tess_config).
 system_value("tess_config_intel", 1)

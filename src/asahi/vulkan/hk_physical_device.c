@@ -231,7 +231,7 @@ hk_get_device_extensions(const struct agx_device *dev,
       .EXT_scalar_block_layout = true,
       .EXT_separate_stencil_usage = true,
       .EXT_shader_atomic_float = g15,
-      .EXT_shader_image_atomic_int64 = false,
+      .EXT_shader_image_atomic_int64 = g15,
       .EXT_shader_demote_to_helper_invocation = true,
       .EXT_shader_module_identifier = true,
       .EXT_shader_object = true,
@@ -353,8 +353,8 @@ hk_get_device_features(
       .storageBuffer8BitAccess = true,
       .uniformAndStorageBuffer8BitAccess = true,
       .storagePushConstant8 = true,
-      .shaderBufferInt64Atomics = false,
-      .shaderSharedInt64Atomics = false,
+      .shaderBufferInt64Atomics = dev->params.gpu_generation >= 15,
+      .shaderSharedInt64Atomics = dev->params.gpu_generation >= 15,
       .shaderFloat16 = true,
       .shaderInt8 = true,
       .descriptorIndexing = true,
@@ -715,7 +715,7 @@ hk_get_device_features(
       .nullDescriptor = true,
 
       /* VK_EXT_shader_image_atomic_int64 */
-      .shaderImageInt64Atomics = false,
+      .shaderImageInt64Atomics = dev->params.gpu_generation >= 15,
       .sparseImageInt64Atomics = false,
 
       /* VK_EXT_shader_atomic_float: G15's device atomics add fp32, which the

@@ -27,8 +27,8 @@ lower_non_tied_default(jay_builder *b, jay_inst *I, jay_def default_)
       jay_remove_instruction(I);
    } else {
       jay_foreach_comp(I->dst, c) {
-         jay_def dst = jay_bare_reg(I->dst.file, I->dst.reg + c);
-         jay_def src = jay_bare_reg(default_.file, default_.reg + c);
+         jay_def dst = jay_bare_reg(I->dst.file, I->dst.reg + c * 2);
+         jay_def src = jay_bare_reg(default_.file, default_.reg + c * 2);
 
          jay_inst *mov = jay_MOV(b, dst, src);
          mov->type = I->type;
@@ -71,9 +71,13 @@ lower(jay_builder *b, jay_inst *I)
          if (stride_sz < type_sz) {
             assert(stride_sz == 16 && type_sz == 32 && "no other case hit");
             I->type = JAY_TYPE_U16;
+            I->dst.size = JAY_SIZE_16;
+            I->src[0].size = JAY_SIZE_16;
 
-            dst.hi = true;
-            src.hi = true;
+            dst = I->dst;
+            src = I->src[0];
+            dst.reg++;
+            src.reg++;
             jay_MOV(b, dst, src)->type = JAY_TYPE_U16;
          }
       }

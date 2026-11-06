@@ -2602,6 +2602,10 @@ brw_nir_select_divergence_options(const struct brw_compiler *compiler,
 
    if (use_jay && nir->info.stage == MESA_SHADER_FRAGMENT)
       options = &compiler->nir_options_fs_single_prim;
+   else if (mesa_shader_stage_is_compute(nir->info.stage) &&
+            !nir->info.workgroup_size_variable &&
+            nir->info.workgroup_size[0] * nir->info.workgroup_size[1] % 32 == 0)
+      options = &compiler->nir_options_cs_uniform_local_id_z;
 
    if (options == nir->options)
       return;
@@ -2683,6 +2687,19 @@ brw_preprocess_nir(const struct brw_compiler *compiler, nir_shader *nir,
    if (OPT(nir_opt_memcpy))
       OPT(nir_split_var_copies);
 
+   const struct nir_lower_var_copies_options early_var_copies_options = {
+      .loop_array_copy_modes =
+         nir_var_all & ~brw_nir_no_indirect_mask(nir->info.stage),
+      .early_lowering = true,
+   };
+
+   /* Propagate aggregate copy sources before lowering, so intermediate arrays
+    * made redundant by copy chains can be removed during normal optimization.
+    * Then lower copies before array splitting can expand them.
+    */
+   OPT(nir_opt_copy_prop_vars);
+   OPT(nir_lower_var_copies_with_options, &early_var_copies_options);
+
    brw_nir_optimize(pt, true);
 
    if (devinfo->has_ray_tracing) {
@@ -2723,7 +2740,11 @@ brw_preprocess_nir(const struct brw_compiler *compiler, nir_shader *nir,
    OPT(nir_lower_bit_size, lower_bit_size_callback, (void *)devinfo);
 
    /* Lower a bunch of stuff */
-   OPT(nir_lower_var_copies);
+   const struct nir_lower_var_copies_options final_var_copies_options = {
+      .loop_array_copy_modes =
+         early_var_copies_options.loop_array_copy_modes,
+   };
+   OPT(nir_lower_var_copies_with_options, &final_var_copies_options);
 
    /* This needs to be run after the first optimization pass but before we
     * lower indirect derefs away

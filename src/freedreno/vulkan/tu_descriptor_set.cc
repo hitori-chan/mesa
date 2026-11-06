@@ -115,14 +115,6 @@ tu_CreateDescriptorSetLayout(
 
    assert(pCreateInfo->sType ==
           VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO);
-   const VkDescriptorSetLayoutBindingFlagsCreateInfo *variable_flags =
-      vk_find_struct_const(
-         pCreateInfo->pNext,
-         DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO);
-   const VkMutableDescriptorTypeCreateInfoEXT *mutable_info =
-      vk_find_struct_const(
-         pCreateInfo->pNext,
-         MUTABLE_DESCRIPTOR_TYPE_CREATE_INFO_EXT);
 
    uint32_t num_bindings = 0;
    uint32_t immutable_sampler_count = 0;
@@ -169,13 +161,15 @@ tu_CreateDescriptorSetLayout(
    struct vk_ycbcr_conversion_state *ycbcr_samplers =
       reinterpret_cast<struct vk_ycbcr_conversion_state *>(&samplers[immutable_sampler_count]);
 
-   VkDescriptorSetLayoutBinding *bindings = NULL;
-   VkResult result = vk_create_sorted_bindings(
-      pCreateInfo->pBindings, pCreateInfo->bindingCount, &bindings, NULL, NULL);
+   struct vk_sorted_bindings *sorted;
+   VkResult result =
+      vk_create_sorted_bindings(&device->vk, pCreateInfo, pAllocator, &sorted);
    if (result != VK_SUCCESS) {
       vk_descriptor_set_layout_unref(&device->vk, &set_layout->vk);
       return vk_error(device, result);
    }
+
+   const VkDescriptorSetLayoutBinding *bindings = sorted->bindings;
 
    set_layout->binding_count = num_bindings;
    set_layout->shader_stages = 0;
@@ -188,6 +182,7 @@ tu_CreateDescriptorSetLayout(
    for (uint32_t j = 0; j < pCreateInfo->bindingCount; j++) {
       const VkDescriptorSetLayoutBinding *binding = bindings + j;
       uint32_t b = binding->binding;
+      const VkDescriptorBindingFlags binding_flags = sorted->flags[j];
 
       set_layout->binding[b].type = binding->descriptorType;
       set_layout->binding[b].array_size =
@@ -204,9 +199,7 @@ tu_CreateDescriptorSetLayout(
           */
          (pCreateInfo->flags &
           VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT) ||
-         (variable_flags && j < variable_flags->bindingCount &&
-          (variable_flags->pBindingFlags[j] &
-           VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT));
+         (binding_flags & VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT);
 
       bool has_subsampled_sampler = false;
       if ((binding->descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER ||
@@ -222,7 +215,7 @@ tu_CreateDescriptorSetLayout(
          samplers_offset += sizeof(struct tu_sampler) * binding->descriptorCount;
 
          bool has_ycbcr_sampler = false;
-         for (unsigned i = 0; i < pCreateInfo->pBindings[j].descriptorCount; ++i) {
+         for (unsigned i = 0; i < binding->descriptorCount; ++i) {
             VK_FROM_HANDLE(tu_sampler, sampler,
                            binding->pImmutableSamplers[i]);
             if (sampler->vk.ycbcr_conversion)
@@ -253,7 +246,7 @@ tu_CreateDescriptorSetLayout(
           * largest descriptor type that the binding can mutate to.
           */
          set_layout->binding[b].size =
-            mutable_descriptor_size(device, &mutable_info->pMutableDescriptorTypeLists[j]);
+            mutable_descriptor_size(device, &sorted->mutable_type_lists[j]);
       } else {
          set_layout->binding[b].size =
             descriptor_size(device, binding, binding->descriptorType,
@@ -263,9 +256,7 @@ tu_CreateDescriptorSetLayout(
       if (binding->descriptorType == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK)
          set_layout->has_inline_uniforms = true;
 
-      if (variable_flags && j < variable_flags->bindingCount &&
-          (variable_flags->pBindingFlags[j] &
-           VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT)) {
+      if (binding_flags & VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT) {
          assert(!binding->pImmutableSamplers); /* Terribly ill defined  how
                                                   many samplers are valid */
          assert(binding->binding == num_bindings - 1);
@@ -284,7 +275,7 @@ tu_CreateDescriptorSetLayout(
       set_layout->shader_stages |= binding->stageFlags;
    }
 
-   free(bindings);
+   vk_destroy_sorted_bindings(&device->vk, pAllocator, sorted);
 
    set_layout->dynamic_offset_size = dynamic_offset_size;
 
@@ -335,26 +326,20 @@ tu_GetDescriptorSetLayoutSupport(
 {
    VK_FROM_HANDLE(tu_device, device, _device);
 
-   VkDescriptorSetLayoutBinding *bindings = NULL;
-   VkResult result = vk_create_sorted_bindings(
-      pCreateInfo->pBindings, pCreateInfo->bindingCount, &bindings, NULL, NULL);
+   struct vk_sorted_bindings *sorted;
+   VkResult result =
+      vk_create_sorted_bindings(&device->vk, pCreateInfo, NULL, &sorted);
    if (result != VK_SUCCESS) {
       pSupport->supported = false;
       return;
    }
 
-   const VkDescriptorSetLayoutBindingFlagsCreateInfo *variable_flags =
-      vk_find_struct_const(
-         pCreateInfo->pNext,
-         DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO);
+   const VkDescriptorSetLayoutBinding *bindings = sorted->bindings;
+
    VkDescriptorSetVariableDescriptorCountLayoutSupport *variable_count =
       vk_find_struct(
          pSupport->pNext,
          DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_LAYOUT_SUPPORT);
-   const VkMutableDescriptorTypeCreateInfoEXT *mutable_info =
-      vk_find_struct_const(
-         pCreateInfo->pNext,
-         MUTABLE_DESCRIPTOR_TYPE_CREATE_INFO_EXT);
 
    if (variable_count) {
       variable_count->maxVariableDescriptorCount = 0;
@@ -364,6 +349,7 @@ tu_GetDescriptorSetLayoutSupport(
    uint64_t size = 0;
    for (uint32_t i = 0; i < pCreateInfo->bindingCount; i++) {
       const VkDescriptorSetLayoutBinding *binding = bindings + i;
+      const VkDescriptorBindingFlags binding_flags = sorted->flags[i];
 
       uint64_t descriptor_sz;
 
@@ -371,7 +357,7 @@ tu_GetDescriptorSetLayoutSupport(
          descriptor_sz = 0;
       } else if (binding->descriptorType == VK_DESCRIPTOR_TYPE_MUTABLE_EXT) {
          const VkMutableDescriptorTypeListEXT *list =
-            &mutable_info->pMutableDescriptorTypeLists[i];
+            &sorted->mutable_type_lists[i];
 
          for (uint32_t j = 0; j < list->descriptorTypeCount; j++) {
             /* Don't support the input attachement and combined image sampler type
@@ -383,8 +369,7 @@ tu_GetDescriptorSetLayoutSupport(
             }
          }
 
-         descriptor_sz =
-            mutable_descriptor_size(device, &mutable_info->pMutableDescriptorTypeLists[i]);
+         descriptor_sz = mutable_descriptor_size(device, list);
       } else {
          bool has_subsampled_sampler = false;
          if ((binding->descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER ||
@@ -423,10 +408,8 @@ tu_GetDescriptorSetLayoutSupport(
          supported = false;
       }
 
-      if (variable_flags && i < variable_flags->bindingCount &&
-          variable_count &&
-          (variable_flags->pBindingFlags[i] &
-           VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT)) {
+      if (variable_count &&
+          (binding_flags & VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT)) {
          variable_count->maxVariableDescriptorCount =
             MIN2(UINT32_MAX, max_count);
       }
@@ -434,7 +417,7 @@ tu_GetDescriptorSetLayoutSupport(
    }
 
 out:
-   free(bindings);
+   vk_destroy_sorted_bindings(&device->vk, NULL, sorted);
 
    pSupport->supported = supported;
 }

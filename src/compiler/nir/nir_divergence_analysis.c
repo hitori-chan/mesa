@@ -411,12 +411,6 @@ visit_intrinsic(nir_intrinsic_instr *instr, struct divergence_state *state)
       is_divergent = false;
       break;
 
-   case nir_intrinsic_load_push_data_intel:
-      is_divergent =
-         (nir_intrinsic_access(instr) & ACCESS_NON_UNIFORM) &&
-         src_divergent(instr->src[0], state);
-      break;
-
    case nir_intrinsic_load_ubo_uniform_block_intel:
    case nir_intrinsic_load_ssbo_uniform_block_intel:
    case nir_intrinsic_load_shared_uniform_block_intel:
@@ -457,6 +451,11 @@ visit_intrinsic(nir_intrinsic_instr *instr, struct divergence_state *state)
    case nir_intrinsic_plane_eqn_origin_intel:
       /* These would be divergent if Jay supported multipolygon */
       is_divergent = false;
+      break;
+
+   case nir_intrinsic_load_local_invocation_id_intel:
+      is_divergent = nir_intrinsic_component(instr) != 2 ||
+         !(state->options & nir_divergence_uniform_local_invocation_id_z);
       break;
 
    case nir_intrinsic_decl_reg:
@@ -884,6 +883,7 @@ visit_intrinsic(nir_intrinsic_instr *instr, struct divergence_state *state)
    case nir_intrinsic_load_viewport_z_range_kk:
    case nir_intrinsic_load_texture_scale:
    case nir_intrinsic_load_inline_data_intel:
+   case nir_intrinsic_load_push_data_intel:
    case nir_intrinsic_resource_intel:
    case nir_intrinsic_load_push_constant: {
       unsigned num_srcs = nir_intrinsic_infos[instr->intrinsic].num_srcs;

@@ -292,7 +292,7 @@ GLES3.2, GLSL ES 3.2 -- all DONE: freedreno/a6xx, radeonsi, virgl, llvmpipe, zin
   GL_OES_tessellation_shader                            DONE (freedreno/a6xx, all drivers that support GL_ARB_tessellation_shader)
   GL_OES_texture_border_clamp                           DONE (all drivers)
   GL_OES_texture_buffer                                 DONE (freedreno, nvc0, r600, softpipe, panfrost, crocus/gen6+)
-  GL_OES_texture_cube_map_array                         DONE (freedreno/a4xx+, nvc0, r600, softpipe)
+  GL_OES_texture_cube_map_array                         DONE (freedreno/a4xx+, nvc0, r600, softpipe, v3d)
   GL_OES_texture_stencil8                               DONE (all drivers that support GL_ARB_texture_stencil8)
   GL_OES_texture_storage_multisample_2d_array           DONE (all drivers that support GL_ARB_texture_multisample)
 
@@ -571,6 +571,7 @@ Khronos extensions that are not part of any Vulkan version:
   VK_KHR_maintenance9                                   DONE (anv, hk, kk, lvp, nvk, panvk, radv, tu, vn)
   VK_KHR_maintenance10                                  DONE (anv, hk, kk, lvp, nvk, panvk, radv, vn)
   VK_KHR_maintenance11                                  DONE (anv, lvp, nvk, panvk, radv, vn)
+  VK_KHR_maintenance12                                  DONE (radv)
   VK_KHR_performance_query                              DONE (anv, radv/gfx10.3+, tu, v3dv)
   VK_KHR_pipeline_binary                                DONE (anv, hk, nvk, panvk, radv)
   VK_KHR_pipeline_executable_properties                 DONE (anv, hasvk, hk, nvk, panvk, pvr, radv, tu, v3dv)
@@ -897,9 +898,9 @@ Rusticl extensions:
   cl_khr_egl_image                                      not started
   cl_khr_expect_assume                                  in progress (hints are ignored)
   cl_khr_extended_async_copies                          not started
-  cl_khr_external_memory                                not started
-  cl_khr_external_memory_dma_buf                        not started
-  cl_khr_external_memory_opaque_fd                      not started
+  cl_khr_external_memory                                DONE (iris, radeonsi, zink)
+  cl_khr_external_memory_dma_buf                        DONE (iris, radeonsi, zink)
+  cl_khr_external_memory_opaque_fd                      DONE (iris, radeonsi, zink)
   cl_khr_external_memory_win32                          not started
   cl_khr_external_semaphore                             DONE (asahi, iris, radeonsi, zink)
   cl_khr_external_semaphore_opaque_fd                   not started
@@ -947,6 +948,11 @@ Rusticl extensions:
   cl_ext_image_unorm_int_2_101010                       DONE
   cl_ext_immutable_memory_objects                       DONE
   cl_ext_migrate_memobject                              not started
+  cl_arm_import_memory                                  DONE
+  cl_arm_import_memory_host                             not started
+  cl_arm_import_memory_dma_buf                          DONE
+  cl_arm_import_memory_protected                        not started
+  cl_arm_import_memory_android_hardware_buffer          not started
   cl_arm_non_uniform_work_group_size                    not started
   cl_arm_shared_virtual_memory                          in progress (nvc0)
   cl_intel_required_subgroup_size                       in progress (available with RUSTICL_FEATURES=intel)

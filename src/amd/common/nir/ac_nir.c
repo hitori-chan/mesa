@@ -1019,11 +1019,36 @@ ac_nir_repack_invocations_in_workgroup(nir_builder *b, nir_def **input_bool,
 }
 
 uint8_t
-ac_nir_lower_phis_to_scalar_cb(const nir_instr *instr, const void *_)
+ac_nir_lower_phis_to_scalar_cb(const nir_instr *instr, const void *_compiler_info)
 {
+   const struct ac_compiler_info *compiler_info = _compiler_info;
+
    nir_phi_instr *phi = nir_instr_as_phi(instr);
    if (phi->def.bit_size == 1 || phi->def.bit_size >= 32)
       return 1;
+
+   /* Split phis that use unpacked D16 results, otherwise they create movs. */
+   if (compiler_info && compiler_info->has_unpacked_d16 && phi->def.bit_size == 16) {
+      nir_foreach_phi_src(src, phi) {
+         nir_scalar scalar = nir_scalar_resolved(src->src.ssa, 0);
+
+         if (nir_scalar_is_tex(scalar)) {
+            return 1;
+         } else if (nir_scalar_is_intrinsic(scalar)) {
+            nir_intrinsic_instr *intrin = nir_scalar_as_intrinsic(scalar);
+
+            switch (intrin->intrinsic) {
+            case nir_intrinsic_image_load: return 1;
+            case nir_intrinsic_load_buffer_amd:
+               if (nir_intrinsic_access(intrin) & ACCESS_USES_FORMAT_AMD)
+                  return 1;
+               break;
+            default:
+               break;
+            }
+         }
+      }
+   }
 
    return 32 / phi->def.bit_size;
 }
@@ -1170,4 +1195,51 @@ ac_nir_opt_vectorize_cb(const nir_instr *instr, const void *data)
    }
 
    return target_width;
+}
+
+bool
+ac_nir_opt_16bit_tex_image(nir_shader *shader, enum amd_gfx_level gfx_level)
+{
+   /* Optimize types of image_sample sources and destinations.
+    *
+    * The image_sample sources bit sizes are:
+    *   nir_tex_src_coord:       a16 ? 16 : 32
+    *   nir_tex_src_comparator:  32
+    *   nir_tex_src_offset:      32
+    *   nir_tex_src_bias:        a16 ? 16 : 32
+    *   nir_tex_src_lod:         a16 ? 16 : 32
+    *   nir_tex_src_min_lod:     a16 ? 16 : 32
+    *   nir_tex_src_ms_index:    a16 ? 16 : 32
+    *   nir_tex_src_ddx:         has_g16 ? (g16 ? 16 : 32) : (a16 ? 16 : 32)
+    *   nir_tex_src_ddy:         has_g16 ? (g16 ? 16 : 32) : (a16 ? 16 : 32)
+    *
+    * We only use a16/g16 if all of the affected sources are 16bit.
+    */
+   assert(gfx_level >= GFX8);
+   bool separate_g16 = gfx_level >= GFX10;
+   bool has_a16 = gfx_level >= GFX9;
+   struct nir_opt_tex_srcs_options opt_srcs_options[] = {
+      {
+         .sampler_dims = ~(BITFIELD_BIT(GLSL_SAMPLER_DIM_CUBE) | BITFIELD_BIT(GLSL_SAMPLER_DIM_BUF)),
+         .src_types = (1 << nir_tex_src_coord) | (1 << nir_tex_src_lod) | (1 << nir_tex_src_bias) |
+                        (1 << nir_tex_src_min_lod) | (1 << nir_tex_src_ms_index) |
+                        (separate_g16 ? 0 : (1 << nir_tex_src_ddx) | (1 << nir_tex_src_ddy)),
+      },
+      {
+         .sampler_dims = ~BITFIELD_BIT(GLSL_SAMPLER_DIM_CUBE),
+         .src_types = (1 << nir_tex_src_ddx) | (1 << nir_tex_src_ddy),
+      },
+   };
+   struct nir_opt_16bit_tex_image_options opt_16bit_options = {
+      .rounding_mode = nir_rounding_mode_undef,
+      .opt_tex_dest_types = nir_type_float | nir_type_int | nir_type_uint,
+      .opt_image_dest_types = nir_type_float | nir_type_int | nir_type_uint,
+      .integer_dest_saturates = true,
+      .opt_image_store_data = true,
+      .opt_image_srcs = has_a16,
+      .opt_srcs_options_count = has_a16 ? (separate_g16 ? 2 : 1) : 0,
+      .opt_srcs_options = opt_srcs_options,
+   };
+
+   return nir_opt_16bit_tex_image(shader, &opt_16bit_options);
 }

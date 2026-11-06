@@ -6,7 +6,7 @@ project(
   ['c', 'cpp'],
   version : files('VERSION'),
   license : 'MIT',
-  meson_version : '>= 1.4.0',
+  meson_version : '>= 1.7.0',
   default_options : [
     'buildtype=debugoptimized',
     'b_ndebug=if-release',
@@ -501,7 +501,7 @@ with_platform_wayland = _platforms.contains('wayland')
 with_platform_haiku = _platforms.contains('haiku')
 with_platform_windows = _platforms.contains('windows')
 with_platform_macos = _platforms.contains('macos')
-with_platform_display = system_has_kms_drm and not with_platform_android
+with_platform_display = system_has_kms_drm and not cc.has_define('__ANDROID__')
 
 with_gfxstream_emulated_android = with_gfxstream_vk and with_platform_android and host_machine.system() == 'linux'
 if with_gfxstream_emulated_android
@@ -940,11 +940,6 @@ with_any_rust = [
 ].contains(true)
 
 if with_any_rust
-  # rust.bindgen() does not pass `--rust-target` to bindgen until 1.7.0.
-  if meson.version().version_compare('< 1.7.0')
-    error('Mesa Rust support requires Meson 1.7.0 or newer')
-  endif
-
   add_languages('rust', required: true)
   rustc = meson.get_compiler('rust')
   rust = import('rust')
@@ -981,6 +976,10 @@ if with_any_rust
     '--raw-line', '#![allow(warnings)]',
     # Required for bindgen 0.71.1
     '--raw-line', '#![allow(unsafe_op_in_unsafe_fn)]',
+  ]
+
+  bindgen_c_args = [
+    '-DMESA_BINDGEN=1'
   ]
 
   rust_global_args = [
@@ -1159,57 +1158,85 @@ python_version_req = '>= 3.10'
 python_exec_list = ['python3.16', 'python3.15', 'python3.14', 'python3.13',
                     'python3.12', 'python3.11', 'python3.10', 'python3', 'python']
 
+# Tuples of version required for that module, and optional condition without
+# which the module is not required. If any version will do, use the special
+# version ''.
+python_required_modules = {
+  'docutils': { 'version': '', 'required_if': get_option('html-docs').enabled() },
+  'hawkmoth': { 'version': '0.16', 'required_if': get_option('html-docs').enabled() },
+  'mako': { 'version': '0.8', 'required_if': true },
+  'pycparser': { 'version': '2.20', 'required_if': with_gallium_etnaviv },
+  'sphinx': { 'version': '', 'required_if': get_option('html-docs').enabled() },
+  'yaml': { 'version': '', 'required_if': true },
+}
+
+any_python_found = false
 foreach p : python_exec_list
   prog_python = find_program(p, required : false, version : python_version_req)
   if not prog_python.found()
     continue
   endif
 
-  has_mako = run_command(
+  any_python_found = true
+
+  has_version_module = run_command(
     prog_python, '-c',
     '''
-import sys
-
 try:
-    try:
-        from packaging.version import Version
-    except:
-        from distutils.version import StrictVersion as Version
+    from packaging.version import Version
 except:
-    sys.exit(2)
-
-try:
-    import mako
-except:
-    sys.exit(1)
-
-if Version(mako.__version__) < Version("0.8.0"):
-    sys.exit(1)
+    from distutils.version import StrictVersion as Version
 ''', check: false)
-  if has_mako.returncode() != 0
+  if has_version_module.returncode() != 0
     continue
   endif
 
-  has_yaml = run_command(prog_python, '-c', 'import yaml', check: false)
-  if has_yaml.returncode() != 0
+  missing_modules = []
+  foreach module_name, module : python_required_modules
+    if not module['required_if']
+      continue
+    endif
+    if module['version'] == ''
+      if run_command(prog_python, '-c', 'import '+ module_name, check: false).returncode() != 0
+        missing_modules += module_name
+      endif
+    else
+      if run_command(prog_python, '-c', '''
+try:
+    from packaging.version import Version
+except:
+    from distutils.version import StrictVersion as Version
+
+import @0@
+assert Version(@0@.__version__) >= Version("@1@")
+      '''.format(module_name, module['version']), check: false).returncode() != 0
+        missing_modules += module_name + ' >= ' + module['version']
+      endif
+      # }}
+    endif
+  endforeach
+
+  if missing_modules.length() > 0
     continue
   endif
 
   break
 endforeach
 
-if not prog_python.found()
+if not any_python_found
   error('Python ' + python_version_req + ' not found')
 endif
 
-if has_mako.returncode() == 1
-  error('Python (3.x) mako module >= 0.8.0 required to build mesa.')
-elif has_mako.returncode() == 2
-  error('One of Python (3.x) packaging or distutils module is required.')
+if has_version_module.returncode() != 0
+  error('One of Python ' + python_version_req + ' packaging or distutils module is required.')
 endif
 
-if has_yaml.returncode() != 0
-  error('Python (3.x) yaml module (PyYAML) required to build mesa.')
+if missing_modules.length() > 0
+  warning('Python ' + python_version_req + ' found but is missing some required modules:')
+  foreach module : missing_modules
+    warning('- ' + module)
+  endforeach
+  error('Please install the missing modules and try again')
 endif
 
 # Support systems without ETIME (e.g. FreeBSD)

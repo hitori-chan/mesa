@@ -4273,9 +4273,17 @@ nir_cf_list_is_empty_block(struct exec_list *cf_list)
    return false;
 }
 
+typedef enum ENUM_PACKED nir_parameter_mode {
+   nir_parameter_in = 0,
+   nir_parameter_out,
+   nir_parameter_inout,
+} nir_parameter_mode;
+
 typedef struct nir_parameter {
    uint8_t num_components;
    uint8_t bit_size;
+
+   nir_parameter_mode mode;
 
    /* True if this parameter is a deref used for returning values */
    bool is_return;
@@ -4287,8 +4295,6 @@ typedef struct nir_parameter {
     * otherwise.
     */
    bool is_uniform;
-
-   nir_variable_mode mode;
 
    /* Drivers may optionally stash flags here describing the parameter.
     * For example, this might encode whether the driver expects the value
@@ -5700,6 +5706,23 @@ bool nir_propagate_invariant(nir_shader *shader, bool invariant_prim);
 void nir_lower_var_copy_instr(nir_intrinsic_instr *copy, nir_shader *shader);
 void nir_lower_deref_copy_instr(nir_builder *b,
                                 nir_intrinsic_instr *copy);
+struct nir_lower_var_copies_options {
+   /**
+    * Variable modes for which wildcard array copies may be lowered to loops.
+    * Both source and destination deref modes must be contained in this mask.
+    */
+   nir_variable_mode loop_array_copy_modes;
+
+   /**
+    * This is not the final call to the pass.  It will not mark
+    * var_copies_lowered in the shader.
+    */
+   bool early_lowering;
+};
+
+bool nir_lower_var_copies_with_options(
+   nir_shader *shader,
+   const struct nir_lower_var_copies_options *options);
 bool nir_lower_var_copies(nir_shader *shader);
 
 bool nir_opt_memcpy(nir_shader *shader);
@@ -7246,7 +7269,10 @@ typedef enum {
     * This is true for backends using nir_opt_preamble even if there's no scalar
     * ALU, since non-divergence is a decent proxy for uniformity.
     */
-   nir_reassociate_scalar_math = (1 << 1),
+   nir_reassociate_scalar_int_math   = (1 << 1),
+   nir_reassociate_scalar_float_math = (1 << 2),
+   nir_reassociate_scalar_math       = nir_reassociate_scalar_int_math |
+                                       nir_reassociate_scalar_float_math,
 } nir_reassociate_options;
 
 bool nir_opt_reassociate(nir_shader *shader, nir_reassociate_options opts);

@@ -889,10 +889,9 @@ bool si_init_gfx_screen(struct si_screen *sscreen) {
       sscreen->info.use_display_dcc_with_retile_blit = false;
    }
 
-   if (sscreen->debug_flags & DBG(SAFE)) {
+   if (sscreen->debug_flags & DBG(SAFE))
       sscreen->options.inline_uniforms = false;
-      sscreen->options.zerovram = true;
-   }
+
    if (sscreen->debug_flags & DBG(SAFER)) {
       sscreen->shader_debug_flags |= DBG(NO_OPT_VARIANT);
       sscreen->shader_debug_flags |= DBG(CHECK_IR);
@@ -1023,9 +1022,6 @@ bool si_init_gfx_screen(struct si_screen *sscreen) {
       glsl_type_singleton_decref();
       return false;
    }
-
-   if (!debug_get_bool_option("RADEON_DISABLE_PERFCOUNTERS", false))
-      si_init_perfcounters(sscreen);
 
    if (sscreen->debug_flags & DBG(NO_OUT_OF_ORDER))
       sscreen->info.has_out_of_order_rast = false;

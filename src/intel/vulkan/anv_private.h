@@ -7124,8 +7124,14 @@ enum anv_vid_mem_av1_types {
    ANV_VID_MEM_AV1_DBD_BUFFER,
    ANV_VID_MEM_AV1_TILE_SIZE_STREAMOUT,
    ANV_VID_MEM_AV1_ENCODE_TILE_BITSTREAM_ACCUM,
+   ANV_VID_MEM_AV1_BRC_PAK_INSERT_OUT,
+   ANV_VID_MEM_AV1_BRC_CDF_TABLES,
+   ANV_VID_MEM_AV1_BRC_CDF_ACTIVE,
+   ANV_VID_MEM_AV1_BRC_DATA,
    ANV_VID_MEM_AV1_MAX,
 };
+
+#define ANV_AV1_CDF_TABLE_SIZE 15104
 
 /* HuC BRC session buffers, shared by the encode codecs. Based past every
  * per-codec range so they never collide in vid_mem[].
@@ -7208,6 +7214,10 @@ struct anv_video_rc_state {
    /* H.264 and H.265 rate control flag bits share the same values. */
    uint32_t rc_flags;
    uint32_t frame_counter;
+   uint32_t brc_init_frame;
+   bool brc_reset;
+   double av1_target_fullness;
+   int32_t av1_hrd_fullness;
 };
 
 struct anv_video_session {

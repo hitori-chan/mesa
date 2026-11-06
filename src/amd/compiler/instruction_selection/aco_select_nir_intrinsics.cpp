@@ -679,6 +679,8 @@ mubuf_load_format_callback(Builder& bld, const LoadEmitInfo& info, unsigned byte
       }
    }
 
+   bool unpacked_d16 = info.component_size == 2 && bld.program->dev.has_unpacked_d16;
+
    aco_ptr<Instruction> mubuf{
       create_instruction(op, Format::MUBUF, 3 + info.tfe + 2 * info.disable_wqm, 1)};
    mubuf->operands[0] = Operand(info.resource);
@@ -690,13 +692,37 @@ mubuf_load_format_callback(Builder& bld, const LoadEmitInfo& info, unsigned byte
    mubuf->mubuf().sync = info.sync;
    mubuf->mubuf().offset = info.const_offset;
    mubuf->mubuf().tfe = info.tfe;
-   RegClass rc = RegClass::get(RegType::vgpr, bytes_needed);
-   Temp val = rc == info.dst.regClass() ? info.dst : bld.tmp(rc);
+   RegClass rc = RegClass::get(RegType::vgpr, bytes_needed * (unpacked_d16 ? 2 : 1));
+   Temp val = !unpacked_d16 && rc == info.dst.regClass() ? info.dst : bld.tmp(rc);
    if (info.tfe)
       mubuf->operands[3] = emit_tfe_init(bld, val);
    init_disable_wqm(bld, mubuf->mubuf(), info.disable_wqm);
    mubuf->definitions[0] = Definition(val);
    bld.insert(std::move(mubuf));
+
+   if (unpacked_d16) {
+      rc = RegClass::get(RegType::vgpr, bytes_needed);
+      Temp unpacked_val = val;
+      val = rc == info.dst.regClass() ? info.dst : bld.tmp(rc);
+
+      unsigned num_components = bytes_needed / 2;
+      aco_ptr<Instruction> split{
+         create_instruction(aco_opcode::p_split_vector, Format::PSEUDO, 1, num_components * 2)};
+      split->operands[0] = Operand(unpacked_val);
+
+      aco_ptr<Instruction> vec{
+         create_instruction(aco_opcode::p_create_vector, Format::PSEUDO, num_components, 1)};
+      vec->definitions[0] = Definition(val);
+
+      for (unsigned i = 0; i < num_components; i++) {
+         split->definitions[i * 2] = bld.def(v2b);
+         split->definitions[i * 2 + 1] = bld.def(v2b);
+         vec->operands[i] = Operand(split->definitions[i * 2].getTemp());
+      }
+
+      bld.insert(std::move(split));
+      bld.insert(std::move(vec));
+   }
 
    return val;
 }
@@ -1812,12 +1838,13 @@ visit_image_load(isel_context* ctx, nir_intrinsic_instr* instr)
       expand_mask |= 1 << result_size;
 
    bool d16 = instr->def.bit_size == 16;
+   bool unpacked_d16 = d16 && ctx->program->dev.has_unpacked_d16;
    assert(!d16 || !is_sparse);
 
-   unsigned num_bytes = util_bitcount(dmask) * (d16 ? 2 : 4) + is_sparse * 4;
+   unsigned num_bytes = util_bitcount(dmask) * (d16 && !unpacked_d16 ? 2 : 4) + is_sparse * 4;
 
    Temp tmp;
-   if (num_bytes == dst.bytes() && dst.type() == RegType::vgpr)
+   if (num_bytes == dst.bytes() && dst.type() == RegType::vgpr && !unpacked_d16)
       tmp = dst;
    else
       tmp = bld.tmp(RegClass::get(RegType::vgpr, num_bytes));
@@ -1866,7 +1893,8 @@ visit_image_load(isel_context* ctx, nir_intrinsic_instr* instr)
                        Operand::zero());
    }
 
-   expand_vector(ctx, tmp, dst, instr->def.num_components, expand_mask, instr->def.bit_size == 64);
+   expand_vector(ctx, tmp, dst, instr->def.num_components, expand_mask, instr->def.bit_size == 64,
+                 unpacked_d16);
 }
 
 void
@@ -1877,6 +1905,7 @@ visit_image_store(isel_context* ctx, nir_intrinsic_instr* instr)
    bool is_array = nir_intrinsic_image_array(instr);
    Temp data = get_ssa_temp(ctx, instr->src[3].ssa);
    bool d16 = instr->src[3].ssa->bit_size == 16;
+   bool unpacked_d16 = d16 && ctx->program->dev.has_unpacked_d16;
 
    /* only R64_UINT and R64_SINT supported */
    if (instr->src[3].ssa->bit_size == 64 && data.bytes() > 8)
@@ -1916,8 +1945,8 @@ visit_image_store(isel_context* ctx, nir_intrinsic_instr* instr)
       if (dim == GLSL_SAMPLER_DIM_BUF)
          dmask = BITFIELD_MASK(util_last_bit(dmask));
 
-      if (dmask != BITFIELD_MASK(num_components)) {
-         uint32_t dmask_count = util_bitcount(dmask);
+      if (dmask != BITFIELD_MASK(num_components) || unpacked_d16) {
+         uint32_t dmask_count = util_bitcount(dmask) * (unpacked_d16 ? 2 : 1);
          RegClass rc = d16 ? v2b : v1;
          if (dmask_count == 1) {
             data = emit_extract_vector(ctx, data, ffs(dmask) - 1, rc);
@@ -1927,6 +1956,9 @@ visit_image_store(isel_context* ctx, nir_intrinsic_instr* instr)
             uint32_t index = 0;
             u_foreach_bit (bit, dmask) {
                vec->operands[index++] = Operand(emit_extract_vector(ctx, data, bit, rc));
+
+               if (unpacked_d16)
+                  vec->operands[index++] = Operand(rc);
             }
             data = bld.tmp(RegClass::get(RegType::vgpr, dmask_count * rc.bytes()));
             vec->definitions[0] = Definition(data);
