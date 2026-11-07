@@ -1168,6 +1168,18 @@ enum drm_asahi_compute_flags {
 	 * Kernels that do not know it ignore it on G15.
 	 */
 	DRM_ASAHI_COMPUTE_BARRIER_RETIRE = (1U << 0),
+
+	/**
+	 * @DRM_ASAHI_COMPUTE_WAIT_STORES: The command reads what the queue's
+	 * previous compute command stored or its end timestamps: it starts
+	 * only once those are visible, at that command's post-process, not
+	 * once it has retired. On G15 a queue's next compute command starts at
+	 * the previous one's retire, and the firmware writes the end
+	 * timestamps after it. Set it only for such a command (a query copy):
+	 * it costs the post-process. Kernels that do not know it ignore it on
+	 * G15.
+	 */
+	DRM_ASAHI_COMPUTE_WAIT_STORES = (1U << 1),
 };
 
 /**
