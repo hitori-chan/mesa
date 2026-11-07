@@ -193,6 +193,10 @@ struct hk_render_registers {
     * pass has retired */
    bool vertex_stores;
 
+   /* G15, compute: the stream reads an end timestamp of the compute stream
+    * before it, which the firmware writes after that stream has retired */
+   bool wait_cdm_ts;
+
    struct {
       uint32_t dimensions;
       uint64_t buffer, meta;
@@ -527,6 +531,7 @@ hk_cs_merge_cdm(struct hk_cs *a, const struct hk_cs *b)
    a->timestamp = b->timestamp;
 
    a->cr.wait_stores |= b->cr.wait_stores;
+   a->cr.wait_cdm_ts |= b->cr.wait_cdm_ts;
    a->post_gfx &= b->post_gfx;
 
    a->stats.calls += b->stats.calls;
