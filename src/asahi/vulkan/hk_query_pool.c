@@ -731,7 +731,13 @@ hk_CmdCopyQueryPoolResults(VkCommandBuffer commandBuffer, VkQueryPool queryPool,
 
    libagx_copy_query_struct(cmd, agx_1d(queryCount), AGX_BARRIER_ALL, info);
 
-   /* It reads what a render reported, which lands after the render retires */
-   if (cmd->current_cs.cs)
+   /* It reads what a render reported, which lands after the render retires,
+    * and a timestamp pool's compute end timestamps, which land after the
+    * compute stream retires: hk_flush_if_timestamp ended that stream.
+    */
+   if (cmd->current_cs.cs) {
       cmd->current_cs.cs->cr.wait_stores = true;
+      cmd->current_cs.cs->cr.wait_cdm_ts |=
+         pool->vk.query_type == VK_QUERY_TYPE_TIMESTAMP;
+   }
 }

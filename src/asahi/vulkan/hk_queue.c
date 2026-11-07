@@ -907,6 +907,12 @@ queue_submit(struct hk_device *dev, struct hk_queue *queue,
                 !queue->vertex_stores)
                cmd.flags |= DRM_ASAHI_COMPUTE_BARRIER_RETIRE;
 
+            /* The queue's next compute command starts at the last one's
+             * retire, before the firmware has written its end timestamps.
+             */
+            if (cs->cr.wait_cdm_ts && dev->dev.params.gpu_generation >= 15)
+               cmd.flags |= DRM_ASAHI_COMPUTE_WAIT_STORES;
+
             queue->vertex_stores = false;
             queue->compute_pending |= !cs->post_gfx;
             util_dynarray_append(&payload, cmd);
