@@ -268,16 +268,19 @@ is_attachment_stored(const VkRenderingAttachmentInfo *att)
 }
 
 /* G15: the background or end-of-tile program's entry program (agx_esl.h)
- * for its USC words; 0 when G15 cannot build it yet */
+ * for its USC words and its pass's tilebuffer (NULL for none yet); 0 when G15
+ * cannot build it yet */
 static uint64_t
 hk_bg_eot_esl(struct hk_cmd_buffer *cmd, const uint8_t *usc,
-              struct agx_bg_eot_shader *shader, enum agx_esl_stage stage)
+              struct agx_bg_eot_shader *shader,
+              const struct agx_tilebuffer_layout *tib, enum agx_esl_stage stage)
 {
    uint8_t *map = agx_bo_map(shader->bo);
    struct agx_esl_code code = agx_esl_code_for_shader(
       shader->ptr, map + (shader->ptr - shader->bo->va->addr), &shader->info,
       NULL);
 
+   code.tib = tib;
    return hk_upload_esl_va(cmd, &code, stage, usc);
 }
 
@@ -534,7 +537,9 @@ hk_build_bg_eot(struct hk_cmd_buffer *cmd, const VkRenderingInfo *info,
    /* For attachmentless rendering, we don't know the sample count until
     * draw-time. But we have trivial bg/eot programs in that case too.
     */
-   if (key.tib.nr_samples >= 1) {
+   bool samples_known = key.tib.nr_samples >= 1;
+
+   if (samples_known) {
       agx_usc_push_packed(&b, SHARED, &key.tib.usc);
    } else {
       assert(key.tib.sample_size_B == 0);
@@ -570,8 +575,9 @@ hk_build_bg_eot(struct hk_cmd_buffer *cmd, const VkRenderingInfo *info,
 
    /* G15 runs an entry program; usc is its VA */
    if (dev->dev.params.gpu_generation >= 15) {
-      ret.usc = hk_bg_eot_esl(cmd, t.cpu, shader,
-                              store ? AGX_ESL_END_OF_TILE : AGX_ESL_BACKGROUND);
+      ret.usc =
+         hk_bg_eot_esl(cmd, t.cpu, shader, samples_known ? &key.tib : NULL,
+                       store ? AGX_ESL_END_OF_TILE : AGX_ESL_BACKGROUND);
    }
 
    agx_pack(&ret.counts, COUNTS, cfg) {
