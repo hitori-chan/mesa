@@ -13,17 +13,28 @@
  */
 #define MAX_BYTES_PER_TILE (32768 - 1)
 
-/* G15's tile memory holds 32 KiB: Metal renders 2 samples of 16 B in 32x32
- * tiles, and 4 samples in 32x16 at 8 B and at 16 B alike, so a tile also holds
- * at most 2048 samples (the msaa and msmrt captures, metal-compute.md)
- */
-#define MAX_BYTES_PER_TILE_G15   32768
-#define MAX_SAMPLES_PER_TILE_G15 2048
-
 /* Maximum bytes per sample in the tilebuffer. Greater allocations require
  * spilling render targets to memory.
  */
 #define MAX_BYTES_PER_SAMPLE (64)
+
+/* G15 takes its tile from the sample count alone, as Metal's driver does for
+ * up to 131 B a sample (FramebufferGen3_3, AGXMetalG15X_M1 0x21267b848):
+ * eight 16 B render targets fit, so a colour pass never spills. That driver
+ * budgets 256 KiB of tile memory a tile, which 128 B samples fill at 2 and 4
+ * samples; its 64 KiB tile of two 2-sample RGBA32F targets ran right
+ * (msmrt32).
+ */
+#define MAX_BYTES_PER_SAMPLE_G15 (128)
+#define MAX_BYTES_PER_TILE_G15   (256 * 1024)
+
+/* Metal's tiles past 32 KiB ran slower on the M3 Max than the same samples in
+ * a tile halved to 32 KiB: eight RGBA16F targets at one sample (64 KiB) 1.26
+ * times faster halved, eight RGBA32F (128 KiB) 2.9 times, five RGBA32F 1.3
+ * times; elsewhere the two agree. So the tile halves while it is over
+ * 32 KiB, down to the architectural 16x16, and the samples still fit.
+ */
+#define TILE_TARGET_B_G15 (32 * 1024)
 
 /* Minimum tile size in pixels, architectural. */
 #define MIN_TILE_SIZE_PX (16 * 16)
@@ -37,6 +48,14 @@ agx_select_tile_size(unsigned px_size_B, unsigned max_B)
    return ((px_size_B * 32 * 32) <= max_B)   ? (32 * 32)
           : ((px_size_B * 32 * 16) <= max_B) ? (32 * 16)
                                              : MIN_TILE_SIZE_PX;
+}
+
+/* G15's tile for a sample count, Metal's: 32x32 at 1 and 2 samples, 32x16 at
+ * 4, 16x16 at 8. A count not known yet (0) takes 32x32. */
+static uint16_t
+agx_select_tile_size_g15(unsigned nr_samples)
+{
+   return nr_samples <= 2 ? (32 * 32) : nr_samples <= 4 ? (32 * 16) : (16 * 16);
 }
 
 static inline unsigned
@@ -70,7 +89,8 @@ agx_build_tilebuffer_layout(const enum pipe_format *formats, uint8_t nr_cbufs,
       .g15 = g15,
    };
 
-   unsigned max_B = g15 ? MAX_BYTES_PER_TILE_G15 : MAX_BYTES_PER_TILE;
+   unsigned max_sample_B =
+      g15 ? MAX_BYTES_PER_SAMPLE_G15 : MAX_BYTES_PER_SAMPLE;
 
    uint32_t offset_B = 0;
    uint8_t order[] = {0, 1, 2, 3, 4, 5, 6, 7};
@@ -99,9 +119,9 @@ agx_build_tilebuffer_layout(const enum pipe_format *formats, uint8_t nr_cbufs,
        * need to spill it to memory. Otherwise, allocate it to the tilebuffer.
        */
       unsigned new_offset_B = start_B + size_B;
-      bool fits =
-         (new_offset_B <= MAX_BYTES_PER_SAMPLE) &&
-         (ALIGN_POT(new_offset_B, 8) * MIN_TILE_SIZE_PX * nr_samples) <= max_B;
+      bool fits = (new_offset_B <= max_sample_B) &&
+                  (g15 || (ALIGN_POT(new_offset_B, 8) * MIN_TILE_SIZE_PX *
+                           nr_samples) <= MAX_BYTES_PER_TILE);
       if (fits) {
          tib._offset_B[rt] = start_B;
          offset_B = new_offset_B;
@@ -110,7 +130,7 @@ agx_build_tilebuffer_layout(const enum pipe_format *formats, uint8_t nr_cbufs,
       }
    }
 
-   assert(offset_B <= MAX_BYTES_PER_SAMPLE && "loop invariant");
+   assert(offset_B <= max_sample_B && "loop invariant");
 
    /* Multisampling needs a nonempty allocation.
     * XXX: Check this against hw
@@ -119,10 +139,17 @@ agx_build_tilebuffer_layout(const enum pipe_format *formats, uint8_t nr_cbufs,
       offset_B = MAX2(offset_B, 1);
 
    tib.sample_size_B = align(offset_B, 8);
-   tib.tile_size = agx_select_tile_size(tib.sample_size_B * nr_samples, max_B);
 
-   while (g15 && tib.tile_size * nr_samples > MAX_SAMPLES_PER_TILE_G15)
-      tib.tile_size /= 2;
+   if (g15) {
+      tib.tile_size = agx_select_tile_size_g15(nr_samples);
+      while (tib.tile_size > MIN_TILE_SIZE_PX &&
+             agx_tilebuffer_total_size(&tib) > TILE_TARGET_B_G15)
+         tib.tile_size /= 2;
+      assert(agx_tilebuffer_total_size(&tib) <= MAX_BYTES_PER_TILE_G15);
+   } else {
+      tib.tile_size = agx_select_tile_size(tib.sample_size_B * nr_samples,
+                                           MAX_BYTES_PER_TILE);
+   }
 
    agx_tilebuffer_pack_usc(&tib);
    return tib;
@@ -178,9 +205,15 @@ agx_tilebuffer_pack_usc(struct agx_tilebuffer_layout *tib)
    agx_pack(&tib->usc, USC_SHARED, cfg) {
       if (tib->nr_samples > 0) {
          cfg.uses_shared_memory = true;
-         cfg.sample_stride_in_8_bytes = tib->sample_size_B / 8;
          cfg.sample_count = tib->nr_samples;
-         cfg.bytes_per_threadgroup = agx_tilebuffer_total_size(tib);
+
+         /* G15 runs no USC words: its entry program takes the imageblock from
+          * the layout (agx_esl_code::tib), whose samples and tiles these
+          * fields cannot hold past 120 B and 64 KiB */
+         if (!tib->g15) {
+            cfg.sample_stride_in_8_bytes = tib->sample_size_B / 8;
+            cfg.bytes_per_threadgroup = agx_tilebuffer_total_size(tib);
+         }
 
          if (tib->tile_size == 32 * 32)
             cfg.layout = AGX_SHARED_LAYOUT_32X32;
