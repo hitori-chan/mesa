@@ -10,12 +10,28 @@
 #include "util/u_debug.h"
 #include "util/u_math.h"
 #include "agx_pack.h"
+#include "agx_tilebuffer.h"
 
 /* The imageblock of a render stage: the tile's shape, the samples and their
- * stride, from the USC SHARED word */
+ * stride, from the pass's tilebuffer layout */
 struct esl_tile {
    unsigned width_log2, height_log2, samples_log2, stride_8B;
 };
+
+static struct esl_tile
+esl_tile(const struct agx_tilebuffer_layout *tib)
+{
+   /* demo15's: 32x32, one sample of 8 bytes */
+   if (!tib || !tib->nr_samples)
+      return (struct esl_tile){5, 5, 0, 1};
+
+   return (struct esl_tile){
+      .width_log2 = tib->tile_size >= 32 * 16 ? 5 : 4,
+      .height_log2 = tib->tile_size >= 32 * 32 ? 5 : 4,
+      .samples_log2 = util_logbase2(tib->nr_samples),
+      .stride_8B = tib->sample_size_B / 8,
+   };
+}
 
 /* The entry program's registers: r0:r1 the buffer address, r2 up the loads */
 #define ESL_BASE 0
@@ -163,8 +179,8 @@ esl_spectpr(struct util_dynarray *out, unsigned stack_bytes, unsigned crs)
 }
 
 /* specLM: the threadgroup memory in 64 B units, and for the render stages
- * (demo15's programs: 0x4B432A0077) the imageblock the USC SHARED word
- * describes. Apple's encoder (libLLVM 32023) takes, besides the imageblock
+ * (demo15's programs: 0x4B432A0077) the imageblock of the pass's tilebuffer
+ * layout. Apple's encoder (libLLVM 32023) takes, besides the imageblock
  * flag (bit 38), the tile's shape as a pair (f19, f20) of which exactly the
  * pairs with f19 + f20 <= 10 are legal (a tile of at most 1024 threads: the
  * log2 of its width and height; Apple's driver passes the tile width as
@@ -259,9 +275,7 @@ agx_esl_from_usc(struct util_dynarray *out, const uint8_t *usc,
    struct esl_range ranges[ESL_MAX_RANGES];
    unsigned nr_ranges = 0;
    unsigned shared_bytes = 0;
-
-   /* demo15's: 32x32, one sample of 8 bytes */
-   struct esl_tile tile = {5, 5, 0, 1};
+   struct esl_tile tile = esl_tile(code ? code->tib : NULL);
 
    for (bool done = false; !done;) {
       switch (usc[0]) {
@@ -286,26 +300,6 @@ agx_esl_from_usc(struct util_dynarray *out, const uint8_t *usc,
          agx_unpack(NULL, usc, USC_SHARED, s);
          if (s.uses_shared_memory)
             shared_bytes = s.bytes_per_threadgroup;
-
-         switch (s.layout) {
-         case AGX_SHARED_LAYOUT_32X32:
-            tile.width_log2 = tile.height_log2 = 5;
-            break;
-         case AGX_SHARED_LAYOUT_32X16:
-            tile.width_log2 = 5;
-            tile.height_log2 = 4;
-            break;
-         case AGX_SHARED_LAYOUT_16X16:
-            tile.width_log2 = tile.height_log2 = 4;
-            break;
-         default:
-            break;
-         }
-
-         if (s.layout != AGX_SHARED_LAYOUT_VERTEX_COMPUTE) {
-            tile.samples_log2 = util_logbase2(MAX2(s.sample_count, 1));
-            tile.stride_8B = s.sample_stride_in_8_bytes;
-         }
 
          usc += AGX_USC_SHARED_LENGTH;
          break;
