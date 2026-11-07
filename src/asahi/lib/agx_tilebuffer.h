@@ -59,15 +59,16 @@ struct agx_tilebuffer_layout {
    /* If layered rendering is used */
    bool layered;
 
-   /* G15: tiles of up to 32 KiB, and a spilled render target is read by a
-    * fetch with the spill table's txf sampler (AGX_SPILL_TXF_G15); it has no
-    * image load */
+   /* G15: the tile from the sample count, samples of up to 128 B, and a
+    * spilled render target is read by a fetch with the spill table's txf
+    * sampler (AGX_SPILL_TXF_G15); it has no image load */
    bool g15;
 
    /* Selected tile size in pixels. Either 32*32, 32*16, or 16*16. */
    uint16_t tile_size;
 
-   /* USC word corresponding to this configuration of the tilebuffer */
+   /* USC word corresponding to this configuration of the tilebuffer (G13's;
+    * G15's entry program takes the layout itself) */
    struct agx_usc_shared_packed usc;
 };
 
