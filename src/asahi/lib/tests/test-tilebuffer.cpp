@@ -151,7 +151,125 @@ struct test tests[] = {
       },
       24576
    },
-
+   /* G15: the tile from the sample count, halved while over 32 KiB down to
+    * 16x16, up to 128 B a sample */
+   {
+      "G15 MSAA 4x",
+      4,
+      {
+         PIPE_FORMAT_R8G8B8A8_UNORM,
+      },
+      {
+         ._offset_B = { 0 },
+         .sample_size_B = 8,
+         .nr_samples = 4,
+         .g15 = true,
+         .tile_size = 32 * 16,
+      },
+      16384
+   },
+   {
+      "G15 six RGBA16F",
+      1,
+      {
+         PIPE_FORMAT_R16G16B16A16_FLOAT,
+         PIPE_FORMAT_R16G16B16A16_FLOAT,
+         PIPE_FORMAT_R16G16B16A16_FLOAT,
+         PIPE_FORMAT_R16G16B16A16_FLOAT,
+         PIPE_FORMAT_R16G16B16A16_FLOAT,
+         PIPE_FORMAT_R16G16B16A16_FLOAT,
+      },
+      {
+         ._offset_B = { 0, 8, 16, 24, 32, 40 },
+         .sample_size_B = 48,
+         .nr_samples = 1,
+         .g15 = true,
+         .tile_size = 32 * 16,
+      },
+      24576
+   },
+   {
+      "G15 two RGBA32F at 2x, Metal's 64 KiB tile halved",
+      2,
+      {
+         PIPE_FORMAT_R32G32B32A32_FLOAT,
+         PIPE_FORMAT_R32G32B32A32_FLOAT,
+      },
+      {
+         ._offset_B = { 0, 16 },
+         .sample_size_B = 32,
+         .nr_samples = 2,
+         .g15 = true,
+         .tile_size = 32 * 16,
+      },
+      32768
+   },
+   {
+      "G15 eight RGBA32F",
+      1,
+      {
+         PIPE_FORMAT_R32G32B32A32_FLOAT,
+         PIPE_FORMAT_R32G32B32A32_FLOAT,
+         PIPE_FORMAT_R32G32B32A32_FLOAT,
+         PIPE_FORMAT_R32G32B32A32_FLOAT,
+         PIPE_FORMAT_R32G32B32A32_FLOAT,
+         PIPE_FORMAT_R32G32B32A32_FLOAT,
+         PIPE_FORMAT_R32G32B32A32_FLOAT,
+         PIPE_FORMAT_R32G32B32A32_FLOAT,
+      },
+      {
+         ._offset_B = { 0, 16, 32, 48, 64, 80, 96, 112 },
+         .sample_size_B = 128,
+         .nr_samples = 1,
+         .g15 = true,
+         .tile_size = 16 * 16,
+      },
+      32768
+   },
+   {
+      "G15 eight RGBA32F at 2x",
+      2,
+      {
+         PIPE_FORMAT_R32G32B32A32_FLOAT,
+         PIPE_FORMAT_R32G32B32A32_FLOAT,
+         PIPE_FORMAT_R32G32B32A32_FLOAT,
+         PIPE_FORMAT_R32G32B32A32_FLOAT,
+         PIPE_FORMAT_R32G32B32A32_FLOAT,
+         PIPE_FORMAT_R32G32B32A32_FLOAT,
+         PIPE_FORMAT_R32G32B32A32_FLOAT,
+         PIPE_FORMAT_R32G32B32A32_FLOAT,
+      },
+      {
+         ._offset_B = { 0, 16, 32, 48, 64, 80, 96, 112 },
+         .sample_size_B = 128,
+         .nr_samples = 2,
+         .g15 = true,
+         .tile_size = 16 * 16,
+      },
+      65536
+   },
+   {
+      "G15 eight RGBA32F at 4x",
+      4,
+      {
+         PIPE_FORMAT_R32G32B32A32_FLOAT,
+         PIPE_FORMAT_R32G32B32A32_FLOAT,
+         PIPE_FORMAT_R32G32B32A32_FLOAT,
+         PIPE_FORMAT_R32G32B32A32_FLOAT,
+         PIPE_FORMAT_R32G32B32A32_FLOAT,
+         PIPE_FORMAT_R32G32B32A32_FLOAT,
+         PIPE_FORMAT_R32G32B32A32_FLOAT,
+         PIPE_FORMAT_R32G32B32A32_FLOAT,
+      },
+      {
+         ._offset_B = { 0, 16, 32, 48, 64, 80, 96, 112 },
+         .sample_size_B = 128,
+         .nr_samples = 4,
+         .g15 = true,
+         .tile_size = 16 * 16,
+      },
+      131072
+   }
 };
 /* clang-format on */
 
@@ -166,7 +284,8 @@ TEST(Tilebuffer, Layouts)
          ;
 
       struct agx_tilebuffer_layout actual = agx_build_tilebuffer_layout(
-         tests[i].formats, nr_cbufs, tests[i].nr_samples, false, false);
+         tests[i].formats, nr_cbufs, tests[i].nr_samples, false,
+         tests[i].layout.g15);
 
       ASSERT_EQ(tests[i].layout.sample_size_B, actual.sample_size_B)
          << tests[i].name;
@@ -177,6 +296,8 @@ TEST(Tilebuffer, Layouts)
 
       for (unsigned j = 0; j < 8; ++j) {
          ASSERT_EQ(tests[i].layout._offset_B[j], actual._offset_B[j])
+            << tests[i].name << ", render target " << j;
+         ASSERT_EQ(tests[i].layout.spilled[j], actual.spilled[j])
             << tests[i].name << ", render target " << j;
       }
    }

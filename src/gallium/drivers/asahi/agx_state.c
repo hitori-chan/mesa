@@ -3352,6 +3352,9 @@ agx_build_pipeline(struct agx_batch *batch, struct agx_compiled_shader *cs,
          cs->bo ? cs->bo->va->addr : 0, cs->bo ? agx_bo_map(cs->bo) : NULL,
          &cs->b.info, linked);
 
+      if (stage == MESA_SHADER_FRAGMENT)
+         code.tib = &batch->tilebuffer_layout;
+
       uint64_t esl =
          agx_upload_esl(batch, t.cpu, &code, agx_esl_stage_for(phys_stage));
       return esl ? agx_usc_addr(dev, esl) : 0;
@@ -3701,6 +3704,7 @@ agx_build_bg_eot(struct agx_batch *batch, bool store, bool partial_render)
       struct agx_esl_code code = agx_esl_code_for_shader(
          shader->ptr, map + (shader->ptr - shader->bo->va->addr), &shader->info,
          NULL);
+      code.tib = &batch->tilebuffer_layout;
 
       ret.usc = agx_upload_esl(
          batch, t.cpu, &code, store ? AGX_ESL_END_OF_TILE : AGX_ESL_BACKGROUND);
@@ -3824,7 +3828,7 @@ agx_batch_init_state(struct agx_batch *batch)
       util_framebuffer_get_num_layers(&batch->key) > 1,
       agx_device(batch->ctx->base.screen)->params.gpu_generation >= 15);
 
-   /* The USC words carry the tile size, which G15's specLM takes */
+   /* G13's USC word carries the tile size; G15's specLM takes the layout's */
    if (agx_device(batch->ctx->base.screen)->debug & AGX_DBG_SMALLTILE) {
       batch->tilebuffer_layout.tile_size = 16 * 16;
       agx_tilebuffer_pack_usc(&batch->tilebuffer_layout);

@@ -19,6 +19,8 @@
  * building USC words.
  */
 
+struct agx_tilebuffer_layout;
+
 /* The code a USC word list refers to: the shader binary at its GPU
  * address, the main shader's size (ldshdr's size class), its stack
  * registers in bytes per thread and its coordinate registers
@@ -39,6 +41,11 @@ struct agx_esl_code {
    /* A fragment program's pixel fences: it waits on these and signals them at
     * its end; its entry program releases the others */
    uint16_t pix_wait_mask;
+
+   /* A render stage's tilebuffer, whose imageblock its specLM declares: G13's
+    * USC SHARED word cannot hold G15's samples and tiles. NULL, or a layout
+    * without samples yet, gives demo15's 32x32 tile of one 8 B sample. */
+   const struct agx_tilebuffer_layout *tib;
 };
 
 /* The program the entry program runs: each stage ends its entry program in

@@ -772,6 +772,9 @@ hk_upload_esl(struct hk_cmd_buffer *cmd, struct hk_shader *s,
    struct agx_esl_code code = agx_esl_code_for_shader(
       s->bo ? s->bo->va->addr : 0, s->b.binary, &s->b.info, &linked->b);
 
+   if (s->b.info.stage == MESA_SHADER_FRAGMENT)
+      code.tib = &cmd->state.gfx.render.tilebuffer;
+
    return hk_upload_esl_code(cmd, &code, agx_esl_stage_for(s->b.info.stage),
                              usc);
 }
