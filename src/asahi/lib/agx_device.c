@@ -78,7 +78,7 @@ static const struct debug_named_value agx_debug_options[] = {
    {"nomerge",   AGX_DBG_NOMERGE,  "Disable control stream merging"},
    {"linear",    AGX_DBG_LINEAR,   "Prefer linear layouts where allowed"},
    {"passthroughgs", AGX_DBG_PASSTHROUGH_GS, "Draw triangles through the passthrough geometry shader (Vulkan)"},
-   {"compresszs",AGX_DBG_COMPRESSZS,"Also compress depth and stencil on G15"},
+   {"nocompresszs",AGX_DBG_NOCOMPRESSZS,"Leave depth and stencil uncompressed on G15"},
    {"noix",      AGX_DBG_NOIX,     "Do not offer the interchange modifier for scanout on G15 (GL)"},
    {"ix",        AGX_DBG_IX,       "Offer interchange for 10-bit RGB too (GL)"},
    {"rayquery",  AGX_DBG_RAYQUERY, "Offer acceleration structures and ray query, not yet tested (Vulkan)"},
