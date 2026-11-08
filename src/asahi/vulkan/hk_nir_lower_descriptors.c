@@ -31,6 +31,9 @@ struct lower_descriptors_ctx {
 
    /* G15's sampled image descriptors and texture handles */
    bool g15;
+
+   /* Direct3D's level for an explicit LOD of x.5 with a point mip filter */
+   bool d3d_nearest_mip;
 };
 
 /* A sampled image descriptor field's offset in the generation's layout */
@@ -761,6 +764,27 @@ lower_tex(nir_builder *b, nir_tex_instr *tex,
       return true;
    }
 
+   /* Direct3D picks the upper level at an explicit LOD of x.5 with a point mip
+    * filter. The hardware truncates the LOD to six fractional bits, then picks
+    * Vulkan's ceil(x + 0.5) - 1, so one step more gives Direct3D's
+    * floor(x + 0.5). The filter is the sampler state's bits 27-28 (1 is
+    * nearest). The LOD from derivatives is left alone: its bias is fp16, and
+    * a step there would move the levels a 64th early.
+    */
+   if (ctx->d3d_nearest_mip && tex->op == nir_texop_txl && sampler) {
+      int li = nir_tex_instr_src_index(tex, nir_tex_src_lod);
+      nir_def *state = load_resource_deref_desc(
+         b, 1, 32, nir_src_as_deref(nir_src_for_ssa(sampler)),
+         plane_offset_B + SAMPLED_OFFS(ctx, sampler), ctx);
+      nir_def *nearest =
+         nir_ieq_imm(b, nir_ubitfield_extract_imm(b, state, 27, 2), 1);
+      nir_def *lod = tex->src[li].src.ssa;
+
+      nir_src_rewrite(&tex->src[li].src,
+                      nir_bcsel(b, nearest, nir_fadd_imm(b, lod, 1.0 / 64.0),
+                                lod));
+   }
+
    {
       unsigned offset_B = plane_offset_B + SAMPLED_OFFS(ctx, tex);
 
@@ -1005,10 +1029,11 @@ hk_nir_lower_descriptors(nir_shader *nir,
                          const struct vk_pipeline_robustness_state *rs,
                          uint32_t set_layout_count,
                          struct vk_descriptor_set_layout *const *set_layouts,
-                         bool g15)
+                         bool g15, bool d3d_nearest_mip)
 {
    struct lower_descriptors_ctx ctx = {
       .g15 = g15,
+      .d3d_nearest_mip = d3d_nearest_mip,
       .clamp_desc_array_bounds =
          rs->storage_buffers !=
             VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DISABLED_EXT ||
