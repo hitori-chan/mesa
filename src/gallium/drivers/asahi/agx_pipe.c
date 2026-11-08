@@ -414,14 +414,13 @@ agx_compression_allowed(const struct agx_resource *pres)
       return false;
    }
 
-   /* G15 compresses colour images, and depth and stencil only with
-    * ASAHI_MESA_DEBUG=compresszs: Apple's depth and stencil attachments are
-    * always compressed, the render job's fields in G13's layout (draws.md), but
-    * Mesa's have not run compressed.
+   /* G15 compresses depth and stencil as Apple does, its attachments always
+    * compressed, the render job's fields in G13's layout (draws.md);
+    * ASAHI_MESA_DEBUG=nocompresszs leaves them uncompressed.
     */
    if (agx_device(pres->base.screen)->params.gpu_generation >= 15 &&
        util_format_is_depth_or_stencil(pres->base.format) &&
-       !(agx_device(pres->base.screen)->debug & AGX_DBG_COMPRESSZS)) {
+       (agx_device(pres->base.screen)->debug & AGX_DBG_NOCOMPRESSZS)) {
       rsrc_debug(pres, "No compression: G15 depth/stencil\n");
       return false;
    }
