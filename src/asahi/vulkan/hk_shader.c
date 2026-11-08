@@ -104,7 +104,11 @@ hk_physical_device_compiler_flags(const struct hk_physical_device *pdev)
 {
    /* This could be optimized but it doesn't matter. The debug flags take the
     * low bits; a driconf option that changes the code takes a high one */
-   return pdev->dev.debug | ((uint64_t)pdev->sampled_views_as_arrays << 63);
+   const struct hk_instance *instance =
+      hk_physical_device_instance((struct hk_physical_device *)pdev);
+
+   return pdev->dev.debug | ((uint64_t)pdev->sampled_views_as_arrays << 63) |
+          ((uint64_t)instance->drirc.misc.d3d_nearest_mip << 62);
 }
 
 const nir_shader_compiler_options *
@@ -1022,7 +1026,8 @@ hk_lower_nir(struct hk_device *dev, nir_shader *nir,
    }
 
    NIR_PASS(_, nir, hk_nir_lower_descriptors, rs, set_layout_count, set_layouts,
-            dev->dev.params.gpu_generation >= 15);
+            dev->dev.params.gpu_generation >= 15,
+            instance->drirc.misc.d3d_nearest_mip);
    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_global,
             nir_address_format_64bit_global);
    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_ssbo,
