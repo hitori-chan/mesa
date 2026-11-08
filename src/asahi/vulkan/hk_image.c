@@ -254,11 +254,12 @@ hk_can_compress(const struct agx_device *dev, VkFormat format, unsigned plane,
    if (dev->debug & AGX_DBG_NOCOMPRESS)
       return false;
 
-   /* G15 compresses colour images, as Gallium, depth and stencil only with
-    * ASAHI_MESA_DEBUG=compresszs, and no image a copy writes unless it is also
-    * a render target, colour or depth and stencil: its compute copies write
-    * with imgwci, which cannot write a compressed image, and a render target's
-    * copies are drawn instead (hk_copy_requires_gfx, vk_meta's depth and
+   /* G15 compresses colour, depth and stencil images, as Gallium and Apple
+    * (ASAHI_MESA_DEBUG=nocompresszs leaves depth and stencil uncompressed:
+    * Grim Dawn's menu frame took 5 % more GPU time so, 2026-11-08), and no
+    * image a copy writes unless it is also a render target, colour or depth
+    * and stencil: its compute copies write with imgwci, which cannot write a
+    * compressed image, and a render target's copies are drawn instead (hk_copy_requires_gfx, vk_meta's depth and
     * stencil copies through the fragment depth and stencil export). D3D's
     * render targets and depth buffers, DXVK's, are all created with
     * TRANSFER_DST: Grim Dawn's frame spent 12 % more GPU time with its render
@@ -266,7 +267,7 @@ hk_can_compress(const struct agx_device *dev, VkFormat format, unsigned plane,
     */
    if (dev->params.gpu_generation >= 15) {
       if (vk_format_is_depth_or_stencil(format) &&
-          !(dev->debug & AGX_DBG_COMPRESSZS))
+          (dev->debug & AGX_DBG_NOCOMPRESSZS))
          return false;
 
       if ((usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) &&
