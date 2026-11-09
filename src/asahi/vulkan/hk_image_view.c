@@ -304,6 +304,8 @@ pack_texture_g15(struct hk_image_view *view, unsigned view_plane,
 
       if (layout->tiling == AIL_TILING_LINEAR)
          cfg.stride = ail_get_linear_stride_B(layout, 0) - 16;
+      else if (layout->tiling == AIL_TILING_INTERCHANGE)
+         cfg.stride_in_tiles = layout->stride_el[0] / 16;
       else
          cfg.page_aligned_layers = layout->page_aligned_layers;
 
@@ -595,6 +597,19 @@ pack_pbe_g15(struct hk_device *dev, struct hk_image_view *view,
          assert((ail_get_linear_stride_B(layout, level) & 15) == 0);
          cfg.stride = (ail_get_linear_stride_B(layout, level) >> 4) - 1;
          assert(image->vk.mip_levels == 1);
+      } else if (layout->tiling == AIL_TILING_INTERCHANGE) {
+         /* As Gallium's: the width in tiles where a linear image has its
+          * stride, the metadata as a compressed image's */
+         assert(layers == 1 && level == 0);
+         cfg.stride_in_tiles = layout->stride_el[0] / 16;
+
+         if (compressed) {
+            cfg.extended = true;
+            cfg.level = 0;
+            cfg.levels = 1;
+            cfg.compressed = true;
+            cfg.acceleration_buffer = base_addr + layout->metadata_offset_B;
+         }
       } else {
          cfg.layers = layers;
          cfg.page_aligned_layers = layout->page_aligned_layers;
