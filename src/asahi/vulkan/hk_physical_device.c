@@ -51,11 +51,15 @@ hk_get_device_extensions(const struct agx_device *dev,
                          const struct hk_instance *instance,
                          struct vk_device_extension_table *ext)
 {
-   /* Software ray queries (hk_nir_ray_tracing.c) and ray-tracing pipelines
-    * (hk_rt_pipeline.c), behind a flag until tested
-    */
-   bool rq = dev->debug & AGX_DBG_RAYQUERY;
    bool g15 = dev->params.gpu_generation >= 15;
+
+   /* Software ray queries (hk_nir_ray_tracing.c) on G15, where the CTS's
+    * ray_query group passes whole. Ray-tracing pipelines (hk_rt_pipeline.c)
+    * only by the flag: tier 1, and three of misc's callableshaderstress cases
+    * fail.
+    */
+   bool rtp = dev->debug & AGX_DBG_RTPIPELINE;
+   bool rq = g15 || rtp;
 
    /* Task and mesh shaders as compute (hk_draw_mesh) */
    bool mesh = g15;
@@ -112,7 +116,7 @@ hk_get_device_extensions(const struct agx_device *dev,
       .KHR_pipeline_binary = true,
       .KHR_pipeline_executable_properties = true,
       .KHR_pipeline_library = true,
-      .KHR_pipeline_library_group_handles = rq,
+      .KHR_pipeline_library_group_handles = rtp,
 #ifdef HK_USE_WSI_PLATFORM
       .KHR_present_id = true,
       .KHR_present_id2 = true,
@@ -122,7 +126,7 @@ hk_get_device_extensions(const struct agx_device *dev,
       .KHR_push_descriptor = true,
       .KHR_ray_query = rq,
       .KHR_ray_tracing_maintenance1 = rq,
-      .KHR_ray_tracing_pipeline = rq,
+      .KHR_ray_tracing_pipeline = rtp,
       .KHR_ray_tracing_position_fetch = rq,
       .KHR_relaxed_block_layout = true,
       .KHR_robustness2 = true,
@@ -212,7 +216,7 @@ hk_get_device_extensions(const struct agx_device *dev,
       .EXT_non_seamless_cube_map = true,
       .EXT_pipeline_creation_cache_control = true,
       .EXT_pipeline_creation_feedback = true,
-      .EXT_pipeline_library_group_handles = rq,
+      .EXT_pipeline_library_group_handles = rtp,
       .EXT_pipeline_protected_access = true,
       .EXT_pipeline_robustness = true,
       .EXT_physical_device_drm = true,
@@ -486,7 +490,8 @@ hk_get_device_features(
       .rayTracingMaintenance1 =
          supported_extensions->KHR_ray_tracing_maintenance1,
       .rayTracingPipelineTraceRaysIndirect2 =
-         supported_extensions->KHR_ray_tracing_maintenance1,
+         supported_extensions->KHR_ray_tracing_maintenance1 &&
+         supported_extensions->KHR_ray_tracing_pipeline,
 
       /* VK_KHR_ray_tracing_position_fetch */
       .rayTracingPositionFetch =
