@@ -364,6 +364,40 @@ hk_can_compress_format(const struct agx_device *dev, VkFormat format)
    return hk_can_compress(dev, format, 0, 64, 64, 1, 0, 0, NULL);
 }
 
+/*
+ * Apple Interchange, the layout the display controller scans out compressed
+ * (Gallium's agx_interchange_offered): G15 only (not with
+ * ASAHI_MESA_DEBUG=noix), for the 8- and 10-bit RGB formats. Its tiles are
+ * always compressed, so it serves only what compression does, and only a 2D
+ * image of one level, one layer and one sample (the caller checks the
+ * levels and layers).
+ */
+bool
+hk_can_interchange(const struct agx_device *dev, VkFormat format,
+                   unsigned width, unsigned height, unsigned samples,
+                   VkImageCreateFlagBits flags, VkImageUsageFlagBits usage,
+                   const void *pNext)
+{
+   if (dev->params.gpu_generation < 15 || (dev->debug & AGX_DBG_NOIX))
+      return false;
+
+   switch (hk_format_to_pipe_format(format)) {
+   case PIPE_FORMAT_R8G8B8A8_UNORM:
+   case PIPE_FORMAT_R8G8B8A8_SRGB:
+   case PIPE_FORMAT_B8G8R8A8_UNORM:
+   case PIPE_FORMAT_B8G8R8A8_SRGB:
+   case PIPE_FORMAT_R10G10B10A2_UNORM:
+   case PIPE_FORMAT_B10G10R10A2_UNORM:
+      break;
+   default:
+      return false;
+   }
+
+   return samples == 1 && !(flags & VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT) &&
+          hk_can_compress(dev, format, 0, width, height, samples, flags, usage,
+                          pNext);
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL
 hk_GetPhysicalDeviceImageFormatProperties2(
    VkPhysicalDevice physicalDevice,
@@ -455,6 +489,17 @@ hk_GetPhysicalDeviceImageFormatProperties2(
                         pImageFormatInfo->pNext))
       return VK_ERROR_FORMAT_NOT_SUPPORTED;
 
+   const bool interchange =
+      pImageFormatInfo->tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT &&
+      mod_info &&
+      mod_info->drmFormatModifier == DRM_FORMAT_MOD_APPLE_INTERCHANGE;
+
+   if (interchange &&
+       !hk_can_interchange(&pdev->dev, pImageFormatInfo->format, 64, 64, 1,
+                           pImageFormatInfo->flags, pImageFormatInfo->usage,
+                           pImageFormatInfo->pNext))
+      return VK_ERROR_FORMAT_NOT_SUPPORTED;
+
    if (ycbcr_info && pImageFormatInfo->type != VK_IMAGE_TYPE_2D)
       return VK_ERROR_FORMAT_NOT_SUPPORTED;
 
@@ -535,6 +580,11 @@ hk_GetPhysicalDeviceImageFormatProperties2(
    uint32_t maxMipLevels = util_logbase2(max_dim) + 1;
    if (ycbcr_info != NULL || pImageFormatInfo->tiling == VK_IMAGE_TILING_LINEAR)
       maxMipLevels = 1;
+
+   if (interchange) {
+      maxMipLevels = 1;
+      maxArraySize = 1;
+   }
 
    VkSampleCountFlags sampleCounts = VK_SAMPLE_COUNT_1_BIT;
    if (pImageFormatInfo->tiling == VK_IMAGE_TILING_OPTIMAL &&
@@ -837,6 +887,10 @@ static uint32_t
 modifier_get_score(uint64_t mod)
 {
    switch (mod) {
+   /* First, as Gallium picks it: the display controller scans it out */
+   case DRM_FORMAT_MOD_APPLE_INTERCHANGE:
+      return 15;
+
    case DRM_FORMAT_MOD_APPLE_GPU_TILED_COMPRESSED:
       return 10;
 
@@ -865,9 +919,19 @@ choose_drm_format_mod(struct hk_device *dev, uint8_t plane_count,
          can_compress = false;
    }
 
+   bool can_interchange =
+      plane_count == 1 && info->imageType == VK_IMAGE_TYPE_2D &&
+      info->mipLevels == 1 && info->arrayLayers == 1 &&
+      hk_can_interchange(&dev->dev, info->format, info->extent.width,
+                         info->extent.height, info->samples, info->flags,
+                         info->usage, info->pNext);
+
    for (uint32_t i = 0; i < modifier_count; ++i) {
       if (!can_compress &&
           modifiers[i] == DRM_FORMAT_MOD_APPLE_GPU_TILED_COMPRESSED)
+         continue;
+
+      if (!can_interchange && modifiers[i] == DRM_FORMAT_MOD_APPLE_INTERCHANGE)
          continue;
 
       uint32_t score = modifier_get_score(modifiers[i]);

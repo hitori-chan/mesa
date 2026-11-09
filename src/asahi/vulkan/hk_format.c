@@ -19,6 +19,7 @@
 #include "vk_format.h"
 
 uint64_t agx_best_modifiers[] = {
+   DRM_FORMAT_MOD_APPLE_INTERCHANGE,
    DRM_FORMAT_MOD_APPLE_GPU_TILED_COMPRESSED,
    DRM_FORMAT_MOD_APPLE_GPU_TILED,
    DRM_FORMAT_MOD_LINEAR,
@@ -38,8 +39,13 @@ hk_modifier_features(const struct agx_device *dev, uint64_t mod,
     * compression refuses (hk_can_compress): storage, and G15's copy
     * destinations
     */
-   if (mod == DRM_FORMAT_MOD_APPLE_GPU_TILED_COMPRESSED) {
+   if (mod == DRM_FORMAT_MOD_APPLE_GPU_TILED_COMPRESSED ||
+       mod == DRM_FORMAT_MOD_APPLE_INTERCHANGE) {
       if (!hk_can_compress_format(dev, vk_format))
+         return 0;
+
+      if (mod == DRM_FORMAT_MOD_APPLE_INTERCHANGE &&
+          !hk_can_interchange(dev, vk_format, 64, 64, 1, 0, 0, NULL))
          return 0;
 
       VkFormatFeatureFlags2 features =
