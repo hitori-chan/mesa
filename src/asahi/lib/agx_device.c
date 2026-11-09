@@ -81,7 +81,7 @@ static const struct debug_named_value agx_debug_options[] = {
    {"nocompresszs",AGX_DBG_NOCOMPRESSZS,"Leave depth and stencil uncompressed on G15"},
    {"noix",      AGX_DBG_NOIX,     "Do not offer the interchange modifier for scanout on G15"},
    {"ix",        AGX_DBG_IX,       "Offer interchange for 10-bit RGB too (GL)"},
-   {"rayquery",  AGX_DBG_RAYQUERY, "Offer acceleration structures and ray query, not yet tested (Vulkan)"},
+   {"rtpipeline", AGX_DBG_RTPIPELINE, "Offer ray-tracing pipelines too, tier 1 (Vulkan; callableshaderstress fails)"},
    {"bodumpverbose", AGX_DBG_BODUMPVERBOSE,   "Include extra info with dumps"},
    DEBUG_NAMED_VALUE_END
 };
