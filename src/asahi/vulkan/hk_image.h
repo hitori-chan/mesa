@@ -135,6 +135,10 @@ hk_image_aspects_to_plane(const struct hk_image *image,
 
 struct agx_device;
 bool hk_can_compress_format(const struct agx_device *dev, VkFormat format);
+bool hk_can_interchange(const struct agx_device *dev, VkFormat format,
+                        unsigned width, unsigned height, unsigned samples,
+                        VkImageCreateFlagBits flags, VkImageUsageFlagBits usage,
+                        const void *pNext);
 
 struct hk_cmd_buffer;
 void hk_clear_image(struct hk_cmd_buffer *cmd, struct hk_image *image,
