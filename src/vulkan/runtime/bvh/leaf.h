@@ -139,8 +139,8 @@ calculate_instance_node_bounds(vk_aabb blas_aabb, mat3x4 otw_matrix)
    vk_aabb aabb;
 
    /* https://zeux.io/2010/10/17/aabb-from-obb-with-component-wise-abs */
-   vec3 blas_aabb_center = (blas_aabb.min + blas_aabb.max) * 0.5;
-   vec3 blas_aabb_extent = (blas_aabb.max - blas_aabb.min) * 0.5;
+   precise vec3 blas_aabb_center = blas_aabb.min * 0.5 + blas_aabb.max * 0.5;
+   precise vec3 blas_aabb_extent = blas_aabb.max * 0.5 - blas_aabb.min * 0.5;
 
    vec3 new_center = vec4(blas_aabb_center, 1.0) * otw_matrix;
    vec3 new_extent = blas_aabb_extent * mat_abs(mat3(otw_matrix));
