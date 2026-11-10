@@ -751,8 +751,13 @@ optimizations.extend([
     ('iadd', d, ('imul', a, ('iadd', c, ('ineg', b))))),
 
    # Comparison simplifications
-   (('inot', ('flt(is_used_once)', 'a(is_a_number)', 'b(is_a_number)')), ('fge', a, b)),
-   (('inot', ('fge(is_used_once)', 'a(is_a_number)', 'b(is_a_number)')), ('flt', a, b)),
+   #
+   # Inverting a float comparison changes its result for NaN, so these need
+   # range analysis to prove the sources aren't NaN even when NaN doesn't have
+   # to be preserved.  Otherwise a loop that exits once its counter is NaN can
+   # become a loop that never exits.
+   (('inot', ('flt(is_used_once)', 'a(is_proven_a_number)', 'b(is_proven_a_number)')), ('fge', a, b)),
+   (('inot', ('fge(is_used_once)', 'a(is_proven_a_number)', 'b(is_proven_a_number)')), ('flt', a, b)),
    (('inot', ('feq(is_used_once)', a, b)), ('fneu', a, b)),
    (('inot', ('fneu(is_used_once)', a, b)), ('feq', a, b)),
    (('inot', ('ilt(is_used_once)', a, b)), ('ige', a, b)),
@@ -1195,8 +1200,10 @@ optimizations.extend([
    (('ior', ('ior(is_used_once)', ('flt', a, b), d), ('flt(is_used_once)', a, c)), ('ior', ('flt', a, ('fmax', b, c)), d)),
 
    # This is how SpvOpFOrdNotEqual might be implemented.  If both values are
-   # numbers, then it can be replaced with fneu.
-   (('ior', ('flt', 'a(is_a_number)', 'b(is_a_number)'), ('flt', b, a)), ('fneu', a, b)),
+   # numbers, then it can be replaced with fneu.  For NaN the ior is false but
+   # fneu is true, so like the comparison inversions above this needs range
+   # analysis to prove the sources aren't NaN.
+   (('ior', ('flt', 'a(is_proven_a_number)', 'b(is_proven_a_number)'), ('flt', b, a)), ('fneu', a, b)),
 
    # Other patterns may optimize the resulting iand tree further.
    (('umin', ('iand', a, '#b(is_pos_power_of_two)'), ('iand', c, b)),
@@ -1726,7 +1733,8 @@ optimizations.extend([
    (('ult', a, a), False),
    (('uge', a, a), True),
    (('flt', a, a), False),
-   (('fge', 'a(is_a_number)', a), True),
+   # fge(NaN, NaN) is false, see the comparison inversions above.
+   (('fge', 'a(is_proven_a_number)', a), True),
    (('feq', 'a(is_a_number)', a), True),
    (('fneu', 'a(is_a_number)', a), False),
    # Logical and bit operations
@@ -2061,14 +2069,16 @@ optimizations.extend([
    #
    # The results expecting true, must be marked imprecise.  The results
    # expecting false are fine because NaN compared >= or < anything is false.
+   # The results expecting true need range analysis to prove the sources
+   # aren't NaN, see the comparison inversions above.
 
-   (('fge', 'a(is_a_number_not_negative)', 'b(is_a_number_not_positive)'), True),
+   (('fge', 'a(is_proven_a_number_not_negative)', 'b(is_proven_a_number_not_positive)'), True),
    (('fge', 'a(is_not_positive)',          'b(is_gt_zero)'),               False),
    (('fge', 'a(is_lt_zero)',               'b(is_not_negative)'),          False),
 
    (('flt', 'a(is_not_negative)',          'b(is_not_positive)'),          False),
-   (('flt', 'a(is_a_number_not_positive)', 'b(is_a_number_gt_zero)'),      True),
-   (('flt', 'a(is_a_number_lt_zero)',      'b(is_a_number_not_negative)'), True),
+   (('flt', 'a(is_proven_a_number_not_positive)', 'b(is_proven_a_number_gt_zero)'),      True),
+   (('flt', 'a(is_proven_a_number_lt_zero)',      'b(is_proven_a_number_not_negative)'), True),
 
    (('ult', a, 0), False),
 ])
