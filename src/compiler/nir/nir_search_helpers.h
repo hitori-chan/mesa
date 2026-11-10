@@ -904,33 +904,65 @@ xz_components_unused(const nir_alu_instr *instr)
    return (nir_def_components_read(&instr->def) & 0x5) == 0;
 }
 
-#define RELATION(r, _exclude)                                                                        \
-   static inline bool                                                                                \
-   is_##r(const nir_search_state *state, const nir_alu_instr *instr,                                 \
-          unsigned src, UNUSED unsigned num_components,                                              \
-          UNUSED const uint8_t *swizzle)                                                             \
-   {                                                                                                 \
-      fp_class_mask exclude = _exclude;                                                              \
-      if (exclude & (FP_CLASS_ANY_INF | FP_CLASS_NAN)) {                                             \
-         /* fp_math_ctrl lets us assume inputs are not NaN/Inf for float sources. */                 \
-         const nir_op_info *op_info = &nir_op_infos[(int)instr->op];                                 \
-         nir_alu_type base_type = nir_alu_type_get_base_type(op_info->input_types[src]);             \
-         if (base_type == nir_type_float) {                                                          \
-            if (!nir_alu_instr_is_inf_preserve(instr))                                               \
-               exclude &= ~FP_CLASS_ANY_INF;                                                         \
-            if (!nir_alu_instr_is_nan_preserve(instr))                                               \
-               exclude &= ~FP_CLASS_NAN;                                                             \
-            if (!exclude)                                                                            \
-               return true;                                                                          \
-         }                                                                                           \
-      }                                                                                              \
-      const fp_class_mask fp_class = nir_analyze_fp_class(state->range_ht, instr->src[src].src.ssa); \
-      return (fp_class & exclude) == 0;                                                              \
+/* Whether source src of instr can't be in any of the classes in exclude.
+ *
+ * With use_fp_math_ctrl, a float source of an instruction that doesn't have
+ * to preserve NaN or Inf is assumed not to be NaN or Inf.  Without it, only
+ * range analysis is trusted.
+ */
+static inline bool
+src_excludes_fp_class(const nir_search_state *state, const nir_alu_instr *instr,
+                      unsigned src, fp_class_mask exclude, bool use_fp_math_ctrl)
+{
+   if (use_fp_math_ctrl && (exclude & (FP_CLASS_ANY_INF | FP_CLASS_NAN))) {
+      const nir_op_info *op_info = &nir_op_infos[(int)instr->op];
+      nir_alu_type base_type = nir_alu_type_get_base_type(op_info->input_types[src]);
+      if (base_type == nir_type_float) {
+         if (!nir_alu_instr_is_inf_preserve(instr))
+            exclude &= ~FP_CLASS_ANY_INF;
+         if (!nir_alu_instr_is_nan_preserve(instr))
+            exclude &= ~FP_CLASS_NAN;
+         if (!exclude)
+            return true;
+      }
+   }
+   const fp_class_mask fp_class = nir_analyze_fp_class(state->range_ht, instr->src[src].src.ssa);
+   return (fp_class & exclude) == 0;
+}
+
+#define RELATION(r, exclude)                                                     \
+   static inline bool                                                            \
+   is_##r(const nir_search_state *state, const nir_alu_instr *instr,             \
+          unsigned src, UNUSED unsigned num_components,                          \
+          UNUSED const uint8_t *swizzle)                                         \
+   {                                                                             \
+      return src_excludes_fp_class(state, instr, src, (exclude), true);          \
    }
 
-#define RELATION_AND_NUM(r, exclude) \
-   RELATION(r, exclude)              \
-   RELATION(a_number_##r, (exclude) | FP_CLASS_NAN)
+/* Like the is_a_number* helpers, but only true if range analysis proves the
+ * relation, including that the source can't be NaN, even when the
+ * instruction doesn't have to preserve NaN.
+ *
+ * Use these for rewrites that change the result of a float comparison for
+ * NaN, because that changes the branch a NaN takes.  A loop like
+ * "for (float t = near; t < far; t += h)" exits once h makes t NaN, but with
+ * the exit condition !(t < far) turned into (t >= far) it never exits and the
+ * GPU hangs.
+ */
+#define PROVEN_RELATION(r, exclude)                                              \
+   static inline bool                                                            \
+   is_proven_##r(const nir_search_state *state, const nir_alu_instr *instr,      \
+                 unsigned src, UNUSED unsigned num_components,                   \
+                 UNUSED const uint8_t *swizzle)                                  \
+   {                                                                             \
+      return src_excludes_fp_class(state, instr, src,                            \
+                                   (exclude) | FP_CLASS_NAN, false);             \
+   }
+
+#define RELATION_AND_NUM(r, exclude)                   \
+   RELATION(r, exclude)                                \
+   RELATION(a_number_##r, (exclude) | FP_CLASS_NAN)    \
+   PROVEN_RELATION(a_number_##r, exclude)
 
 RELATION_AND_NUM(lt_zero, FP_CLASS_ANY_POS | FP_CLASS_ANY_ZERO)
 RELATION_AND_NUM(not_positive, FP_CLASS_ANY_POS)
@@ -943,6 +975,7 @@ RELATION_AND_NUM(le_pos_one, FP_CLASS_GT_POS_ONE | FP_CLASS_POS_INF)
 RELATION_AND_NUM(gt_0_and_lt_1, FP_CLASS_ANY_NEG | FP_CLASS_ANY_ZERO | FP_CLASS_POS_ONE | FP_CLASS_GT_POS_ONE | FP_CLASS_POS_INF)
 RELATION_AND_NUM(ge_pos_one, FP_CLASS_ANY_NEG | FP_CLASS_ANY_ZERO | FP_CLASS_GT_ZERO_LT_POS_ONE)
 RELATION(a_number, FP_CLASS_NAN)
+PROVEN_RELATION(a_number, 0)
 RELATION(finite, FP_CLASS_ANY_INF | FP_CLASS_NAN)
 RELATION(finite_not_zero, FP_CLASS_ANY_INF | FP_CLASS_NAN | FP_CLASS_ANY_ZERO)
 RELATION(integral, FP_CLASS_NON_INTEGRAL)
