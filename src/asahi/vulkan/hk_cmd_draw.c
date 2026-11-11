@@ -559,7 +559,6 @@ hk_build_bg_eot(struct hk_cmd_buffer *cmd, const VkRenderingInfo *info,
 
    /* Get the shader */
    key.reserved_preamble = uniforms;
-   /* XXX: locking? */
    struct agx_bg_eot_shader *shader = agx_get_bg_eot_shader(&dev->bg_eot, &key);
 
    agx_usc_pack(&b, SHADER, cfg) {
