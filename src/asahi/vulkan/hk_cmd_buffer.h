@@ -1001,6 +1001,9 @@ uint64_t hk_cmd_buffer_upload_root(struct hk_cmd_buffer *cmd,
 void hk_reserve_scratch(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
                         struct hk_shader *s);
 
+/* Room for a draw's USC words on the stack: G15 only reads them back */
+#define HK_USC_WORDS_STACK 512
+
 uint32_t hk_upload_usc_words(struct hk_cmd_buffer *cmd, struct hk_shader *s,
                              struct hk_linked_shader *linked);
 

@@ -93,22 +93,16 @@ read_shader(struct agx_screen *screen, struct blob_reader *blob,
    blob_copy_bytes(blob, &binary->b.info, sizeof(binary->b.info));
    size_t size = binary->b.info.binary_size;
 
-   if (uncompiled->type == MESA_SHADER_VERTEX ||
-       uncompiled->type == MESA_SHADER_TESS_EVAL ||
-       uncompiled->type == MESA_SHADER_FRAGMENT) {
+   /* The CPU's copy too, as a compiled shader keeps it: linking reads the
+    * vertex and fragment stages' code, and G15's entry program copies every
+    * stage's preamble from it (the BO's mapping is write-combined) */
+   binary->b.binary = malloc(size);
+   blob_copy_bytes(blob, binary->b.binary, size);
 
-      binary->b.binary = malloc(size);
-      blob_copy_bytes(blob, binary->b.binary, size);
-
-      if (size) {
-         binary->bo = agx_bo_create(&screen->dev, size, 0,
-                                    AGX_BO_EXEC | AGX_BO_LOW_VA, "Executable");
-         memcpy(agx_bo_map(binary->bo), binary->b.binary, size);
-      }
-   } else if (size) {
+   if (size) {
       binary->bo = agx_bo_create(&screen->dev, size, 0,
                                  AGX_BO_EXEC | AGX_BO_LOW_VA, "Executable");
-      blob_copy_bytes(blob, agx_bo_map(binary->bo), size);
+      memcpy(agx_bo_map(binary->bo), binary->b.binary, size);
    }
 
    blob_copy_bytes(blob, &binary->uvs, sizeof(binary->uvs));
