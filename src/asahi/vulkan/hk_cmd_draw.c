@@ -275,10 +275,8 @@ hk_bg_eot_esl(struct hk_cmd_buffer *cmd, const uint8_t *usc,
               struct agx_bg_eot_shader *shader,
               const struct agx_tilebuffer_layout *tib, enum agx_esl_stage stage)
 {
-   uint8_t *map = agx_bo_map(shader->bo);
-   struct agx_esl_code code = agx_esl_code_for_shader(
-      shader->ptr, map + (shader->ptr - shader->bo->va->addr), &shader->info,
-      NULL);
+   struct agx_esl_code code =
+      agx_esl_code_for_shader(shader->ptr, shader->binary, &shader->info, NULL);
 
    code.tib = tib;
    return hk_upload_esl_va(cmd, &code, stage, usc);
@@ -414,7 +412,18 @@ hk_build_bg_eot(struct hk_cmd_buffer *cmd, const VkRenderingInfo *info,
    /* Begin building the pipeline: a binding per render target and one per
     * resolved target */
    size_t usc_size = agx_usc_size(3 + 2 * HK_MAX_RTS);
-   struct agx_ptr t = hk_pool_usc_alloc(cmd, usc_size, 64);
+
+   /* G15 reads the words back to build the entry program and the GPU never
+    * sees them: on the stack, the pool's mapping being write-combined
+    * (hk_upload_usc_words) */
+   alignas(16) uint8_t stack[HK_USC_WORDS_STACK];
+   struct agx_ptr t = {0};
+
+   if (g15 && usc_size <= sizeof(stack))
+      t.cpu = stack;
+   else
+      t = hk_pool_usc_alloc(cmd, usc_size, 64);
+
    if (!t.cpu)
       return (struct hk_bg_eot){.usc = t.gpu};
 
