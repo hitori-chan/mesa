@@ -73,7 +73,8 @@ static struct agx_bg_eot_shader *
 agx_compile_bg_eot_shader(struct agx_bg_eot_cache *cache, nir_shader *shader,
                           struct agx_shader_key *key,
                           struct agx_tilebuffer_layout *tib,
-                          unsigned g15_sampler_uniform)
+                          unsigned g15_sampler_uniform,
+                          const struct agx_bg_eot_key *bg_eot_key)
 {
    bool g15 = cache->dev->params.gpu_generation >= 15;
    agx_nir_lower_texture_gen(shader, g15);
@@ -92,17 +93,29 @@ agx_compile_bg_eot_shader(struct agx_bg_eot_cache *cache, nir_shader *shader,
                   nir_metadata_control_flow, &g15_sampler_uniform);
    }
 
-   struct agx_bg_eot_shader *res = rzalloc(cache->ht, struct agx_bg_eot_shader);
    struct agx_shader_part bin;
 
    /* G15 packs its own instruction set */
    key->dev.gpu_generation = cache->dev->params.gpu_generation;
    agx_compile_shader_nir(shader, key, &bin);
 
-   res->info = bin.info;
-   res->ptr = agx_pool_upload_aligned_with_bo(
-      &cache->pool, bin.binary, bin.info.binary_size, 128, &res->bo);
-   res->binary = ralloc_memdup(res, bin.binary, bin.info.binary_size);
+   /* Compiled outside the lock, so another thread may have inserted the
+    * same program meanwhile: the first one in is kept. */
+   simple_mtx_lock(&cache->lock);
+   struct hash_entry *ent = _mesa_hash_table_search(cache->ht, bg_eot_key);
+   struct agx_bg_eot_shader *res = ent ? ent->data : NULL;
+
+   if (!res) {
+      res = rzalloc(cache->ht, struct agx_bg_eot_shader);
+      res->key = *bg_eot_key;
+      res->info = bin.info;
+      res->ptr = agx_pool_upload_aligned_with_bo(
+         &cache->pool, bin.binary, bin.info.binary_size, 128, &res->bo);
+      res->binary = ralloc_memdup(res, bin.binary, bin.info.binary_size);
+      _mesa_hash_table_insert(cache->ht, &res->key, res);
+   }
+
+   simple_mtx_unlock(&cache->lock);
    free(bin.binary);
    ralloc_free(shader);
 
@@ -188,7 +201,7 @@ agx_build_background_shader(struct agx_bg_eot_cache *cache,
    }
 
    return agx_compile_bg_eot_shader(cache, b.shader, &compiler_key, &key->tib,
-                                    key->g15_sampler_uniform);
+                                    key->g15_sampler_uniform, key);
 }
 
 static struct agx_bg_eot_shader *
@@ -245,32 +258,33 @@ agx_build_end_of_tile_shader(struct agx_bg_eot_cache *cache,
       .reserved_preamble = key->reserved_preamble,
    };
 
-   return agx_compile_bg_eot_shader(cache, b.shader, &compiler_key, NULL, 0);
+   return agx_compile_bg_eot_shader(cache, b.shader, &compiler_key, NULL, 0,
+                                    key);
 }
 
 struct agx_bg_eot_shader *
 agx_get_bg_eot_shader(struct agx_bg_eot_cache *cache,
                       struct agx_bg_eot_key *key)
 {
+   /* The cache is the device's, and Vulkan records render passes on any
+    * thread: the table's search and insert and the pool's upload take the
+    * lock the precompiled programs already upload under, the compile does
+    * not (agx_compile_bg_eot_shader). Shaders are immutable once inserted,
+    * so the pointer outlives the lock.
+    */
+   simple_mtx_lock(&cache->lock);
    struct hash_entry *ent = _mesa_hash_table_search(cache->ht, key);
+   simple_mtx_unlock(&cache->lock);
+
    if (ent)
       return ent->data;
 
-   struct agx_bg_eot_shader *ret = NULL;
-
    for (unsigned rt = 0; rt < ARRAY_SIZE(key->op); ++rt) {
-      if (key->op[rt] == AGX_EOT_STORE || key->resolve) {
-         ret = agx_build_end_of_tile_shader(cache, key);
-         break;
-      }
+      if (key->op[rt] == AGX_EOT_STORE || key->resolve)
+         return agx_build_end_of_tile_shader(cache, key);
    }
 
-   if (!ret)
-      ret = agx_build_background_shader(cache, key);
-
-   ret->key = *key;
-   _mesa_hash_table_insert(cache->ht, &ret->key, ret);
-   return ret;
+   return agx_build_background_shader(cache, key);
 }
 
 DERIVE_HASH_TABLE(agx_bg_eot_key);
