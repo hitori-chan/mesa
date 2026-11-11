@@ -252,11 +252,20 @@ struct agx_bg_eot_shader *
 agx_get_bg_eot_shader(struct agx_bg_eot_cache *cache,
                       struct agx_bg_eot_key *key)
 {
-   struct hash_entry *ent = _mesa_hash_table_search(cache->ht, key);
-   if (ent)
-      return ent->data;
-
    struct agx_bg_eot_shader *ret = NULL;
+
+   /* The cache is the device's, and Vulkan records render passes on any
+    * thread: the table's search and insert and the pool's upload take the
+    * lock the precompiled programs already upload under. Shaders are
+    * immutable once inserted, so the pointer outlives the lock.
+    */
+   simple_mtx_lock(&cache->lock);
+
+   struct hash_entry *ent = _mesa_hash_table_search(cache->ht, key);
+   if (ent) {
+      ret = ent->data;
+      goto out;
+   }
 
    for (unsigned rt = 0; rt < ARRAY_SIZE(key->op); ++rt) {
       if (key->op[rt] == AGX_EOT_STORE || key->resolve) {
@@ -270,6 +279,9 @@ agx_get_bg_eot_shader(struct agx_bg_eot_cache *cache,
 
    ret->key = *key;
    _mesa_hash_table_insert(cache->ht, &ret->key, ret);
+
+out:
+   simple_mtx_unlock(&cache->lock);
    return ret;
 }
 
