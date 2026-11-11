@@ -3201,14 +3201,20 @@ agx_update_descriptors(struct agx_batch *batch, struct agx_compiled_shader *cs)
  * G15 starts a shader through an entry program built from its USC words
  * (agx_esl.h). Returns its VA, or 0 if G15 cannot build one yet
  * (agx_esl_from_usc says why).
+ *
+ * The words are read back to build it and the GPU never sees them, so they
+ * are built in CPU memory (agx_usc_words_g15): the pools' mappings are
+ * write-combined, each read a trip to memory. The program itself starts on
+ * the stack too, and the shader's code it copies is the CPU's copy.
  */
 static uint64_t
 agx_upload_esl(struct agx_batch *batch, const uint8_t *usc,
                const struct agx_esl_code *code, enum agx_esl_stage stage)
 {
    struct agx_device *dev = agx_device(batch->ctx->base.screen);
+   uint8_t stack[1024];
    struct util_dynarray esl;
-   util_dynarray_init(&esl, NULL);
+   util_dynarray_init_from_stack(&esl, stack, sizeof(stack));
 
    uint64_t addr = 0;
    if (agx_esl_from_usc(&esl, usc, dev->shader_base, code, stage)) {
@@ -3221,6 +3227,23 @@ agx_upload_esl(struct agx_batch *batch, const uint8_t *usc,
 
    util_dynarray_fini(&esl);
    return addr;
+}
+
+/* Room for a draw's USC words on the stack */
+#define AGX_USC_WORDS_STACK 512
+
+/* Where a list of USC words is built: on G15 the stack when it fits, as only
+ * the CPU reads them, else the pipeline pool (whose t.gpu G13 points at) */
+static struct agx_ptr
+agx_usc_words_g15(struct agx_batch *batch, size_t size, void *stack,
+                  size_t stack_size)
+{
+   struct agx_device *dev = agx_device(batch->ctx->base.screen);
+
+   if (dev->params.gpu_generation >= 15 && size <= stack_size)
+      return (struct agx_ptr){.cpu = stack};
+
+   return agx_pool_alloc_aligned(&batch->pipeline_pool, size, 64);
 }
 
 static uint32_t
@@ -3236,8 +3259,8 @@ agx_build_pipeline(struct agx_batch *batch, struct agx_compiled_shader *cs,
    size_t usc_size =
       agx_usc_size(constant_push_ranges + cs->push_range_count + 2);
 
-   struct agx_ptr t =
-      agx_pool_alloc_aligned(&batch->pipeline_pool, usc_size, 64);
+   alignas(16) uint8_t stack[AGX_USC_WORDS_STACK];
+   struct agx_ptr t = agx_usc_words_g15(batch, usc_size, stack, sizeof(stack));
 
    struct agx_usc_builder b = agx_usc_builder(t.cpu, usc_size);
 
@@ -3349,7 +3372,7 @@ agx_build_pipeline(struct agx_batch *batch, struct agx_compiled_shader *cs,
 
    if (dev->params.gpu_generation >= 15) {
       struct agx_esl_code code = agx_esl_code_for_shader(
-         cs->bo ? cs->bo->va->addr : 0, cs->bo ? agx_bo_map(cs->bo) : NULL,
+         cs->bo ? cs->bo->va->addr : 0, cs->bo ? cs->b.binary : NULL,
          &cs->b.info, linked);
 
       if (stage == MESA_SHADER_FRAGMENT)
@@ -3417,22 +3440,25 @@ agx_launch_precomp(struct agx_batch *batch, struct agx_grid grid,
       return;
    }
 
+   alignas(16) uint8_t stack[AGX_USC_WORDS_STACK];
    struct agx_ptr t =
-      agx_pool_alloc_aligned(&batch->pipeline_pool, agx_usc_size(15), 64);
+      agx_usc_words_g15(batch, agx_usc_size(15), stack, sizeof(stack));
 
    uint64_t uploaded_data =
       agx_pool_upload_aligned(&batch->pool, args, arg_size, 4);
 
-   uint32_t usc = agx_usc_addr(dev, t.gpu);
    agx_usc_words_precomp(t.cpu, &cs->b, uploaded_data, arg_size);
 
    /* G15 launches the kernel's entry program, built from the words */
+   uint32_t usc;
    if (dev->params.gpu_generation >= 15) {
       struct agx_esl_code code =
          agx_esl_code_for_precomp(cs->ptr, dev->libagx_programs[program]);
 
       uint64_t esl = agx_upload_esl(batch, t.cpu, &code, AGX_ESL_COMPUTE);
       usc = esl ? agx_usc_addr(dev, esl) : 0;
+   } else {
+      usc = agx_usc_addr(dev, t.gpu);
    }
 
    agx_batch_add_bo(batch, cs->bo);
@@ -3489,8 +3515,8 @@ agx_build_bg_eot(struct agx_batch *batch, bool store, bool partial_render)
 
    /* Begin building the pipeline */
    size_t usc_size = agx_usc_size(3 + PIPE_MAX_COLOR_BUFS);
-   struct agx_ptr t =
-      agx_pool_alloc_aligned(&batch->pipeline_pool, usc_size, 64);
+   alignas(16) uint8_t stack[AGX_USC_WORDS_STACK];
+   struct agx_ptr t = agx_usc_words_g15(batch, usc_size, stack, sizeof(stack));
    struct agx_usc_builder b = agx_usc_builder(t.cpu, usc_size);
 
    bool needs_sampler = false;
@@ -3700,10 +3726,8 @@ agx_build_bg_eot(struct agx_batch *batch, bool store, bool partial_render)
 
    /* G15 runs an entry program; usc is its VA */
    if (dev->params.gpu_generation >= 15) {
-      uint8_t *map = agx_bo_map(shader->bo);
       struct agx_esl_code code = agx_esl_code_for_shader(
-         shader->ptr, map + (shader->ptr - shader->bo->va->addr), &shader->info,
-         NULL);
+         shader->ptr, shader->binary, &shader->info, NULL);
       code.tib = &batch->tilebuffer_layout;
 
       ret.usc = agx_upload_esl(

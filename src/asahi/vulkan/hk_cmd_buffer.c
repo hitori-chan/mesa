@@ -729,9 +729,6 @@ hk_reserve_scratch(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
    }
 }
 
-/* Room for a draw's USC words on the stack */
-#define HK_USC_WORDS_STACK 512
-
 /* G15: the entry program for a USC word list (agx_esl.h): its VA, 0 when G15
  * cannot build it yet */
 uint64_t
