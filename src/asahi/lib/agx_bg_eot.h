@@ -94,6 +94,10 @@ struct agx_bg_eot_shader {
    struct agx_shader_info info;
    struct agx_bo *bo;
    uint64_t ptr;
+
+   /* The CPU's copy of the code at ptr: G15's entry program copies the
+    * preamble from it, the BO's mapping being write-combined */
+   const void *binary;
 };
 
 struct agx_bg_eot_shader *agx_get_bg_eot_shader(struct agx_bg_eot_cache *cache,
