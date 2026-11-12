@@ -1844,23 +1844,29 @@ hk_compile_shader(struct hk_device *dev, struct vk_shader_compile_info *info,
       /* Fold constant offset srcs for IO. */
       NIR_PASS(_, nir, nir_opt_constant_folding);
 
+      /* Only compile the software variant if we might use this shader with
+       * geometry/tessellation. We need to compile the hardware variant
+       * unconditionally to handle the VS -> null FS case, which does not
+       * require setting the FRAGMENT bit.
+       */
+      bool compile_sw =
+         next_stage & (VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT |
+                       VK_SHADER_STAGE_GEOMETRY_BIT);
+
+      enum hk_vs_variant last_variant =
+         compile_sw ? HK_VS_VARIANT_SW : HK_VS_VARIANT_HW;
+
       for (enum hk_vs_variant v = 0; v < HK_VS_VARIANTS; ++v) {
-         /* Only compile the software variant if we might use this shader with
-          * geometry/tessellation. We need to compile the hardware variant
-          * unconditionally to handle the VS -> null FS case, which does not
-          * require setting the FRAGMENT bit.
-          */
-         if (v == HK_VS_VARIANT_SW &&
-             !(next_stage & (VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT |
-                             VK_SHADER_STAGE_GEOMETRY_BIT)))
+         if (v == HK_VS_VARIANT_SW && !compile_sw)
             continue;
 
          struct hk_shader *shader = &obj->variants[v];
          bool hw = v == HK_VS_VARIANT_HW;
-         bool last = (v + 1) == HK_VS_VARIANTS;
+         bool last = v == last_variant;
 
          /* Each variant gets its own NIR. To save an extra clone, we use the
-          * original NIR for the last stage.
+          * original NIR for the last variant that is compiled, so that it is
+          * freed exactly once, as that variant's clone.
           */
          nir_shader *clone = last ? nir : nir_shader_clone(NULL, nir);
 
@@ -1903,7 +1909,7 @@ hk_compile_shader(struct hk_device *dev, struct vk_shader_compile_info *info,
             }
          }
 
-         /* hk_compile_nir takes ownership of the clone */
+         /* hk_compile_nir does not free the NIR, even on failure */
          result =
             hk_compile_nir(dev, pAllocator, clone, info->flags,
                            info->robustness, key, features, shader, sw_stage,
@@ -1911,7 +1917,11 @@ hk_compile_shader(struct hk_device *dev, struct vk_shader_compile_info *info,
          if (result != VK_SUCCESS) {
             ralloc_free(clone);
             hk_api_shader_destroy(&dev->vk, &obj->vk, pAllocator);
-            ralloc_free(nir);
+
+            /* For the last variant, clone is nir and was freed above */
+            if (!last)
+               ralloc_free(nir);
+
             return result;
          }
 
@@ -1925,7 +1935,7 @@ hk_compile_shader(struct hk_device *dev, struct vk_shader_compile_info *info,
    } else {
       struct hk_shader *shader = hk_only_variant(obj);
 
-      /* hk_compile_nir takes ownership of nir */
+      /* hk_compile_nir does not free the NIR, even on failure */
       result = hk_compile_nir(dev, pAllocator, nir, info->flags,
                               info->robustness, key, features, shader, sw_stage,
                               true, NULL, info->set_layout_count);
