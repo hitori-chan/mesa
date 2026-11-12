@@ -276,3 +276,17 @@ TEST_F(u_printf_test, util_printf_scalar_l_modifier)
 
    EXPECT_EQ(parse(), "-10000000000 18446744073709551615 123456789 +5000000000");
 }
+
+TEST_F(u_printf_test, util_printf_scalar_z_t_modifiers)
+{
+   add_format("%5zd|%-15zu|%+15td|%.5zi|%jx", { 8, 8, 8, 8, 8 });
+
+   use_format(0);
+   add_arg<int64_t>(10);
+   add_arg<uint64_t>(10000000000ULL);
+   add_arg<int64_t>(-10000000000LL);
+   add_arg<int64_t>(100);
+   add_arg<uint64_t>(0x123456789ULL);
+
+   EXPECT_EQ(parse(), "   10|10000000000    |   -10000000000|00100|123456789");
+}
