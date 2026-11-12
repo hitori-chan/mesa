@@ -81,7 +81,8 @@ static const struct debug_named_value agx_debug_options[] = {
    {"nocompresszs",AGX_DBG_NOCOMPRESSZS,"Leave depth and stencil uncompressed on G15"},
    {"noix",      AGX_DBG_NOIX,     "Do not offer the interchange modifier for scanout on G15"},
    {"ix",        AGX_DBG_IX,       "Offer interchange for 10-bit RGB too (GL)"},
-   {"rtpipeline", AGX_DBG_RTPIPELINE, "Offer ray-tracing pipelines too, tier 1 (Vulkan; callableshaderstress fails)"},
+   {"rtpipeline", AGX_DBG_RTPIPELINE, "Offer ray-tracing pipelines too (Vulkan, G15; recursion not run on the GPU yet)"},
+   {"rtdispatch", AGX_DBG_RTDISPATCH, "Run every ray-tracing pipeline through the dispatcher loop, recursion's (a test of it)"},
    {"bodumpverbose", AGX_DBG_BODUMPVERBOSE,   "Include extra info with dumps"},
    DEBUG_NAMED_VALUE_END
 };

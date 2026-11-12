@@ -262,6 +262,11 @@ trace_rays(struct hk_cmd_buffer *cmd, uint64_t params, struct agx_grid grid)
 
    desc->root.cs.rt_params = params;
 
+   if (s->info.cs.rt_stack) {
+      desc->root.cs.rt_stack[0] = s->info.cs.rt_stack_base;
+      desc->root.cs.rt_stack[1] = hk_rt_stack_end(cmd, s);
+   }
+
    struct hk_cs *cs = hk_cmd_buffer_get_cs(cmd, true /* compute */);
    if (!cs)
       return;

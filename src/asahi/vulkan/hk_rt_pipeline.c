@@ -2,20 +2,24 @@
  * SPDX-License-Identifier: GPL-2.0-only
  */
 
-/* Ray-tracing pipelines, tier 1. The common runtime (vk_pipeline.c) compiles
- * each stage to a holder of its NIR and links a pipeline's groups, its
- * libraries' included, through link_rt_pipeline: one compute kernel
- * (hk_nir_rt_pipeline.c), bound at the ray-tracing bind point. A group
- * handle names its shaders by content, so a handle is the same in every
- * pipeline and library, and replays.
+/* Ray-tracing pipelines. The common runtime (vk_pipeline.c) compiles each
+ * stage to a holder of its NIR and links a pipeline's groups, its libraries'
+ * included, through link_rt_pipeline: one compute kernel
+ * (hk_nir_rt_pipeline.c), bound at the ray-tracing bind point. Tier 1
+ * inlines every stage; tier 2, for recursion, loops over the stages split at
+ * their calls, their frames on the thread-private stack. A group handle
+ * names its shaders by content, so a handle is the same in every pipeline
+ * and library, and replays.
  */
 
+#include "agx_esl.h"
 #include "hk_cmd_buffer.h"
 #include "hk_device.h"
 #include "hk_nir_ray_tracing.h"
 #include "hk_shader.h"
 
 #include "util/blob.h"
+#include "util/log.h"
 #include "util/mesa-blake3.h"
 #include "nir_serialize.h"
 #include "vk_log.h"
@@ -54,6 +58,7 @@ hk_rt_stage_serialize(struct vk_device *vk_dev,
    /* The stage first, as hk_api_shader_serialize */
    blob_write_uint8(blob, vk_shader->stage);
    blob_write_uint64(blob, s->id);
+   blob_write_uint32(blob, vk_shader->stack_size);
    blob_write_bytes(blob, &s->rs, sizeof(s->rs));
    blob_write_uint32(blob, s->nir_size);
    blob_write_bytes(blob, s->nir, s->nir_size);
@@ -116,6 +121,7 @@ static const struct vk_shader_ops hk_rt_stage_ops = {
 
 static VkResult
 hk_rt_stage_init(struct hk_device *dev, mesa_shader_stage stage, uint64_t id,
+                 uint32_t stack_size,
                  const struct vk_pipeline_robustness_state *rs, const void *nir,
                  uint32_t nir_size, const VkAllocationCallbacks *pAllocator,
                  struct vk_shader **shader_out)
@@ -136,8 +142,10 @@ hk_rt_stage_init(struct hk_device *dev, mesa_shader_stage stage, uint64_t id,
    s->id = id;
    s->rs = *rs;
 
-   /* The kernel's scratch is sized when it is linked: no stack */
-   s->vk.stack_size = 0;
+   /* Its frame in a dispatcher kernel (tier 2); an inlining kernel's
+    * scratch is sized when it is linked
+    */
+   s->vk.stack_size = stack_size;
 
    *shader_out = &s->vk;
    return VK_SUCCESS;
@@ -171,9 +179,9 @@ hk_rt_stage_create(struct hk_device *dev,
    if (id == 0)
       id = 1;
 
-   VkResult result =
-      hk_rt_stage_init(dev, info->stage, id, info->robustness, blob.data,
-                       blob.size, pAllocator, shader_out);
+   VkResult result = hk_rt_stage_init(
+      dev, info->stage, id, hk_nir_rt_stage_stack_size(info->nir),
+      info->robustness, blob.data, blob.size, pAllocator, shader_out);
    blob_finish(&blob);
    return result;
 }
@@ -212,6 +220,7 @@ hk_rt_stage_deserialize(struct hk_device *dev, struct blob_reader *blob,
                         struct vk_shader **shader_out)
 {
    uint64_t id = blob_read_uint64(blob);
+   uint32_t stack_size = blob_read_uint32(blob);
 
    struct vk_pipeline_robustness_state rs;
    blob_copy_bytes(blob, &rs, sizeof(rs));
@@ -222,8 +231,8 @@ hk_rt_stage_deserialize(struct hk_device *dev, struct blob_reader *blob,
    if (blob->overrun || id == 0)
       return vk_error(dev, VK_ERROR_INCOMPATIBLE_SHADER_BINARY_EXT);
 
-   return hk_rt_stage_init(dev, stage, id, &rs, nir, nir_size, pAllocator,
-                           shader_out);
+   return hk_rt_stage_init(dev, stage, id, stack_size, &rs, nir, nir_size,
+                           pAllocator, shader_out);
 }
 
 /* {general or closest hit, any hit, intersection, 0} */
@@ -278,6 +287,34 @@ hk_replay_rt_shader_group(UNUSED struct vk_device *device,
                           UNUSED struct vk_shader **shaders,
                           UNUSED const void *replay_data)
 {
+}
+
+/* The spec's default stack size from the stages' frames, as
+ * vk_create_rt_pipeline computes it
+ */
+static uint32_t
+hk_rt_default_stack(const struct hk_rt_stage_shader *const *holders,
+                    uint32_t count, uint32_t depth)
+{
+   uint32_t max[MESA_SHADER_CALLABLE + 1] = {0};
+   uint32_t any = 0;
+
+   for (uint32_t i = 0; i < count; i++) {
+      uint32_t size = holders[i]->vk.stack_size;
+      max[holders[i]->vk.stage] = MAX2(max[holders[i]->vk.stage], size);
+      any = MAX2(any, size);
+   }
+
+   uint32_t first =
+      MAX3(max[MESA_SHADER_CLOSEST_HIT], max[MESA_SHADER_MISS],
+           max[MESA_SHADER_INTERSECTION] + max[MESA_SHADER_ANY_HIT]);
+   uint32_t deeper = MAX2(max[MESA_SHADER_CLOSEST_HIT], max[MESA_SHADER_MISS]);
+
+   uint32_t size = max[MESA_SHADER_RAYGEN] + MIN2(1, depth) * first +
+                   (depth > 1 ? depth - 1 : 0) * deeper +
+                   2 * max[MESA_SHADER_CALLABLE];
+
+   return MAX2(size, any);
 }
 
 static void
@@ -377,15 +414,14 @@ hk_link_rt_pipeline(struct vk_device *vk_dev,
          info->flags & VK_PIPELINE_CREATE_2_RAY_TRACING_SKIP_TRIANGLES_BIT_KHR,
       .skip_aabbs =
          info->flags & VK_PIPELINE_CREATE_2_RAY_TRACING_SKIP_AABBS_BIT_KHR,
+      .max_recursion_depth = info->max_recursion_depth,
    };
 
-   if (!hk_nir_rt_kernel_supported(&kernel_info)) {
-      result = vk_errorf(dev, VK_ERROR_FEATURE_NOT_PRESENT,
-                         "a callable shader calls one: not inlined yet");
-      goto out;
-   }
-
-   nir_shader *nir = hk_nir_build_rt_kernel(options, &kernel_info);
+   bool dispatcher = (dev->dev.debug & AGX_DBG_RTDISPATCH) ||
+                     hk_nir_rt_needs_dispatcher(&kernel_info);
+   nir_shader *nir = dispatcher
+                        ? hk_nir_build_rt_dispatcher(options, &kernel_info)
+                        : hk_nir_build_rt_kernel(options, &kernel_info);
 
    hk_preprocess_nir_internal(vk_dev->physical, nir);
    const nir_lower_compute_system_values_options csv_options = {0};
@@ -402,10 +438,39 @@ hk_link_rt_pipeline(struct vk_device *vk_dev,
 
    struct hk_api_shader *obj;
    result = hk_compile_rt_kernel(dev, &compile_info, pAllocator, &obj);
-   if (result == VK_SUCCESS) {
-      hk_only_variant(obj)->info.cs.ray_tracing = true;
-      *shader_out = &obj->vk;
+   if (result != VK_SUCCESS)
+      goto out;
+
+   struct hk_shader *s = hk_only_variant(obj);
+   s->info.cs.ray_tracing = true;
+   s->info.cs.rt_stack = dispatcher;
+
+   if (dispatcher) {
+      /* The frames start past the kernel's own stack: its scratch, its
+       * spills and a device atomic's result word (agx3_stack_size)
+       */
+      s->info.cs.rt_stack_base = ALIGN_POT(s->b.info.stack_size, 16);
+      s->info.cs.rt_default_stack =
+         hk_rt_default_stack(holders, stage_count, info->max_recursion_depth);
+
+      /* A thread's stack is under 16 KiB (AGX_ESL_MAX_STACK_B): a pipeline
+       * whose default stack, the one its maxPipelineRayRecursionDepth
+       * needs, does not fit is refused. Past a kernel stack of about 560 B,
+       * depth 31 fits closest-hit and miss frames up to about 500 B.
+       */
+      uint64_t end =
+         (uint64_t)s->info.cs.rt_stack_base + s->info.cs.rt_default_stack;
+      if (end > AGX_ESL_MAX_STACK_B) {
+         vk_shader_destroy(vk_dev, &obj->vk, pAllocator);
+         result = vk_errorf(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY,
+                            "the ray-tracing stack takes %" PRIu64
+                            " B of the %u a thread can have",
+                            end, AGX_ESL_MAX_STACK_B);
+         goto out;
+      }
    }
+
+   *shader_out = &obj->vk;
 
 out:
    ralloc_free(mem_ctx);
@@ -428,8 +493,34 @@ hk_cmd_set_rt_stack_size(struct vk_command_buffer *vk_cmd,
 {
    struct hk_cmd_buffer *cmd = container_of(vk_cmd, struct hk_cmd_buffer, vk);
 
-   /* Inlined stages have no stack: kept for tier 2 */
+   /* Used by dispatcher kernels only: an inlining one has a fixed scratch */
    cmd->state.rt.stack_size = stack_size;
+}
+
+/* A dispatcher kernel's stack end for a dispatch: its frames' base plus the
+ * pipeline's stack size, the default or the one set
+ */
+uint32_t
+hk_rt_stack_end(struct hk_cmd_buffer *cmd, const struct hk_shader *s)
+{
+   uint32_t base = s->info.cs.rt_stack_base;
+   uint64_t stack = cmd->state.rt.stack_size;
+
+   /* A dynamic stack size not set yet */
+   if (stack == 0)
+      stack = s->info.cs.rt_default_stack;
+
+   /* Linking checked the default. A size set past what a thread can have
+    * is clamped: the kernel stops a thread whose next frame would not fit
+    * (hk_nir_rt_pipeline.c, build_cases).
+    */
+   if (base + stack > AGX_ESL_MAX_STACK_B) {
+      mesa_logw_once("a ray-tracing stack of %" PRIu64 " B clamped to %u B",
+                     stack, AGX_ESL_MAX_STACK_B - base);
+      stack = AGX_ESL_MAX_STACK_B - base;
+   }
+
+   return base + stack;
 }
 
 void

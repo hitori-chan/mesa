@@ -100,6 +100,14 @@ struct hk_shader_info {
           * table is the ray-tracing bind point's
           */
          bool ray_tracing;
+
+         /* A dispatcher kernel, whose frames sit on the thread-private stack
+          * from rt_stack_base: the specTPR adds the pipeline's stack size,
+          * rt_default_stack until one is set.
+          */
+         bool rt_stack;
+         uint32_t rt_stack_base;
+         uint32_t rt_default_stack;
       } cs;
 
       /* Task and mesh shaders */
@@ -469,6 +477,9 @@ void hk_cmd_set_rt_stack_size(struct vk_command_buffer *cmd,
 
 void hk_cmd_bind_rt_shader(struct vk_command_buffer *cmd,
                            struct vk_shader *shader);
+
+struct hk_cmd_buffer;
+uint32_t hk_rt_stack_end(struct hk_cmd_buffer *cmd, const struct hk_shader *s);
 
 struct hk_api_shader *hk_meta_shader(struct hk_device *dev,
                                      hk_internal_builder_t builder, void *data,

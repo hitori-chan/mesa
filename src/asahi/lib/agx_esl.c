@@ -172,6 +172,7 @@ esl_ldshdr(struct util_dynarray *out, uint64_t va, unsigned size)
 static void
 esl_spectpr(struct util_dynarray *out, unsigned stack_bytes, unsigned crs)
 {
+   assert(stack_bytes <= AGX_ESL_MAX_STACK_B);
    unsigned words = stack_bytes ? DIV_ROUND_UP(stack_bytes, 4) + 4 : 0;
    assert(words < (1 << 12));
 
