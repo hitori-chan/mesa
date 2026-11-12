@@ -118,6 +118,11 @@ struct hk_root_descriptor_table {
 
          /* A ray-tracing dispatch's VkTraceRaysIndirectCommand2KHR */
          uint64_t rt_params;
+
+         /* The range of the thread-private stack a dispatcher kernel's
+          * frames take, the specTPR's end (hk_rt_pipeline.c)
+          */
+         uint32_t rt_stack[2];
       } cs;
    };
 

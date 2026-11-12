@@ -48,6 +48,10 @@ struct agx_esl_code {
    const struct agx_tilebuffer_layout *tib;
 };
 
+/* The most thread-private stack a specTPR gives a thread, in bytes: its word
+ * count is 12 bits and holds the stack plus 4 words (esl_spectpr) */
+#define AGX_ESL_MAX_STACK_B ((((1 << 12) - 1) - 4) * 4)
+
 /* The program the entry program runs: each stage ends its entry program in
  * its own way (noopwafel's demo15 for the render stages) */
 enum agx_esl_stage {

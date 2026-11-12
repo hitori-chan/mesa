@@ -772,6 +772,12 @@ hk_upload_esl(struct hk_cmd_buffer *cmd, struct hk_shader *s,
    if (s->b.info.stage == MESA_SHADER_FRAGMENT)
       code.tib = &cmd->state.gfx.render.tilebuffer;
 
+   /* A dispatcher kernel's frames follow its own stack, up to the end its
+    * dispatch set (hk_rt_pipeline.c)
+    */
+   if (s->info.stage == MESA_SHADER_COMPUTE && s->info.cs.rt_stack)
+      code.stack_size = cmd->state.rt.descriptors.root.cs.rt_stack[1];
+
    return hk_upload_esl_code(cmd, &code, agx_esl_stage_for(s->b.info.stage),
                              usc);
 }
