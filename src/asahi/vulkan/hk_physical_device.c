@@ -55,10 +55,11 @@ hk_get_device_extensions(const struct agx_device *dev,
 
    /* Software ray queries (hk_nir_ray_tracing.c) on G15, where the CTS's
     * ray_query group passes whole. Ray-tracing pipelines (hk_rt_pipeline.c)
-    * only by the flag: tier 1, and three of misc's callableshaderstress cases
-    * fail.
+    * only by the flag until tier 2 (recursion) has run, and on G15 alone:
+    * its frames take a thread-private stack that each dispatch's specTPR
+    * sizes (G13's scratch is the shader's static size).
     */
-   bool rtp = dev->debug & AGX_DBG_RTPIPELINE;
+   bool rtp = g15 && (dev->debug & AGX_DBG_RTPIPELINE);
    bool rq = g15 || rtp;
 
    /* Task and mesh shaders as compute (hk_draw_mesh) */
@@ -1069,11 +1070,12 @@ hk_get_device_properties(const struct agx_device *dev,
       .maxPushDescriptors = HK_MAX_PUSH_DESCRIPTORS,
 
       /* VK_KHR_ray_tracing_pipeline: a handle is four 64-bit shader IDs
-       * (hk_rt_pipeline.c). One level of recursion: only ray generation
-       * shaders trace, and the pipeline is one kernel.
+       * (hk_rt_pipeline.c). Recursion to DXR's 31, in the dispatcher's
+       * frames: a pipeline whose default stack does not fit a thread's
+       * 16 KiB fails with VK_ERROR_OUT_OF_DEVICE_MEMORY.
        */
       .shaderGroupHandleSize = 32,
-      .maxRayRecursionDepth = 1,
+      .maxRayRecursionDepth = 31,
       .maxShaderGroupStride = 4096,
       .shaderGroupBaseAlignment = 32,
       .shaderGroupHandleCaptureReplaySize = 32,
