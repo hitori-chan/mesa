@@ -145,11 +145,30 @@ struct hk_rt_kernel_info {
 
    bool skip_triangles;
    bool skip_aabbs;
+
+   /* maxPipelineRayRecursionDepth */
+   uint32_t max_recursion_depth;
 };
 
-bool hk_nir_rt_kernel_supported(const struct hk_rt_kernel_info *info);
+/* Whether a pipeline needs the dispatcher (tier 2) rather than one inlined
+ * kernel (tier 1): a callable shader that calls or traces, or a closest-hit
+ * or miss shader that traces deeper than the first level.
+ */
+bool hk_nir_rt_needs_dispatcher(const struct hk_rt_kernel_info *info);
 
+/* Tier 1: every stage inlined where it is called */
 nir_shader *hk_nir_build_rt_kernel(const nir_shader_compiler_options *options,
                                    const struct hk_rt_kernel_info *info);
+
+/* Tier 2: a loop over the stages split at their calls */
+nir_shader *
+hk_nir_build_rt_dispatcher(const nir_shader_compiler_options *options,
+                           const struct hk_rt_kernel_info *info);
+
+/* The bytes of thread-private stack a stage's frame takes in the dispatcher:
+ * its locals, payloads and spills, and a return slot when it calls. The
+ * stage's VkShader stack size.
+ */
+unsigned hk_nir_rt_stage_stack_size(const nir_shader *nir);
 
 #endif
