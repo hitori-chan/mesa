@@ -975,6 +975,70 @@ hk_nir_rt_needs_dispatcher(const struct hk_rt_kernel_info *info)
    return false;
 }
 
+static bool
+is_bound_memory(const nir_variable *var)
+{
+   return var->data.mode == nir_var_mem_ssbo ||
+          var->data.mode == nir_var_image ||
+          (var->data.mode == nir_var_uniform &&
+           glsl_type_is_image(glsl_without_array(var->type)));
+}
+
+/*
+ * Each inlined stage and part brings its own copies of the variables it binds
+ * (nir_inline_function_impl), so one binding can be several restrict
+ * variables in the kernel, which do alias. nir_opt_access would judge each
+ * apart: an image that one part only writes and the part resuming after a
+ * call reads would lose its store's fence to the texture path
+ * (memguarantee.inside), and a buffer one part only reads could be reordered
+ * across another's store. Drop restrict from the copies and their accesses.
+ */
+static void
+unrestrict_shared_bindings(nir_shader *s)
+{
+   struct set *shared = _mesa_pointer_set_create(NULL);
+
+   nir_foreach_variable_in_shader(a, s) {
+      if (!is_bound_memory(a))
+         continue;
+
+      nir_foreach_variable_in_shader(b, s) {
+         if (a != b && is_bound_memory(b) &&
+             a->data.descriptor_set == b->data.descriptor_set &&
+             a->data.binding == b->data.binding) {
+            a->data.access &= ~ACCESS_RESTRICT;
+            _mesa_set_add(shared, a);
+            break;
+         }
+      }
+   }
+
+   if (shared->entries) {
+      nir_foreach_function_impl(impl, s) {
+         nir_foreach_block(block, impl) {
+            nir_foreach_instr(instr, block) {
+               if (instr->type != nir_instr_type_intrinsic)
+                  continue;
+
+               nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+               if (!nir_intrinsic_has_access(intr) ||
+                   !nir_intrinsic_infos[intr->intrinsic].num_srcs)
+                  continue;
+
+               nir_variable *var = nir_get_binding_variable(
+                  s, nir_chase_binding(intr->src[0]));
+               if (var && _mesa_set_search(shared, var)) {
+                  nir_intrinsic_set_access(
+                     intr, nir_intrinsic_access(intr) & ~ACCESS_RESTRICT);
+               }
+            }
+         }
+      }
+   }
+
+   _mesa_set_destroy(shared, NULL);
+}
+
 nir_shader *
 hk_nir_build_rt_kernel(const nir_shader_compiler_options *options,
                        const struct hk_rt_kernel_info *info)
@@ -1030,6 +1094,7 @@ hk_nir_build_rt_kernel(const nir_shader_compiler_options *options,
    NIR_PASS(_, s, nir_lower_returns);
 
    s->scratch_size = rb.scratch_end;
+   unrestrict_shared_bindings(s);
    NIR_PASS(_, s, nir_lower_global_vars_to_local);
    NIR_PASS(_, s, nir_lower_vars_to_ssa);
    NIR_PASS(_, s, nir_lower_scratch_to_var);
@@ -1775,6 +1840,7 @@ hk_nir_build_rt_dispatcher(const nir_shader_compiler_options *options,
     * frames; the frames are past the kernel's stack
     */
    s->scratch_size = rb.scratch_end;
+   unrestrict_shared_bindings(s);
    NIR_PASS(_, s, nir_lower_global_vars_to_local);
    NIR_PASS(_, s, nir_lower_vars_to_ssa);
    NIR_PASS(_, s, nir_remove_dead_variables,
