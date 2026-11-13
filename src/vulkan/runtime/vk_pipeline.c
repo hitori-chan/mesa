@@ -2790,7 +2790,7 @@ vk_rt_pipeline_destroy(struct vk_device *device,
    if (rt_pipeline->layout != NULL)
       vk_pipeline_layout_unref(device, rt_pipeline->layout);
    if (rt_pipeline->linked != NULL)
-      vk_shader_destroy(device, rt_pipeline->linked, pAllocator);
+      vk_shader_unref(device, rt_pipeline->linked);
    vk_pipeline_free(device, pAllocator, pipeline);
 }
 
@@ -3534,8 +3534,53 @@ is_rt_stack_size_dynamic(const VkRayTracingPipelineCreateInfoKHR *info)
    return false;
 }
 
+/* The linked shader's cache key: what the link reads, each stage by its own
+ * key (which holds its code, its flags and the pipeline layout)
+ */
+static void
+vk_rt_pipeline_link_key(const struct vk_rt_link_info *info,
+                        blake3_hash key)
+{
+   struct mesa_blake3 blake3_ctx;
+   _mesa_blake3_init(&blake3_ctx);
+
+   const VkPipelineCreateFlags2KHR flags =
+      info->flags & (VK_PIPELINE_CREATE_2_RAY_TRACING_SKIP_TRIANGLES_BIT_KHR |
+                     VK_PIPELINE_CREATE_2_RAY_TRACING_SKIP_AABBS_BIT_KHR);
+   _mesa_blake3_update(&blake3_ctx, &flags, sizeof(flags));
+   _mesa_blake3_update(&blake3_ctx, &info->max_recursion_depth,
+                       sizeof(info->max_recursion_depth));
+
+   if (info->layout != NULL) {
+      for (uint32_t s = 0; s < info->layout->set_count; s++) {
+         static const blake3_hash none;
+         const struct vk_descriptor_set_layout *set =
+            info->layout->set_layouts[s];
+         _mesa_blake3_update(&blake3_ctx, set != NULL ? set->blake3 : none,
+                             sizeof(blake3_hash));
+      }
+   }
+
+   _mesa_blake3_update(&blake3_ctx, &info->group_count,
+                       sizeof(info->group_count));
+   for (uint32_t g = 0; g < info->group_count; g++) {
+      const struct vk_rt_link_group *group = &info->groups[g];
+      _mesa_blake3_update(&blake3_ctx, &group->type, sizeof(group->type));
+      _mesa_blake3_update(&blake3_ctx, &group->shader_count,
+                          sizeof(group->shader_count));
+      for (uint32_t i = 0; i < group->shader_count; i++) {
+         _mesa_blake3_update(&blake3_ctx,
+                             group->shaders[i]->pipeline.cache_key,
+                             sizeof(group->shaders[i]->pipeline.cache_key));
+      }
+   }
+
+   _mesa_blake3_final(&blake3_ctx, key);
+}
+
 static VkResult
 vk_rt_pipeline_link(struct vk_device *device,
+                    struct vk_pipeline_cache *cache,
                     struct vk_rt_pipeline *pipeline,
                     const VkRayTracingPipelineCreateInfoKHR *pCreateInfo,
                     VkPipelineCreateFlags2KHR pipeline_flags,
@@ -3568,9 +3613,33 @@ vk_rt_pipeline_link(struct vk_device *device,
       .groups = groups,
    };
 
-   VkResult result =
-      device->shader_ops->link_rt_pipeline(device, &info, pAllocator,
-                                           &pipeline->linked);
+   blake3_hash key;
+   vk_rt_pipeline_link_key(&info, key);
+
+   VkResult result = VK_SUCCESS;
+   struct vk_pipeline_cache_object *cache_obj = NULL;
+   if (cache != NULL) {
+      bool cache_hit;
+      cache_obj = vk_pipeline_cache_lookup_object(cache, key, sizeof(key),
+                                                  &pipeline_shader_cache_ops,
+                                                  &cache_hit);
+   }
+
+   if (cache_obj == NULL) {
+      /* A cache object is freed with the device's allocator, as the stages */
+      struct vk_shader *linked;
+      result = device->shader_ops->link_rt_pipeline(device, &info,
+                                                    &device->alloc, &linked);
+      if (result == VK_SUCCESS) {
+         vk_shader_init_cache_obj(device, linked, key, sizeof(key));
+         cache_obj = &linked->pipeline.cache_obj;
+         if (cache != NULL)
+            cache_obj = vk_pipeline_cache_add_object(cache, cache_obj);
+      }
+   }
+
+   if (cache_obj != NULL)
+      pipeline->linked = vk_shader_from_cache_obj(cache_obj);
 
    vk_free2(&device->alloc, pAllocator, groups);
    return result;
@@ -3876,7 +3945,7 @@ vk_create_rt_pipeline(struct vk_device *device,
 
    if (device->shader_ops->link_rt_pipeline != NULL &&
        !(pipeline_flags & VK_PIPELINE_CREATE_2_LIBRARY_BIT_KHR)) {
-      result = vk_rt_pipeline_link(device, pipeline, pCreateInfo,
+      result = vk_rt_pipeline_link(device, cache, pipeline, pCreateInfo,
                                    pipeline_flags, pipeline_layout,
                                    pAllocator);
       if (result != VK_SUCCESS)
