@@ -961,10 +961,19 @@ hk_get_device_properties(const struct agx_device *dev,
 
       /* Vulkan 1.1 properties */
       .subgroupSize = 32,
+      /* Ray-tracing stages run inlined in a compute kernel, a subgroup the
+       * rays its lanes hold */
       .subgroupSupportedStages =
          VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_ALL_GRAPHICS |
          (dev->params.gpu_generation >= 15
              ? VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT
+             : 0) |
+         (dev->params.gpu_generation >= 15 && (dev->debug & AGX_DBG_RTPIPELINE)
+             ? VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_ANY_HIT_BIT_KHR |
+                  VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
+                  VK_SHADER_STAGE_MISS_BIT_KHR |
+                  VK_SHADER_STAGE_INTERSECTION_BIT_KHR |
+                  VK_SHADER_STAGE_CALLABLE_BIT_KHR
              : 0),
       .subgroupSupportedOperations =
          VK_SUBGROUP_FEATURE_BASIC_BIT | VK_SUBGROUP_FEATURE_BALLOT_BIT |
