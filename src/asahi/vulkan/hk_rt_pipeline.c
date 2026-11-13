@@ -419,29 +419,45 @@ hk_link_rt_pipeline(struct vk_device *vk_dev,
 
    bool dispatcher = (dev->dev.debug & AGX_DBG_RTDISPATCH) ||
                      hk_nir_rt_needs_dispatcher(&kernel_info);
-   nir_shader *nir = dispatcher
-                        ? hk_nir_build_rt_dispatcher(options, &kernel_info)
-                        : hk_nir_build_rt_kernel(options, &kernel_info);
-
-   hk_preprocess_nir_internal(vk_dev->physical, nir);
-   const nir_lower_compute_system_values_options csv_options = {0};
-   NIR_PASS(_, nir, nir_lower_compute_system_values, &csv_options);
-
-   struct vk_pipeline_layout *layout = info->layout;
-   struct vk_shader_compile_info compile_info = {
-      .stage = MESA_SHADER_COMPUTE,
-      .nir = nir,
-      .robustness = &rs,
-      .set_layout_count = layout != NULL ? layout->set_count : 0,
-      .set_layouts = layout != NULL ? layout->set_layouts : NULL,
-   };
-
    struct hk_api_shader *obj;
-   result = hk_compile_rt_kernel(dev, &compile_info, pAllocator, &obj);
-   if (result != VK_SUCCESS)
-      goto out;
+   struct hk_shader *s;
 
-   struct hk_shader *s = hk_only_variant(obj);
+   for (;;) {
+      nir_shader *nir = dispatcher
+                           ? hk_nir_build_rt_dispatcher(options, &kernel_info)
+                           : hk_nir_build_rt_kernel(options, &kernel_info);
+
+      hk_preprocess_nir_internal(vk_dev->physical, nir);
+      const nir_lower_compute_system_values_options csv_options = {0};
+      NIR_PASS(_, nir, nir_lower_compute_system_values, &csv_options);
+
+      struct vk_pipeline_layout *layout = info->layout;
+      struct vk_shader_compile_info compile_info = {
+         .stage = MESA_SHADER_COMPUTE,
+         .nir = nir,
+         .robustness = &rs,
+         .set_layout_count = layout != NULL ? layout->set_count : 0,
+         .set_layouts = layout != NULL ? layout->set_layouts : NULL,
+      };
+
+      result = hk_compile_rt_kernel(dev, &compile_info, pAllocator, &obj);
+      if (result != VK_SUCCESS)
+         goto out;
+
+      s = hk_only_variant(obj);
+
+      /* An inlining kernel keeps every inlined stage's payload frame in its
+       * own stack (one scratch array once an access is indirect): past what
+       * a thread can have, the dispatcher holds only the frames of the calls
+       * under way
+       */
+      if (dispatcher || s->b.info.stack_size <= AGX_ESL_MAX_STACK_B)
+         break;
+
+      vk_shader_destroy(vk_dev, &obj->vk, pAllocator);
+      dispatcher = true;
+   }
+
    s->info.cs.ray_tracing = true;
    s->info.cs.rt_stack = dispatcher;
 
