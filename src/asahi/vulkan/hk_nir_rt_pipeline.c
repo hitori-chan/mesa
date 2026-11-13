@@ -93,9 +93,12 @@ struct rt_builder {
    /* The end of the deepest frame */
    unsigned scratch_end;
 
-   /* Tier 2: each stage's first case, by stage index, and its frame size */
+   /* Tier 2: each stage's first case, by stage index, its frame size, and
+    * whether it neither traces nor calls
+    */
    uint32_t *first_case;
    uint32_t *frame;
+   bool *leaf;
 };
 
 /* A stage being inlined, or the kernel */
@@ -1598,6 +1601,21 @@ inline_part(struct rt_clone *k, nir_builder *kb, const struct rt_part *p)
 
    util_dynarray_fini(&frame_ops);
 
+   /* A leaf stage's large locals, which the backend would give each its own
+    * scratch, at one base past the hit attributes for every leaf: a leaf's
+    * case runs whole within one pass of the loop, so no two leaves' locals
+    * are live at once in a thread, and the traversal's inlined frames there
+    * are dead outside its case
+    */
+   if (k->rb->leaf[p->stage]) {
+      s->scratch_size = HIT_ATTRIBS_SIZE;
+      NIR_PASS(_, s, nir_lower_vars_to_scratch, 256,
+               glsl_get_natural_size_align_bytes,
+               glsl_get_word_size_align_bytes);
+      k->rb->scratch_end =
+         MAX2(k->rb->scratch_end, ALIGN_POT(s->scratch_size, 16));
+   }
+
    struct util_dynarray intrs;
    util_dynarray_init(&intrs, NULL);
 
@@ -1752,6 +1770,7 @@ hk_nir_build_rt_dispatcher(const nir_shader_compiler_options *options,
       .scratch_end = HIT_ATTRIBS_SIZE,
       .first_case = rzalloc_array(mem_ctx, uint32_t, stage_count),
       .frame = rzalloc_array(mem_ctx, uint32_t, stage_count),
+      .leaf = rzalloc_array(mem_ctx, bool, stage_count),
    };
 
    for (unsigned i = 0; i < ARRAY_SIZE(rb.by_stage); i++)
@@ -1778,6 +1797,7 @@ hk_nir_build_rt_dispatcher(const nir_shader_compiler_options *options,
       struct rt_split split = split_stage(mem_ctx, nir);
       rb.first_case[i] = next_case;
       rb.frame[i] = split.frame;
+      rb.leaf[i] = !traces && !calls;
 
       for (uint32_t j = 0; j < split.count; j++) {
          struct rt_part part = {split.parts[j], i, j};
