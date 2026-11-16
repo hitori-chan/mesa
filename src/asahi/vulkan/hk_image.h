@@ -54,6 +54,13 @@ struct hk_image_plane {
    uint64_t addr;
    struct agx_va *va;
 
+   /* An imported plane's place in its memory binding, as its exporter laid it
+    * out (VkImageDrmFormatModifierExplicitCreateInfoEXT); otherwise the planes
+    * follow each other, aligned.
+    */
+   bool explicit_offset;
+   uint64_t offset_B;
+
    /* For host image copy */
    void *map;
    uint32_t rem;
