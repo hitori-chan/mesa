@@ -102,12 +102,16 @@ shared_var_info(const struct glsl_type *type, unsigned *size, unsigned *align)
 uint64_t
 hk_physical_device_compiler_flags(const struct hk_physical_device *pdev)
 {
-   /* This could be optimized but it doesn't matter. The debug flags take the
-    * low bits; a driconf option that changes the code takes a high one */
+   /* This could be optimized but it doesn't matter. The device's debug flags
+    * take the low 32 bits and the compiler's (AGX_MESA_DEBUG, many of which
+    * change the code) the next ones, so that a cache never hands a shader
+    * compiled under other flags; a driconf option that changes the code takes
+    * a high bit */
    const struct hk_instance *instance =
       hk_physical_device_instance((struct hk_physical_device *)pdev);
 
-   return pdev->dev.debug | ((uint64_t)pdev->sampled_views_as_arrays << 63) |
+   return pdev->dev.debug | (agx_get_compiler_debug() << 32) |
+          ((uint64_t)pdev->sampled_views_as_arrays << 63) |
           ((uint64_t)instance->drirc.misc.d3d_nearest_mip << 62);
 }
 
