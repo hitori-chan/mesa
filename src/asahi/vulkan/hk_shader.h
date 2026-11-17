@@ -68,7 +68,9 @@ struct hk_shader_info {
          uint32_t attribs_read;
          BITSET_DECLARE(attrib_components_read, AGX_MAX_ATTRIBS * 4);
          bool use_prolog;
-         uint8_t _pad[7];
+         /* The shader samples, reads or writes an image */
+         bool accesses_images;
+         uint8_t _pad[6];
       } vs;
 
       struct {

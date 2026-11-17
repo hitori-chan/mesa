@@ -264,6 +264,11 @@ hk_BeginCommandBuffer(VkCommandBuffer commandBuffer,
    hk_reset_cmd_buffer(&cmd->vk, 0);
 
    perf_debug(cmd, "Begin command buffer");
+
+   /* What the command buffers before this one recorded is not known here */
+   cmd->vertex_dep = true;
+   cmd->avail_mem = cmd->avail_img = 0;
+
    hk_cmd_buffer_begin_compute(cmd, pBeginInfo);
    hk_cmd_buffer_begin_graphics(cmd, pBeginInfo);
 
@@ -326,12 +331,182 @@ hk_EndCommandBuffer(VkCommandBuffer commandBuffer)
    return vk_command_buffer_get_record_result(&cmd->vk);
 }
 
+/*
+ * Whether a stage mask names work a render runs: anything but the host's and
+ * compute's (transfers included, as blits and copies may be draws). Compute's
+ * order against renders has its own barriers.
+ */
+static bool
+hk_render_stages(VkPipelineStageFlags2 stages, VkPipelineStageFlags2 none)
+{
+   return stages & ~(none | VK_PIPELINE_STAGE_2_HOST_BIT |
+                     VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
+}
+
+/*
+ * Whether a destination stage mask reaches no render stage before the
+ * fragment stage, so that the next render's vertex stage waits for nothing.
+ */
+static bool
+hk_fragment_side(VkPipelineStageFlags2 dst)
+{
+   return !(dst & ~(VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+                    VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+                    VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT |
+                    VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT |
+                    VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT |
+                    VK_PIPELINE_STAGE_2_HOST_BIT |
+                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT));
+}
+
+/*
+ * Whether a source stage mask names no stage a render runs from its fragment
+ * stage on: the next render's vertex stage follows those either way, as the
+ * vertex stages run in order.
+ */
+static bool
+hk_vertex_side(VkPipelineStageFlags2 src)
+{
+   return !(src & ~(VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT |
+                    VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT |
+                    VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT |
+                    VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT |
+                    VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT |
+                    VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
+                    VK_PIPELINE_STAGE_2_HOST_BIT |
+                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT));
+}
+
+/* The accesses that read only; any other is taken as a write */
+#define HK_READ_ACCESSES                                                       \
+   (VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_INDEX_READ_BIT |       \
+    VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_2_UNIFORM_READ_BIT |     \
+    VK_ACCESS_2_INPUT_ATTACHMENT_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT |      \
+    VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT |                                    \
+    VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |                            \
+    VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_HOST_READ_BIT |                \
+    VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_SHADER_SAMPLED_READ_BIT |        \
+    VK_ACCESS_2_SHADER_STORAGE_READ_BIT)
+
+/*
+ * Whether a dependency reaches the next render's vertex stage: one into the
+ * fragment stage alone leaves it free, as the fragment stages run in order,
+ * each on the previous one's retire. A layout change records no work here
+ * (hk_CmdPipelineBarrier2), so it does not count.
+ */
+static bool
+hk_render_to_render(VkPipelineStageFlags2 src, VkPipelineStageFlags2 dst)
+{
+   if (hk_fragment_side(dst))
+      return false;
+
+   return hk_render_stages(src, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT) &&
+          hk_render_stages(dst, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT);
+}
+
+/*
+ * Follow the writes that barriers leaving the next render's vertex stage free
+ * made available, through the barriers chained to them (whose source stages
+ * meet their destination stages). Returns whether this one chains to writes
+ * as memory (2) or as an image's (1), or to neither (0).
+ */
+static unsigned
+hk_chain(struct hk_cmd_buffer *cmd, VkPipelineStageFlags2 src,
+         VkPipelineStageFlags2 dst)
+{
+   unsigned chained = 0;
+
+   if (src & cmd->avail_img) {
+      cmd->avail_img |= dst;
+      chained = 1;
+   }
+   if (src & cmd->avail_mem) {
+      cmd->avail_mem |= dst;
+      chained = 2;
+   }
+   return chained;
+}
+
+/*
+ * A memory or buffer barrier from render work to render work. Without a write
+ * on its source side (nor one chained to it) it orders the next writes after
+ * the previous reads only: from the vertex side, whose stages run in order,
+ * that holds anyway; from the fragment side the next render's vertex stage
+ * must wait only if it stores (or accesses images, for writes chained from an
+ * image's). A write keeps the next vertex stage waiting.
+ */
+static void
+hk_memory_dependency(struct hk_cmd_buffer *cmd, VkPipelineStageFlags2 src,
+                     VkPipelineStageFlags2 dst, VkAccessFlags2 src_access)
+{
+   unsigned chained = hk_chain(cmd, src, dst);
+   bool writes = src_access & ~HK_READ_ACCESSES;
+
+   if (!hk_render_to_render(src, dst)) {
+      if (writes && hk_render_stages(src, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT))
+         cmd->avail_mem |= dst;
+      return;
+   }
+
+   if (writes || chained == 2)
+      cmd->vertex_dep = true;
+   else if (chained || !hk_vertex_side(src))
+      cmd->vertex_dep_exec = true;
+}
+
+/*
+ * G15: a dependency from render work to render work keeps the next render's
+ * vertex stage behind the previous render's fragment stage, as without
+ * DRM_ASAHI_RENDER_OVERLAP_VERTEX every render's is. The fragment stages run
+ * in order either way, but a fragment stage that reads what the one before
+ * stored then starts right at that one's retire, before its stores are
+ * visible, where the vertex stage between them otherwise gives them time.
+ */
+void
+hk_cmd_buffer_dependency(struct hk_cmd_buffer *cmd,
+                         const VkDependencyInfo *info)
+{
+   for (uint32_t i = 0; i < info->memoryBarrierCount; ++i) {
+      const VkMemoryBarrier2 *b = &info->pMemoryBarriers[i];
+      hk_memory_dependency(cmd, b->srcStageMask, b->dstStageMask,
+                           b->srcAccessMask);
+   }
+
+   for (uint32_t i = 0; i < info->bufferMemoryBarrierCount; ++i) {
+      const VkBufferMemoryBarrier2 *b = &info->pBufferMemoryBarriers[i];
+      hk_memory_dependency(cmd, b->srcStageMask, b->dstStageMask,
+                           b->srcAccessMask);
+   }
+
+   /* An image barrier concerns that image alone, which the next render's
+    * vertex side reaches only through an image or texture instruction */
+   for (uint32_t i = 0; i < info->imageMemoryBarrierCount; ++i) {
+      const VkImageMemoryBarrier2 *b = &info->pImageMemoryBarriers[i];
+      unsigned chained = hk_chain(cmd, b->srcStageMask, b->dstStageMask);
+
+      if (!hk_render_to_render(b->srcStageMask, b->dstStageMask)) {
+         if ((b->srcAccessMask & ~HK_READ_ACCESSES) &&
+             hk_render_stages(b->srcStageMask,
+                              VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT))
+            cmd->avail_img |= b->dstStageMask;
+         continue;
+      }
+
+      if (chained == 2)
+         cmd->vertex_dep = true;
+      else
+         cmd->vertex_dep_image = true;
+   }
+}
+
 VKAPI_ATTR void VKAPI_CALL
 hk_CmdPipelineBarrier2(VkCommandBuffer commandBuffer,
                        const VkDependencyInfo *pDependencyInfo)
 {
    VK_FROM_HANDLE(hk_cmd_buffer, cmd, commandBuffer);
    struct hk_device *dev = hk_cmd_buffer_device(cmd);
+
+   hk_cmd_buffer_dependency(cmd, pDependencyInfo);
 
    if (HK_PERF(dev, NOBARRIER))
       return;
@@ -953,6 +1128,13 @@ hk_cs_init_graphics(struct hk_cmd_buffer *cmd, struct hk_cs *cs)
     * hk_BeginRendering/hk_EndRendering will override.
     */
    cs->cr = render->cr;
+   cs->cr.vertex_dep = cmd->vertex_dep;
+   cs->cr.vertex_dep_image = cmd->vertex_dep_image;
+   cs->cr.vertex_dep_exec = cmd->vertex_dep_exec;
+   /* A vertex stage that waits follows every render before it */
+   if (cmd->vertex_dep)
+      cmd->avail_mem = cmd->avail_img = 0;
+   cmd->vertex_dep = cmd->vertex_dep_image = cmd->vertex_dep_exec = false;
    cs->cr.bg.main = render->cr.bg.partial;
    cs->cr.eot.main = render->cr.eot.partial;
    cs->cr.zls_control = render->cr.zls_control_partial;
