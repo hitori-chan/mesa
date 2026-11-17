@@ -809,6 +809,17 @@ enum drm_asahi_render_flags {
 	DRM_ASAHI_RENDER_BARRIER_RETIRE = (1U << 4),
 
 	/**
+	 * @DRM_ASAHI_RENDER_OVERLAP_VERTEX: The render's vertex stage depends on
+	 * no earlier render's fragment stage, so it may run while earlier renders
+	 * of the queue are still in their fragment stages, as Metal's vertex
+	 * stages run ahead of its fragment stages (G15: up to a few renders
+	 * ahead). The fragment stages stay in order. Ignored with
+	 * @DRM_ASAHI_RENDER_WAIT_STORES. Kernels that do not know it ignore it
+	 * on G15.
+	 */
+	DRM_ASAHI_RENDER_OVERLAP_VERTEX = (1U << 6),
+
+	/**
 	 * @DRM_ASAHI_RENDER_DBIAS_IS_INT: Use integer depth bias formula.
 	 *
 	 * Graphics specifications contain two alternate formulas for depth

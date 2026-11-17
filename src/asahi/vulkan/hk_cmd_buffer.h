@@ -202,6 +202,23 @@ struct hk_render_registers {
     * before it, which the firmware writes after that stream has retired */
    bool wait_cdm_ts;
 
+   /* G15: a barrier from render work to render work came before the pass (or
+    * it is the command buffer's first), so its vertex stage does not run
+    * under the previous pass's fragment stage */
+   bool vertex_dep;
+
+   /* G15: barriers that reach the pass's vertex stage only
+    * through images (vertex_dep_image) or only to order its writes after
+    * the previous pass's reads (vertex_dep_exec): they keep it from
+    * overlapping only if its vertex side accesses images (vertex_images) or
+    * stores (vertex_stores) */
+   bool vertex_dep_image, vertex_dep_exec;
+
+   /* G15: a draw's vertex side samples, reads or writes an image, or runs
+    * stages before the hardware vertex shader (tessellation, geometry, mesh),
+    * whose accesses are not followed */
+   bool vertex_images;
+
    struct {
       uint32_t dimensions;
       uint64_t buffer, meta;
@@ -587,6 +604,16 @@ struct hk_cmd_buffer {
    /* Recording a resolve pass (of a render pass or vkCmdResolveImage) */
    bool resolving;
 
+   /* The next render's vertex_dep, vertex_dep_image and vertex_dep_exec
+    * (struct hk_render_registers) */
+   bool vertex_dep, vertex_dep_image, vertex_dep_exec;
+
+   /* G15: the stages that writes from render work reach through barriers
+    * that left the next render's vertex stage free, as memory (avail_mem)
+    * or as an image's (avail_img), since the last render whose vertex stage
+    * waited: a barrier from these stages may carry those writes on */
+   VkPipelineStageFlags2 avail_mem, avail_img;
+
    struct {
       struct hk_uploader main, usc;
    } uploader;
@@ -712,6 +739,8 @@ hk_pool_usc_alloc(struct hk_cmd_buffer *cmd, uint32_t size, uint32_t alignment)
 }
 
 void hk_cs_init_graphics(struct hk_cmd_buffer *cmd, struct hk_cs *cs);
+void hk_cmd_buffer_dependency(struct hk_cmd_buffer *cmd,
+                              const VkDependencyInfo *info);
 uint32_t hk_default_sample_positions(unsigned nr_samples);
 
 static inline struct hk_cs *

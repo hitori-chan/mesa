@@ -35,6 +35,12 @@ struct hk_queue {
     * command has waited for those stores yet */
    bool vertex_stores;
 
+   /* G15: a dependency through images or of execution only came
+    * before a render that ran its vertex stage under the earlier renders'
+    * fragment stages, and no render has waited since (asahi_fill_vdm_command)
+    */
+   bool vertex_dep_pending;
+
    /* G15: compute work no later render has waited for, a report behind a
     * render not counted */
    bool compute_pending;
