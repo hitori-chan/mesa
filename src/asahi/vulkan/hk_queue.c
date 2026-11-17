@@ -109,8 +109,8 @@ asahi_fill_cdm_command(struct hk_device *dev, struct hk_cs *cs,
 }
 
 static void
-asahi_fill_vdm_command(struct hk_device *dev, struct hk_cs *cs,
-                       struct drm_asahi_cmd_render *c)
+asahi_fill_vdm_command(struct hk_device *dev, struct hk_queue *queue,
+                       struct hk_cs *cs, struct drm_asahi_cmd_render *c)
 {
    memset(c, 0, sizeof(*c));
 
@@ -209,9 +209,28 @@ asahi_fill_vdm_command(struct hk_device *dev, struct hk_cs *cs,
    if (cs->cr.process_empty_tiles)
       c->flags |= DRM_ASAHI_RENDER_PROCESS_EMPTY_TILES;
 
-   /* Only G15's kernel knows the flag; G13's rejects it */
+   /* Only G15's kernel knows the flags; G13's rejects them */
    if (cs->cr.wait_stores && dev->dev.params.gpu_generation >= 15)
       c->flags |= DRM_ASAHI_RENDER_WAIT_STORES;
+
+   /* A render with no dependency on render work before it may run its vertex
+    * stage under the earlier renders' fragment stages: one through images or
+    * of execution only counts only if its vertex side accesses images or
+    * stores (hk_cmd_buffer_dependency). One that did not count stays pending
+    * for the renders after it until a render waits, as the kernel may run a
+    * vertex stage several renders ahead.
+    */
+   bool pending = cs->cr.vertex_dep_image || cs->cr.vertex_dep_exec ||
+                  queue->vertex_dep_pending;
+   bool overlap =
+      !cs->cr.vertex_dep &&
+      !(pending && (cs->cr.vertex_images || cs->cr.vertex_stores)) &&
+      !cs->cr.wait_stores && dev->dev.params.gpu_generation >= 15 &&
+      !HK_PERF(dev, NOOVERLAP);
+
+   if (overlap)
+      c->flags |= DRM_ASAHI_RENDER_OVERLAP_VERTEX;
+   queue->vertex_dep_pending = overlap && pending;
 
    if (cs->scratch.vs.main || cs->scratch.vs.preamble) {
       c->flags |= DRM_ASAHI_RENDER_VERTEX_SCRATCH;
@@ -925,7 +944,7 @@ queue_submit(struct hk_device *dev, struct hk_queue *queue,
                    cs->timestamp.end.handle);
 
             struct drm_asahi_cmd_render cmd;
-            asahi_fill_vdm_command(dev, cs, &cmd);
+            asahi_fill_vdm_command(dev, queue, cs, &cmd);
 
             if (g15_barrier_retire(dev))
                cmd.flags |= DRM_ASAHI_RENDER_BARRIER_RETIRE;

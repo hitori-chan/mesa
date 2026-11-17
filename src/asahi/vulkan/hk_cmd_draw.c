@@ -4028,6 +4028,18 @@ hk_flush_gfx_state(struct hk_cmd_buffer *cmd, uint32_t draw_id,
    cs->cr.vertex_stores |=
       gfx->xfb_enabled || (hw_vs && hw_vs->b.info.writes_memory);
 
+   /* Only a plain vertex shader's accesses are followed */
+   if (!cs->cr.vertex_images) {
+      struct hk_api_shader *vs = gfx->shaders[MESA_SHADER_VERTEX];
+
+      cs->cr.vertex_images =
+         !vs || hw_vs != &vs->variants[HK_VS_VARIANT_HW] ||
+         gfx->shaders[MESA_SHADER_TESS_CTRL] ||
+         gfx->shaders[MESA_SHADER_TESS_EVAL] ||
+         gfx->shaders[MESA_SHADER_GEOMETRY] || gfx->shaders[MESA_SHADER_TASK] ||
+         gfx->shaders[MESA_SHADER_MESH] || hw_vs->info.vs.accesses_images;
+   }
+
    return cs;
 }
 
