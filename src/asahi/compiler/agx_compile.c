@@ -3896,6 +3896,14 @@ emit_if(agx_context *ctx, nir_if *nif)
    _b.cursor = agx_before_block(else_block);
    agx_else_fcmp(&_b, agx_zero(), agx_zero(), 1, AGX_FCOND_EQ, false, end_else);
 
+   /* The block after the if runs at the if's own nesting, every thread that
+    * entered it active again after the pop_exec: divergent only inside other
+    * control flow, so a shader's top-level code after its first if keeps its
+    * last-use flags.
+    */
+   ctx->loop_nesting--;
+   ctx->total_nesting--;
+
    ctx->after_block = agx_create_block(ctx);
 
    agx_block_add_successor(first_block, if_block);
@@ -3905,8 +3913,6 @@ emit_if(agx_context *ctx, nir_if *nif)
 
    _b.cursor = agx_after_block(ctx->current_block);
    agx_pop_exec(&_b, 1);
-   ctx->loop_nesting--;
-   ctx->total_nesting--;
 }
 
 static void
@@ -3957,6 +3963,11 @@ emit_loop(agx_context *ctx, nir_loop *nloop)
    /* Restore loop nesting (we might be inside an if inside an outer loop) */
    ctx->loop_nesting = pushed_nesting;
    ctx->total_nesting--;
+
+   /* The break block, made inside the loop's nesting, runs after it, all its
+    * threads active again after the pop_exec
+    */
+   ctx->after_block->divergent = ctx->total_nesting > 0;
 }
 
 /* Before the first control flow structure, the nesting counter needs to be
