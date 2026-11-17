@@ -1370,6 +1370,26 @@ lower_per_primitive_input(nir_builder *b, nir_intrinsic_instr *intr,
    return true;
 }
 
+/* Whether the shader has any texture or image instruction */
+static bool
+hk_accesses_images(nir_shader *nir)
+{
+   nir_foreach_function_impl(impl, nir) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type == nir_instr_type_tex)
+               return true;
+
+            if (instr->type == nir_instr_type_intrinsic &&
+                nir_intrinsic_has_image_dim(nir_instr_as_intrinsic(instr)))
+               return true;
+         }
+      }
+   }
+
+   return false;
+}
+
 static VkResult
 hk_compile_nir(struct hk_device *dev, const VkAllocationCallbacks *pAllocator,
                nir_shader *nir, VkShaderCreateFlagsEXT shader_flags,
@@ -1386,6 +1406,7 @@ hk_compile_nir(struct hk_device *dev, const VkAllocationCallbacks *pAllocator,
       nr_vbos = DIV_ROUND_UP(
          BITSET_LAST_BIT(shader->info.vs.attrib_components_read), 4);
       kill_psiz = key->vs.kill_psiz;
+      shader->info.vs.accesses_images = hk_accesses_images(nir);
    } else if (sw_stage == MESA_SHADER_FRAGMENT) {
       NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_per_primitive_input,
                nir_metadata_control_flow, NULL);

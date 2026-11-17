@@ -118,6 +118,9 @@ hk_CmdWaitEvents2(VkCommandBuffer commandBuffer, uint32_t eventCount,
    VK_FROM_HANDLE(hk_cmd_buffer, cmd, commandBuffer);
    perf_debug(cmd, "Wait events");
 
+   for (uint32_t i = 0; i < eventCount; ++i)
+      hk_cmd_buffer_dependency(cmd, &pDependencyInfos[i]);
+
    /* The big hammer. Need to check if this is actually needed.
     *
     * XXX: perf.
