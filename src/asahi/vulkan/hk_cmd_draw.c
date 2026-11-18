@@ -2295,7 +2295,7 @@ hk_get_fast_linked_locked_vs(struct hk_device *dev, struct hk_shader *shader,
                            agx_nir_vs_prolog, false, false, 0, 0);
 
    struct hk_linked_shader *linked =
-      hk_fast_link(dev, false, shader, prolog, NULL, 0);
+      hk_fast_link(dev, false, shader, prolog, NULL, 0, 1);
 
    struct hk_fast_link_key *key_clone =
       ralloc_memdup(shader->linked.ht, key, sizeof(*key));
@@ -2357,7 +2357,8 @@ hk_get_fast_linked_locked_fs(struct hk_device *dev, struct hk_shader *shader,
       epilog_stop, 0, key->epilog.nr_samples);
 
    struct hk_linked_shader *linked =
-      hk_fast_link(dev, true, shader, prolog, epilog, key->nr_samples_shaded);
+      hk_fast_link(dev, true, shader, prolog, epilog, key->nr_samples_shaded,
+                   key->epilog.nr_samples);
    linked->b.tib_written = agx_fs_epilog_tib_written(&key->epilog, &linked->b);
 
    struct hk_fast_link_key *key_clone =

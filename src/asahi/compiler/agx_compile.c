@@ -5504,6 +5504,15 @@ agx_compile_shader_nir_impl(nir_shader *nir, struct agx_shader_key *key,
          nir->info.fs.needs_coarse_quad_helper_invocations ||
          nir->info.writes_memory || agx_fs_reads_vertices(&info->varyings.fs);
 
+      /* G15: a merged pair shades a pixel holding samples of both triangles
+       * once, with the first triangle's flat inputs, so a strip's seams lose
+       * their antialiasing. Apple's compiler disables merging for a flat input
+       * at more than one sample (getDisableTriangleMerging, AGXCompilerCore
+       * 27.2 0x229425858); the sample count is known at link time.
+       */
+      info->disable_tri_merging_msaa = key->dev.gpu_generation >= 15 &&
+                                       agx_fs_reads_flat(&info->varyings.fs);
+
       /* G15: a merged pair of a strip's or fan's triangles projects a
        * perspective input iterated at a sample, the centroid or an offset
        * wrong (dEQP-VK's barycentric weights cases, whose reference

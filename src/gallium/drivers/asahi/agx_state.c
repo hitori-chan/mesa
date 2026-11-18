@@ -2364,7 +2364,9 @@ asahi_fast_link(struct agx_context *ctx, struct agx_uncompiled_shader *so,
    struct agx_linked_shader *linked =
       rzalloc(so->linked_shaders, struct agx_linked_shader);
    agx_fast_link(linked, dev, so->type == MESA_SHADER_FRAGMENT, &key->main->b,
-                 &prolog->b, &epilog->b, key->nr_samples_shaded);
+                 &prolog->b, &epilog->b, key->nr_samples_shaded,
+                 so->type == MESA_SHADER_FRAGMENT ? key->epilog.fs.nr_samples
+                                                  : 1);
 
    if (so->type == MESA_SHADER_FRAGMENT)
       linked->tib_written = agx_fs_epilog_tib_written(&key->epilog.fs, linked);
