@@ -85,12 +85,13 @@ void
 agx_fast_link(struct agx_linked_shader *linked, struct agx_device *dev,
               bool fragment, struct agx_shader_part *main,
               struct agx_shader_part *prolog, struct agx_shader_part *epilog,
-              unsigned nr_samples_shaded)
+              unsigned nr_samples_shaded, unsigned nr_samples)
 {
    size_t size = 0;
    unsigned nr_gprs = 0, scratch_size = 0;
    bool reads_tib = false, writes_sample_mask = false,
-        disable_tri_merging = false, tag_write_disable = true;
+        disable_tri_merging = false, disable_tri_merging_msaa = false,
+        tag_write_disable = true;
    bool g15 = dev->params.gpu_generation >= 15;
 
    /* G15: the loop header and footer in G15 instructions (agx_pack3.c) */
@@ -129,6 +130,7 @@ agx_fast_link(struct agx_linked_shader *linked, struct agx_device *dev,
       reads_tib |= part->info.reads_tib;
       writes_sample_mask |= part->info.writes_sample_mask;
       disable_tri_merging |= part->info.disable_tri_merging;
+      disable_tri_merging_msaa |= part->info.disable_tri_merging_msaa;
       linked->uses_base_param |= part->info.uses_base_param;
       linked->uses_txf |= part->info.uses_txf;
       tag_write_disable &= part->info.tag_write_disable;
@@ -281,6 +283,9 @@ agx_fast_link(struct agx_linked_shader *linked, struct agx_device *dev,
          writes_sample_mask = false;
          linked->no_op = true;
       }
+
+      if (nr_samples > 1 && disable_tri_merging_msaa)
+         disable_tri_merging = true;
 
       /* G15: Apple's discard and depth output disable triangle merging (their
        * fragment control 2, 0x44000200: draws.md)
