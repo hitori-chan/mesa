@@ -1122,6 +1122,7 @@ hk_cs_init_graphics(struct hk_cmd_buffer *cmd, struct hk_cs *cs)
    uint8_t *map = cs->current;
 
    cs->tib = render->tilebuffer;
+   render->nr_gfx_cs++;
 
    /* Assume this is not the first control stream of the render pass, so
     * initially use the partial background/EOT program and ZLS control.

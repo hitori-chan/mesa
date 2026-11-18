@@ -50,6 +50,7 @@ static const struct debug_named_value hk_perf_options[] = {
    {"hostbarrier", HK_PERF_HOSTBARRIER, "G15: barriers across kinds wait for the firmware's post-process"},
    {"allext",    HK_PERF_ALLEXT,   "virtio: every swapchain image on every submit"},
    {"nooverlap", HK_PERF_NOOVERLAP, "G15: no render's vertex stage under the previous render's fragment stage"},
+   {"zsstore",   HK_PERF_ZSSTORE,  "Load and store depth and stencil as the pass begins, written or not"},
    DEBUG_NAMED_VALUE_END
 };
 /* clang-format on */

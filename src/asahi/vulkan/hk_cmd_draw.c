@@ -643,7 +643,7 @@ hk_zs_keep(const VkRenderingAttachmentInfo *att)
           att->loadOp != VK_ATTACHMENT_LOAD_OP_CLEAR;
 }
 
-static void
+static struct agx_zls
 hk_pack_zls_control(struct agx_zls_control_packed *packed,
                     struct ail_layout *z_layout, struct ail_layout *s_layout,
                     const VkRenderingAttachmentInfo *z,
@@ -681,6 +681,7 @@ hk_pack_zls_control(struct agx_zls_control_packed *packed,
    }
 
    agx_pack_zls_control(packed, z_layout, s_layout, &zls);
+   return zls;
 }
 
 /* G15: an attachment's bound level over the pass's layers, as Metal lists a
@@ -972,8 +973,11 @@ hk_CmdBeginRendering(VkCommandBuffer commandBuffer,
       }
    }
 
-   hk_pack_zls_control(&render->cr.zls_control, z_layout, s_layout, attach_z,
-                       attach_s, incomplete_render_area, false);
+   render->zls_args =
+      hk_pack_zls_control(&render->cr.zls_control, z_layout, s_layout,
+                          attach_z, attach_s, incomplete_render_area, false);
+   render->z_layout = z_layout;
+   render->s_layout = s_layout;
 
    hk_pack_zls_control(&render->cr.zls_control_partial, z_layout, s_layout,
                        attach_z, attach_s, incomplete_render_area, true);
@@ -1155,6 +1159,47 @@ hk_CmdBeginRendering(VkCommandBuffer commandBuffer,
    }
 }
 
+/*
+ * hk_pack_zls_control stores depth and stencil whatever the store op, since a
+ * pass split into several control streams must keep what each stream wrote.
+ * An aspect no draw of the pass writes holds in memory what its tiles hold, so
+ * no stream needs to store it, whatever the store op (DXVK's tiler path gives
+ * STORE_OP_NONE to a read-only depth, dxvk_context.cpp adjustAttachmentLoad
+ * StoreOps); an aspect no draw reads or writes needs no load either. Done only
+ * for a pass in one control stream, begun and ended in this command buffer,
+ * so that every stream that loaded it is the one patched here. As Gallium's
+ * batches do (agx_pipe.c: z_store = batch->resolve & PIPE_CLEAR_DEPTH).
+ */
+static void
+hk_trim_zls(struct hk_cmd_buffer *cmd, struct hk_cs *cs)
+{
+   struct hk_device *dev = hk_cmd_buffer_device(cmd);
+   struct hk_rendering_state *render = &cmd->state.gfx.render;
+
+   if (HK_PERF(dev, ZSSTORE) || render->nr_gfx_cs != 1 ||
+       (render->flags &
+        (VK_RENDERING_SUSPENDING_BIT | VK_RENDERING_RESUMING_BIT)))
+      return;
+
+   if (!render->z_layout && !render->s_layout)
+      return;
+
+   struct agx_zls zls = render->zls_args;
+   uint8_t a = render->zs_access;
+   bool z_write = (a & HK_ZS_WRITE_Z) || render->depth_att.clear ||
+                  render->depth_att.resolve_mode != VK_RESOLVE_MODE_NONE;
+   bool s_write = (a & HK_ZS_WRITE_S) || render->stencil_att.clear ||
+                  render->stencil_att.resolve_mode != VK_RESOLVE_MODE_NONE;
+
+   zls.z_store &= z_write;
+   zls.z_load &= z_write || (a & HK_ZS_READ_Z);
+   zls.s_store &= s_write;
+   zls.s_load &= s_write || (a & HK_ZS_READ_S);
+
+   agx_pack_zls_control(&cs->cr.zls_control, render->z_layout,
+                        render->s_layout, &zls);
+}
+
 VKAPI_ATTR void VKAPI_CALL
 hk_CmdEndRendering2KHR(VkCommandBuffer commandBuffer,
                        const VkRenderingEndInfoKHR *pRenderingEndInfo)
@@ -1168,6 +1213,7 @@ hk_CmdEndRendering2KHR(VkCommandBuffer commandBuffer,
    struct hk_cs *cs = cmd->current_cs.gfx;
    if (cs) {
       cs->cr.eot.main = render->cr.eot.main;
+      hk_trim_zls(cmd, cs);
    }
 
    /* Only that control stream's end-of-tile program resolves, on every tile,
@@ -2457,6 +2503,44 @@ hk_stencil_test_enabled(struct hk_cmd_buffer *cmd)
 
    return dyn->ds.stencil.test_enable &&
           render->stencil_att.vk_format != VK_FORMAT_UNDEFINED;
+}
+
+/* The draw's depth and stencil accesses (HK_ZS_*), at most what it does: a
+ * test reads, a test with writes or an op other than KEEP writes */
+static uint8_t
+hk_zs_access(struct hk_cmd_buffer *cmd)
+{
+   const struct hk_rendering_state *render = &cmd->state.gfx.render;
+   struct vk_dynamic_graphics_state *dyn = &cmd->vk.dynamic_graphics_state;
+   uint8_t access = 0;
+
+   if (render->depth_att.vk_format != VK_FORMAT_UNDEFINED) {
+      if (dyn->ds.depth.test_enable || dyn->ds.depth.bounds_test.enable)
+         access |= HK_ZS_READ_Z;
+
+      if (dyn->ds.depth.test_enable && dyn->ds.depth.write_enable)
+         access |= HK_ZS_WRITE_Z;
+   }
+
+   if (hk_stencil_test_enabled(cmd)) {
+      access |= HK_ZS_READ_S;
+
+      const struct vk_stencil_test_face_state *faces[] = {
+         &dyn->ds.stencil.front,
+         &dyn->ds.stencil.back,
+      };
+
+      for (unsigned i = 0; i < ARRAY_SIZE(faces); ++i) {
+         const struct vk_stencil_test_face_state *f = faces[i];
+
+         if (f->write_mask && (f->op.pass != VK_STENCIL_OP_KEEP ||
+                               f->op.fail != VK_STENCIL_OP_KEEP ||
+                               f->op.depth_fail != VK_STENCIL_OP_KEEP))
+            access |= HK_ZS_WRITE_S;
+      }
+   }
+
+   return access;
 }
 
 /* G15: whether to enable agx_pack_stencil_always_g15's test */
@@ -3955,6 +4039,8 @@ hk_flush_gfx_state(struct hk_cmd_buffer *cmd, uint32_t draw_id,
 
    if (!cs)
       return NULL;
+
+   gfx->render.zs_access |= hk_zs_access(cmd);
 
    /* Annoyingly,
     * VK_DEPTH_BIAS_REPRESENTATION_LEAST_REPRESENTABLE_VALUE_FORCE_UNORM_EXT is

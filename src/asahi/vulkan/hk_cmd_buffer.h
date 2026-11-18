@@ -264,7 +264,21 @@ struct hk_rendering_state {
    /* G15: the colour attachments the end-of-tile program resolves, with no
     * resolve pass after */
    uint8_t eot_resolve;
+
+   /* The depth and stencil accesses of the pass's draws (HK_ZS_*), its
+    * graphics control streams, and its ZLS word's inputs: a pass in one
+    * control stream loads an aspect only if it reads or writes it, and stores
+    * it only if it writes it (hk_CmdEndRendering2KHR) */
+   uint8_t zs_access;
+   uint32_t nr_gfx_cs;
+   struct agx_zls zls_args;
+   struct ail_layout *z_layout, *s_layout;
 };
+
+#define HK_ZS_READ_Z  BITFIELD_BIT(0)
+#define HK_ZS_WRITE_Z BITFIELD_BIT(1)
+#define HK_ZS_READ_S  BITFIELD_BIT(2)
+#define HK_ZS_WRITE_S BITFIELD_BIT(3)
 
 struct hk_index_buffer_state {
    struct hk_addr_range buffer;
