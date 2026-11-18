@@ -82,6 +82,18 @@ agx_fs_reads_vertices(const struct agx_varyings_fs *fs)
    return false;
 }
 
+/* Whether a fragment shader reads a flat input */
+static inline bool
+agx_fs_reads_flat(const struct agx_varyings_fs *fs)
+{
+   for (unsigned i = 0; i < fs->nr_bindings; ++i) {
+      if (!fs->bindings[i].smooth)
+         return true;
+   }
+
+   return false;
+}
+
 union agx_varyings {
    struct agx_varyings_fs fs;
 };
@@ -193,6 +205,9 @@ struct agx_shader_info {
 
    /* Shader is incompatible with triangle merging */
    bool disable_tri_merging;
+
+   /* Shader is incompatible with triangle merging at more than one sample */
+   bool disable_tri_merging_msaa;
 
    /* Reads draw ID system value */
    bool uses_draw_id;

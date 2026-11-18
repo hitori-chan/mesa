@@ -70,7 +70,8 @@ struct agx_linked_shader {
 void agx_fast_link(struct agx_linked_shader *linked, struct agx_device *dev,
                    bool fragment, struct agx_shader_part *main,
                    struct agx_shader_part *prolog,
-                   struct agx_shader_part *epilog, unsigned nr_samples_shaded);
+                   struct agx_shader_part *epilog, unsigned nr_samples_shaded,
+                   unsigned nr_samples);
 
 /* The code of a shader at va, its binary at cpu. A shader linked into a
  * program (linked, NULL for none) loads the program's main part. */
