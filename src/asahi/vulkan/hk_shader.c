@@ -1166,7 +1166,7 @@ hk_upload_shader(struct hk_device *dev, struct hk_shader *shader)
 
    if (!shader->linked.ht) {
       /* If we only have a single variant, link now. */
-      shader->only_linked = hk_fast_link(dev, false, shader, NULL, NULL, 0);
+      shader->only_linked = hk_fast_link(dev, false, shader, NULL, NULL, 0, 1);
    }
 
    if (shader->info.stage == MESA_SHADER_FRAGMENT) {
@@ -2413,11 +2413,11 @@ const struct vk_device_shader_ops hk_device_shader_ops = {
 struct hk_linked_shader *
 hk_fast_link(struct hk_device *dev, bool fragment, struct hk_shader *main,
              struct agx_shader_part *prolog, struct agx_shader_part *epilog,
-             unsigned nr_samples_shaded)
+             unsigned nr_samples_shaded, unsigned nr_samples)
 {
    struct hk_linked_shader *s = rzalloc(NULL, struct hk_linked_shader);
    agx_fast_link(&s->b, &dev->dev, fragment, &main->b, prolog, epilog,
-                 nr_samples_shaded);
+                 nr_samples_shaded, nr_samples);
 
    if (fragment) {
       unsigned samplers = main->b.info.sampler_state_count;
