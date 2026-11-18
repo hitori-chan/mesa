@@ -351,7 +351,15 @@ struct vk_meta_image_copy_key {
 
    /* G15's device_load and device_store have no format conversion */
    bool g15;
+
+   /* The key is hashed and compared whole: padding left to the compiler
+    * would take any value, so identical copies would make new pipelines.
+    * Named, it is zeroed with the members a designated initializer omits.
+    */
+   uint8_t pad[2];
 };
+static_assert(sizeof(struct vk_meta_image_copy_key) == 7 * 4,
+              "vk_meta_image_copy_key has no implicit padding");
 
 static bool
 hk_meta_g15(struct vk_device *device)
