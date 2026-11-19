@@ -423,16 +423,30 @@ blend_uses_2src(struct agx_blend_rt_key rt)
 
 static void
 copy_colour(nir_builder *b, const struct agx_fs_epilog_key *key,
-            unsigned out_rt, unsigned in_loc, bool dual_src)
+            unsigned out_rt, unsigned in_loc, bool dual_src,
+            nir_def **shared_alpha)
 {
    unsigned size = (key->link.size_32 & BITFIELD_BIT(in_loc)) ? 32 : 16;
 
    nir_def *value =
       nir_load_exported_agx(b, 4, size, .base = AGX_ABI_FOUT_COLOUR(in_loc));
 
+   u_foreach_bit(c, (key->link.zero_channels >> (4 * in_loc)) & 0xf) {
+      value = nir_vector_insert_imm(b, value, nir_imm_zero(b, 1, size), c);
+   }
+
    if (key->link.loc0_w_1 && in_loc == 0) {
       value =
          nir_vector_insert_imm(b, value, nir_imm_floatN_t(b, 1.0, size), 3);
+   } else if (key->link.alpha_shared & BITFIELD_BIT(in_loc)) {
+      /* One load, so that the blends' clamp and 1 - alpha are computed once */
+      if (!*shared_alpha) {
+         unsigned src = key->link.alpha_src;
+         *shared_alpha = nir_load_exported_agx(
+            b, 1, size, .base = AGX_ABI_FOUT_COLOUR(src) + 3 * (size / 16));
+      }
+
+      value = nir_vector_insert_imm(b, value, *shared_alpha, 3);
    }
 
    nir_store_output(b, value, nir_imm_int(b, 0),
@@ -451,12 +465,14 @@ agx_nir_fs_epilog(nir_builder *b, const void *key_)
    /* First, construct a passthrough shader reading each colour and outputting
     * the value.
     */
+   nir_def *shared_alpha = NULL;
+
    for (unsigned rt = 0; rt < ARRAY_SIZE(key->remap); ++rt) {
       int location = key->remap[rt];
 
       /* Negative remaps indicate the attachment isn't written. */
       if (location >= 0 && key->link.loc_written & BITFIELD_BIT(location)) {
-         copy_colour(b, key, rt, location, false);
+         copy_colour(b, key, rt, location, false, &shared_alpha);
 
          /* If this render target uses dual source blending, also copy the dual
           * source colour. While the copy_colour above is needed even for
@@ -469,7 +485,7 @@ agx_nir_fs_epilog(nir_builder *b, const void *key_)
              key->rt_formats[rt] != PIPE_FORMAT_NONE) {
 
             assert(location == 0);
-            copy_colour(b, key, rt, 1, true);
+            copy_colour(b, key, rt, 1, true, &shared_alpha);
          }
       }
    }
@@ -820,6 +836,10 @@ lower_output_to_epilog(nir_builder *b, nir_intrinsic_instr *intr, void *data)
           nir_scalar_as_uint(s) == one_f) {
 
          info->loc0_w_1 = true;
+      } else if ((info->zero_channels & BITFIELD_BIT(4 * loc + comp + c)) ||
+                 (comp + c == 3 && (info->alpha_shared & BITFIELD_BIT(loc)) &&
+                  loc != info->alpha_src)) {
+         /* The epilog knows this channel's value */
       } else {
          unsigned stride = vec->bit_size / 16;
 
@@ -831,11 +851,99 @@ lower_output_to_epilog(nir_builder *b, nir_intrinsic_instr *intr, void *data)
    return true;
 }
 
+static bool
+same_scalar(nir_scalar a, nir_scalar b)
+{
+   if (a.def->bit_size != b.def->bit_size)
+      return false;
+
+   if (nir_scalar_is_const(a) && nir_scalar_is_const(b))
+      return nir_scalar_as_uint(a) == nir_scalar_as_uint(b);
+
+   return nir_scalar_equal(a, b);
+}
+
+/*
+ * What the epilog can know of the colours from the main shader alone: channels
+ * written as zero, and an alpha several locations share (a G-buffer's usual
+ * form). Only outputs written once, in the last block, count: their value is
+ * the value at the end of the shader whatever path was taken.
+ */
+static void
+gather_known_outputs(nir_shader *s, struct agx_fs_epilog_link_info *info)
+{
+   nir_function_impl *impl = nir_shader_get_entrypoint(s);
+   nir_block *last = nir_impl_last_block(impl);
+   uint32_t written = 0, bad = 0, zero = 0;
+   nir_scalar alpha[8];
+
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr(instr, block) {
+         if (instr->type != nir_instr_type_intrinsic)
+            continue;
+
+         nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+         if (intr->intrinsic != nir_intrinsic_store_output)
+            continue;
+
+         nir_io_semantics sem = nir_intrinsic_io_semantics(intr);
+         if (sem.location == FRAG_RESULT_COLOR || sem.dual_source_blend_index)
+            return;
+
+         if (sem.location < FRAG_RESULT_DATA0)
+            continue;
+
+         unsigned loc = sem.location - FRAG_RESULT_DATA0;
+         loc += nir_src_as_uint(intr->src[1]);
+         unsigned comp = nir_intrinsic_component(intr);
+
+         u_foreach_bit(c, nir_intrinsic_write_mask(intr)) {
+            uint32_t bit = BITFIELD_BIT(4 * loc + comp + c);
+            nir_scalar v = nir_scalar_resolved(intr->src[0].ssa, c);
+
+            if ((written & bit) || block != last)
+               bad |= bit;
+
+            written |= bit;
+
+            if (nir_scalar_is_const(v) && nir_scalar_as_uint(v) == 0)
+               zero |= bit;
+
+            if (comp + c == 3)
+               alpha[loc] = v;
+         }
+      }
+   }
+
+   info->zero_channels = zero & ~bad;
+
+   int src = -1;
+   for (unsigned loc = 0; loc < ARRAY_SIZE(alpha); ++loc) {
+      uint32_t bit = BITFIELD_BIT(4 * loc + 3);
+      if (!(written & bit) || (bad & bit) || (info->zero_channels & bit))
+         continue;
+
+      /* Location 0's constant 1 is not exported (loc0_w_1) */
+      if (loc == 0 && nir_scalar_is_const(alpha[0]))
+         continue;
+
+      if (src < 0) {
+         src = loc;
+      } else if (same_scalar(alpha[src], alpha[loc])) {
+         info->alpha_shared |= BITFIELD_BIT(src) | BITFIELD_BIT(loc);
+      }
+   }
+
+   info->alpha_src = info->alpha_shared ? src : 0;
+}
+
 bool
 agx_nir_lower_fs_output_to_epilog(nir_shader *s,
                                   struct agx_fs_epilog_link_info *out)
 {
    struct lower_epilog_ctx ctx = {.info = out};
+
+   gather_known_outputs(s, out);
 
    nir_shader_intrinsics_pass(s, lower_output_to_epilog,
                               nir_metadata_control_flow, &ctx);
