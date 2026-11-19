@@ -144,30 +144,69 @@ agx_g15_register_only(agx_context *ctx, agx_instr *I, unsigned s)
    }
 }
 
+/*
+ * G15: a texture's or a sampler's index from a uniform goes to a register,
+ * which its field needs, once a block: each sample of a parallax loop moved it
+ * again (30 moves a pixel in Grim Dawn's G-buffer shaders), where one half
+ * kept for the block holds it.
+ */
+static bool
+agx_g15_tex_index(agx_context *ctx, agx_instr *I, unsigned s)
+{
+   /* a preamble writes uniforms: not there */
+   return ctx->key->dev.gpu_generation >= 15 && !ctx->is_preamble &&
+          (I->op == AGX_OPCODE_TEXTURE_SAMPLE ||
+           I->op == AGX_OPCODE_TEXTURE_LOAD) &&
+          (s == 3 || s == 4);
+}
+
 void
 agx_lower_uniform_sources(agx_context *ctx)
 {
-   agx_foreach_instr_global_safe(ctx, I) {
-      agx_builder b = agx_init_builder(ctx, agx_before_instr(I));
+   agx_foreach_block(ctx, block) {
+      agx_index moved[8], from[8];
+      unsigned nr_moved = 0;
 
-      agx_foreach_src(I, s) {
-         /* G15's block write takes its descriptor's address in a uniform
-          * pair (its 7-bit field reaches the low half only) */
-         if (I->op == AGX_OPCODE_BLOCK_IMAGE_STORE && s == 0 &&
-             ctx->key->dev.gpu_generation >= 15 &&
-             I->src[s].type == AGX_INDEX_UNIFORM &&
-             I->src[s].size == AGX_SIZE_64 && I->src[s].value < 256)
-            continue;
+      agx_foreach_instr_in_block_safe(block, I) {
+         agx_builder b = agx_init_builder(ctx, agx_before_instr(I));
 
-         if (I->src[s].type == AGX_INDEX_UNIFORM &&
-             (!agx_instr_accepts_uniform(I->op, s, I->src[s].value,
-                                         I->src[s].size) ||
-              agx_g15_stale_uniform_base(ctx, I, s) ||
-              agx_g15_register_only(ctx, I, s))) {
+         agx_foreach_src(I, s) {
+            /* G15's block write takes its descriptor's address in a uniform
+             * pair (its 7-bit field reaches the low half only) */
+            if (I->op == AGX_OPCODE_BLOCK_IMAGE_STORE && s == 0 &&
+                ctx->key->dev.gpu_generation >= 15 &&
+                I->src[s].type == AGX_INDEX_UNIFORM &&
+                I->src[s].size == AGX_SIZE_64 && I->src[s].value < 256)
+               continue;
 
-            agx_index idx = I->src[s];
-            idx.abs = idx.neg = false;
-            agx_replace_src(I, s, agx_mov(&b, idx));
+            if (I->src[s].type == AGX_INDEX_UNIFORM &&
+                (!agx_instr_accepts_uniform(I->op, s, I->src[s].value,
+                                            I->src[s].size) ||
+                 agx_g15_stale_uniform_base(ctx, I, s) ||
+                 agx_g15_register_only(ctx, I, s))) {
+
+               agx_index idx = I->src[s];
+               idx.abs = idx.neg = false;
+
+               bool keep = agx_g15_tex_index(ctx, I, s);
+               agx_index reg = agx_null();
+
+               for (unsigned i = 0; keep && i < nr_moved; ++i) {
+                  if (agx_is_equiv(from[i], idx) && from[i].size == idx.size)
+                     reg = moved[i];
+               }
+
+               if (agx_is_null(reg)) {
+                  reg = agx_mov(&b, idx);
+
+                  if (keep && nr_moved < ARRAY_SIZE(moved)) {
+                     from[nr_moved] = idx;
+                     moved[nr_moved++] = reg;
+                  }
+               }
+
+               agx_replace_src(I, s, reg);
+            }
          }
       }
    }
