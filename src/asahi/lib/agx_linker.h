@@ -340,8 +340,20 @@ struct agx_fs_epilog_link_info {
    bool sample_mask_after_force_early : 1;
 
    unsigned padding : 1;
+
+   /* Bit i set if location i's alpha is the value location alpha_src exports:
+    * the main shader exports it once and the epilog blends with one copy.
+    */
+   uint8_t alpha_shared;
+   uint8_t alpha_src;
+   uint16_t padding2;
+
+   /* Bit 4 * location + component set if that channel is written as zero: the
+    * main shader does not export it and the epilog folds it.
+    */
+   uint32_t zero_channels;
 };
-static_assert(sizeof(struct agx_fs_epilog_link_info) == 4, "packed");
+static_assert(sizeof(struct agx_fs_epilog_link_info) == 12, "packed");
 
 struct agx_fs_epilog_key {
    struct agx_fs_epilog_link_info link;
