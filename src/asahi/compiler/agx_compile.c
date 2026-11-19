@@ -5050,6 +5050,10 @@ agx_compile_function_nir(nir_shader *nir, nir_function_impl *impl,
    if (ctx->g15_tex_base)
       agx_move_preloads_off_tex_base(ctx);
 
+   /* After scheduling, which would move the uses it splits off */
+   if (likely(!(agx_compiler_debug & AGX_DBG_NOOPT)))
+      AGX_PASS(ctx, agx_opt_split_collect);
+
    agx_ra(ctx);
    if (ctx->ra_failed) {
       out->preamble_too_big = true;
