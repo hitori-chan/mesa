@@ -876,23 +876,39 @@ agx_emit_local_store_pixel(agx_builder *b, nir_intrinsic_instr *instr)
 
    /* G15's tile data is raw: unorm8 channels are packed two to a 16-bit
     * register, as Apple's fltnorm does before its tile stores, and stored as
-    * one 16- or 32-bit value (agx_nir_lower_tile_raw leaves these). An sRGB
-    * target's channels are sRGB-encoded but its alpha. */
+    * one 16- or 32-bit value, or as masked bytes (agx_nir_lower_tile_raw
+    * leaves these). An sRGB target's channels are sRGB-encoded but its
+    * alpha. */
    if (b->shader->key->dev.gpu_generation >= 15 &&
        (format == AGX_FORMAT_U8NORM || format == AGX_FORMAT_SRGBA8)) {
-      /* One channel of a masked store: packed beside the zero in its second
-       * source and stored as one byte.
+      /* A masked store, as Apple's: the channels it writes, compacted, packed
+       * two to a 16-bit half and stored as bytes in one tile_store i8 with the
+       * mask (Metal's G-buffer: i8, xyz from r3l_r3h; its helper: i8, xw from
+       * r0h). The bytes it leaves keep their value.
        */
-      if (mask == 0x1) {
+      if (mask != 0x3 && mask != 0xf) {
          assert(format == AGX_FORMAT_U8NORM);
-         agx_index byte = agx_temp(b->shader, AGX_SIZE_16);
-         agx_pack_unorm_to(b, byte, agx_extract_nir_src(b, instr->src[0], 0),
-                           agx_extract_nir_src(b, instr->src[0], 1),
-                           AGX_PACK_MODE_RG8UNORM);
+         unsigned n = util_bitcount(mask), k = 0;
+         agx_index c[4], h[2] = {agx_null(), agx_null()};
+
+         u_foreach_bit(i, mask)
+            c[k++] = agx_extract_nir_src(b, instr->src[0], i);
+
+         for (unsigned i = 0; i < DIV_ROUND_UP(n, 2); i++) {
+            h[i] = agx_temp(b->shader, AGX_SIZE_16);
+            agx_pack_unorm_to(b, h[i], c[2 * i], c[MIN2(2 * i + 1, n - 1)],
+                              AGX_PACK_MODE_RG8UNORM);
+         }
+
+         agx_index v = h[0];
+         if (n > 2) {
+            v = agx_temp(b->shader, AGX_SIZE_32);
+            agx_emit_collect_to(b, v, 2, h);
+         }
 
          b->shader->out->tag_write_disable = false;
-         return agx_st_tile(b, byte, agx_src_index(&instr->src[1]), coords,
-                            AGX_FORMAT_I8, 0x1, nir_intrinsic_base(instr),
+         return agx_st_tile(b, v, agx_src_index(&instr->src[1]), coords,
+                            AGX_FORMAT_I8, mask, nir_intrinsic_base(instr),
                             explicit);
       }
 

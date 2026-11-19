@@ -247,7 +247,7 @@ agx_coordinate_registers(const agx_instr *I, enum agx_size size)
 }
 
 static unsigned
-agx_read_registers(const agx_instr *I, unsigned s)
+agx_read_registers(const agx_instr *I, unsigned s, bool g15)
 {
    unsigned size = agx_size_align_16(I->src[s].size);
 
@@ -276,6 +276,12 @@ agx_read_registers(const agx_instr *I, unsigned s)
    case AGX_OPCODE_LOCAL_STORE:
    case AGX_OPCODE_STACK_STORE:
    case AGX_OPCODE_ST_TILE:
+      /* G15's 8-bit tile store takes the bytes its mask writes, packed two
+       * to a 16-bit half (agx_emit_local_store_pixel) */
+      if (I->op == AGX_OPCODE_ST_TILE && s == 0 && g15 &&
+          I->format == AGX_FORMAT_I8)
+         return DIV_ROUND_UP(util_bitcount(I->mask), 2);
+
       /* See agx_write_registers */
       if (s == 0)
          return util_bitcount(I->mask) * MIN2(size, 2);
@@ -405,7 +411,8 @@ agx_validate_width(agx_context *ctx)
          if (I->src[s].type == AGX_INDEX_NULL)
             continue;
 
-         unsigned exp = agx_read_registers(I, s);
+         unsigned exp =
+            agx_read_registers(I, s, ctx->key->dev.gpu_generation >= 15);
          unsigned act =
             agx_channels(I->src[s]) * agx_size_align_16(I->src[s].size);
 
