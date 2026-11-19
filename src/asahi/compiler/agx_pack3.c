@@ -2986,8 +2986,11 @@ a3_tile_type(const struct a3 *a, const agx_instr *I)
 {
    switch (I->format) {
    case AGX_FORMAT_I8:
-      if (util_bitcount(I->mask) > 1)
-         a3_fail(a, "8-bit tile vector (G15 packs the bytes)");
+      /* A store's mask may name several bytes: its register holds them
+       * packed in order, two to a 16-bit half (Apple's tile_store i8, xyz
+       * from r3l_r3h, i8, xw from r0h). Loads stay one byte. */
+      if (util_bitcount(I->mask) > 1 && I->op != AGX_OPCODE_ST_TILE)
+         a3_fail(a, "8-bit tile load vector");
       return 2;
    case AGX_FORMAT_I16:
    case AGX_FORMAT_F16:
