@@ -880,6 +880,22 @@ agx_emit_local_store_pixel(agx_builder *b, nir_intrinsic_instr *instr)
     * target's channels are sRGB-encoded but its alpha. */
    if (b->shader->key->dev.gpu_generation >= 15 &&
        (format == AGX_FORMAT_U8NORM || format == AGX_FORMAT_SRGBA8)) {
+      /* One channel of a masked store: packed beside the zero in its second
+       * source and stored as one byte.
+       */
+      if (mask == 0x1) {
+         assert(format == AGX_FORMAT_U8NORM);
+         agx_index byte = agx_temp(b->shader, AGX_SIZE_16);
+         agx_pack_unorm_to(b, byte, agx_extract_nir_src(b, instr->src[0], 0),
+                           agx_extract_nir_src(b, instr->src[0], 1),
+                           AGX_PACK_MODE_RG8UNORM);
+
+         b->shader->out->tag_write_disable = false;
+         return agx_st_tile(b, byte, agx_src_index(&instr->src[1]), coords,
+                            AGX_FORMAT_I8, 0x1, nir_intrinsic_base(instr),
+                            explicit);
+      }
+
       assert(mask == 0x3 || mask == 0xf);
       bool srgb = format == AGX_FORMAT_SRGBA8;
       agx_index h[2];

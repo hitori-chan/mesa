@@ -146,6 +146,33 @@ store_byte_channels(nir_builder *b, nir_intrinsic_instr *intr, nir_def *bytes,
    }
 }
 
+/* A masked unorm8 store by 16-bit halves, converted as a whole store is: a half
+ * written whole is one pack_unorm and a 16-bit store, the one channel of a half
+ * written in part a pack_unorm beside a zero and an 8-bit store
+ * (agx_emit_local_store_pixel).
+ */
+static void
+store_unorm8_halves(nir_builder *b, nir_intrinsic_instr *intr, nir_def *value,
+                    unsigned mask, unsigned base)
+{
+   for (unsigned h = 0; h < 2; h++) {
+      unsigned first = 2 * h;
+      unsigned bits = (mask >> first) & 0x3;
+
+      if (bits == 0x3) {
+         store_raw(b, intr, nir_channels(b, value, 0x3 << first), base + first,
+                   0x3, AIL_ISA_FORMAT_U8NORM);
+      } else if (bits) {
+         unsigned c = first + (bits == 0x2);
+         nir_def *pair[2] = {nir_channel(b, value, c),
+                             nir_imm_floatN_t(b, 0.0, value->bit_size)};
+
+         store_raw(b, intr, nir_vec(b, pair, 2), base + c, 0x1,
+                   AIL_ISA_FORMAT_U8NORM);
+      }
+   }
+}
+
 static nir_def *
 unpack_bytes(nir_builder *b, nir_def *word, unsigned n)
 {
@@ -195,6 +222,15 @@ lower_store(nir_builder *b, nir_intrinsic_instr *intr)
       /* Packed by the backend's pack_unorm, two channels an instruction */
       if ((mask == 0x3 || mask == 0xf) && n >= util_last_bit(mask))
          return false;
+
+      /* The one channel store_unorm8_halves leaves to the backend */
+      if (mask == 0x1 && n == 2)
+         return false;
+
+      if (n >= util_last_bit(mask)) {
+         store_unorm8_halves(b, intr, value, mask, base);
+         return true;
+      }
 
       store_byte_channels(b, intr,
                           nir_format_float_to_unorm(b, to_f32(b, value), bits8),
