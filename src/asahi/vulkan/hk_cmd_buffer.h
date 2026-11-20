@@ -301,6 +301,12 @@ struct hk_graphics_state {
 
    enum hk_dirty dirty;
 
+   /* The depth and stencil state with its no-op tests and writes taken out
+    * (vk_optimize_depth_stencil_state), from hk_update_ds: what the hardware
+    * is told and what the pass loads and stores
+    */
+   struct vk_depth_stencil_state ds;
+
    uint64_t root;
    uint64_t draw_params;
    uint64_t draw_id_ptr;
