@@ -34,6 +34,10 @@ struct lower_descriptors_ctx {
 
    /* Direct3D's level for an explicit LOD of x.5 with a point mip filter */
    bool d3d_nearest_mip;
+
+   /* G15: a separate sampler's border for an sRGB view is its first entry
+    * (hk_descriptor_set.c, g15_srgb_sampler_entry) */
+   bool border_without_format;
 };
 
 /* A sampled image descriptor field's offset in the generation's layout */
@@ -326,10 +330,12 @@ load_resource_deref_desc(nir_builder *b, unsigned num_components,
 }
 
 /* G15: the texture handle is an index into the set seen as a table of 32 B
- * entries, and the sampler of a combined descriptor the entry after it */
+ * entries, and the sampler of a combined descriptor the entry after it. A
+ * sampler's entry moves back by back_entries (0 or 1), if given. */
 static nir_def *
 load_image_handle(nir_builder *b, const struct lower_descriptors_ctx *ctx,
-                  nir_src src, unsigned offset_B, bool sampler)
+                  nir_src src, unsigned offset_B, bool sampler,
+                  nir_def *back_entries)
 
 {
    uint32_t set, binding;
@@ -357,6 +363,9 @@ load_image_handle(nir_builder *b, const struct lower_descriptors_ctx *ctx,
    nir_def *entry =
       nir_iadd_imm(b, nir_imul_imm(b, index, binding_layout->stride / 32),
                    (binding_layout->offset + offset_B) / 32);
+
+   if (back_entries)
+      entry = nir_isub(b, entry, back_entries);
 
    /* The texture instructions read 16 bits of the entry: a binding whose
     * entries all lie below 65536 says so (the backend drops the mask), and the
@@ -397,7 +406,7 @@ lower_image_intrin(nir_builder *b, nir_intrinsic_instr *intr,
    }
 
    nir_rewrite_image_intrinsic(
-      intr, load_image_handle(b, ctx, intr->src[0], offs, false),
+      intr, load_image_handle(b, ctx, intr->src[0], offs, false, NULL),
       nir_image_intrinsic_type_bindless);
 
    return true;
@@ -689,6 +698,23 @@ try_lower_intrin(nir_builder *b, nir_intrinsic_instr *intrin,
    }
 }
 
+/* A sampler of a sampler binding: no view comes with it, so G15's border was
+ * packed without a format, and its first entry is the sRGB view's
+ * (hk_descriptor_set.c). A mutable binding may hold a combined image sampler,
+ * whose first entry is its texture, so it keeps the second. */
+static bool
+is_separate_sampler(nir_builder *b, const struct lower_descriptors_ctx *ctx,
+                    nir_def *sampler)
+{
+   uint32_t set, binding;
+   nir_def *index;
+   get_resource_deref_binding(b, nir_src_as_deref(nir_src_for_ssa(sampler)),
+                              &set, &binding, &index);
+
+   return get_binding_layout(set, binding, ctx)->type ==
+          VK_DESCRIPTOR_TYPE_SAMPLER;
+}
+
 static bool
 lower_tex(nir_builder *b, nir_tex_instr *tex,
           const struct lower_descriptors_ctx *ctx)
@@ -797,20 +823,34 @@ lower_tex(nir_builder *b, nir_tex_instr *tex,
       unsigned offset_B = plane_offset_B + SAMPLED_OFFS(ctx, tex);
 
       nir_def *handle =
-         load_image_handle(b, ctx, nir_src_for_ssa(texture), offset_B, false);
+         load_image_handle(b, ctx, nir_src_for_ssa(texture), offset_B, false,
+                           NULL);
 
       nir_tex_instr_add_src(tex, nir_tex_src_texture_handle, handle);
    }
 
    /* G15: the sampler (a texture without one, for txf: the entry's zero
     * sampler; the LOD query reads its LOD range and mip filter), a custom
-    * border colour in its entry (hk_descriptor_set.h) */
+    * border colour in its entry (hk_descriptor_set.h). A separate sampler
+    * holds its border for sRGB views in its first entry, which a sample of an
+    * sRGB view (the texture's bit 108) takes. */
    if (ctx->g15) {
       if (!nir_tex_instr_is_query(tex) || tex->op == nir_texop_lod) {
          unsigned offset_B = plane_offset_B + SAMPLED_OFFS(ctx, sampler);
+         nir_def *srgb = NULL;
+
+         if (ctx->border_without_format && sampler &&
+             tex->op != nir_texop_lod &&
+             is_separate_sampler(b, ctx, sampler)) {
+            nir_def *word3 = load_resource_deref_desc(
+               b, 1, 32, nir_src_as_deref(nir_src_for_ssa(texture)),
+               plane_offset_B + SAMPLED_OFFS(ctx, tex) + 12, ctx);
+            srgb = nir_ubitfield_extract_imm(b, word3, 108 - 96, 1);
+         }
+
          nir_def *s = load_image_handle(
             b, ctx, nir_src_for_ssa(sampler ? sampler : texture), offset_B,
-            true);
+            true, srgb);
          nir_tex_instr_add_src(tex, nir_tex_src_sampler_handle, s);
       }
       return true;
@@ -1037,11 +1077,13 @@ hk_nir_lower_descriptors(nir_shader *nir,
                          const struct vk_pipeline_robustness_state *rs,
                          uint32_t set_layout_count,
                          struct vk_descriptor_set_layout *const *set_layouts,
-                         bool g15, bool d3d_nearest_mip)
+                         bool g15, bool d3d_nearest_mip,
+                         bool border_without_format)
 {
    struct lower_descriptors_ctx ctx = {
       .g15 = g15,
       .d3d_nearest_mip = d3d_nearest_mip,
+      .border_without_format = g15 && border_without_format,
       .clamp_desc_array_bounds =
          rs->storage_buffers !=
             VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DISABLED_EXT ||
