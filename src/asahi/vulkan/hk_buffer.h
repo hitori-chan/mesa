@@ -27,6 +27,19 @@ struct hk_buffer {
     * NULL otherwise.
     */
    struct agx_bo *residency;
+
+   /**
+    * G15 with soft faults: an unbound page of this sparse residency buffer
+    * leaves its read-write alias unmapped, so a shader's load there reads 0
+    * and its store is dropped, as residencyNonResidentStrict wants. Its
+    * read-only alias maps the zero page, as any sparse buffer's. False where a
+    * fixed-function unit reaches the read-write alias, which an unmapped page
+    * would fault: a storage texel buffer's PBE, an indirect dispatch's group
+    * counts (hk_CmdDispatchIndirect) and a device-generated index buffer
+    * token's address, which goes to the VDM (hk_cmd_dgc.c). Those map the
+    * scratch page there.
+    */
+   bool unbound_unmapped;
 };
 
 VK_DEFINE_NONDISP_HANDLE_CASTS(hk_buffer, vk.base, VkBuffer,

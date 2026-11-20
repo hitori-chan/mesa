@@ -435,6 +435,10 @@ struct hk_bind_builder {
    /* A sparse buffer's residency bitmap (hk_buffer::residency), or NULL */
    struct agx_bo *residency;
 
+   /* An unbound page's read-write alias stays unmapped
+    * (hk_buffer::unbound_unmapped) */
+   bool unbound_unmapped;
+
    /* State */
    struct hk_device_memory *mem;
    VkDeviceSize resourceOffset;
@@ -534,6 +538,30 @@ hk_flush_bind(struct hk_bind_builder *b)
          BITSET_SET_RANGE(map, first, last - 1);
    }
 
+   /* An unbind of a buffer whose unbound pages read 0 through soft faults:
+    * unmap the read-write alias, the read-only one maps the zero page.
+    */
+   if (!b->mem && b->unbound_unmapped) {
+      uint64_t range_B = align64(b->size, AIL_PAGESIZE);
+      assert(b->resourceOffset + range_B <= b->va->size_B);
+
+      struct drm_asahi_gem_bind_op unbind = {
+         .flags = DRM_ASAHI_BIND_UNBIND,
+         .addr = va_addr,
+         .range = range_B,
+      };
+      struct drm_asahi_gem_bind_op zero = {
+         .handle = b->dev->dev.zero_bo->uapi_handle,
+         .flags = DRM_ASAHI_BIND_READ | DRM_ASAHI_BIND_SINGLE_PAGE,
+         .addr = agx_rw_addr_to_ro(&b->dev->dev, va_addr),
+         .range = range_B,
+      };
+
+      util_dynarray_append(&b->binds, unbind);
+      util_dynarray_append(&b->binds, zero);
+      return VK_SUCCESS;
+   }
+
    /* When the app wants to unbind, replace the bound pages with scratch pages
     * so we don't leave a gap.
     */
@@ -622,6 +650,7 @@ hk_sparse_buffer_bind_memory(struct hk_device *device,
    struct hk_bind_builder b =
       hk_bind_builder(device, &buffer->vk.base, buffer->va, NULL);
    b.residency = buffer->residency;
+   b.unbound_unmapped = buffer->unbound_unmapped;
 
    for (uint32_t i = 0; i < bind->bindCount; ++i) {
       struct hk_device_memory *cur_mem = NULL;
