@@ -405,6 +405,27 @@ hk_render_to_render(VkPipelineStageFlags2 src, VkPipelineStageFlags2 dst)
 }
 
 /*
+ * A barrier whose source names no render stage (compute's alone, say) that
+ * chains to a render's writes and reaches the next render's vertex stage: the
+ * chain runs through stages with no work recorded between its barriers (a
+ * dispatch would order the renders itself), so it keeps that stage waiting as
+ * a render-to-render barrier would.
+ */
+static void
+hk_chained_dependency(struct hk_cmd_buffer *cmd, unsigned chained,
+                      VkPipelineStageFlags2 dst)
+{
+   if (!chained || hk_fragment_side(dst) ||
+       !hk_render_stages(dst, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT))
+      return;
+
+   if (chained == 2)
+      cmd->vertex_dep = true;
+   else
+      cmd->vertex_dep_image = true;
+}
+
+/*
  * Follow the writes that barriers leaving the next render's vertex stage free
  * made available, through the barriers chained to them (whose source stages
  * meet their destination stages). Returns whether this one chains to writes
@@ -445,6 +466,7 @@ hk_memory_dependency(struct hk_cmd_buffer *cmd, VkPipelineStageFlags2 src,
    if (!hk_render_to_render(src, dst)) {
       if (writes && hk_render_stages(src, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT))
          cmd->avail_mem |= dst;
+      hk_chained_dependency(cmd, chained, dst);
       return;
    }
 
@@ -489,6 +511,7 @@ hk_cmd_buffer_dependency(struct hk_cmd_buffer *cmd,
              hk_render_stages(b->srcStageMask,
                               VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT))
             cmd->avail_img |= b->dstStageMask;
+         hk_chained_dependency(cmd, chained, b->dstStageMask);
          continue;
       }
 
