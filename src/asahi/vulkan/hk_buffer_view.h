@@ -21,6 +21,11 @@ struct hk_buffer_view {
    struct vk_buffer_view vk;
    struct agx_texture_packed tex;
    struct agx_pbe_packed pbe;
+
+   /* G15: the residency words of its descriptor (hk_descriptor_set.h), zero
+    * unless its buffer has a residency bitmap */
+   uint64_t residency_bitmap;
+   uint64_t residency_view;
 };
 
 VK_DEFINE_NONDISP_HANDLE_CASTS(hk_buffer_view, vk.base, VkBufferView,

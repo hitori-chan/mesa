@@ -13,6 +13,7 @@
 #include "hk_descriptor_set.h"
 #include "hk_descriptor_set_layout.h"
 #include "hk_shader.h"
+#include "libagx.h"
 
 #include "nir.h"
 #include "nir_builder.h"
@@ -1192,4 +1193,73 @@ hk_nir_lower_image_loads_g15(nir_shader *nir)
 {
    return nir_shader_instructions_pass(nir, lower_image_load_g15,
                                        nir_metadata_control_flow, NULL);
+}
+
+/*
+ * G15: a sparse read of a texel buffer reports its page's residency from its
+ * buffer's bitmap (hk_buffer::residency), as the texture unit fetches the
+ * buffer's linear texture as resident, unbound pages included (they map the
+ * zero page). It runs before agx_nir_lower_texture, while the texel is the
+ * view's, and after hk_nir_lower_image_r64, so an R64 load's residency code
+ * is the last of its 32-bit components.
+ */
+static bool
+lower_sparse_texel_buffer(nir_builder *b, nir_instr *instr, UNUSED void *data)
+{
+   nir_def *def, *handle, *x;
+
+   if (instr->type == nir_instr_type_tex) {
+      nir_tex_instr *tex = nir_instr_as_tex(instr);
+      if (!tex->is_sparse || tex->sampler_dim != GLSL_SAMPLER_DIM_BUF)
+         return false;
+
+      int h = nir_tex_instr_src_index(tex, nir_tex_src_texture_handle);
+      int c = nir_tex_instr_src_index(tex, nir_tex_src_coord);
+      assert(h >= 0 && c >= 0 && "a bindless buffer fetch");
+
+      def = &tex->def;
+      handle = tex->src[h].src.ssa;
+      x = tex->src[c].src.ssa;
+   } else if (instr->type == nir_instr_type_intrinsic) {
+      nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+      if (intr->intrinsic != nir_intrinsic_bindless_image_sparse_load ||
+          nir_intrinsic_image_dim(intr) != GLSL_SAMPLER_DIM_BUF)
+         return false;
+
+      def = &intr->def;
+      handle = intr->src[0].ssa;
+      x = intr->src[1].ssa;
+   } else {
+      return false;
+   }
+
+   /* Before the read: the lookup branches, and the fix-up below must stay in
+    * the read's block */
+   b->cursor = nir_before_instr(instr);
+
+   nir_def *desc = nir_load_from_texture_handle_agx(b, handle);
+   nir_def *unbound = libagx_texel_buffer_unbound(
+      b, desc,
+      nir_iadd_imm(
+         b, desc,
+         offsetof(struct hk_storage_image_descriptor_g15, residency_bitmap)),
+      nir_iadd_imm(b, desc,
+                   offsetof(struct hk_storage_image_descriptor_g15, pbe_pad)),
+      nir_u2u32(b, nir_channel(b, x, 0)));
+
+   /* Residency codes are 0 where resident (agx_nir_lower_texture) */
+   b->cursor = nir_after_instr(instr);
+   unsigned last = def->num_components - 1;
+   nir_def *code = nir_ior(b, nir_channel(b, def, last),
+                           nir_u2uN(b, unbound, def->bit_size));
+
+   nir_def_rewrite_uses_after(def, nir_vector_insert_imm(b, def, code, last));
+   return true;
+}
+
+bool
+hk_nir_lower_sparse_texel_buffers_g15(nir_shader *nir)
+{
+   return nir_shader_instructions_pass(nir, lower_sparse_texel_buffer,
+                                       nir_metadata_none, NULL);
 }
