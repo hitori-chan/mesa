@@ -14,6 +14,7 @@
 #include "drm-shim/drm_shim.h"
 #include "drm-uapi/asahi_drm.h"
 #include "util/macros.h"
+#include "util/simple_mtx.h"
 
 static struct drm_asahi_params_global params = {
    .gpu_generation = 13,
@@ -65,6 +66,10 @@ struct asahi_bind {
    struct shim_bo *bo;
 };
 
+/* The binds, the submit count, the next object and offset: a process
+ * creates, binds and submits from several threads at once (a pipeline's
+ * stages compiled beside each other, an application's own threads) */
+static simple_mtx_t asahi_lock = SIMPLE_MTX_INITIALIZER;
 static struct asahi_bind *binds;
 static unsigned nr_binds, max_binds, nr_submits;
 
@@ -89,8 +94,11 @@ asahi_ioctl_gem_bind_object(int fd, unsigned long request, void *arg)
    struct drm_asahi_gem_bind_object *bind = arg;
    static uint32_t next_object = 1;
 
-   if (bind->op == DRM_ASAHI_BIND_OBJECT_OP_BIND)
+   if (bind->op == DRM_ASAHI_BIND_OBJECT_OP_BIND) {
+      simple_mtx_lock(&asahi_lock);
       bind->object_handle = next_object++;
+      simple_mtx_unlock(&asahi_lock);
+   }
 
    return 0;
 }
@@ -104,9 +112,11 @@ asahi_ioctl_gem_create(int fd, unsigned long request, void *arg)
 
    drm_shim_bo_init(&bo->base, create->size);
 
+   simple_mtx_lock(&asahi_lock);
    assert(UINT64_MAX - asahi.next_offset > create->size);
    bo->offset = asahi.next_offset;
    asahi.next_offset += create->size;
+   simple_mtx_unlock(&asahi_lock);
 
    create->handle = drm_shim_bo_get_handle(shim_fd, &bo->base);
 
@@ -135,6 +145,7 @@ asahi_ioctl_vm_bind(int fd, unsigned long request, void *arg)
    struct shim_fd *shim_fd = drm_shim_fd_lookup(fd);
    struct drm_asahi_vm_bind *vb = arg;
 
+   simple_mtx_lock(&asahi_lock);
    for (unsigned i = 0; i < vb->num_binds; ++i) {
       struct drm_asahi_gem_bind_op *op =
          (void *)(uintptr_t)(vb->userptr + (uint64_t)i * vb->stride);
@@ -167,6 +178,7 @@ asahi_ioctl_vm_bind(int fd, unsigned long request, void *arg)
          .bo = drm_shim_bo_lookup(shim_fd, op->handle),
       };
    }
+   simple_mtx_unlock(&asahi_lock);
 
    return 0;
 }
@@ -202,6 +214,7 @@ asahi_ioctl_submit(int fd, unsigned long request, void *arg)
    if (!dir)
       return 0;
 
+   simple_mtx_lock(&asahi_lock);
    snprintf(path, sizeof(path), "%s/submit-%u", dir, nr_submits++);
    mkdir(dir, 0755);
    mkdir(path, 0755);
@@ -219,6 +232,7 @@ asahi_ioctl_submit(int fd, unsigned long request, void *arg)
       asahi_dump_bo(path, b->bo, b->offset,
                     MIN2(b->range, b->bo->size - b->offset));
    }
+   simple_mtx_unlock(&asahi_lock);
 
    return 0;
 }
