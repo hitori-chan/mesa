@@ -58,6 +58,10 @@ struct hk_physical_device {
    /* G15: sampled plain views and reads as arrays of one (driconf
     * hk_sampled_views_as_arrays); part of the shader cache's key */
    bool sampled_views_as_arrays;
+
+   /* HK_PERFTEST as every device starts with it (hk_parse_perftest); its
+    * HK_PERF_SHADER_CODE bits are part of the shader cache's key */
+   uint32_t perftest;
 };
 
 VK_DEFINE_HANDLE_CASTS(hk_physical_device, vk.base, VkPhysicalDevice,

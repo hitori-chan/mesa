@@ -58,6 +58,27 @@ static const struct debug_named_value hk_perf_options[] = {
 };
 /* clang-format on */
 
+uint32_t
+hk_parse_perftest(const struct hk_physical_device *pdev)
+{
+   const struct hk_instance *instance =
+      hk_physical_device_instance((struct hk_physical_device *)pdev);
+   uint32_t perftest =
+      debug_get_flags_option("HK_PERFTEST", hk_perf_options, 0);
+
+   if (instance->drirc.misc.disable_border_emulation)
+      perftest |= HK_PERF_NOBORDER;
+
+   /* G15 tessellates triangle and quad domains in hardware, as Metal; G13's
+    * tessellator is not ours */
+   if (pdev->dev.params.gpu_generation >= 15 && !(perftest & HK_PERF_SWTESS))
+      perftest |= HK_PERF_HWTESS;
+   else
+      perftest &= ~(HK_PERF_HWTESS | HK_PERF_HWTESS32);
+
+   return perftest;
+}
+
 /*
  * We preupload some constants so we can cheaply reference later without extra
  * allocation and copying.
@@ -342,18 +363,7 @@ hk_CreateDevice(VkPhysicalDevice physicalDevice,
       goto fail_init;
    }
 
-   dev->perftest = debug_get_flags_option("HK_PERFTEST", hk_perf_options, 0);
-
-   if (instance->drirc.misc.disable_border_emulation) {
-      dev->perftest |= HK_PERF_NOBORDER;
-   }
-
-   /* G15 tessellates triangle and quad domains in hardware, as Metal; G13's
-    * tessellator is not ours */
-   if (pdev->dev.params.gpu_generation >= 15 && !HK_PERF(dev, SWTESS))
-      dev->perftest |= HK_PERF_HWTESS;
-   else
-      dev->perftest &= ~(HK_PERF_HWTESS | HK_PERF_HWTESS32);
+   dev->perftest = pdev->perftest;
 
    if (HK_PERF(dev, NOROBUST)) {
       dev->vk.enabled_features.robustBufferAccess = false;
