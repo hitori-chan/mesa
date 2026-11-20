@@ -114,6 +114,17 @@ hk_CreateBufferView(VkDevice _device, const VkBufferViewCreateInfo *pCreateInfo,
                                   view->vk.elements, tail_offset_el);
       agx_pack_buffer_pbe_g15(&view->pbe, format, rw_base, view->vk.elements,
                               tail_offset_el);
+
+      /* A sparse residency buffer's fetch reads its page's bit: the view's
+       * texel x is at head_offset_B + (tail_offset_el + x) * blocksize
+       */
+      if (buffer->residency) {
+         assert(head_offset_B < (1ull << 48));
+         view->residency_bitmap = buffer->residency->va->addr;
+         view->residency_view =
+            head_offset_B | ((uint64_t)util_format_get_blocksize(format) << 48);
+      }
+
       *pBufferView = hk_buffer_view_to_handle(view);
       return VK_SUCCESS;
    }

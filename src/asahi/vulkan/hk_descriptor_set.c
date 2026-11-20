@@ -367,12 +367,14 @@ set_is_g15(struct hk_descriptor_set *set)
    return dev->dev.params.gpu_generation >= 15;
 }
 
-/* G15's storage image and texel buffer layout (hk_descriptor_set.h) */
+/* G15's storage image and texel buffer layout (hk_descriptor_set.h): an
+ * image's PBE software words or a texel buffer view's residency */
 static void
 write_storage_desc_g15(struct hk_descriptor_set *set, uint32_t binding,
                        uint32_t elem, const struct agx_texture_packed *tex,
                        const struct agx_pbe_packed *pbe,
-                       const struct agx_pbe_g15_software_packed *sw)
+                       const struct agx_pbe_g15_software_packed *sw,
+                       const struct hk_buffer_view *view)
 {
    struct hk_storage_image_descriptor_g15 desc = {};
 
@@ -382,6 +384,13 @@ write_storage_desc_g15(struct hk_descriptor_set *set, uint32_t binding,
 
       if (sw)
          memcpy(desc.pbe_pad, sw, sizeof(desc.pbe_pad));
+
+      if (view) {
+         static_assert(sizeof(desc.pbe_pad) == sizeof(view->residency_view),
+                       "the residency view fills the PBE's fourth word");
+         desc.residency_bitmap = view->residency_bitmap;
+         memcpy(desc.pbe_pad, &view->residency_view, sizeof(desc.pbe_pad));
+      }
    } else {
       agx_set_null_texture(&desc.tex, true);
       agx_set_null_pbe(&desc.pbe, true);
@@ -404,9 +413,9 @@ write_storage_image_view_desc(struct hk_descriptor_set *set,
          assert(view->plane_count == 1);
          write_storage_desc_g15(set, binding, elem, &view->planes[0].ro_storage,
                                 &view->planes[0].storage,
-                                &view->planes[0].storage_g15_sw);
+                                &view->planes[0].storage_g15_sw, NULL);
       } else {
-         write_storage_desc_g15(set, binding, elem, NULL, NULL, NULL);
+         write_storage_desc_g15(set, binding, elem, NULL, NULL, NULL, NULL);
       }
       return;
    }
@@ -457,7 +466,7 @@ write_buffer_desc(struct hk_descriptor_set *set,
        set->layout->binding[binding].type == VK_DESCRIPTOR_TYPE_MUTABLE_EXT &&
        set->layout->binding[binding].stride >=
           sizeof(struct hk_storage_image_descriptor_g15)) {
-      write_storage_desc_g15(set, binding, elem, NULL, NULL, NULL);
+      write_storage_desc_g15(set, binding, elem, NULL, NULL, NULL, NULL);
       return;
    }
 
@@ -489,9 +498,9 @@ write_buffer_view_desc(struct hk_descriptor_set *set,
       if (bufferView != VK_NULL_HANDLE) {
          VK_FROM_HANDLE(hk_buffer_view, view, bufferView);
          write_storage_desc_g15(set, binding, elem, &view->tex, &view->pbe,
-                                NULL);
+                                NULL, view);
       } else {
-         write_storage_desc_g15(set, binding, elem, NULL, NULL, NULL);
+         write_storage_desc_g15(set, binding, elem, NULL, NULL, NULL, NULL);
       }
       return;
    }

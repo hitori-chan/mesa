@@ -26,6 +26,7 @@
 #include "hk_physical_device.h"
 
 #include <xf86drm.h>
+#include "util/bitset.h"
 #include "util/list.h"
 #include "util/macros.h"
 #include "util/u_dynarray.h"
@@ -431,6 +432,9 @@ struct hk_bind_builder {
    struct agx_va *va;
    struct hk_image *image;
 
+   /* A sparse buffer's residency bitmap (hk_buffer::residency), or NULL */
+   struct agx_bo *residency;
+
    /* State */
    struct hk_device_memory *mem;
    VkDeviceSize resourceOffset;
@@ -512,6 +516,22 @@ hk_flush_bind(struct hk_bind_builder *b)
             }
          }
       }
+   }
+
+   /* Keep the buffer's residency bitmap with its pages: a set bit is unbound.
+    * A bind's offset is page aligned, its size too but at the buffer's end.
+    */
+   if (b->residency) {
+      BITSET_WORD *map = agx_bo_map(b->residency);
+      unsigned first = b->resourceOffset / AIL_PAGESIZE;
+      unsigned last = DIV_ROUND_UP(b->resourceOffset + b->size, AIL_PAGESIZE);
+
+      assert((uint64_t)last * AIL_PAGESIZE <= b->va->size_B);
+
+      if (b->mem)
+         BITSET_CLEAR_RANGE(map, first, last - 1);
+      else
+         BITSET_SET_RANGE(map, first, last - 1);
    }
 
    /* When the app wants to unbind, replace the bound pages with scratch pages
@@ -601,6 +621,7 @@ hk_sparse_buffer_bind_memory(struct hk_device *device,
 
    struct hk_bind_builder b =
       hk_bind_builder(device, &buffer->vk.base, buffer->va, NULL);
+   b.residency = buffer->residency;
 
    for (uint32_t i = 0; i < bind->bindCount; ++i) {
       struct hk_device_memory *cur_mem = NULL;

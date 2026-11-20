@@ -405,6 +405,7 @@ hk_nir_lower_descriptors(nir_shader *nir,
                          bool border_without_format);
 
 bool hk_nir_lower_image_loads_g15(nir_shader *nir);
+bool hk_nir_lower_sparse_texel_buffers_g15(nir_shader *nir);
 
 bool hk_nir_lower_atomic64(nir_shader *nir);
 bool hk_nir_lower_shared_atomic64(nir_shader *nir);

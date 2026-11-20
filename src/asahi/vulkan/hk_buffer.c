@@ -12,6 +12,7 @@
 #include "hk_device_memory.h"
 #include "hk_entrypoints.h"
 #include "hk_physical_device.h"
+#include "layout.h"
 
 static uint32_t
 hk_get_buffer_alignment(const struct hk_physical_device *pdev,
@@ -160,6 +161,32 @@ hk_CreateBuffer(VkDevice device, const VkBufferCreateInfo *pCreateInfo,
       hk_bind_scratch(
          dev, buffer->va, 0, vma_size_B,
          buffer->vk.create_flags & VK_IMAGE_CREATE_SPARSE_BINDING_BIT);
+
+      /* G15: a texel buffer view of a sparse residency buffer reads its
+       * residency from a bitmap, a bit per page kept by vkQueueBindSparse
+       * (hk_flush_bind). Unbound pages map the zero page, which the texture
+       * unit reads as resident.
+       */
+      if (dev->dev.params.gpu_generation >= 15 &&
+          (buffer->vk.create_flags & VK_BUFFER_CREATE_SPARSE_RESIDENCY_BIT) &&
+          (buffer->vk.usage &
+           (VK_BUFFER_USAGE_2_UNIFORM_TEXEL_BUFFER_BIT_KHR |
+            VK_BUFFER_USAGE_2_STORAGE_TEXEL_BUFFER_BIT_KHR))) {
+
+         size_t size_B =
+            DIV_ROUND_UP(vma_size_B / AIL_PAGESIZE, 32) * sizeof(uint32_t);
+
+         buffer->residency =
+            agx_bo_create(&dev->dev, size_B, 0, 0, "Sparse buffer residency");
+         if (!buffer->residency) {
+            agx_va_free(&dev->dev, buffer->va, true);
+            vk_buffer_destroy(&dev->vk, pAllocator, &buffer->vk);
+            return vk_error(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+         }
+
+         /* Every page starts unbound */
+         memset(agx_bo_map(buffer->residency), 0xff, size_B);
+      }
    }
 
    *pBuffer = hk_buffer_to_handle(buffer);
@@ -181,6 +208,7 @@ hk_DestroyBuffer(VkDevice device, VkBuffer _buffer,
       agx_va_free(&dev->dev, buffer->va, true);
    }
 
+   agx_bo_unreference(&dev->dev, buffer->residency);
    vk_buffer_destroy(&dev->vk, pAllocator, &buffer->vk);
 }
 
