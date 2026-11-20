@@ -523,11 +523,91 @@ lower_load_global_bounded(nir_builder *b, nir_intrinsic_instr *intr)
    nir_def_replace(&intr->def, val);
 }
 
+/* A bounded constant-offset load's check covers the 64-B granule of its last
+ * byte. Where the loads of one granule of one buffer select three or more
+ * words, the granule's base address is selected instead, out of bounds the
+ * zero page: two selects (a 64-bit one) and shared, where each word took one.
+ * The heaviest of Grim Dawn's light shaders select 40 words from three
+ * granules, all in the entry program (e4cap, 2026-11-20).
+ */
+struct hk_ubo_granule {
+   nir_def *base, *bound;
+   unsigned first, words;
+};
+
+struct hk_ubo_lower {
+   bool soft_fault;
+   struct util_dynarray granules;
+};
+
+static unsigned
+hk_ubo_granule_first(nir_intrinsic_instr *intrin)
+{
+   nir_scalar offs = nir_scalar_resolved(intrin->src[1].ssa, 0);
+   if (!nir_scalar_is_const(offs))
+      return 0;
+
+   /* An offset whose last byte wraps (a constant negative index) is left to
+    * the per-load path */
+   uint64_t last = nir_scalar_as_uint(offs) +
+                   (intrin->def.bit_size / 8) * intrin->num_components - 1;
+   if (last > UINT32_MAX)
+      return 0;
+
+   return (unsigned)last & ~63u;
+}
+
+static struct hk_ubo_granule *
+hk_ubo_granule_get(struct hk_ubo_lower *ctx, nir_intrinsic_instr *intrin,
+                   bool add)
+{
+   unsigned first = hk_ubo_granule_first(intrin);
+   if (!first)
+      return NULL;
+
+   nir_def *base = intrin->src[0].ssa, *bound = intrin->src[2].ssa;
+   util_dynarray_foreach(&ctx->granules, struct hk_ubo_granule, g) {
+      if (g->base == base && g->bound == bound && g->first == first)
+         return g;
+   }
+
+   if (!add)
+      return NULL;
+
+   struct hk_ubo_granule g = {base, bound, first, 0};
+   util_dynarray_append(&ctx->granules, g);
+   return util_dynarray_top_ptr(&ctx->granules, struct hk_ubo_granule);
+}
+
+static void
+hk_ubo_count_granules(nir_shader *nir, struct hk_ubo_lower *ctx)
+{
+   nir_foreach_function_impl(impl, nir) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+
+            nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(instr);
+            if (intrin->intrinsic != nir_intrinsic_load_global_constant_bounded)
+               continue;
+
+            struct hk_ubo_granule *g = hk_ubo_granule_get(ctx, intrin, true);
+            if (g) {
+               g->words += intrin->num_components *
+                           DIV_ROUND_UP(intrin->def.bit_size, 32);
+            }
+         }
+      }
+   }
+}
+
 static bool
 lower_load_global_constant_offset_instr(nir_builder *b,
                                         nir_intrinsic_instr *intrin, void *data)
 {
-   bool *has_soft_fault = data;
+   struct hk_ubo_lower *ctx = data;
+   bool *has_soft_fault = &ctx->soft_fault;
 
    if (intrin->intrinsic == nir_intrinsic_load_global_bounded ||
        (intrin->intrinsic == nir_intrinsic_load_global_constant_bounded &&
@@ -559,12 +639,26 @@ lower_load_global_constant_offset_instr(nir_builder *b,
    unsigned align_mul = nir_intrinsic_align_mul(intrin);
    unsigned align_offset = nir_intrinsic_align_offset(intrin);
 
+   /* The granule's base selected, its words loaded as they are */
+   struct hk_ubo_granule *g =
+      bound ? hk_ubo_granule_get(ctx, intrin, false) : NULL;
+   bool select_base =
+      g && g->words >= 3 && g->first <= AGX_ZERO_PAGE_SIZE - 64;
+
+   if (select_base) {
+      assert(align_mul == 64);
+      nir_def *valid = nir_uge(b, bound, nir_imm_int(b, g->first + 1));
+      base_addr = nir_bcsel(b, valid, base_addr,
+                            nir_imm_int64(b, AGX_ZERO_PAGE_ADDRESS));
+   }
+
    nir_def *val = nir_load_global_constant(
       b, intrin->def.num_components, intrin->def.bit_size,
       nir_iadd(b, base_addr, nir_u2u64(b, offset)), .align_mul = align_mul,
       .align_offset = align_offset, .access = nir_intrinsic_access(intrin));
 
-   if (intrin->intrinsic == nir_intrinsic_load_global_constant_bounded) {
+   if (intrin->intrinsic == nir_intrinsic_load_global_constant_bounded &&
+       !select_base) {
       nir_scalar offs = nir_scalar_resolved(offset, 0);
       if (nir_scalar_is_const(offs)) {
          /* The last byte loaded */
@@ -1055,10 +1149,18 @@ hk_lower_nir(struct hk_device *dev, nir_shader *nir,
    NIR_PASS(progress, nir, nir_opt_sink, opts);
    NIR_PASS(progress, nir, nir_opt_move, opts);
 
-   bool soft_fault = agx_has_soft_fault(&dev->dev);
+   struct hk_ubo_lower ubo = {.soft_fault = agx_has_soft_fault(&dev->dev)};
+   util_dynarray_init(&ubo.granules, NULL);
+   if (ubo.soft_fault) {
+      /* nir_lower_explicit_io gives each load its own base and bound: one
+       * buffer's loads share them only after CSE, which the granules key on */
+      NIR_PASS(_, nir, nir_opt_cse);
+      hk_ubo_count_granules(nir, &ubo);
+   }
+
    NIR_PASS(_, nir, nir_shader_intrinsics_pass,
-            lower_load_global_constant_offset_instr, nir_metadata_none,
-            &soft_fault);
+            lower_load_global_constant_offset_instr, nir_metadata_none, &ubo);
+   util_dynarray_fini(&ubo.granules);
 
    assert(nir->info.shared_size == 0);
 
