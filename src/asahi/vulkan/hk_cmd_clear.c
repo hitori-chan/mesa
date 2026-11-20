@@ -159,3 +159,90 @@ hk_CmdClearDepthStencilImage(VkCommandBuffer commandBuffer, VkImage _image,
                      true /* whole 3D */);
    }
 }
+
+/*
+ * A subresource leaving VK_IMAGE_LAYOUT_ZERO_INITIALIZED_EXT reads as zero
+ * texels from its zeroed memory. A compressed image's metadata is in that
+ * memory too, and G15 decodes a zeroed subtile mode as a compressed block, so
+ * every subtile is marked uncompressed, in command order: the memory may have
+ * been zeroed through a buffer since the bind marked it
+ * (hk_image_plane_init_metadata), as vkd3d-proton zeroes a suballocated
+ * committed texture. Only the barrier's levels and layers: the others may be
+ * in use already.
+ */
+static bool
+hk_zero_initialized_metadata(struct hk_cmd_buffer *cmd,
+                             const VkImageMemoryBarrier2 *b)
+{
+   VK_FROM_HANDLE(hk_image, image, b->image);
+   const VkImageSubresourceRange *range = &b->subresourceRange;
+   const uint32_t level_end =
+      range->baseMipLevel + vk_image_subresource_level_count(&image->vk, range);
+   bool filled = false;
+
+   VkImageAspectFlags aspects =
+      vk_image_expand_aspect_mask(&image->vk, range->aspectMask);
+   unsigned planes = 0;
+   u_foreach_bit(a, aspects)
+      planes |= BITFIELD_BIT(hk_image_aspects_to_plane(image, BITFIELD_BIT(a)));
+
+   u_foreach_bit(p, planes) {
+      const struct ail_layout *layout = &image->planes[p].layout;
+      if (!layout->compressed)
+         continue;
+
+      /* A 3D image's slices are the layout's layers */
+      uint32_t base_layer = range->baseArrayLayer;
+      uint32_t layer_count =
+         vk_image_subresource_layer_count(&image->vk, range);
+      if (image->vk.image_type == VK_IMAGE_TYPE_3D) {
+         base_layer = 0;
+         layer_count = layout->depth_px;
+      }
+
+      const uint32_t stride_B = layout->compression_layer_stride_B;
+      const uint32_t mode =
+         ail_subtile_uncompressed_mode(layout->format) * 0x01010101u;
+
+      for (uint32_t l = range->baseMipLevel;
+           l < level_end && ail_is_level_allocated_compressed(layout, l); ++l) {
+
+         /* A level's metadata runs to the next level's or the layer's end */
+         bool last = l + 1 == layout->levels ||
+                     !ail_is_level_allocated_compressed(layout, l + 1);
+         uint32_t end_B =
+            last ? stride_B : layout->level_offsets_compressed_B[l + 1];
+         uint32_t size_B = end_B - layout->level_offsets_compressed_B[l];
+
+         uint64_t addr = image->planes[p].addr + layout->metadata_offset_B +
+                         (uint64_t)base_layer * stride_B +
+                         layout->level_offsets_compressed_B[l];
+
+         assert(addr % 16 == 0 && size_B % 16 == 0 && stride_B % 16 == 0);
+         libagx_fill_uint4(cmd, agx_2d(size_B / 16, layer_count),
+                           AGX_BARRIER_ALL, addr, stride_B / 16, mode, mode,
+                           mode, mode);
+         filled = true;
+      }
+   }
+
+   return filled;
+}
+
+void
+hk_zero_initialized_transitions(struct hk_cmd_buffer *cmd,
+                                const VkDependencyInfo *info)
+{
+   bool filled = false;
+
+   for (uint32_t i = 0; i < info->imageMemoryBarrierCount; ++i) {
+      const VkImageMemoryBarrier2 *b = &info->pImageMemoryBarriers[i];
+
+      if (b->oldLayout == VK_IMAGE_LAYOUT_ZERO_INITIALIZED_EXT)
+         filled |= hk_zero_initialized_metadata(cmd, b);
+   }
+
+   /* The work after the barrier follows the fills */
+   if (filled)
+      hk_cmd_buffer_end_compute(cmd);
+}

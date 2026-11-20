@@ -1051,6 +1051,8 @@ void hk_cmd_copy(struct hk_cmd_buffer *cmd, uint64_t dst, uint64_t src,
                  size_t size);
 void hk_cmd_fill(struct hk_cmd_buffer *cmd, uint64_t addr, size_t range,
                  uint32_t data);
+void hk_zero_initialized_transitions(struct hk_cmd_buffer *cmd,
+                                     const VkDependencyInfo *info);
 void hk_cmd_dispatch_dgc(struct hk_cmd_buffer *cmd, uint64_t addr);
 uint64_t hk_predicate_args(struct hk_cmd_buffer *cmd, uint64_t in,
                            uint64_t count, uint32_t n, uint32_t stride_B,
