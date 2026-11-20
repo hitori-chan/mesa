@@ -55,6 +55,7 @@ static const struct debug_named_value hk_perf_options[] = {
    {"swtess",    HK_PERF_SWTESS,   "G15: tessellate in compute shaders, not the hardware tessellator"},
    {"hwtess32",  HK_PERF_HWTESS32, "G15: the hardware tessellator with FP32 factors"},
    {"serialcompile", HK_PERF_SERIALCOMPILE, "Compile a pipeline's stages one after another on the calling thread"},
+   {"nobackendcache", HK_PERF_NOBACKENDCACHE, "Compile every stage, not a result kept for the same input"},
    DEBUG_NAMED_VALUE_END
 };
 /* clang-format on */
@@ -468,6 +469,7 @@ hk_CreateDevice(VkPhysicalDevice physicalDevice,
    *pDevice = hk_device_to_handle(dev);
 
    simple_mtx_init(&dev->scratch.lock, mtx_plain);
+   hk_backend_cache_init(dev);
    agx_scratch_init(&dev->dev, &dev->scratch.vs);
    agx_scratch_init(&dev->dev, &dev->scratch.fs);
    agx_scratch_init(&dev->dev, &dev->scratch.cs);
@@ -524,6 +526,8 @@ hk_DestroyDevice(VkDevice _device, const VkAllocationCallbacks *pAllocator)
 
    if (dev->compile.ok)
       util_queue_destroy(&dev->compile.queue);
+
+   hk_backend_cache_finish(dev);
 
    hk_device_finish_meta(dev);
    hk_destroy_internal_shaders(dev, &dev->kernels, false);

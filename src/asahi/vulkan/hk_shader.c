@@ -59,6 +59,7 @@
 #include "util/hash_table.h"
 #include "util/macros.h"
 #include "util/mesa-blake3.h"
+#include "nir_serialize.h"
 #include "util/simple_mtx.h"
 #include "util/u_debug.h"
 #include "vulkan/vulkan_core.h"
@@ -1625,6 +1626,198 @@ hk_accesses_images(nir_shader *nir)
    return false;
 }
 
+/* The backend's results by the hash of its input. A pipeline's stage often
+ * reaches the backend as another pipeline's did: pipelines that share a
+ * vertex shader but not their fragment shader, or modules that differ in
+ * nothing the compile reads. Elden Ring's 8,825 startup pipelines reach it
+ * 10,248 times with 3,484 inputs. agx_compile_shader_nir is a function of its
+ * NIR and key, so the device keeps each result, up to HK_BACKEND_CACHE_BYTES
+ * (then starts again). Asserts-on builds compile a copy of a hit's NIR anyway
+ * and check that both agree. A hit leaves the NIR as the backend found it, so
+ * nothing after the backend may read what the backend changes in it.
+ */
+#define HK_BACKEND_CACHE_BYTES (64 << 20)
+
+struct hk_backend_entry {
+   blake3_hash hash;
+   struct agx_shader_info info;
+   uint8_t binary[];
+};
+
+static uint32_t
+hk_backend_entry_hash(const void *key)
+{
+   uint32_t h;
+   memcpy(&h, key, sizeof(h));
+   return h;
+}
+
+static bool
+hk_backend_entry_equal(const void *a, const void *b)
+{
+   return memcmp(a, b, sizeof(blake3_hash)) == 0;
+}
+
+void
+hk_backend_cache_init(struct hk_device *dev)
+{
+   simple_mtx_init(&dev->backend_cache.lock, mtx_plain);
+   dev->backend_cache.ht = _mesa_hash_table_create(NULL, hk_backend_entry_hash,
+                                                   hk_backend_entry_equal);
+}
+
+static void
+hk_backend_cache_clear(struct hk_device *dev)
+{
+   hash_table_foreach(dev->backend_cache.ht, entry)
+      free(entry->data);
+
+   _mesa_hash_table_clear(dev->backend_cache.ht, NULL);
+   dev->backend_cache.bytes = 0;
+}
+
+void
+hk_backend_cache_finish(struct hk_device *dev)
+{
+   if (dev->backend_cache.ht) {
+      hk_backend_cache_clear(dev);
+      _mesa_hash_table_destroy(dev->backend_cache.ht, NULL);
+   }
+
+   simple_mtx_destroy(&dev->backend_cache.lock);
+}
+
+/* The NIR as the backend reads it: no names or debug information, no
+ * source hash (modules that preprocess alike share it), with the locations
+ * that stripping drops; and the key's fields, its padding left out */
+static void
+hk_backend_hash(nir_shader *nir, const struct agx_shader_key *key,
+                blake3_hash out)
+{
+   struct mesa_blake3 ctx;
+   _mesa_blake3_init(&ctx);
+
+   blake3_hash source;
+   memcpy(source, nir->info.source_blake3, sizeof(source));
+   memset(nir->info.source_blake3, 0, sizeof(nir->info.source_blake3));
+
+   struct blob blob;
+   blob_init(&blob);
+   nir_serialize(&blob, nir, true);
+   memcpy(nir->info.source_blake3, source, sizeof(source));
+
+   _mesa_blake3_update(&ctx, blob.data, blob.size);
+   blob_finish(&blob);
+
+   nir_foreach_variable_in_shader(var, nir) {
+      const int32_t loc[2] = {var->data.mode, var->data.location};
+      _mesa_blake3_update(&ctx, loc, sizeof(loc));
+   }
+
+   /* A field added to the key is added here too */
+   STATIC_ASSERT(sizeof(struct agx_shader_key) == 24);
+   const uint32_t k[] = {
+      key->dev.needs_g13x_coherency,
+      key->dev.soft_fault,
+      key->dev.gpu_generation,
+      key->reserved_preamble,
+      key->has_scratch,
+      key->is_helper,
+      key->promote_constants,
+      key->promote_textures,
+      key->no_stop,
+      key->secondary,
+      key->vs_prolog,
+      key->fs.ignore_tib_dependencies,
+      key->fs.inside_sample_loop,
+      key->fs.cf_base,
+      key->fs.nr_samples,
+   };
+   _mesa_blake3_update(&ctx, k, sizeof(k));
+   _mesa_blake3_final(&ctx, out);
+}
+
+static bool
+hk_backend_cache_get(struct hk_device *dev, const blake3_hash hash,
+                     struct agx_shader_part *out)
+{
+   bool hit = false;
+
+   simple_mtx_lock(&dev->backend_cache.lock);
+   struct hash_entry *he = _mesa_hash_table_search(dev->backend_cache.ht, hash);
+   if (he) {
+      const struct hk_backend_entry *e = he->data;
+      void *binary = malloc(e->info.binary_size);
+      if (binary) {
+         memcpy(binary, e->binary, e->info.binary_size);
+         out->info = e->info;
+         out->binary = binary;
+         hit = true;
+      }
+   }
+   simple_mtx_unlock(&dev->backend_cache.lock);
+
+   return hit;
+}
+
+static void
+hk_backend_cache_put(struct hk_device *dev, const blake3_hash hash,
+                     const struct agx_shader_part *part)
+{
+   size_t size = sizeof(struct hk_backend_entry) + part->info.binary_size;
+   struct hk_backend_entry *e = malloc(size);
+   if (!e)
+      return;
+
+   memcpy(e->hash, hash, sizeof(e->hash));
+   e->info = part->info;
+   memcpy(e->binary, part->binary, part->info.binary_size);
+
+   simple_mtx_lock(&dev->backend_cache.lock);
+   if (dev->backend_cache.bytes + size > HK_BACKEND_CACHE_BYTES)
+      hk_backend_cache_clear(dev);
+
+   /* Another thread may have put the same result meanwhile */
+   if (_mesa_hash_table_search(dev->backend_cache.ht, e->hash)) {
+      free(e);
+   } else {
+      _mesa_hash_table_insert(dev->backend_cache.ht, e->hash, e);
+      dev->backend_cache.bytes += size;
+   }
+   simple_mtx_unlock(&dev->backend_cache.lock);
+}
+
+/* agx_compile_shader_nir, or its result for the same input */
+static void
+hk_compile_backend(struct hk_device *dev, nir_shader *nir,
+                   struct agx_shader_key *key, struct agx_shader_part *out)
+{
+   if (HK_PERF(dev, NOBACKENDCACHE) || !dev->backend_cache.ht) {
+      agx_compile_shader_nir(nir, key, out);
+      return;
+   }
+
+   blake3_hash hash;
+   hk_backend_hash(nir, key, hash);
+
+   if (hk_backend_cache_get(dev, hash, out)) {
+#ifndef NDEBUG
+      /* On a clone: a hit leaves the NIR as the backend found it, here too */
+      nir_shader *clone = nir_shader_clone(NULL, nir);
+      struct agx_shader_part check;
+      agx_compile_shader_nir(clone, key, &check);
+      ralloc_free(clone);
+      assert(memcmp(&check.info, &out->info, sizeof(check.info)) == 0);
+      assert(memcmp(check.binary, out->binary, check.info.binary_size) == 0);
+      free(check.binary);
+#endif
+      return;
+   }
+
+   agx_compile_shader_nir(nir, key, out);
+   hk_backend_cache_put(dev, hash, out);
+}
+
 static VkResult
 hk_compile_nir(struct hk_device *dev, const VkAllocationCallbacks *pAllocator,
                nir_shader *nir, VkShaderCreateFlagsEXT shader_flags,
@@ -1767,8 +1960,13 @@ hk_compile_nir(struct hk_device *dev, const VkAllocationCallbacks *pAllocator,
    if (lock)
       simple_mtx_lock(lock);
 
+   /* A pipeline that captures its internal representations prints the NIR as
+    * the backend left it: compile it every time */
    assert(nir->info.io_lowered);
-   agx_compile_shader_nir(nir, &backend_key, &shader->b);
+   if (lock || (shader_flags & VK_SHADER_CREATE_CAPTURE_INTERNAL_REPRESENTATIONS_BIT_MESA))
+      agx_compile_shader_nir(nir, &backend_key, &shader->b);
+   else
+      hk_compile_backend(dev, nir, &backend_key, &shader->b);
 
    if (lock)
       simple_mtx_unlock(lock);
