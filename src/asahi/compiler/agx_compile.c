@@ -4182,29 +4182,35 @@ agx_lower_front_face(struct nir_builder *b, nir_intrinsic_instr *intr,
 static void
 agx_optimize_loop_nir(nir_shader *nir)
 {
+   /* A pass is run again only once another has changed the shader since it
+    * last ran (algebraic and loop unrolling also after their own progress).
+    */
+   struct set *skip = _mesa_pointer_set_create(NULL);
    bool progress;
 
    do {
       progress = false;
 
-      NIR_PASS(progress, nir, nir_opt_copy_prop);
-      NIR_PASS(progress, nir, nir_opt_remove_phis);
-      NIR_PASS(progress, nir, nir_opt_dce);
-      NIR_PASS(progress, nir, nir_opt_dead_cf);
-      NIR_PASS(progress, nir, nir_opt_cse);
+      NIR_LOOP_PASS(progress, skip, nir, nir_opt_copy_prop);
+      NIR_LOOP_PASS(progress, skip, nir, nir_opt_remove_phis);
+      NIR_LOOP_PASS(progress, skip, nir, nir_opt_dce);
+      NIR_LOOP_PASS(progress, skip, nir, nir_opt_dead_cf);
+      NIR_LOOP_PASS(progress, skip, nir, nir_opt_cse);
 
       nir_opt_peephole_select_options peephole_select_options = {
          .limit = 64,
          .expensive_alu_ok = true,
       };
-      NIR_PASS(progress, nir, nir_opt_peephole_select,
-               &peephole_select_options);
-      NIR_PASS(progress, nir, nir_opt_phi_precision);
-      NIR_PASS(progress, nir, nir_opt_algebraic);
-      NIR_PASS(progress, nir, nir_opt_constant_folding);
-      NIR_PASS(progress, nir, nir_opt_undef);
-      NIR_PASS(progress, nir, nir_opt_loop_unroll);
+      NIR_LOOP_PASS(progress, skip, nir, nir_opt_peephole_select,
+                    &peephole_select_options);
+      NIR_LOOP_PASS(progress, skip, nir, nir_opt_phi_precision);
+      NIR_LOOP_PASS_NOT_IDEMPOTENT(progress, skip, nir, nir_opt_algebraic);
+      NIR_LOOP_PASS(progress, skip, nir, nir_opt_constant_folding);
+      NIR_LOOP_PASS(progress, skip, nir, nir_opt_undef);
+      NIR_LOOP_PASS_NOT_IDEMPOTENT(progress, skip, nir, nir_opt_loop_unroll);
    } while (progress);
+
+   _mesa_set_destroy(skip, NULL);
 }
 
 bool
@@ -4425,13 +4431,15 @@ agx_optimize_nir(nir_shader *nir, bool soft_fault, uint16_t *preamble_size,
    }
 
    /* The above create operations that need lowering/optimizing */
+   struct set *skip = _mesa_pointer_set_create(NULL);
    do {
       progress = false;
 
-      NIR_PASS(progress, nir, nir_opt_algebraic);
-      NIR_PASS(progress, nir, nir_opt_constant_folding);
-      NIR_PASS(progress, nir, nir_opt_dce);
+      NIR_LOOP_PASS_NOT_IDEMPOTENT(progress, skip, nir, nir_opt_algebraic);
+      NIR_LOOP_PASS(progress, skip, nir, nir_opt_constant_folding);
+      NIR_LOOP_PASS(progress, skip, nir, nir_opt_dce);
    } while (progress);
+   _mesa_set_destroy(skip, NULL);
 
    progress = false;
 
@@ -4454,13 +4462,17 @@ agx_optimize_nir(nir_shader *nir, bool soft_fault, uint16_t *preamble_size,
     * calculations), then clean up after the lowering.
     */
    if (progress) {
+      skip = _mesa_pointer_set_create(NULL);
+
       do {
          progress = false;
 
-         NIR_PASS(progress, nir, nir_opt_algebraic);
-         NIR_PASS(progress, nir, nir_opt_constant_folding);
-         NIR_PASS(progress, nir, nir_opt_dce);
+         NIR_LOOP_PASS_NOT_IDEMPOTENT(progress, skip, nir, nir_opt_algebraic);
+         NIR_LOOP_PASS(progress, skip, nir, nir_opt_constant_folding);
+         NIR_LOOP_PASS(progress, skip, nir, nir_opt_dce);
       } while (progress);
+
+      _mesa_set_destroy(skip, NULL);
    }
 
    /* Reassociate before forming preambles because it makes preambles more
@@ -4535,13 +4547,16 @@ agx_optimize_nir(nir_shader *nir, bool soft_fault, uint16_t *preamble_size,
    /* Fuse add/sub/multiplies/shifts after running opt_algebraic_late to fuse
     * isub but before shifts are lowered.
     */
+   skip = _mesa_pointer_set_create(NULL);
    do {
       progress = false;
 
-      NIR_PASS(progress, nir, nir_opt_dce);
-      NIR_PASS(progress, nir, nir_opt_cse);
-      NIR_PASS(progress, nir, agx_nir_fuse_algebraic_late);
+      NIR_LOOP_PASS(progress, skip, nir, nir_opt_dce);
+      NIR_LOOP_PASS(progress, skip, nir, nir_opt_cse);
+      NIR_LOOP_PASS_NOT_IDEMPOTENT(progress, skip, nir,
+                                   agx_nir_fuse_algebraic_late);
    } while (progress);
+   _mesa_set_destroy(skip, NULL);
 
    /* Before optimizing bounds checks, we need to clean up and index defs so
     * optimize_bounds does the right thing.
@@ -5448,14 +5463,16 @@ agx_compile_shader_nir_impl(nir_shader *nir, struct agx_shader_key *key,
    }
 
    /* Cleanup 8-bit math before lowering */
+   struct set *skip = _mesa_pointer_set_create(NULL);
    bool progress;
    do {
       progress = false;
 
-      NIR_PASS(progress, nir, nir_opt_algebraic);
-      NIR_PASS(progress, nir, nir_opt_constant_folding);
-      NIR_PASS(progress, nir, nir_opt_dce);
+      NIR_LOOP_PASS_NOT_IDEMPOTENT(progress, skip, nir, nir_opt_algebraic);
+      NIR_LOOP_PASS(progress, skip, nir, nir_opt_constant_folding);
+      NIR_LOOP_PASS(progress, skip, nir, nir_opt_dce);
    } while (progress);
+   _mesa_set_destroy(skip, NULL);
 
    NIR_PASS(_, nir, nir_lower_bit_size, lower_bit_size_callback, NULL);
 
