@@ -15,6 +15,7 @@
 #include "util/os_misc.h"
 #include "git_sha1.h"
 #include "hk_buffer.h"
+#include "hk_device.h"
 #include "hk_entrypoints.h"
 #include "hk_image.h"
 #include "hk_instance.h"
@@ -1549,6 +1550,8 @@ hk_create_drm_physical_device(struct vk_instance *_instance,
 
    pdev->sampled_views_as_arrays = pdev->dev.params.gpu_generation >= 15 &&
                                    instance->drirc.misc.sampled_views_as_arrays;
+
+   pdev->perftest = hk_parse_perftest(pdev);
 
    hk_physical_device_init_pipeline_cache(pdev);
 
