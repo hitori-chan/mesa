@@ -6,6 +6,7 @@
 
 /* Bottom-up local scheduler to reduce register pressure */
 
+#include "util/bitset.h"
 #include "util/dag.h"
 #include "util/sparse_bitset.h"
 #include "util/u_debug.h"
@@ -18,8 +19,10 @@ struct sched_ctx {
    /* Dependency graph */
    struct dag *dag;
 
-   /* Live set */
-   struct u_sparse_bitset live;
+   /* Live set, dense: calculate_pressure_delta tests it for every source of
+    * every candidate at every step */
+   BITSET_WORD *live;
+   unsigned alloc;
 
    /* G15: issue the textures early (agx_pressure_schedule), while the live
     * registers (pressure, in 16-bit halves) stay within budget */
@@ -137,13 +140,13 @@ create_dag(agx_context *ctx, agx_block *block, void *memctx)
  *      live_in = (live_out - KILL) + GEN
  */
 static signed
-calculate_pressure_delta(agx_instr *I, struct u_sparse_bitset *live)
+calculate_pressure_delta(agx_instr *I, const BITSET_WORD *live)
 {
    signed delta = 0;
 
    /* Destinations must be unique */
    agx_foreach_ssa_dest(I, d) {
-      if (u_sparse_bitset_test(live, I->dest[d].value))
+      if (BITSET_TEST(live, I->dest[d].value))
          delta -= agx_index_size_16(I->dest[d]);
    }
 
@@ -158,7 +161,7 @@ calculate_pressure_delta(agx_instr *I, struct u_sparse_bitset *live)
          }
       }
 
-      if (!dupe && !u_sparse_bitset_test(live, I->src[src].value))
+      if (!dupe && !BITSET_TEST(live, I->src[src].value))
          delta += agx_index_size_16(I->src[src]);
    }
 
@@ -206,7 +209,7 @@ choose_instr(struct sched_ctx *s)
       if (n->instr->op == AGX_OPCODE_WAIT_PIX)
          return n;
 
-      int32_t delta = calculate_pressure_delta(n->instr, &s->live);
+      int32_t delta = calculate_pressure_delta(n->instr, s->live);
 
       /* G15 heuristic: hide a texture's latency by choosing it after the
        * instructions that do not need it, so that it issues before them, the
@@ -236,13 +239,35 @@ choose_instr(struct sched_ctx *s)
    return best ? best : tex ? tex : last;
 }
 
-/* The 16-bit halves live at the end of a block */
+/* The live set at a block's end */
+static void
+live_init(BITSET_WORD *live, unsigned alloc, struct u_sparse_bitset *live_out)
+{
+   memset(live, 0, BITSET_BYTES(alloc));
+
+   U_SPARSE_BITSET_FOREACH_SET(live_out, v)
+      BITSET_SET(live, v);
+}
+
+/* The live set before I from the one after it, as agx_liveness_ins_update */
+static void
+live_update(BITSET_WORD *live, agx_instr *I)
+{
+   agx_foreach_ssa_dest(I, d)
+      BITSET_CLEAR(live, I->dest[d].value);
+
+   agx_foreach_ssa_src(I, s)
+      BITSET_SET(live, I->src[s].value);
+}
+
+/* The 16-bit halves live */
 static signed
-live_size(struct u_sparse_bitset *live, const uint8_t *size)
+live_size(const BITSET_WORD *live, unsigned alloc, const uint8_t *size)
 {
    signed n = 0;
+   unsigned v;
 
-   U_SPARSE_BITSET_FOREACH_SET(live, v)
+   BITSET_FOREACH_SET(v, live, alloc)
       n += size[v];
 
    return n;
@@ -258,18 +283,18 @@ pressure_schedule_block(agx_context *ctx, agx_block *block, struct sched_ctx *s,
    unsigned nr_ins = 0;
    bool textures = false;
 
-   u_sparse_bitset_dup(&s->live, &block->live_out);
+   live_init(s->live, s->alloc, &block->live_out);
 
    agx_foreach_instr_in_block_rev(block, I) {
-      pressure += calculate_pressure_delta(I, &s->live);
+      pressure += calculate_pressure_delta(I, s->live);
       orig_max_pressure = MAX2(pressure, orig_max_pressure);
-      agx_liveness_ins_update(&s->live, I);
+      live_update(s->live, I);
       textures |= is_texture(I);
       nr_ins++;
    }
 
-   u_sparse_bitset_dup(&s->live, &block->live_out);
-   signed base = s->early_tex ? live_size(&s->live, size) : 0;
+   live_init(s->live, s->alloc, &block->live_out);
+   signed base = s->early_tex ? live_size(s->live, s->alloc, size) : 0;
    s->pressure = base;
 
    /* off by a constant, that's ok */
@@ -281,14 +306,14 @@ pressure_schedule_block(agx_context *ctx, agx_block *block, struct sched_ctx *s,
 
    while (!list_is_empty(&s->dag->heads)) {
       struct sched_node *node = choose_instr(s);
-      signed delta = calculate_pressure_delta(node->instr, &s->live);
+      signed delta = calculate_pressure_delta(node->instr, s->live);
       pressure += delta;
       s->pressure += delta;
       max_pressure = MAX2(pressure, max_pressure);
       dag_prune_head(s->dag, &node->dag);
 
       schedule[nr_ins++] = node;
-      agx_liveness_ins_update(&s->live, node->instr);
+      live_update(s->live, node->instr);
    }
 
    /* Bail if it looks like it's worse, unless it issues textures early within
@@ -324,20 +349,18 @@ DEBUG_GET_ONCE_NUM_OPTION(agx_g15_tex_slack, "AGX_G15_TEX_SLACK", 16)
 static signed
 early_tex_budget(agx_context *ctx, const uint8_t *size, void *memctx)
 {
-   struct u_sparse_bitset live;
+   BITSET_WORD *live = ralloc_array(memctx, BITSET_WORD, BITSET_WORDS(ctx->alloc));
    signed max = 0;
 
-   u_sparse_bitset_init(&live, ctx->alloc, memctx);
-
    agx_foreach_block(ctx, block) {
-      u_sparse_bitset_dup(&live, &block->live_out);
-      signed pressure = live_size(&live, size);
+      live_init(live, ctx->alloc, &block->live_out);
+      signed pressure = live_size(live, ctx->alloc, size);
       max = MAX2(max, pressure);
 
       agx_foreach_instr_in_block_rev(block, I) {
-         pressure += calculate_pressure_delta(I, &live);
+         pressure += calculate_pressure_delta(I, live);
          max = MAX2(max, pressure);
-         agx_liveness_ins_update(&live, I);
+         live_update(live, I);
       }
    }
 
@@ -373,13 +396,16 @@ agx_pressure_schedule(agx_context *ctx)
       early_tex = budget >= 0;
    }
 
+   BITSET_WORD *live = ralloc_array(memctx, BITSET_WORD, BITSET_WORDS(ctx->alloc));
+
    agx_foreach_block(ctx, block) {
       struct sched_ctx sctx = {
          .dag = create_dag(ctx, block, memctx),
+         .live = live,
+         .alloc = ctx->alloc,
          .early_tex = early_tex,
          .budget = budget,
       };
-      u_sparse_bitset_init(&sctx.live, ctx->alloc, memctx);
 
       pressure_schedule_block(ctx, block, &sctx, size);
    }
