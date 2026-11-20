@@ -1517,6 +1517,23 @@ nir_lower_explicit_io_instr(nir_builder *b,
             nir_io_offset comp_addr =
                build_addr(b, intrin, base_addr, addr_format, comp_offset,
                           align_mul, align_offset);
+
+            /* A back-end that checks bounded loads itself takes each
+             * component's offset saturated: a component past 2^32 stays out
+             * of bounds instead of wrapping to the start of the buffer, so
+             * an out-of-bounds vector reads zero whole (vkd3d-proton's
+             * test_structured_buffer_addressing_wrap: a uvec3 at 2^32 - 4).
+             */
+            if (comp_offset && !comp_addr.shift &&
+                addr_format == nir_address_format_64bit_bounded_global &&
+                (deref->modes & nir_var_mem_ssbo) &&
+                b->shader->options->has_load_global_bounded) {
+               nir_def *offset = nir_umin_imm(b, nir_channel(b, base_addr, 3),
+                                              UINT32_MAX - comp_offset);
+               offset = nir_iadd_imm(b, offset, comp_offset);
+               comp_addr.def = nir_vector_insert_imm(b, base_addr, offset, 3);
+            }
+
             comps[i] = build_explicit_io_load(b, intrin, comp_addr,
                                               addr_format, deref->modes,
                                               align_mul,
