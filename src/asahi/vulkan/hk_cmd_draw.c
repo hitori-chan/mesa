@@ -2542,18 +2542,19 @@ hk_zs_access(struct hk_cmd_buffer *cmd)
    return access;
 }
 
-/* G15: whether to enable agx_pack_stencil_always_g15's test */
+/* G15: whether to enable agx_pack_stencil_always_g15's test: in a pass
+ * without a depth or stencil attachment, as Metal. With one, Metal leaves the
+ * test off for a draw with neither depth writes nor stencil (Grim Dawn's
+ * lights on macOS 27.2.1: 116 draws, depth Lequal or Always, writes off).
+ */
 static bool
 hk_g15_stencil_always(struct hk_cmd_buffer *cmd)
 {
    const struct hk_rendering_state *render = &cmd->state.gfx.render;
-   struct vk_dynamic_graphics_state *dyn = &cmd->vk.dynamic_graphics_state;
-   bool has_z = render->depth_att.vk_format != VK_FORMAT_UNDEFINED;
-   bool z_write =
-      has_z && dyn->ds.depth.test_enable && dyn->ds.depth.write_enable;
 
    return hk_cmd_buffer_device(cmd)->dev.params.gpu_generation >= 15 &&
-          !hk_stencil_test_enabled(cmd) && !z_write;
+          render->depth_att.vk_format == VK_FORMAT_UNDEFINED &&
+          render->stencil_att.vk_format == VK_FORMAT_UNDEFINED;
 }
 
 /* A G15 mesh draw of lines, its viewports 1/256 px lower (hk_flush_vp_state) */

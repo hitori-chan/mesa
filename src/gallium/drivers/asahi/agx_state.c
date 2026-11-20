@@ -4086,8 +4086,11 @@ agx_encode_state(struct agx_batch *batch, uint8_t *out)
                cfg.visibility_mode = AGX_VISIBILITY_MODE_BOOLEAN;
          }
 
+         /* G15: the pass-always test only without a depth or stencil
+          * attachment, as Metal (hk_g15_stencil_always) */
          cfg.stencil_test_enable =
-            ctx->zs->base.stencil[0].enabled || ctx->zs->g15_stencil_always;
+            ctx->zs->base.stencil[0].enabled ||
+            (ctx->zs->g15_stencil_always && !batch->key.zsbuf.texture);
          cfg.two_sided_stencil = ctx->zs->base.stencil[1].enabled;
          cfg.depth_bias_enable =
             rast->depth_bias && object_type == AGX_OBJECT_TYPE_TRIANGLE;
