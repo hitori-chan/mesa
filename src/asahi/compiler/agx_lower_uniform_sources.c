@@ -148,7 +148,10 @@ agx_g15_register_only(agx_context *ctx, agx_instr *I, unsigned s)
  * G15: a texture's or a sampler's index from a uniform goes to a register,
  * which its field needs, once a block: each sample of a parallax loop moved it
  * again (30 moves a pixel in Grim Dawn's G-buffer shaders), where one half
- * kept for the block holds it.
+ * kept for the block holds it. Memory bases and special-function operands
+ * moved off preamble uniforms share a block's copy the same way: Grim Dawn's
+ * skinned vertex shader moved its three bone-matrix bases 96 times a vertex
+ * (gbuf-vs-1120, e4cap 2026-11-20).
  */
 static bool
 agx_g15_tex_index(agx_context *ctx, agx_instr *I, unsigned s)
@@ -188,7 +191,11 @@ agx_lower_uniform_sources(agx_context *ctx)
                agx_index idx = I->src[s];
                idx.abs = idx.neg = false;
 
-               bool keep = agx_g15_tex_index(ctx, I, s);
+               /* One copy a block serves every later read of the same
+                * uniform: a uniform holds one value through the program */
+               bool keep = agx_g15_tex_index(ctx, I, s) ||
+                           agx_g15_stale_uniform_base(ctx, I, s) ||
+                           agx_g15_register_only(ctx, I, s);
                agx_index reg = agx_null();
 
                for (unsigned i = 0; keep && i < nr_moved; ++i) {
