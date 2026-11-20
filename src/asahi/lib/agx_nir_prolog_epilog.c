@@ -582,7 +582,9 @@ agx_nir_fs_epilog(nir_builder *b, const void *key_)
    }
 
    /* Alpha-to-coverage must be lowered before alpha-to-one */
-   if (key->blend.alpha_to_coverage)
+   if (key->blend.alpha_to_coverage && key->nr_samples == 1)
+      NIR_PASS(_, b->shader, nir_lower_alpha_to_coverage_single_sample, NULL);
+   else if (key->blend.alpha_to_coverage)
       NIR_PASS(_, b->shader, nir_lower_alpha_to_coverage, false,
                NULL);
 
