@@ -106,6 +106,8 @@ agx_bo_cache_put_locked(struct agx_device *dev, struct agx_bo *bo)
    struct list_head *bucket = agx_bucket(dev, bo->size);
    struct timespec time;
 
+   bo->recycled = true;
+
    /* Add us to the bucket */
    list_addtail(&bo->bucket_link, bucket);
 

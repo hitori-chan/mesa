@@ -239,6 +239,10 @@ hk_AllocateMemory(VkDevice device, const VkMemoryAllocateInfo *pAllocateInfo,
          fd_info->handleType == VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT ||
          fd_info->handleType == VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT);
 
+      /* VUID-VkMemoryAllocateFlagsInfo-flags-10760: no zeroing of an import */
+      assert(
+         !(mem->vk.alloc_flags & VK_MEMORY_ALLOCATE_ZERO_INITIALIZE_BIT_EXT));
+
       mem->bo = agx_bo_import(&dev->dev, fd_info->fd);
       if (mem->bo == NULL) {
          result = vk_error(dev, VK_ERROR_INVALID_EXTERNAL_HANDLE);
@@ -260,6 +264,15 @@ hk_AllocateMemory(VkDevice device, const VkMemoryAllocateInfo *pAllocateInfo,
       if (!mem->bo) {
          result = vk_error(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY);
          goto fail_alloc;
+      }
+
+      /* The kernel zeroes a new BO (shmem clears a page when it allocates
+       * it), so only a BO from the cache needs it, and only as far as the
+       * application sees: the cache hands out BOs up to twice the size.
+       */
+      if ((mem->vk.alloc_flags & VK_MEMORY_ALLOCATE_ZERO_INITIALIZE_BIT_EXT) &&
+          mem->bo->recycled) {
+         memset(agx_bo_map(mem->bo), 0, aligned_size);
       }
    }
 

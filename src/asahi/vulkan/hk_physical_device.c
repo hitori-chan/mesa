@@ -257,6 +257,7 @@ hk_get_device_extensions(const struct agx_device *dev,
       .EXT_vertex_input_dynamic_state = true,
       .EXT_ycbcr_2plane_444_formats = false,
       .EXT_ycbcr_image_arrays = false,
+      .EXT_zero_initialize_device_memory = true,
       .GOOGLE_decorate_string = true,
 #ifdef HK_USE_WSI_PLATFORM
       .GOOGLE_display_timing = wsi_instance_supports_google_display_timing(
@@ -771,6 +772,9 @@ hk_get_device_features(
 
       /* VK_EXT_ycbcr_image_arrays */
       .ycbcrImageArrays = false,
+
+      /* VK_EXT_zero_initialize_device_memory */
+      .zeroInitializeDeviceMemory = true,
 
       /* VK_KHR_shader_relaxed_extended_instruction */
       .shaderRelaxedExtendedInstruction = true,
@@ -1344,6 +1348,7 @@ hk_get_device_properties(const struct agx_device *dev,
       VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
       // VK_IMAGE_LAYOUT_FRAGMENT_DENSITY_MAP_OPTIMAL_EXT,
       VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT,
+      VK_IMAGE_LAYOUT_ZERO_INITIALIZED_EXT,
    };
 
    properties->pCopySrcLayouts = (VkImageLayout *)supported_layouts;

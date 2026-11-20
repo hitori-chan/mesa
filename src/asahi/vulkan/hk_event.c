@@ -127,4 +127,7 @@ hk_CmdWaitEvents2(VkCommandBuffer commandBuffer, uint32_t eventCount,
     */
    hk_cmd_buffer_end_compute(cmd);
    hk_cmd_buffer_end_graphics(cmd);
+
+   for (uint32_t i = 0; i < eventCount; ++i)
+      hk_zero_initialized_transitions(cmd, &pDependencyInfos[i]);
 }

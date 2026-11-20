@@ -77,6 +77,11 @@ struct agx_bo {
    /* The time this BO was used last, so we can evict stale BOs. */
    time_t last_used;
 
+   /* Set when the BO enters the cache: its memory then holds what its last
+    * user wrote, where the kernel hands out a new BO zeroed.
+    */
+   bool recycled;
+
    /* Creation attributes */
    enum agx_bo_flags flags;
    size_t size;
