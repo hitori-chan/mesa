@@ -62,6 +62,13 @@ struct hk_sampler_heap {
    struct hash_table *ht;
 };
 
+/* Results by the hash of their input, up to a size, then cleared */
+struct hk_result_cache {
+   simple_mtx_t lock;
+   struct hash_table *ht;
+   size_t bytes;
+};
+
 struct hk_device {
    struct vk_device vk;
    struct agx_device dev;
@@ -119,12 +126,9 @@ struct hk_device {
       struct util_dynarray counts;
    } external_bos;
 
-   /* The backend's results by the hash of its input (hk_compile_nir) */
-   struct {
-      simple_mtx_t lock;
-      struct hash_table *ht;
-      size_t bytes;
-   } backend_cache;
+   /* Results by the hash of their input (hk_shader.c): the backend's
+    * (hk_compile_nir) and the stages lowered (hk_compile_shaders) */
+   struct hk_result_cache backend_cache, lower_cache;
 };
 
 VK_DEFINE_HANDLE_CASTS(hk_device, vk.base, VkDevice, VK_OBJECT_TYPE_DEVICE)
@@ -149,6 +153,7 @@ enum hk_perftest {
    HK_PERF_HWTESS = BITFIELD_BIT(15),
    HK_PERF_SERIALCOMPILE = BITFIELD_BIT(16),
    HK_PERF_NOBACKENDCACHE = BITFIELD_BIT(17),
+   HK_PERF_NOLOWERCACHE = BITFIELD_BIT(18),
 };
 
 #define HK_PERF(dev, flag) unlikely((dev)->perftest &HK_PERF_##flag)
