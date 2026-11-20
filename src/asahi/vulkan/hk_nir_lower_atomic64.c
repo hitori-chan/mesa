@@ -413,7 +413,7 @@ hk_nir_lower_shared_atomic64(nir_shader *nir)
    if (!rmw)
       return false;
 
-   assert(mesa_shader_stage_is_compute(nir->info.stage) &&
+   assert(mesa_shader_stage_uses_workgroup(nir->info.stage) &&
           !nir->info.workgroup_size_variable && nir->info.shared_size > 0);
 
    unsigned words = DIV_ROUND_UP(nir->info.shared_size, 8);
