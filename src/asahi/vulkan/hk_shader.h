@@ -435,6 +435,9 @@ VkResult hk_compile_shader(struct hk_device *dev,
                            const VkAllocationCallbacks *pAllocator,
                            struct hk_api_shader **shader_out);
 
+void hk_backend_cache_init(struct hk_device *dev);
+void hk_backend_cache_finish(struct hk_device *dev);
+
 void hk_preprocess_nir_internal(struct vk_physical_device *vk_pdev,
                                 nir_shader *nir);
 

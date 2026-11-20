@@ -118,6 +118,13 @@ struct hk_device {
       struct util_dynarray list;
       struct util_dynarray counts;
    } external_bos;
+
+   /* The backend's results by the hash of its input (hk_compile_nir) */
+   struct {
+      simple_mtx_t lock;
+      struct hash_table *ht;
+      size_t bytes;
+   } backend_cache;
 };
 
 VK_DEFINE_HANDLE_CASTS(hk_device, vk.base, VkDevice, VK_OBJECT_TYPE_DEVICE)
@@ -141,6 +148,7 @@ enum hk_perftest {
    /* Not an option: on G15 unless swtess is set */
    HK_PERF_HWTESS = BITFIELD_BIT(15),
    HK_PERF_SERIALCOMPILE = BITFIELD_BIT(16),
+   HK_PERF_NOBACKENDCACHE = BITFIELD_BIT(17),
 };
 
 #define HK_PERF(dev, flag) unlikely((dev)->perftest &HK_PERF_##flag)
