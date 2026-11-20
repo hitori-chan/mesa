@@ -4,6 +4,7 @@
  */
 
 #include "agx_bg_eot.h"
+#include "util/format/u_format.h"
 #include "util/simple_mtx.h"
 #include "util/u_debug.h"
 #include "agx_compile.h"
@@ -124,7 +125,7 @@ agx_compile_bg_eot_shader(struct agx_bg_eot_cache *cache, nir_shader *shader,
 
 static nir_def *
 build_background_op(nir_builder *b, enum agx_bg_eot_op op, unsigned rt,
-                    unsigned nr, bool msaa, bool layered, bool g15)
+                    unsigned nr, bool msaa, bool layered, bool g15, bool f16)
 {
    if (op == AGX_BG_LOAD) {
       nir_def *coord = nir_load_pixel_coord(b);
@@ -149,8 +150,10 @@ build_background_op(nir_builder *b, enum agx_bg_eot_op op, unsigned rt,
          .dim = msaa ? GLSL_SAMPLER_DIM_MS : GLSL_SAMPLER_DIM_2D,
          .is_array = layered,
 
-         /* The type doesn't matter as long as it matches the store */
-         .dest_type = nir_type_uint32,
+         /* The type doesn't matter as long as it matches the store, but an
+          * F16 target's is a half fetch straight into the tile store
+          */
+         .dest_type = f16 ? nir_type_float16 : nir_type_uint32,
 
          /* Layer is necessarily already in-bounds so we do not want the
           * compiler to clamp it, which would require reading the descriptor
@@ -188,12 +191,25 @@ agx_build_background_shader(struct agx_bg_eot_cache *cache,
       bool layered = key->tib.layered;
       assert(nr > 0);
 
+      /* G15: an F16 target loads at 16 bits, as Apple's background program
+       * (AGCLLVMBackgroundObjectFragmentShader::buildStateless,
+       * AGXCompilerCore_272 0x2293c4944), where a 32-bit fetch took four
+       * fadd to narrow it again (Grim Dawn's rgba16f lights)
+       */
+      enum pipe_format lf = key->tib.logical_format[rt];
+      bool g15 = cache->dev->params.gpu_generation >= 15;
+      bool f16 = g15 && key->op[rt] == AGX_BG_LOAD && !msaa &&
+                 !key->tib.spilled[rt] &&
+                 util_format_is_float(lf) &&
+                 util_format_get_component_bits(
+                    lf, UTIL_FORMAT_COLORSPACE_RGB, 0) == 16;
+
       nir_store_output(
          &b,
-         build_background_op(&b, key->op[rt], rt, nr, msaa, layered,
-                             cache->dev->params.gpu_generation >= 15),
+         build_background_op(&b, key->op[rt], rt, nr, msaa, layered, g15,
+                             f16),
          nir_imm_int(&b, 0), .write_mask = BITFIELD_MASK(nr),
-         .src_type = nir_type_uint32,
+         .src_type = f16 ? nir_type_float16 : nir_type_uint32,
          .io_semantics.location = FRAG_RESULT_DATA0 + rt,
          .io_semantics.num_slots = 1);
 
