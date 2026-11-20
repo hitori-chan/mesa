@@ -598,16 +598,18 @@ nir_opt_reassociate_loop(nir_shader *nir, nir_reassociate_options in_opts)
 
          any_progress = true;
 
+         struct set *skip = _mesa_pointer_set_create(NULL);
          do {
             progress = false;
 
-            NIR_PASS(progress, nir, nir_opt_algebraic);
-            NIR_PASS(progress, nir, nir_opt_constant_folding);
-            NIR_PASS(progress, nir, nir_opt_copy_prop);
-            NIR_PASS(progress, nir, nir_opt_cse);
-            NIR_PASS(progress, nir, nir_opt_dce);
+            NIR_LOOP_PASS_NOT_IDEMPOTENT(progress, skip, nir, nir_opt_algebraic);
+            NIR_LOOP_PASS(progress, skip, nir, nir_opt_constant_folding);
+            NIR_LOOP_PASS(progress, skip, nir, nir_opt_copy_prop);
+            NIR_LOOP_PASS(progress, skip, nir, nir_opt_cse);
+            NIR_LOOP_PASS(progress, skip, nir, nir_opt_dce);
             any_progress |= progress;
          } while (progress);
+         _mesa_set_destroy(skip, NULL);
       }
    }
 

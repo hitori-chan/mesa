@@ -160,15 +160,17 @@ hk_preprocess_nir_internal(struct vk_physical_device *vk_pdev, nir_shader *nir)
    UNUSED bool progress = false;
    NIR_PASS(_, nir, nir_lower_global_vars_to_local);
 
+   struct set *skip = _mesa_pointer_set_create(NULL);
    do {
       progress = false;
-      NIR_PASS(progress, nir, nir_lower_vars_to_ssa);
-      NIR_PASS(progress, nir, nir_opt_copy_prop);
-      NIR_PASS(progress, nir, nir_opt_dce);
-      NIR_PASS(progress, nir, nir_opt_constant_folding);
-      NIR_PASS(progress, nir, nir_opt_loop);
-      NIR_PASS(progress, nir, nir_opt_loop_unroll);
+      NIR_LOOP_PASS(progress, skip, nir, nir_lower_vars_to_ssa);
+      NIR_LOOP_PASS(progress, skip, nir, nir_opt_copy_prop);
+      NIR_LOOP_PASS(progress, skip, nir, nir_opt_dce);
+      NIR_LOOP_PASS(progress, skip, nir, nir_opt_constant_folding);
+      NIR_LOOP_PASS_NOT_IDEMPOTENT(progress, skip, nir, nir_opt_loop);
+      NIR_LOOP_PASS_NOT_IDEMPOTENT(progress, skip, nir, nir_opt_loop_unroll);
    } while (progress);
+   _mesa_set_destroy(skip, NULL);
 
    if (nir->info.stage == MESA_SHADER_FRAGMENT) {
       struct nir_lower_sysvals_to_varyings_options sysvals_opts = {
