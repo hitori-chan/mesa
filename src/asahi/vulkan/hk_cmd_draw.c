@@ -2494,14 +2494,45 @@ hk_ppp_push_stencil_face(struct agx_ppp_update *ppp,
    }
 }
 
+/* Any of the state vk_optimize_depth_stencil_state reads */
+static bool
+hk_ds_dirty(const struct vk_dynamic_graphics_state *dyn)
+{
+   return IS_DIRTY(DS_DEPTH_TEST_ENABLE) || IS_DIRTY(DS_DEPTH_WRITE_ENABLE) ||
+          IS_DIRTY(DS_DEPTH_COMPARE_OP) || IS_DIRTY(DS_STENCIL_TEST_ENABLE) ||
+          IS_DIRTY(DS_STENCIL_OP) || IS_DIRTY(DS_STENCIL_COMPARE_MASK) ||
+          IS_DIRTY(DS_STENCIL_WRITE_MASK) || IS_DIRTY(DS_STENCIL_REFERENCE);
+}
+
+/* The draw's depth and stencil state without its no-op tests and writes, as
+ * Metal sets it: Grim Dawn's G-buffer on macOS 27.2.1 has the stencil test off
+ * on its 102 draws whose stencil is KEEP and ALWAYS. The attachments are
+ * pass state, and hk_CmdBeginRendering dirties everything.
+ */
+static void
+hk_update_ds(struct hk_cmd_buffer *cmd)
+{
+   const struct hk_rendering_state *render = &cmd->state.gfx.render;
+   const struct vk_dynamic_graphics_state *dyn =
+      &cmd->vk.dynamic_graphics_state;
+
+   if (!hk_ds_dirty(dyn))
+      return;
+
+   VkImageAspectFlags aspects = 0;
+   if (render->depth_att.vk_format != VK_FORMAT_UNDEFINED)
+      aspects |= VK_IMAGE_ASPECT_DEPTH_BIT;
+   if (render->stencil_att.vk_format != VK_FORMAT_UNDEFINED)
+      aspects |= VK_IMAGE_ASPECT_STENCIL_BIT;
+
+   cmd->state.gfx.ds = dyn->ds;
+   vk_optimize_depth_stencil_state(&cmd->state.gfx.ds, aspects, true);
+}
+
 static bool
 hk_stencil_test_enabled(struct hk_cmd_buffer *cmd)
 {
-   const struct hk_rendering_state *render = &cmd->state.gfx.render;
-   struct vk_dynamic_graphics_state *dyn = &cmd->vk.dynamic_graphics_state;
-
-   return dyn->ds.stencil.test_enable &&
-          render->stencil_att.vk_format != VK_FORMAT_UNDEFINED;
+   return cmd->state.gfx.ds.stencil.test_enable;
 }
 
 /* The draw's depth and stencil accesses (HK_ZS_*), at most what it does: a
@@ -2511,13 +2542,14 @@ hk_zs_access(struct hk_cmd_buffer *cmd)
 {
    const struct hk_rendering_state *render = &cmd->state.gfx.render;
    struct vk_dynamic_graphics_state *dyn = &cmd->vk.dynamic_graphics_state;
+   const struct vk_depth_stencil_state *ds = &cmd->state.gfx.ds;
    uint8_t access = 0;
 
    if (render->depth_att.vk_format != VK_FORMAT_UNDEFINED) {
-      if (dyn->ds.depth.test_enable || dyn->ds.depth.bounds_test.enable)
+      if (ds->depth.test_enable || dyn->ds.depth.bounds_test.enable)
          access |= HK_ZS_READ_Z;
 
-      if (dyn->ds.depth.test_enable && dyn->ds.depth.write_enable)
+      if (ds->depth.test_enable && ds->depth.write_enable)
          access |= HK_ZS_WRITE_Z;
    }
 
@@ -2525,8 +2557,8 @@ hk_zs_access(struct hk_cmd_buffer *cmd)
       access |= HK_ZS_READ_S;
 
       const struct vk_stencil_test_face_state *faces[] = {
-         &dyn->ds.stencil.front,
-         &dyn->ds.stencil.back,
+         &ds->stencil.front,
+         &ds->stencil.back,
       };
 
       for (unsigned i = 0; i < ARRAY_SIZE(faces); ++i) {
@@ -2857,7 +2889,6 @@ hk_default_sample_positions(unsigned nr_samples)
 static void
 hk_flush_ppp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
 {
-   const struct hk_rendering_state *render = &cmd->state.gfx.render;
    struct vk_dynamic_graphics_state *dyn = &cmd->vk.dynamic_graphics_state;
 
    struct hk_graphics_state *gfx = &cmd->state.gfx;
@@ -2876,19 +2907,19 @@ hk_flush_ppp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
    bool varyings_dirty = gfx->dirty & HK_DIRTY_VARYINGS;
    uint32_t tib_written = g15 && fs && linked_fs ? linked_fs->b.tib_written : 0;
 
-   bool face_dirty =
-      IS_DIRTY(DS_DEPTH_TEST_ENABLE) || IS_DIRTY(DS_DEPTH_WRITE_ENABLE) ||
-      IS_DIRTY(DS_DEPTH_COMPARE_OP) || IS_DIRTY(DS_STENCIL_REFERENCE) ||
-      IS_DIRTY(RS_LINE_WIDTH) || IS_DIRTY(RS_POLYGON_MODE) || fs_dirty;
+   /* gfx->ds mixes the depth and stencil state, so any of it dirties every
+    * word built from it
+    */
+   bool ds_dirty = hk_ds_dirty(dyn);
 
-   bool stencil_face_dirty =
-      IS_DIRTY(DS_STENCIL_OP) || IS_DIRTY(DS_STENCIL_COMPARE_MASK) ||
-      IS_DIRTY(DS_STENCIL_WRITE_MASK) || IS_DIRTY(DS_STENCIL_TEST_ENABLE) ||
-      (g15 && face_dirty);
+   bool face_dirty = ds_dirty || IS_DIRTY(RS_LINE_WIDTH) ||
+                     IS_DIRTY(RS_POLYGON_MODE) || fs_dirty;
+
+   bool stencil_face_dirty = ds_dirty || (g15 && face_dirty);
 
    struct AGX_PPP_HEADER dirty = {
       .fragment_control =
-         IS_DIRTY(DS_STENCIL_TEST_ENABLE) || IS_DIRTY(IA_PRIMITIVE_TOPOLOGY) ||
+         ds_dirty || IS_DIRTY(IA_PRIMITIVE_TOPOLOGY) ||
          IS_DIRTY(RS_DEPTH_BIAS_ENABLE) || gfx->dirty & HK_DIRTY_OCCLUSION,
 
       .fragment_control_2 =
@@ -2983,16 +3014,15 @@ hk_flush_ppp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
    struct agx_fragment_face_2_packed fragment_face_2 = {};
 
    if (dirty.fragment_front_face) {
-      bool has_z = render->depth_att.vk_format != VK_FORMAT_UNDEFINED;
-      bool z_test = has_z && dyn->ds.depth.test_enable;
+      bool z_test = gfx->ds.depth.test_enable;
 
       agx_pack(&fragment_face, FRAGMENT_FACE, cfg) {
          cfg.line_width = agx_pack_line_width(dyn->rs.line.width);
          cfg.polygon_mode = translate_polygon_mode(dyn->rs.polygon_mode);
-         cfg.disable_depth_write = !(z_test && dyn->ds.depth.write_enable);
+         cfg.disable_depth_write = !(z_test && gfx->ds.depth.write_enable);
 
          if (z_test && !gfx->descriptors.root.draw.force_never_in_shader)
-            cfg.depth_function = translate_compare_op(dyn->ds.depth.compare_op);
+            cfg.depth_function = translate_compare_op(gfx->ds.depth.compare_op);
          else
             cfg.depth_function = AGX_ZS_FUNC_ALWAYS;
       };
@@ -3014,7 +3044,7 @@ hk_flush_ppp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
    }
 
    if (dirty.fragment_front_stencil) {
-      hk_ppp_push_stencil_face(&ppp, dyn->ds.stencil.front,
+      hk_ppp_push_stencil_face(&ppp, gfx->ds.stencil.front,
                                hk_stencil_test_enabled(cmd),
                                hk_g15_stencil_always(cmd));
    }
@@ -3034,7 +3064,7 @@ hk_flush_ppp_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t **out)
    }
 
    if (dirty.fragment_back_stencil) {
-      hk_ppp_push_stencil_face(&ppp, dyn->ds.stencil.back,
+      hk_ppp_push_stencil_face(&ppp, gfx->ds.stencil.back,
                                hk_stencil_test_enabled(cmd),
                                hk_g15_stencil_always(cmd));
    }
@@ -4041,6 +4071,7 @@ hk_flush_gfx_state(struct hk_cmd_buffer *cmd, uint32_t draw_id,
    if (!cs)
       return NULL;
 
+   hk_update_ds(cmd);
    gfx->render.zs_access |= hk_zs_access(cmd);
 
    /* Annoyingly,
