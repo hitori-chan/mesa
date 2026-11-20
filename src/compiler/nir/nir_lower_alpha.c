@@ -75,8 +75,9 @@ alpha_to_coverage(nir_builder *b, nir_def *alpha, bool has_intrinsic)
  * Lower alpha-to-coverage to sample_mask and some math. May run on either a
  * monolithic pixel shader or a fragment epilogue.
  */
-bool
-nir_lower_alpha_to_coverage(nir_shader *shader, bool has_intrinsic, nir_def *dyn_enable)
+static bool
+lower_alpha_to_coverage(nir_shader *shader, bool has_intrinsic,
+                        nir_def *dyn_enable, bool single_sample)
 {
    /* nir_lower_io_to_temporaries ensures that stores are in the last block */
    nir_function_impl *impl = nir_shader_get_entrypoint(shader);
@@ -119,12 +120,33 @@ nir_lower_alpha_to_coverage(nir_shader *shader, bool has_intrinsic, nir_def *dyn
    nir_def *alpha = nir_channel(b, rgba, 3);
    if (dyn_enable)
       alpha = nir_bcsel(b, dyn_enable, alpha, nir_imm_floatN_t(b, 1.0f, alpha->bit_size));
-   nir_def *mask = alpha_to_coverage(b, alpha, has_intrinsic);
+   /* At one sample only the mask's bit 0 counts, which the dither pattern
+    * sets for about half the pixels at alpha 0.5: a threshold instead, as
+    * Apple's G15 compiler emits it (alpha > 0.5), without the pattern's
+    * arithmetic. Any monotonic mapping is the API's.
+    */
+   nir_def *mask = single_sample
+                      ? nir_b2i32(b, nir_fgt_imm(b, alpha, 0.5))
+                      : alpha_to_coverage(b, alpha, has_intrinsic);
 
    /* Discard samples that aren't covered */
    nir_demote_samples(b, nir_inot(b, mask));
    shader->info.fs.uses_discard = true;
    return nir_progress(true, impl, nir_metadata_control_flow);
+}
+
+bool
+nir_lower_alpha_to_coverage(nir_shader *shader, bool has_intrinsic, nir_def *dyn_enable)
+{
+   return lower_alpha_to_coverage(shader, has_intrinsic, dyn_enable, false);
+}
+
+/* For a single-sampled target: the sample covered when alpha is above 0.5 */
+bool
+nir_lower_alpha_to_coverage_single_sample(nir_shader *shader,
+                                          nir_def *dyn_enable)
+{
+   return lower_alpha_to_coverage(shader, false, dyn_enable, true);
 }
 
 /*
