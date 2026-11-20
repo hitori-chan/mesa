@@ -409,8 +409,11 @@ hk_hash_graphics_state(struct vk_physical_device *device,
 static nir_def *
 bounds_check(nir_builder *b, nir_def *data, nir_def *offs, nir_def *bound)
 {
-   if (data->bit_size == 32 && data->num_components == 1) {
-      return nir_bounds_agx(b, data, offs, bound);
+   if (data->bit_size == 32) {
+      /* One icmpsel a word, where a bcsel of the vector adds the compare */
+      unsigned n = data->num_components;
+      return nir_bounds_agx(b, data, nir_replicate(b, offs, n),
+                            nir_replicate(b, bound, n));
    } else {
       /* TODO: Optimize */
       return nir_bcsel(b, nir_uge(b, bound, offs), data,
@@ -579,6 +582,49 @@ hk_ubo_granule_get(struct hk_ubo_lower *ctx, nir_intrinsic_instr *intrin,
    return util_dynarray_top_ptr(&ctx->granules, struct hk_ubo_granule);
 }
 
+/* nir_lower_explicit_io keeps UBO vector loads whole
+ * (has_load_global_constant_bounded_vectors), and one check covers a vector
+ * only within one 64-B granule: the check is on the granule of its last byte.
+ * A vector that may straddle one, and with exact bounds (no soft faults) any
+ * vector, is split into the per-component loads explicit IO made before. A
+ * scalar that straddles is out of bounds as a whole, as robustness2 allows.
+ */
+static bool
+hk_ubo_load_in_one_granule(nir_intrinsic_instr *intrin)
+{
+   unsigned size = (intrin->def.bit_size / 8) * intrin->num_components;
+   unsigned m = MIN2(nir_intrinsic_align_mul(intrin), HK_MIN_UBO_ALIGNMENT);
+   return (nir_intrinsic_align_offset(intrin) % m) + size <= m;
+}
+
+static bool
+split_ubo_vector(nir_builder *b, nir_intrinsic_instr *intrin, void *data)
+{
+   const bool *soft_fault = data;
+   if (intrin->intrinsic != nir_intrinsic_load_global_constant_bounded ||
+       intrin->num_components == 1 ||
+       (*soft_fault && hk_ubo_load_in_one_granule(intrin)))
+      return false;
+
+   b->cursor = nir_before_instr(&intrin->instr);
+   unsigned bit_size = intrin->def.bit_size;
+   unsigned align_mul = nir_intrinsic_align_mul(intrin);
+   unsigned align_offset = nir_intrinsic_align_offset(intrin);
+   nir_def *comps[NIR_MAX_VEC_COMPONENTS];
+
+   for (unsigned c = 0; c < intrin->num_components; ++c) {
+      unsigned off = c * (bit_size / 8);
+      comps[c] = nir_load_global_constant_bounded(
+         b, 1, bit_size, intrin->src[0].ssa,
+         nir_iadd_imm(b, intrin->src[1].ssa, off), intrin->src[2].ssa,
+         .access = nir_intrinsic_access(intrin), .align_mul = align_mul,
+         .align_offset = (align_offset + off) % align_mul);
+   }
+
+   nir_def_replace(&intrin->def, nir_vec(b, comps, intrin->num_components));
+   return true;
+}
+
 static void
 hk_ubo_count_granules(nir_shader *nir, struct hk_ubo_lower *ctx)
 {
@@ -690,8 +736,47 @@ lower_load_global_constant_offset_instr(nir_builder *b,
             val = bounds_check(b, val, nir_imm_int(b, first + 1), bound);
          }
       } else {
-         offset = nir_iadd_imm(b, offset, load_size);
-         val = bounds_check(b, val, offset, bound);
+         /* Against the range rounded up to the 64-B granule, as the constant
+          * case's check: robustness2 rounds it so for its bounds checks
+          * (robustUniformBufferAccessSizeAlignment), and a vector the
+          * vectorizer merged then reads what its components did. Once a
+          * buffer after CSE; a range that would wrap stays as it is.
+          */
+         nir_def *rounded = nir_iand_imm(
+            b, nir_iadd_imm(b, bound, HK_MIN_UBO_ALIGNMENT - 1),
+            ~(HK_MIN_UBO_ALIGNMENT - 1));
+         rounded = nir_umax(b, rounded, bound);
+
+         /* An element of an array, amul(x, stride) as check_in_bounds',
+          * checks its index: x * stride + load_size <= R, amul not wrapping,
+          * is x < (R - load_size) / stride + 1, and no x where R < load_size.
+          * The limit is uniform and x the load's own, so the end offset's
+          * arithmetic a load goes (Direct3D 9 rows i, i + 1, i + 2).
+          */
+         nir_scalar offs = nir_scalar_resolved(offset, 0);
+         nir_scalar srcs[2];
+         unsigned i = 0;
+         if (is_op(offs, nir_op_amul)) {
+            srcs[0] = nir_scalar_chase_alu_src(offs, 0);
+            srcs[1] = nir_scalar_chase_alu_src(offs, 1);
+            i = nir_scalar_is_const(srcs[0]) ? 1 : 0;
+         }
+
+         if (is_op(offs, nir_op_amul) && nir_scalar_is_const(srcs[1 - i]) &&
+             nir_scalar_as_uint(srcs[1 - i]) != 0) {
+            uint32_t stride = nir_scalar_as_uint(srcs[1 - i]);
+            nir_def *x = nir_mov_scalar(b, srcs[i]);
+            nir_def *lim = nir_iadd_imm(
+               b, nir_udiv_imm(b, nir_iadd_imm(b, rounded, -load_size), stride),
+               1);
+            lim = nir_bcsel(b, nir_uge_imm(b, rounded, load_size), lim,
+                            nir_imm_int(b, 0));
+            val = nir_bcsel(b, nir_ult(b, x, lim), val,
+                            nir_imm_zero(b, val->num_components, bit_size));
+         } else {
+            offset = nir_iadd_imm(b, offset, load_size);
+            val = bounds_check(b, val, offset, rounded);
+         }
       }
    }
 
@@ -1129,6 +1214,28 @@ hk_lower_nir(struct hk_device *dev, nir_shader *nir,
             nir_address_format_64bit_global);
    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_ssbo,
             hk_buffer_addr_format(rs->storage_buffers));
+   /* One load a vector before the bounds go in: Direct3D 9 shaders through
+    * DXVK read a constant a component at a time, and each component's load
+    * took its own address, base and bounds check (Grim Dawn's skinned vertex
+    * shader: 48 loads for 12 rows, e4cap 2026-11-20).
+    */
+   bool g15 = dev->dev.params.gpu_generation >= 15;
+   bool robust_ubo = rs->uniform_buffers !=
+                     VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DISABLED_EXT;
+
+   /* Robust, only where the bounds are checked on the rounded range (the
+    * soft-fault path below): with check_in_bounds's exact range
+    * split_ubo_vector splits every vector again */
+   if (!robust_ubo || agx_has_soft_fault(&dev->dev)) {
+      NIR_PASS(_, nir, nir_opt_load_store_vectorize,
+               &(const nir_load_store_vectorize_options){
+                  .modes = nir_var_mem_ubo,
+                  .callback = agx_mem_vectorize_cb,
+                  .cb_data = &g15,
+                  .robust_modes = robust_ubo ? nir_var_mem_ubo : 0,
+               });
+   }
+
    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_ubo,
             hk_buffer_addr_format(rs->uniform_buffers));
 
@@ -1151,6 +1258,12 @@ hk_lower_nir(struct hk_device *dev, nir_shader *nir,
 
    struct hk_ubo_lower ubo = {.soft_fault = agx_has_soft_fault(&dev->dev)};
    util_dynarray_init(&ubo.granules, NULL);
+   bool split = false;
+   NIR_PASS(split, nir, nir_shader_intrinsics_pass, split_ubo_vector,
+            nir_metadata_control_flow, &ubo.soft_fault);
+   if (split)
+      NIR_PASS(_, nir, nir_opt_constant_folding);
+
    if (ubo.soft_fault) {
       /* nir_lower_explicit_io gives each load its own base and bound: one
        * buffer's loads share them only after CSE, which the granules key on */

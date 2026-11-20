@@ -1492,9 +1492,18 @@ nir_lower_explicit_io_instr(nir_builder *b,
     * back-end's problem.  Another option would be to somehow plumb more of
     * that information through to nir_lower_explicit_io.  For now, however,
     * scalarizing is at least correct.
+    *
+    * A backend whose load_global_constant_bounded checks each component
+    * (has_load_global_constant_bounded_vectors) keeps UBO loads whole.
     */
+   bool bounded_ubo_vector =
+      intrin->intrinsic == nir_intrinsic_load_deref &&
+      deref->modes == nir_var_mem_ubo &&
+      addr_format == nir_address_format_64bit_bounded_global &&
+      b->shader->options->has_load_global_constant_bounded_vectors;
    bool scalarize = vec_stride > scalar_size ||
-                    addr_format_needs_bounds_check(addr_format);
+                    (addr_format_needs_bounds_check(addr_format) &&
+                     !bounded_ubo_vector);
 
    switch (intrin->intrinsic) {
    case nir_intrinsic_load_deref: {
