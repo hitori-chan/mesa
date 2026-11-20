@@ -157,10 +157,32 @@ hk_CreateBuffer(VkDevice device, const VkBufferCreateInfo *pCreateInfo,
       }
       buffer->vk.device_address = buffer->va->addr;
 
-      /* Bind scratch pages to make read/write across the VA valid */
-      hk_bind_scratch(
-         dev, buffer->va, 0, vma_size_B,
-         buffer->vk.create_flags & VK_IMAGE_CREATE_SPARSE_BINDING_BIT);
+      buffer->unbound_unmapped =
+         dev->dev.params.gpu_generation >= 15 &&
+         agx_has_soft_fault(&dev->dev) &&
+         (buffer->vk.create_flags & VK_BUFFER_CREATE_SPARSE_RESIDENCY_BIT) &&
+         !(buffer->vk.usage & (VK_BUFFER_USAGE_2_STORAGE_TEXEL_BUFFER_BIT_KHR |
+                               VK_BUFFER_USAGE_2_INDIRECT_BUFFER_BIT_KHR |
+                               VK_BUFFER_USAGE_2_INDEX_BUFFER_BIT_KHR));
+
+      if (buffer->unbound_unmapped) {
+         /* Every page starts unbound: only the read-only alias is mapped. A
+          * freed BO's VA comes back to the heap before the kernel drops its
+          * mappings (agx_bo_free, deferred while jobs run), so unmap the
+          * read-write range explicitly.
+          */
+         agx_bo_bind(&dev->dev, NULL, buffer->va->addr, vma_size_B, 0,
+                     DRM_ASAHI_BIND_UNBIND);
+         agx_bo_bind(&dev->dev, dev->dev.zero_bo,
+                     agx_rw_addr_to_ro(&dev->dev, buffer->va->addr),
+                     vma_size_B, 0,
+                     DRM_ASAHI_BIND_READ | DRM_ASAHI_BIND_SINGLE_PAGE);
+      } else {
+         /* Bind scratch pages to make read/write across the VA valid */
+         hk_bind_scratch(
+            dev, buffer->va, 0, vma_size_B,
+            buffer->vk.create_flags & VK_IMAGE_CREATE_SPARSE_BINDING_BIT);
+      }
 
       /* G15: a texel buffer view of a sparse residency buffer reads its
        * residency from a bitmap, a bit per page kept by vkQueueBindSparse
