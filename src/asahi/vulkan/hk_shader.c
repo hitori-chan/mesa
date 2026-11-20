@@ -342,12 +342,22 @@ hk_populate_fs_key(struct hk_fs_key *key,
 
 enum hk_feature_key {
    HK_FEAT_CUSTOM_BORDER = BITFIELD_BIT(0),
+   HK_FEAT_BORDER_WITHOUT_FORMAT = BITFIELD_BIT(1),
 };
 
 static enum hk_feature_key
 hk_make_feature_key(const struct vk_features *feats)
 {
-   return (!feats || feats->customBorderColors) ? HK_FEAT_CUSTOM_BORDER : 0;
+   enum hk_feature_key key = 0;
+
+   if (!feats || feats->customBorderColors)
+      key |= HK_FEAT_CUSTOM_BORDER;
+
+   if (!feats || (feats->customBorderColors &&
+                  feats->customBorderColorWithoutFormat))
+      key |= HK_FEAT_BORDER_WITHOUT_FORMAT;
+
+   return key;
 }
 
 /*
@@ -1209,7 +1219,8 @@ hk_lower_nir(struct hk_device *dev, nir_shader *nir,
 
    NIR_PASS(_, nir, hk_nir_lower_descriptors, rs, set_layout_count, set_layouts,
             dev->dev.params.gpu_generation >= 15,
-            instance->drirc.misc.d3d_nearest_mip);
+            instance->drirc.misc.d3d_nearest_mip,
+            features & HK_FEAT_BORDER_WITHOUT_FORMAT);
    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_global,
             nir_address_format_64bit_global);
    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_ssbo,

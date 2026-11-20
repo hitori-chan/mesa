@@ -147,6 +147,39 @@ g15_opaque_black_as_custom(struct hk_sampled_image_descriptor_g15 *desc,
    agx_pack_border(&desc->border, black, format);
 }
 
+/* A separate sampler's first entry, where a combined descriptor has its
+ * texture: the sampler again, its formatless border packed for an sRGB view,
+ * which a sample of one takes (hk_nir_lower_descriptors.c). An sRGB view reads
+ * the colour channels of the border word as 12-bit linear, a unorm8 view its
+ * low 8 bits, so one word without a format holds only one of them exactly
+ * (g15_pack_border_no_format; vkd3d-proton's test_custom_border_color_srgb).
+ * A border with a format is the same in both entries.
+ */
+static void
+g15_srgb_sampler_entry(struct hk_sampled_image_descriptor_g15 *desc,
+                       const struct hk_sampler *sampler, unsigned plane)
+{
+   struct {
+      struct agx_sampler_packed state;
+      struct agx_border_packed border;
+      uint32_t pad[2];
+   } entry = {
+      .state = desc->sampler,
+      .border = desc->border,
+   };
+   static_assert(sizeof(entry) == 32, "one 32 B entry");
+   static_assert(offsetof(struct hk_sampled_image_descriptor_g15, tex) == 0,
+                 "the first entry");
+
+   if (sampler->has_border &&
+       g15_border_format(sampler, NULL, plane) == PIPE_FORMAT_NONE) {
+      agx_pack_border(&entry.border, sampler->custom_border.uint32,
+                      PIPE_FORMAT_R8G8B8A8_SRGB);
+   }
+
+   memcpy(desc, &entry, sizeof(entry));
+}
+
 /* A view plane's texture and minimum LOD, as both descriptor layouts hold
  * them */
 static void
@@ -237,6 +270,9 @@ write_sampled_image_view_desc_g15(struct hk_descriptor_set *set,
          } else if (view) {
             g15_opaque_black_as_custom(&desc[plane], view, plane);
          }
+
+         if (descriptor_type == VK_DESCRIPTOR_TYPE_SAMPLER)
+            g15_srgb_sampler_entry(&desc[plane], sampler, plane);
       }
    }
    write_desc(set, binding, elem, desc, sizeof(desc[0]) * plane_count);
