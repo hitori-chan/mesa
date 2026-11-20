@@ -51,9 +51,24 @@ enum a3_mod {
 
 #define A3_MAX_OPS 32
 
+/* A run of instruction bits two operands' fields both hold: len value bits at
+ * vpos in the operand and at j_vpos in operand j */
+struct a3_seg {
+   uint8_t j, vpos, j_vpos, len;
+};
+
+/* A spec's runs by operand (operand i's in seg[start[i]..start[i + 1])): what
+ * a3_set clears in the other operands and a3_shared reads from them, found
+ * once per spec rather than bit by bit per instruction */
+struct a3_overlaps {
+   uint16_t start[A3_MAX_OPS + 1];
+   struct a3_seg seg[];
+};
+
 struct a3 {
    const agx_instr *I;
    const struct agx3_pack_spec *spec;
+   const struct a3_overlaps *ovl;
    unsigned length;
    uint64_t ops[A3_MAX_OPS];
    uint64_t tmpl[A3_MAX_OPS];
@@ -74,6 +89,72 @@ struct a3 {
    jmp_buf *trial;
 };
 
+static struct a3_overlaps *a3_overlaps_cache[AGX3_NUM_INSTRS];
+
+static const struct a3_overlaps *
+a3_overlaps(enum agx3_instr instr)
+{
+   struct a3_overlaps *o = p_atomic_read(&a3_overlaps_cache[instr]);
+   if (likely(o))
+      return o;
+
+   const struct agx3_pack_spec *s = agx3_spec(instr);
+   unsigned n = 0;
+
+   /* Count the runs, then fill them */
+   for (unsigned pass = 0; pass < 2; pass++) {
+      for (unsigned op = 0; op < s->nops; op++) {
+         if (pass)
+            o->start[op] = n;
+
+         for (unsigned f = s->op_start[op]; f < s->op_start[op + 1]; f++) {
+            const struct agx3_field *fo = &s->fields[f];
+
+            for (unsigned j = 0; j < s->nops; j++) {
+               if (j == op)
+                  continue;
+
+               for (unsigned g = s->op_start[j]; g < s->op_start[j + 1]; g++) {
+                  const struct agx3_field *fj = &s->fields[g];
+                  unsigned lo = MAX2(fo->start, fj->start);
+                  unsigned hi = MIN2(fo->start + fo->size, fj->start + fj->size);
+
+                  if (lo >= hi)
+                     continue;
+
+                  if (pass) {
+                     o->seg[n] = (struct a3_seg){
+                        .j = j,
+                        .vpos = fo->vpos + (lo - fo->start),
+                        .j_vpos = fj->vpos + (lo - fj->start),
+                        .len = hi - lo,
+                     };
+                  }
+
+                  n++;
+               }
+            }
+         }
+      }
+
+      if (!pass) {
+         o = calloc(1, sizeof(*o) + n * sizeof(o->seg[0]));
+         n = 0;
+      }
+   }
+
+   o->start[s->nops] = n;
+
+   struct a3_overlaps *old =
+      p_atomic_cmpxchg(&a3_overlaps_cache[instr], NULL, o);
+   if (old) {
+      free(o);
+      return old;
+   }
+
+   return o;
+}
+
 static unsigned
 a3_hex(char c)
 {
@@ -93,6 +174,7 @@ a3_begin(struct a3 *a, const agx_instr *I, enum agx3_instr instr,
 
    a->I = I;
    a->spec = agx3_spec(instr);
+   a->ovl = a3_overlaps(instr);
    a->length = n;
    a->set = 0;
    assert(a->spec->nops <= A3_MAX_OPS);
@@ -103,13 +185,14 @@ a3_begin(struct a3 *a, const agx_instr *I, enum agx3_instr instr,
 /* Set an operand, clearing the bits other operands (display modifiers that
  * alias it) hold in the same instruction bits, so a template's value
  * cannot leak through the OR in agx3_pack. */
+#ifndef NDEBUG
+/* The bit-by-bit forms of a3_set's clearing and a3_shared, which the runs must
+ * match */
 static void
-a3_set(struct a3 *a, unsigned op, uint64_t v)
+a3_set_clear_bits(const struct agx3_pack_spec *s, uint64_t *ops, unsigned op)
 {
-   const struct agx3_pack_spec *s = a->spec;
    uint64_t own[3] = {0};
 
-   assert(op < s->nops);
    for (unsigned f = s->op_start[op]; f < s->op_start[op + 1]; f++) {
       for (unsigned b = 0; b < s->fields[f].size; b++) {
          unsigned bit = s->fields[f].start + b;
@@ -125,10 +208,68 @@ a3_set(struct a3 *a, unsigned op, uint64_t v)
          for (unsigned b = 0; b < s->fields[f].size; b++) {
             unsigned bit = s->fields[f].start + b;
             if (own[bit / 64] & BITFIELD64_BIT(bit % 64))
-               a->ops[j] &= ~BITFIELD64_BIT(s->fields[f].vpos + b);
+               ops[j] &= ~BITFIELD64_BIT(s->fields[f].vpos + b);
          }
       }
    }
+}
+
+static uint64_t
+a3_shared_bits(const struct a3 *a, unsigned op, uint64_t *val)
+{
+   const struct agx3_pack_spec *s = a->spec;
+   uint64_t mask = 0;
+
+   *val = 0;
+   for (unsigned f = s->op_start[op]; f < s->op_start[op + 1]; f++) {
+      const struct agx3_field *fo = &s->fields[f];
+
+      u_foreach_bit(j, a->set) {
+         if (j == op)
+            continue;
+
+         for (unsigned g = s->op_start[j]; g < s->op_start[j + 1]; g++) {
+            const struct agx3_field *fj = &s->fields[g];
+
+            for (unsigned b = 0; b < fo->size; b++) {
+               unsigned bit = fo->start + b;
+               if (bit < fj->start || bit >= fj->start + fj->size)
+                  continue;
+
+               uint64_t vb = BITFIELD64_BIT(fo->vpos + b);
+               mask |= vb;
+               if ((a->ops[j] >> (fj->vpos + bit - fj->start)) & 1)
+                  *val |= vb;
+            }
+         }
+      }
+   }
+
+   return mask;
+}
+#endif
+
+static void
+a3_set(struct a3 *a, unsigned op, uint64_t v)
+{
+   const struct a3_overlaps *o = a->ovl;
+
+   assert(op < a->spec->nops);
+#ifndef NDEBUG
+   uint64_t check[A3_MAX_OPS];
+   memcpy(check, a->ops, sizeof(check));
+   a3_set_clear_bits(a->spec, check, op);
+#endif
+
+   for (unsigned i = o->start[op]; i < o->start[op + 1]; i++) {
+      const struct a3_seg *g = &o->seg[i];
+      a->ops[g->j] &= ~(BITFIELD64_MASK(g->len) << g->j_vpos);
+   }
+
+#ifndef NDEBUG
+   for (unsigned j = 0; j < a->spec->nops; j++)
+      assert(j == op || check[j] == a->ops[j]);
+#endif
 
    a->ops[op] = v;
    a->want[op] = v;
@@ -180,33 +321,24 @@ a3_case(const struct a3 *a, unsigned op, enum a3_kind kind, unsigned size,
 static uint64_t
 a3_shared(const struct a3 *a, unsigned op, uint64_t *val)
 {
-   const struct agx3_pack_spec *s = a->spec;
+   const struct a3_overlaps *o = a->ovl;
    uint64_t mask = 0;
 
    *val = 0;
-   for (unsigned f = s->op_start[op]; f < s->op_start[op + 1]; f++) {
-      const struct agx3_field *fo = &s->fields[f];
+   for (unsigned i = o->start[op]; i < o->start[op + 1]; i++) {
+      const struct a3_seg *g = &o->seg[i];
+      if (!(a->set & BITFIELD_BIT(g->j)))
+         continue;
 
-      u_foreach_bit(j, a->set) {
-         if (j == op)
-            continue;
-
-         for (unsigned g = s->op_start[j]; g < s->op_start[j + 1]; g++) {
-            const struct agx3_field *fj = &s->fields[g];
-
-            for (unsigned b = 0; b < fo->size; b++) {
-               unsigned bit = fo->start + b;
-               if (bit < fj->start || bit >= fj->start + fj->size)
-                  continue;
-
-               uint64_t vb = BITFIELD64_BIT(fo->vpos + b);
-               mask |= vb;
-               if ((a->ops[j] >> (fj->vpos + bit - fj->start)) & 1)
-                  *val |= vb;
-            }
-         }
-      }
+      uint64_t m = BITFIELD64_MASK(g->len);
+      mask |= m << g->vpos;
+      *val |= ((a->ops[g->j] >> g->j_vpos) & m) << g->vpos;
    }
+
+#ifndef NDEBUG
+   uint64_t check_val, check_mask = a3_shared_bits(a, op, &check_val);
+   assert(check_mask == mask && check_val == *val);
+#endif
 
    return mask;
 }
