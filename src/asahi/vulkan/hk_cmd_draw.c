@@ -1143,8 +1143,14 @@ hk_CmdBeginRendering(VkCommandBuffer commandBuffer,
          .layerCount = render->view_mask ? 1 : render->layer_count,
       };
 
+      /* A load operation is never predicated: conditional rendering covers
+       * vkCmdClearAttachments, not this clear made through it.
+       */
+      uint64_t cond_addr = cmd->state.cond.addr;
+      cmd->state.cond.addr = 0;
       hk_CmdClearAttachments(hk_cmd_buffer_to_handle(cmd), clear_count,
                              clear_att, 1, &clear_rect);
+      cmd->state.cond.addr = cond_addr;
    } else {
       /* If a tile is empty, we do not want to process it, as the redundant
        * roundtrip of memory-->tilebuffer-->memory wastes a tremendous amount of
