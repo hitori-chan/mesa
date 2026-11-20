@@ -86,13 +86,24 @@ static_assert(sizeof(struct hk_storage_image_descriptor) == 48,
  * is a fetch, which names a sampler), and the PBE (writes and atomics). The
  * texture and sampler sit where hk_sampled_image_descriptor_g15 has them, so
  * a texel buffer's fetch finds its sampler as a sampled image's does.
+ *
+ * A texel buffer's sparse residency takes two words the hardware does not
+ * read: the sampler entry's last (a sampled image's shader words) and the
+ * PBE's fourth (read for multisampled and compressed images only). The first
+ * is its buffer's residency bitmap (hk_buffer::residency), 0 for a buffer
+ * without one; the second the view's 16 B aligned start in the buffer in
+ * bytes, with its texel size in bytes at bit 48
+ * (libagx_texel_buffer_unbound).
  */
 struct hk_storage_image_descriptor_g15 {
    struct agx_texture_packed tex;
    uint32_t tex_pad[2];
    struct agx_sampler_packed txf_sampler;
-   uint32_t sampler_pad[6];
+   uint32_t sampler_pad[4];
+   uint64_t residency_bitmap;
    struct agx_pbe_packed pbe;
+
+   /* An image's PBE G15 software, a texel buffer's residency view */
    uint32_t pbe_pad[2];
 };
 static_assert(sizeof(struct hk_storage_image_descriptor_g15) == 96,
@@ -100,6 +111,11 @@ static_assert(sizeof(struct hk_storage_image_descriptor_g15) == 96,
 static_assert(offsetof(struct hk_storage_image_descriptor_g15, txf_sampler) ==
                  offsetof(struct hk_sampled_image_descriptor_g15, sampler),
               "the sampler is the entry after the texture");
+static_assert(offsetof(struct hk_storage_image_descriptor_g15,
+                       residency_bitmap) ==
+                 offsetof(struct hk_sampled_image_descriptor_g15,
+                          lod_bias_fp16),
+              "the residency bitmap is where a sampled image's words are");
 static_assert(offsetof(struct hk_storage_image_descriptor_g15, pbe) == 64,
               "the PBE is the third entry");
 

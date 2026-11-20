@@ -396,3 +396,30 @@ libagx_buffer_image_offset(constant struct agx_pbe_packed *ptr, uint x)
 
    return x + d.buffer_offset_sw;
 }
+
+/*
+ * Honeykrisp's G15 sparse texel buffers (hk_descriptor_set.h): the residency
+ * code of a view's texel x, 1 where its 16 KiB page (AIL_PAGESIZE) is unbound
+ * in its buffer's bitmap, a set bit a page unbound. A texel past the view and
+ * a view of a buffer without a bitmap (address 0) read as resident, as the
+ * texture unit's fetch of such a linear texture does.
+ */
+uint
+libagx_texel_buffer_unbound(constant struct agx_texture_packed *ptr,
+                            constant uint64_t *bitmap_ptr,
+                            constant uint64_t *view_ptr, uint x)
+{
+   agx_unpack(NULL, ptr, TEXTURE, sw);
+   uint64_t bitmap = *bitmap_ptr;
+
+   if (bitmap == 0 || x >= sw.buffer_size_sw)
+      return 0;
+
+   /* The view's 16 B aligned start in bytes, and its texel size at bit 48 */
+   uint64_t view = *view_ptr;
+   uint64_t x_B = (view & BITFIELD64_MASK(48)) +
+                  (uint64_t)(x + sw.buffer_offset_sw) * (uint)(view >> 48);
+   uint page = x_B / 16384;
+
+   return (((constant uint *)bitmap)[page / 32] >> (page % 32)) & 1;
+}

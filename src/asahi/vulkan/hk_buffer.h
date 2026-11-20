@@ -20,6 +20,13 @@ struct hk_buffer {
 
    /** Reserved VA for sparse buffers, NULL otherwise. */
    struct agx_va *va;
+
+   /**
+    * G15: a sparse residency texel buffer's bitmap of its 16 KiB pages, a set
+    * bit unbound, which its views' fetches read for their residency code.
+    * NULL otherwise.
+    */
+   struct agx_bo *residency;
 };
 
 VK_DEFINE_NONDISP_HANDLE_CASTS(hk_buffer, vk.base, VkBuffer,
