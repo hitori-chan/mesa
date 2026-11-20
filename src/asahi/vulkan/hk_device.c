@@ -54,6 +54,7 @@ static const struct debug_named_value hk_perf_options[] = {
    {"imgchain",  HK_PERF_IMGCHAIN, "G15: an image barrier chained to memory writes holds the next vertex stage"},
    {"swtess",    HK_PERF_SWTESS,   "G15: tessellate in compute shaders, not the hardware tessellator"},
    {"hwtess32",  HK_PERF_HWTESS32, "G15: the hardware tessellator with FP32 factors"},
+   {"serialcompile", HK_PERF_SERIALCOMPILE, "Compile a pipeline's stages one after another on the calling thread"},
    DEBUG_NAMED_VALUE_END
 };
 /* clang-format on */
@@ -520,6 +521,9 @@ hk_DestroyDevice(VkDevice _device, const VkAllocationCallbacks *pAllocator)
    util_dynarray_fini(&dev->external_bos.counts);
    util_dynarray_fini(&dev->external_bos.list);
    u_rwlock_destroy(&dev->external_bos.lock);
+
+   if (dev->compile.ok)
+      util_queue_destroy(&dev->compile.queue);
 
    hk_device_finish_meta(dev);
    hk_destroy_internal_shaders(dev, &dev->kernels, false);
