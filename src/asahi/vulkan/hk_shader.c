@@ -7,6 +7,7 @@
  * SPDX-License-Identifier: MIT
  */
 #include "hk_shader.h"
+#include "util/u_queue.h"
 
 #include "poly/nir/poly_nir.h"
 #include "agx_debug.h"
@@ -2282,6 +2283,50 @@ nir_opts(nir_shader *nir, void *data)
    } while (progress);
 }
 
+/* A pipeline's stages are compiled beside each other once linked: an
+ * application that creates its pipelines on one thread (Elden Ring's startup
+ * set) otherwise waits for each stage in turn. hk_compile_shader is already
+ * called from several threads at once by applications that compile in
+ * parallel, so a stage is safe on another thread. Four threads take a
+ * pipeline's stages but the last, which the calling thread compiles meanwhile;
+ * a stage that finds them all busy is compiled on the calling thread, so
+ * applications that compile on many threads themselves do not queue behind
+ * them.
+ */
+#define HK_COMPILE_THREADS 4
+
+struct hk_compile_job {
+   struct hk_device *dev;
+   struct vk_shader_compile_info *info;
+   const struct vk_graphics_pipeline_state *state;
+   const struct vk_features *features;
+   const VkAllocationCallbacks *pAllocator;
+   struct hk_api_shader **out;
+   struct util_queue_fence fence;
+   bool queued;
+   VkResult result;
+};
+
+static void
+hk_compile_queue_init(const void *data)
+{
+   struct hk_device *dev = (struct hk_device *)data;
+
+   dev->compile.ok =
+      util_queue_init(&dev->compile.queue, "hk_compile", 32,
+                      HK_COMPILE_THREADS, UTIL_QUEUE_INIT_RESIZE_IF_FULL, NULL);
+}
+
+static void
+hk_compile_job_execute(void *data, UNUSED void *gdata, UNUSED int thread_index)
+{
+   struct hk_compile_job *job = data;
+
+   job->result = hk_compile_shader(job->dev, job->info, job->state,
+                                   job->features, job->pAllocator, job->out);
+   p_atomic_dec(&job->dev->compile.busy);
+}
+
 static VkResult
 hk_compile_shaders(struct vk_device *vk_dev, uint32_t shader_count,
                    struct vk_shader_compile_info *infos,
@@ -2342,6 +2387,68 @@ hk_compile_shaders(struct vk_device *vk_dev, uint32_t shader_count,
 
    nir_opt_varyings_bulk(shaders, shader_count, true, UINT32_MAX, UINT32_MAX,
                          nir_opts, NULL);
+
+   if (shader_count > 1 && !HK_PERF(dev, SERIALCOMPILE)) {
+      util_call_once_data(&dev->compile.once, hk_compile_queue_init, dev);
+
+      if (dev->compile.ok) {
+         struct hk_compile_job jobs[shader_count];
+         VkResult result = VK_SUCCESS;
+
+         /* The last stage (the fragment shader, usually the largest) stays on
+          * this thread, the others go to the queue while it has room */
+         for (uint32_t i = 0; i < shader_count; i++) {
+            jobs[i] = (struct hk_compile_job){
+               .dev = dev,
+               .info = &infos[i],
+               .state = state,
+               .features = features,
+               .pAllocator = pAllocator,
+               .out = (struct hk_api_shader **)&shaders_out[i],
+            };
+
+            if (i + 1 < shader_count &&
+                p_atomic_inc_return(&dev->compile.busy) <= HK_COMPILE_THREADS) {
+               jobs[i].queued = true;
+               util_queue_fence_init(&jobs[i].fence);
+               util_queue_add_job(&dev->compile.queue, &jobs[i], &jobs[i].fence,
+                                  hk_compile_job_execute, NULL, 0);
+            } else if (i + 1 < shader_count) {
+               p_atomic_dec(&dev->compile.busy);
+            }
+         }
+
+         for (uint32_t i = 0; i < shader_count; i++) {
+            if (!jobs[i].queued) {
+               jobs[i].result =
+                  hk_compile_shader(dev, jobs[i].info, state, features,
+                                    pAllocator, jobs[i].out);
+            }
+         }
+
+         for (uint32_t i = 0; i < shader_count; i++) {
+            if (jobs[i].queued) {
+               util_queue_fence_wait(&jobs[i].fence);
+               util_queue_fence_destroy(&jobs[i].fence);
+            }
+
+            if (jobs[i].result != VK_SUCCESS && result == VK_SUCCESS)
+               result = jobs[i].result;
+         }
+
+         /* Each stage consumed its NIR: on a failure, destroy the ones built */
+         if (result != VK_SUCCESS) {
+            for (uint32_t i = 0; i < shader_count; i++) {
+               if (jobs[i].result == VK_SUCCESS)
+                  hk_api_shader_destroy(&dev->vk, shaders_out[i], pAllocator);
+            }
+
+            memset(shaders_out, 0, shader_count * sizeof(*shaders_out));
+         }
+
+         return result;
+      }
+   }
 
    for (uint32_t i = 0; i < shader_count; i++) {
       VkResult result =

@@ -11,6 +11,7 @@
 #include "util/rwlock.h"
 #include "util/simple_mtx.h"
 #include "util/u_dynarray.h"
+#include "util/u_queue.h"
 #include "agx_bg_eot.h"
 #include "agx_pack.h"
 #include "agx_scratch.h"
@@ -102,6 +103,16 @@ struct hk_device {
 
    uint32_t perftest;
 
+   /* A pipeline's stages but its last, compiled beside the calling thread
+    * (hk_compile_shaders): started at the first pipeline of several stages,
+    * busy counting the stages it holds */
+   struct {
+      struct util_queue queue;
+      util_once_flag once;
+      bool ok;
+      uint32_t busy;
+   } compile;
+
    struct {
       struct u_rwlock lock;
       struct util_dynarray list;
@@ -129,6 +140,7 @@ enum hk_perftest {
    HK_PERF_HWTESS32 = BITFIELD_BIT(14),
    /* Not an option: on G15 unless swtess is set */
    HK_PERF_HWTESS = BITFIELD_BIT(15),
+   HK_PERF_SERIALCOMPILE = BITFIELD_BIT(16),
 };
 
 #define HK_PERF(dev, flag) unlikely((dev)->perftest &HK_PERF_##flag)
