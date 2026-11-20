@@ -992,12 +992,18 @@
     <value name="FP32" value="1"/>
   </enum>
 
+  <!-- Apple's drawPatches (G15X and G13X 27.2) builds it from the pipeline:
+       bits 0-15 zero, bit 22 zero, bit 21 set -->
   <struct name="VDM State Tessellation" size="4">
-    <field name="Unknown" size="17" start="0" type="hex"/>
+    <field name="Unknown" size="16" start="0" type="hex"/>
+    <!-- The vertex shader reads the ring, edge and vertex index
+         (air.ring_edge_vertex) -->
+    <field name="Ring edge vertex" size="1" start="16" type="bool"/>
     <field name="Step function" size="2" start="17" type="Step function"/>
     <field name="Factor type" size="1" start="19" type="Factor type"/>
     <field name="Patch type" size="1" start="20" type="Patch type"/>
-    <field name="Unknown 3" size="2" start="21" type="hex"/> <!-- 1 -->
+    <field name="Unknown 21" size="1" start="21" type="bool"/>
+    <field name="Unknown 22" size="1" start="22" type="bool"/>
 
     <!-- Subtract 1 for fractional odd -->
     <field name="Max tess factor" size="6" start="23" type="uint" modifier="minus(1)"/>
@@ -1085,32 +1091,25 @@
     <field name="Target lo" size="32" start="32" type="hex"/>
   </struct>
 
+  <!-- Apple's drawPatches (G15X 27.2) emits the header 0xB2F00C00 direct and
+       0xB4300C00 indirect, the factor buffer's bits 39:32 or'd in. The words
+       follow in the order of their bits, bit 20's after the others, as the
+       Index List's, then G15's top byte. Only the set difference of the two
+       headers is traced: the per-bit mapping below is inferred, so a driver
+       emits the two headers whole. -->
   <struct name="VDM Tessellate" size="4">
     <field name="Factor buffer hi" size="8" start="0" type="hex"/>
     <field name="Unknown 0" size="12" start="8" type="hex"/> <!-- 0xc -->
-
-    <!-- Set for both indirect and direct -->
-    <field name="Unknown 2" size="1" start="20" type="bool"/>
-
-    <!-- Present for both indirect and direct -->
-    <!-- XXX: Order is an (educated) guess -->
+    <field name="Factor buffer size present" size="1" start="20" type="bool"/>
     <field name="Factor buffer present" size="1" start="21" type="bool"/>
-
-    <!-- XXX: out of bits???? not set for indirect??? -->
+    <!-- Direct only -->
     <field name="Patch count present" size="1" start="22" type="bool"/>
-
-    <!-- These four are omitted for indirect draws -->
-    <!-- XXX: Order is an (educated) guess -->
-    <field name="Instance count present" size="1" start="22" type="bool"/>
-    <field name="Base patch present" size="1" start="23" type="bool"/>
-    <field name="Base instance present" size="1" start="25" type="bool"/>
-    <!-- XXX: Out of bits!!! -->
-    <field name="Instance stride present" size="1" start="25" type="bool"/>
-
+    <field name="Instance count present" size="1" start="23" type="bool"/>
+    <!-- Two words: the base patch and the base instance -->
+    <field name="Base present" size="1" start="25" type="bool"/>
+    <!-- Indirect only -->
     <field name="Indirect present" size="1" start="26" type="bool"/>
-    <field name="Factor buffer size present" size="1" start="28" type="bool"/>
-
-    <field name="Unknown 1" size="1" start="28" type="hex"/> <!-- 1 -->
+    <field name="Instance stride present" size="1" start="28" type="bool"/>
     <field name="Block Type" size="3" start="29" type="VDM Block Type" exact="Tessellate"/>
   </struct>
 
@@ -1126,30 +1125,35 @@
     <field name="Instance count" size="32" start="0" type="uint"/>
   </struct>
 
-  <struct name="VDM Tessellate: Base patch" size="4">
-    <field name="Base patch" size="32" start="0" type="uint"/>
+  <!-- Metal's patchStart and baseInstance -->
+  <struct name="VDM Tessellate: Base" size="8">
+    <field name="Base patch" size="32" start="0:0" type="uint"/>
+    <field name="Base instance" size="32" start="1:0" type="uint"/>
   </struct>
 
-  <struct name="VDM Tessellate: Base instance" size="4">
-    <field name="Base instance" size="32" start="0" type="uint"/>
-  </struct>
-
-  <struct name="VDM Tessellate: Instance stride" size="4">
-    <!-- Divided by 4 for QUADS -->
-    <field name="Instance stride" size="32" start="0" type="uint"/>
-  </struct>
-
-  <struct name="VDM Tessellate: Indirect" size="12">
-    <!-- Address of the indirect buffer, format presumably matches Metal -->
-    <field name="Address hi" size="8" start="0:0" type="hex"/>
+  <!-- Of Metal's MTLDrawPatchIndirectArguments: {patchCount, instanceCount,
+       patchStart, baseInstance}. G15 takes bits 47:32 of the address, G13X
+       bits 39:32. -->
+  <struct name="VDM Tessellate: Indirect" size="8">
+    <field name="Address hi" size="16" start="0:0" type="hex"/>
     <field name="Address lo" size="32" start="1:0" type="hex"/>
-
-    <!-- # of bytes in the buffer, presumably for hw bounds checking -->
-    <field name="Size" size="32" start="2:0" type="uint"/>
   </struct>
 
+  <!-- Between one instance's factors and the next's, in bytes, for the step
+       functions per instance. 19 bits on G13X and G15X, either patch type. -->
+  <struct name="VDM Tessellate: Instance stride" size="4">
+    <field name="Instance stride" size="19" start="0" type="uint" modifier="shr(2)"/>
+  </struct>
+
+  <!-- Apple's driver gives the whole Metal buffer's words, while the factor
+       address includes the buffer offset -->
   <struct name="VDM Tessellate: Factor buffer size" size="4">
     <field name="Size (words)" size="32" start="0" type="uint" modifier="minus(1)"/>
+  </struct>
+
+  <!-- G15: the factor buffer's bits 47:40, as the Index List's top byte -->
+  <struct name="VDM Tessellate: Factor buffer top" size="4">
+    <field name="Factor buffer top" size="8" start="0" type="hex"/>
   </struct>
 
   <struct name="VDM Stream Terminate" size="32">

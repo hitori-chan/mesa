@@ -691,6 +691,17 @@ a3_sr(const struct a3 *a, enum agx_sr sr)
       return 93;
    case AGX_SR_INSTANCE_ID:
       return 88;
+   /* A post-tessellation vertex shader's patch and position in the patch:
+    * libLLVM's register table names sr89 PATCHID, sr90 TESSU and sr91 TESSV,
+    * and AGC's llvm.agx3.patch.id and position.in.patch.u/v intrinsics carry
+    * the same names. The intrinsic to register selection is not read, and
+    * none has run on the hardware. */
+   case AGX_SR_PATCH_ID:
+      return 89;
+   case AGX_SR_TESS_U:
+      return 90;
+   case AGX_SR_TESS_V:
+      return 91;
    default:
       a3_fail(a, "special register not mapped");
    }

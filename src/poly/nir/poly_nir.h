@@ -75,6 +75,8 @@ bool poly_nir_lower_tcs(struct nir_shader *tcs,
                         bool can_ignore_shader_out_barriers);
 
 bool poly_nir_lower_tes(struct nir_shader *tes, bool to_hw_vs);
+bool poly_nir_lower_tcs_hw_factors(struct nir_shader *tcs);
+bool poly_nir_lower_tes_hw(struct nir_shader *tes);
 
 uint64_t poly_tcs_per_vertex_outputs(const struct nir_shader *nir);
 

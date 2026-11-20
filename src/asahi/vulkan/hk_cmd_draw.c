@@ -1657,6 +1657,37 @@ hk_upload_tess_params(struct hk_cmd_buffer *cmd, struct poly_tess_params *out,
          dyn->ts.domain_origin == VK_TESSELLATION_DOMAIN_ORIGIN_LOWER_LEFT;
    }
 
+   /* The hardware tessellator reads the levels from the factor buffer the
+    * TCS writes, one struct per unrolled patch. It needs no tessellator
+    * outputs: no coordinates, counts or draws.
+    */
+   if (gfx->tess.hw) {
+      assert(!agx_is_indirect(draw.b));
+
+      bool quad = gfx->tess.info.mode == TESS_PRIMITIVE_QUADS;
+      bool fp32 = HK_PERF(dev, HWTESS32);
+      unsigned in_patches = draw.b.count[0] / args.input_patch_size;
+      unsigned unrolled_patches = in_patches * draw.b.count[1];
+
+      uint32_t tcs_B = unrolled_patches * args.tcs_stride_el * 4;
+      uint32_t factors_B =
+         unrolled_patches * poly_tess_hw_factor_size(quad, fp32);
+
+      args.tcs_buffer = hk_pool_alloc(cmd, tcs_B, 4).gpu;
+      args.patches_per_instance = in_patches;
+      args.nr_patches = unrolled_patches;
+      args.hw_factors = hk_pool_alloc(cmd, factors_B, 16).gpu;
+      args.hw_factors_quad = quad;
+      args.hw_factors_fp32 = fp32;
+
+      gfx->tess.out_draws = 0;
+      gfx->tess.hw_factors = args.hw_factors;
+      gfx->tess.hw_factors_size_B = factors_B;
+      gfx->tess.hw_patches = unrolled_patches;
+      memcpy(out, &args, sizeof(args));
+      return;
+   }
+
    uint32_t draw_stride_el = 5;
    size_t draw_stride_B = draw_stride_el * sizeof(uint32_t);
 
@@ -2127,6 +2158,14 @@ hk_launch_tess(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
    hk_dispatch_with_usc(
       dev, cs, &tcs->b.info, hk_upload_usc_words(cmd, tcs, tcs->only_linked),
       grid_tcs, agx_workgroup(tcs->info.tess.tcs_output_patch_size, 1, 1));
+
+   /* The hardware tessellator takes the levels the TCS wrote: the draw is
+    * hk_vdm_tessellate's.
+    */
+   if (gfx->tess.hw) {
+      perf_debug(cmd, "Hardware tessellation");
+      return draw;
+   }
 
    /* First generate counts, then prefix sum them, and then tessellate. */
    libagx_tessellate(cmd, grid_tess, AGX_BARRIER_ALL | AGX_PREGFX, info.mode,
@@ -4056,6 +4095,93 @@ hk_handle_passthrough_gs(struct hk_cmd_buffer *cmd, struct agx_draw draw)
    hk_cmd_bind_graphics_shader(cmd, MESA_SHADER_GEOMETRY, gs);
 }
 
+/* Whether the fragment shader reads gl_PrimitiveID, which the hardware would
+ * generate per triangle
+ */
+static bool
+hk_fs_reads_primitive_id(struct hk_graphics_state *gfx)
+{
+   struct hk_shader *fs = hk_only_variant(gfx->shaders[MESA_SHADER_FRAGMENT]);
+   if (!fs)
+      return false;
+
+   const struct agx_varyings_fs *v = &fs->b.info.varyings.fs;
+
+   for (unsigned i = 0; i < v->nr_bindings; ++i) {
+      if (v->bindings[i].slot == VARYING_SLOT_PRIMITIVE_ID)
+         return true;
+   }
+
+   return false;
+}
+
+/*
+ * Whether a tessellated draw runs on G15's hardware tessellator
+ * (unless HK_PERFTEST=swtess): a direct draw of triangles or quads outside
+ * points mode, straight to the rasterizer. What the hardware path neither
+ * counts nor feeds stays in software, as does every indirect draw.
+ */
+static bool
+hk_tess_use_hw(struct hk_cmd_buffer *cmd, struct agx_draw draw)
+{
+   struct hk_device *dev = hk_cmd_buffer_device(cmd);
+   struct hk_graphics_state *gfx = &cmd->state.gfx;
+   struct vk_dynamic_graphics_state *dyn = &cmd->vk.dynamic_graphics_state;
+   struct hk_api_shader *tcs = gfx->shaders[MESA_SHADER_TESS_CTRL];
+   struct hk_api_shader *tes = gfx->shaders[MESA_SHADER_TESS_EVAL];
+
+   if (!HK_PERF(dev, HWTESS) || !tcs || !tes)
+      return false;
+
+   /* A geometry shader, the passthrough for transform feedback and
+    * conservative rasterization included, runs the TES as a compute shader
+    */
+   if (gfx->shaders[MESA_SHADER_GEOMETRY] || gfx->shaders[MESA_SHADER_MESH])
+      return false;
+
+   if (gfx->tess.info.points ||
+       (gfx->tess.info.mode != TESS_PRIMITIVE_TRIANGLES &&
+        gfx->tess.info.mode != TESS_PRIMITIVE_QUADS))
+      return false;
+
+   /* Shaders compiled under swtess, from a cache */
+   if (!tes->variants[HK_TES_VARIANT_HW_TESS].code_size ||
+       !hk_only_variant(tcs)->info.tess.hw_factors) {
+      perf_debug(cmd, "Hardware tessellation: shaders without its variants");
+      return false;
+   }
+
+   if (agx_is_indirect(draw.b)) {
+      perf_debug(cmd, "Hardware tessellation: indirect draw in software");
+      return false;
+   }
+
+   if (draw.b.count[0] < dyn->ts.patch_control_points)
+      return false;
+
+   /* The software tessellator counts these */
+   if (hk_stat_enabled(hk_pipeline_stat_addr(
+          cmd,
+          VK_QUERY_PIPELINE_STATISTIC_TESSELLATION_EVALUATION_SHADER_INVOCATIONS_BIT)) ||
+       hk_stat_enabled(hk_pipeline_stat_addr(
+          cmd, VK_QUERY_PIPELINE_STATISTIC_CLIPPING_INVOCATIONS_BIT)) ||
+       hk_stat_enabled(hk_pipeline_stat_addr(
+          cmd, VK_QUERY_PIPELINE_STATISTIC_CLIPPING_PRIMITIVES_BIT))) {
+      perf_debug(cmd, "Hardware tessellation: statistics in software");
+      return false;
+   }
+
+   /* The patch ID would have to come from the TES: the hardware's counts
+    * something else (not verified which), the software path's triangles
+    */
+   if (hk_fs_reads_primitive_id(gfx)) {
+      perf_debug(cmd, "Hardware tessellation: primitive ID in software");
+      return false;
+   }
+
+   return true;
+}
+
 static struct hk_cs *
 hk_flush_gfx_state(struct hk_cmd_buffer *cmd, uint32_t draw_id,
                    struct agx_draw draw)
@@ -4140,6 +4266,13 @@ hk_flush_gfx_state(struct hk_cmd_buffer *cmd, uint32_t draw_id,
 
    /* TODO: Try to reduce draw overhead of this */
    hk_handle_passthrough_gs(cmd, draw);
+
+   /* The hardware tessellator's variant is per draw: relink when it changes */
+   bool hw_tess = hk_tess_use_hw(cmd, draw);
+   if (gfx->tess.hw != hw_tess) {
+      gfx->tess.hw = hw_tess;
+      gfx->shaders_dirty |= BITFIELD_BIT(MESA_SHADER_TESS_EVAL);
+   }
 
    hk_flush_shaders(cmd);
 
@@ -4285,6 +4418,107 @@ hk_ia_update(struct hk_cmd_buffer *cmd, struct agx_draw draw,
                           ia_vertices, ia_prims, vs_invocations, c_prims, c_inv,
                           draw_ptr, prim, patch_size);
    }
+}
+
+/*
+ * A draw on G15's hardware tessellator, as Apple's drawPatches emits it
+ * (HWTessellationContext<G15>::drawPatches, AGXMetalG15X 27.2): a VDM state
+ * update with the tessellation word and the factor scale, then the Tessellate
+ * block. Its header is Apple's direct one whole, the per-bit meaning being
+ * inferred (cmdbuf.xml).
+ *
+ * The draw's instances are unrolled into one run of patches, instance-major
+ * as the TCS output and the factor buffer: one instance, the levels stepped
+ * per patch, base patch and instance 0. A TES has no instance index to lose,
+ * and the patch ID needs no instance stride or base.
+ *
+ * The winding bit set gives the software tessellator's order, on which the
+ * cull state flips the front face for counter-clockwise and lower-left-origin
+ * domains on both paths (hk_flush_ppp_state): clear, the 48
+ * dEQP-VK.tessellation.winding cases fail, set they pass. The bit is named
+ * after Metal's winding, whose y-up NDC reads the other way round in Vulkan's
+ * y-down framebuffer (inferred).
+ */
+#define HK_VDM_TESSELLATE_DIRECT_G15 0xB2F00C00
+
+static uint32_t *
+hk_vdm_tessellate(struct hk_cmd_buffer *cmd, uint32_t *out)
+{
+   struct hk_device *dev = hk_cmd_buffer_device(cmd);
+   struct hk_graphics_state *gfx = &cmd->state.gfx;
+   uint64_t factors = gfx->tess.hw_factors;
+   enum gl_tess_spacing spacing = gfx->tess.info.spacing;
+
+   assert(dev->dev.params.gpu_generation >= 15);
+
+   agx_push(out, VDM_STATE, cfg) {
+      cfg.tessellation_present = true;
+      cfg.tessellation_scale_present = true;
+   }
+
+   agx_push(out, VDM_STATE_TESSELLATION, cfg) {
+      cfg.step_function = AGX_STEP_FUNCTION_PER_PATCH;
+      cfg.factor_type = HK_PERF(dev, HWTESS32) ? AGX_FACTOR_TYPE_FP32
+                                               : AGX_FACTOR_TYPE_FP16;
+      cfg.patch_type = gfx->tess.info.mode == TESS_PRIMITIVE_QUADS
+                          ? AGX_PATCH_TYPE_QUADS
+                          : AGX_PATCH_TYPE_TRIANGLES;
+      cfg.unknown_21 = true;
+      cfg.counterclockwise_winding = true;
+
+      /* As hk_upload_tess_params's for the software tessellator. The level
+       * cap is maxTessellationGenerationLevel, one less for fractional odd,
+       * as Apple's encoding of Metal's 64.
+       */
+      if (spacing == TESS_SPACING_EQUAL) {
+         cfg.partition_mode = AGX_PARTITION_MODE_INTEGER;
+         cfg.max_tess_factor = 64;
+      } else if (spacing == TESS_SPACING_FRACTIONAL_ODD) {
+         cfg.partition_mode = AGX_PARTITION_MODE_FRACTIONAL_ODD;
+         cfg.max_tess_factor = 63;
+      } else {
+         cfg.partition_mode = AGX_PARTITION_MODE_FRACTIONAL_EVEN;
+         cfg.max_tess_factor = 64;
+      }
+   }
+
+   /* Always applied: 1.0 */
+   agx_push(out, VDM_STATE_TESSELLATION_SCALE, cfg) {
+      cfg.scale = 1.0f;
+   }
+
+   *(out++) = HK_VDM_TESSELLATE_DIRECT_G15 | ((factors >> 32) & 0xff);
+
+   agx_push(out, VDM_TESSELLATE_FACTOR_BUFFER, cfg) {
+      cfg.factor_buffer_lo = factors;
+   }
+
+   agx_push(out, VDM_TESSELLATE_PATCH_COUNT, cfg) {
+      cfg.patch_count = gfx->tess.hw_patches;
+   }
+
+   agx_push(out, VDM_TESSELLATE_INSTANCE_COUNT, cfg) {
+      cfg.instance_count = 1;
+   }
+
+   agx_push(out, VDM_TESSELLATE_BASE, cfg) {
+      cfg.base_patch = 0;
+      cfg.base_instance = 0;
+   }
+
+   agx_push(out, VDM_TESSELLATE_INSTANCE_STRIDE, cfg) {
+      cfg.instance_stride = 0;
+   }
+
+   agx_push(out, VDM_TESSELLATE_FACTOR_BUFFER_SIZE, cfg) {
+      cfg.size_words = DIV_ROUND_UP(gfx->tess.hw_factors_size_B, 4);
+   }
+
+   agx_push(out, VDM_TESSELLATE_FACTOR_BUFFER_TOP, cfg) {
+      cfg.factor_buffer_top = factors >> 40;
+   }
+
+   return out;
 }
 
 void
@@ -4436,6 +4670,8 @@ hk_draw(struct hk_cmd_buffer *cmd, uint16_t draw_id, struct agx_draw draw_)
          };
 
          util_dynarray_append(cmd->state.gfx.dgc.vdm, vdm);
+      } else if (tess && cmd->state.gfx.tess.hw) {
+         cs->current = (void *)hk_vdm_tessellate(cmd, (uint32_t *)out);
       } else {
          cs->current = (void *)agx_vdm_draw((uint32_t *)out, dev->dev.chip,
                                             draw, topology);

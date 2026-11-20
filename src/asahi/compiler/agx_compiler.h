@@ -572,6 +572,11 @@ typedef struct {
     */
    agx_index vertex_id_sr, instance_id_sr;
 
+   /* G15: a hardware-tessellated vertex shader's patch ID and domain
+    * coordinates read from their special registers, or NULL
+    */
+   agx_index patch_id_sr, tess_u_sr, tess_v_sr;
+
    /* Beginning of our stack allocation used for spilling, below that is
     * NIR-level scratch.
     */
