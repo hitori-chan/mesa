@@ -459,6 +459,72 @@ cmp_rank(const void *a_, const void *b_, void *ctx)
       return a->def->index - b->def->index;
 }
 
+/* An operand of the tree reassociate_chain builds: a source, or a source
+ * added to itself (a pair of equal sources, grouped to fuse FMA) */
+struct operand {
+   nir_scalar s;
+   bool pair;
+};
+
+/* Whether an interior node or the root is as reassociate_chain builds it */
+static bool
+built_node(nir_scalar e, const struct chain *c)
+{
+   if (!nir_scalar_is_alu(e) || e.comp != 0)
+      return false;
+
+   nir_alu_instr *alu = nir_def_as_alu(e.def);
+   return alu->op == c->root->op && alu->def.num_components == 1 &&
+          alu->fp_math_ctrl == c->fp_math_ctrl && !alu->no_signed_wrap &&
+          !alu->no_unsigned_wrap;
+}
+
+static bool
+built_operand(nir_scalar e, struct operand o, const struct chain *c)
+{
+   if (!o.pair)
+      return nir_scalar_equal(e, o.s);
+
+   return built_node(e, c) && list_is_singular(&e.def->uses) &&
+          nir_scalar_equal(nir_scalar_chase_alu_src(e, 0), o.s) &&
+          nir_scalar_equal(nir_scalar_chase_alu_src(e, 1), o.s);
+}
+
+/* Whether e is ((o[0] op o[1]) op o[2]) ... op o[n - 1] as built */
+static bool
+built_chain(nir_scalar e, const struct operand *o, unsigned n,
+            const struct chain *c)
+{
+   if (n == 1)
+      return built_operand(e, o[0], c);
+
+   return built_node(e, c) && list_is_singular(&e.def->uses) &&
+          built_chain(nir_scalar_chase_alu_src(e, 0), o, n - 1, c) &&
+          built_operand(nir_scalar_chase_alu_src(e, 1), o[n - 1], c);
+}
+
+/* Whether the chain already has the tree its new order would build, so that
+ * building it again would change nothing but the instructions' names */
+static bool
+chain_is_built(const struct chain *c)
+{
+   struct operand o[MAX_CHAIN_LENGTH];
+   unsigned n = 0;
+
+   o[n++] = (struct operand){c->srcs[0], false};
+   for (unsigned i = 1; i < c->length; ++i) {
+      bool pair = i < c->length - 1 &&
+                  nir_scalar_equal(c->srcs[i], c->srcs[i + 1]);
+      o[n++] = (struct operand){c->srcs[i], pair};
+      i += pair;
+   }
+
+   nir_scalar root = nir_get_scalar(&c->root->def, 0);
+   return built_node(root, c) &&
+          built_operand(nir_scalar_chase_alu_src(root, 0), o[n - 1], c) &&
+          built_chain(nir_scalar_chase_alu_src(root, 1), o, n - 1, c);
+}
+
 static bool
 reassociate_chain(struct chain *c, void *pair_freq)
 {
@@ -481,6 +547,9 @@ reassociate_chain(struct chain *c, void *pair_freq)
 
    util_qsort_r(c->srcs + pinned, c->length - pinned, sizeof(c->srcs[0]),
                 cmp_rank, (void*) c->prefer_convergent);
+
+   if (chain_is_built(c))
+      return false;
 
    /* Reassociate according to the new order */
    nir_def *new_root = nir_mov_scalar(&b, c->srcs[0]);
