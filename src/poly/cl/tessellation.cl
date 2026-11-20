@@ -125,3 +125,61 @@ poly_tess_level_inner_default(constant struct poly_tess_params *p)
 {
    return vload2(0, p->tess_level_inner_default);
 }
+
+/*
+ * A hardware tessellator (hk on G15) reads the levels from a factor buffer in
+ * Metal's layout. The TCS writes each level there as it stores it, as
+ * invocations may write the levels in turn. A triangle's outer[3] and inner[1]
+ * have no place in it.
+ */
+void
+poly_tcs_store_hw_factor(constant struct poly_tess_params *p, uint patch,
+                         uint inner, uint el, float value)
+{
+   if (!p->hw_factors)
+      return;
+
+   bool quad = p->hw_factors_quad;
+   uint slot;
+
+   if (inner) {
+      if (el >= (quad ? 2 : 1))
+         return;
+
+      slot = (quad ? 4 : 3) + el;
+   } else {
+      if (el >= (quad ? 4 : 3))
+         return;
+
+      slot = el;
+   }
+
+   bool fp32 = p->hw_factors_fp32;
+   global uchar *base = p->hw_factors +
+                        (patch * poly_tess_hw_factor_size(quad, fp32));
+
+   if (fp32)
+      ((global float *)base)[slot] = value;
+   else
+      ((global ushort *)base)[slot] = _mesa_float_to_half(value);
+}
+
+/*
+ * A TES run by the hardware tessellator gets the patch from the hardware. The
+ * draw unrolls its instances into one run of patches, instance-major as the
+ * TCS output, so the hardware's patch ID is the unrolled patch.
+ */
+uint
+poly_tes_hw_patch_id(constant struct poly_tess_params *p, uint unrolled_patch)
+{
+   return unrolled_patch % p->patches_per_instance;
+}
+
+uintptr_t
+poly_tes_hw_in_address(constant struct poly_tess_params *p, uint unrolled_patch,
+                       uint vtx_id, gl_varying_slot location)
+{
+   return poly_tcs_out_address(p, unrolled_patch, vtx_id, location,
+                               p->tcs_patch_constants, p->output_patch_size,
+                               p->tcs_per_vertex_outputs);
+}

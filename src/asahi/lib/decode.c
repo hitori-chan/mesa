@@ -932,14 +932,21 @@ agxdecode_vdm(struct agxdecode_ctx *ctx, const uint8_t *map, uint64_t *link,
       length += AGX_VDM_TESSELLATE_##STRUCT_NAME##_LENGTH;                     \
    }
 
+      /* The words in the order of their presence bits, bit 20's last (the
+       * per-bit mapping is inferred from Apple's two headers) */
       TESS_PRINT(factor_buffer, FACTOR_BUFFER, "Factor buffer");
-      TESS_PRINT(patch_count, PATCH_COUNT, "Patch");
+      TESS_PRINT(patch_count, PATCH_COUNT, "Patch count");
       TESS_PRINT(instance_count, INSTANCE_COUNT, "Instance count");
-      TESS_PRINT(base_patch, BASE_PATCH, "Base patch");
-      TESS_PRINT(base_instance, BASE_INSTANCE, "Base instance");
-      TESS_PRINT(instance_stride, INSTANCE_STRIDE, "Instance stride");
+      TESS_PRINT(base, BASE, "Base");
       TESS_PRINT(indirect, INDIRECT, "Indirect");
+      TESS_PRINT(instance_stride, INSTANCE_STRIDE, "Instance stride");
       TESS_PRINT(factor_buffer_size, FACTOR_BUFFER_SIZE, "Factor buffer size");
+
+      /* G15: the factor buffer's top byte, as the Index List's */
+      if (params->gpu_generation >= 15) {
+         DUMP_CL(VDM_TESSELLATE_FACTOR_BUFFER_TOP, map, "Factor buffer top");
+         length += AGX_VDM_TESSELLATE_FACTOR_BUFFER_TOP_LENGTH;
+      }
 
 #undef TESS_PRINT
       return length;

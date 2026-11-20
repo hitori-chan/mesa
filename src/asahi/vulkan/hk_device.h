@@ -125,6 +125,10 @@ enum hk_perftest {
    HK_PERF_NOOVERLAP = BITFIELD_BIT(10),
    HK_PERF_ZSSTORE = BITFIELD_BIT(11),
    HK_PERF_IMGCHAIN = BITFIELD_BIT(12),
+   HK_PERF_SWTESS = BITFIELD_BIT(13),
+   HK_PERF_HWTESS32 = BITFIELD_BIT(14),
+   /* Not an option: on G15 unless swtess is set */
+   HK_PERF_HWTESS = BITFIELD_BIT(15),
 };
 
 #define HK_PERF(dev, flag) unlikely((dev)->perftest &HK_PERF_##flag)

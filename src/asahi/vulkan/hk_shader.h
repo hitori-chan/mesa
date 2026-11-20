@@ -93,6 +93,11 @@ struct hk_shader_info {
          uint8_t tcs_nr_patch_outputs;
 
          struct hk_tess_info info;
+
+         /* The TCS writes its levels to a hardware tessellator's factor
+          * buffer as well (poly_nir_lower_tcs_hw_factors)
+          */
+         bool hw_factors;
       } tess;
 
       struct poly_gs_info gs;
@@ -200,6 +205,13 @@ enum hk_vs_variant {
    HK_VS_VARIANTS,
 };
 
+/* A tessellation evaluation shader has one more: the hardware vertex shader
+ * fed by the hardware tessellator (HK_PERFTEST=hwtess on G15), compiled only
+ * with that knob, for triangle and quad domains outside points mode.
+ */
+#define HK_TES_VARIANT_HW_TESS HK_VS_VARIANTS
+#define HK_TES_VARIANTS        (HK_VS_VARIANTS + 1)
+
 enum hk_gs_variant {
    /* Hardware vertex shader used for rasterization */
    HK_GS_VARIANT_RAST,
@@ -249,8 +261,10 @@ hk_num_variants(mesa_shader_stage stage)
 {
    switch (stage) {
    case MESA_SHADER_VERTEX:
-   case MESA_SHADER_TESS_EVAL:
       return HK_VS_VARIANTS;
+
+   case MESA_SHADER_TESS_EVAL:
+      return HK_TES_VARIANTS;
 
    case MESA_SHADER_GEOMETRY:
       return HK_GS_VARIANTS;
@@ -301,6 +315,9 @@ hk_variant_name(struct hk_api_shader *obj, struct hk_shader *variant)
              : i == HK_MESH_VARIANT_RAST_CONSERVATIVE
                 ? "Conservative rasterization"
                 : "Main";
+   } else if (i == HK_TES_VARIANT_HW_TESS) {
+      assert(obj->vk.stage == MESA_SHADER_TESS_EVAL);
+      return "Hardware tessellation";
    } else {
       assert(i < 2);
       return i == HK_VS_VARIANT_SW ? "Software" : "Hardware";

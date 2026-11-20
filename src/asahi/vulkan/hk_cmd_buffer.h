@@ -398,6 +398,19 @@ struct hk_graphics_state {
       uint64_t grids;
       struct hk_tess_info info;
       enum mesa_prim prim;
+
+      /* The draw runs on G15's hardware tessellator (HK_PERFTEST=hwtess),
+       * decided per draw: the TES's hardware tessellation variant is the
+       * hardware vertex shader.
+       */
+      bool hw;
+
+      /* The hardware tessellator's factor buffer, its size and the patches
+       * of the draw, unrolled over its instances
+       */
+      uint64_t hw_factors;
+      uint32_t hw_factors_size_B;
+      uint32_t hw_patches;
    } tess;
 
    /* Needed by vk_command_buffer::dynamic_graphics_state */
@@ -712,6 +725,8 @@ hk_bound_hw_vs(struct hk_graphics_state *gfx)
       return &gs->variants[HK_GS_VARIANT_RAST_CONSERVATIVE];
    else if (gs)
       return &gs->variants[HK_GS_VARIANT_RAST];
+   else if (tes && gfx->tess.hw)
+      return &tes->variants[HK_TES_VARIANT_HW_TESS];
    else if (tes)
       return &tes->variants[HK_VS_VARIANT_HW];
    else

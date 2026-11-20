@@ -100,6 +100,27 @@ struct poly_tess_params {
     * dynamically in the TES.
     */
    uint32_t ccw;
+
+   /* A hardware tessellator's factor buffer, else 0 (hk on G15). A TCS
+    * lowered by poly_nir_lower_tcs_hw_factors writes its levels there as
+    * well, one struct per unrolled patch in Metal's layout: {outer[0..2],
+    * inner[0]} for triangles, {outer[0..3], inner[0..1]} for quads, of half
+    * or of float.
+    */
+   DEVICE(uint8_t) hw_factors;
+
+   /* The factor buffer's domain, quads else triangles */
+   uint32_t hw_factors_quad;
+
+   /* The factor buffer's levels are floats, else halves */
+   uint32_t hw_factors_fp32;
 } PACKED;
-static_assert(sizeof(struct poly_tess_params) == 34 * 4,
-              "struct poly_tess_params must be 34 words");
+static_assert(sizeof(struct poly_tess_params) == 38 * 4,
+              "struct poly_tess_params must be 38 words");
+
+/* Bytes of a patch's levels in a hardware tessellator's factor buffer */
+static inline uint32_t
+poly_tess_hw_factor_size(bool quad, bool fp32)
+{
+   return (quad ? 6 : 4) * (fp32 ? 4 : 2);
+}

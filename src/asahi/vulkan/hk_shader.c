@@ -1624,7 +1624,7 @@ hk_compile_nir(struct hk_device *dev, const VkAllocationCallbacks *pAllocator,
                const struct vk_pipeline_robustness_state *rs,
                const union hk_key *key, enum hk_feature_key features,
                struct hk_shader *shader, mesa_shader_stage sw_stage, bool hw,
-               nir_xfb_info *xfb_info, unsigned set_count)
+               bool hw_tess, nir_xfb_info *xfb_info, unsigned set_count)
 {
    unsigned nr_vbos = 0;
    bool kill_psiz = false;
@@ -1685,6 +1685,9 @@ hk_compile_nir(struct hk_device *dev, const VkAllocationCallbacks *pAllocator,
          shader->info.tess.tcs_nr_patch_outputs =
             util_last_bit(nir->info.patch_outputs_written);
          shader->info.tess.tcs_output_stride = poly_tcs_output_stride(nir);
+      } else if (hw_tess) {
+         /* As below, for the hardware tessellator */
+         NIR_PASS(_, nir, poly_nir_lower_tes_hw);
       } else {
          /* This destroys info so it needs to happen after the gather */
          NIR_PASS(_, nir, poly_nir_lower_tes, hw);
@@ -1910,6 +1913,14 @@ hk_compile_shader(struct hk_device *dev, struct vk_shader_compile_info *info,
       hk_populate_vs_key(&key_tmp.vs, state);
       key = &key_tmp;
    } else if (sw_stage == MESA_SHADER_TESS_CTRL) {
+      /* With the hardware tessellator, every TCS also writes the levels where
+       * the hardware reads them, for the draws that use it
+       */
+      if (HK_PERF(dev, HWTESS)) {
+         NIR_PASS(_, nir, poly_nir_lower_tcs_hw_factors);
+         obj->variants[0].info.tess.hw_factors = true;
+      }
+
       NIR_PASS(_, nir, poly_nir_lower_tcs, true);
    } else if (sw_stage == MESA_SHADER_TASK) {
       NIR_PASS(_, nir, poly_nir_lower_task, &obj->variants[0].info.mesh);
@@ -1984,7 +1995,8 @@ hk_compile_shader(struct hk_device *dev, struct vk_shader_compile_info *info,
             result =
                hk_compile_nir(dev, pAllocator, variants[v].in, info->flags,
                               info->robustness, NULL, features, variants[v].out,
-                              sw_stage, true, NULL, info->set_layout_count);
+                              sw_stage, true, false, NULL,
+                              info->set_layout_count);
 
             if (result != VK_SUCCESS) {
                ralloc_free(variants[v].in);
@@ -2051,7 +2063,7 @@ hk_compile_shader(struct hk_device *dev, struct vk_shader_compile_info *info,
          result =
             hk_compile_nir(dev, pAllocator, variants[v].in, info->flags,
                            info->robustness, NULL, features, variants[v].out,
-                           sw_stage, true, NULL, info->set_layout_count);
+                           sw_stage, true, false, NULL, info->set_layout_count);
 
          if (result != VK_SUCCESS) {
             hk_api_shader_destroy(&dev->vk, &obj->vk, pAllocator);
@@ -2105,15 +2117,29 @@ hk_compile_shader(struct hk_device *dev, struct vk_shader_compile_info *info,
          next_stage & (VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT |
                        VK_SHADER_STAGE_GEOMETRY_BIT);
 
-      enum hk_vs_variant last_variant =
-         compile_sw ? HK_VS_VARIANT_SW : HK_VS_VARIANT_HW;
+      /* G15's hardware tessellator runs the TES as a hardware vertex shader
+       * of its own. The domain and points mode may be the TCS's alone, which
+       * the draw checks.
+       */
+      bool compile_hw_tess =
+         sw_stage == MESA_SHADER_TESS_EVAL && HK_PERF(dev, HWTESS) &&
+         !nir->info.tess.point_mode &&
+         nir->info.tess._primitive_mode != TESS_PRIMITIVE_ISOLINES;
 
-      for (enum hk_vs_variant v = 0; v < HK_VS_VARIANTS; ++v) {
+      unsigned last_variant = compile_hw_tess ? HK_TES_VARIANT_HW_TESS
+                              : compile_sw    ? HK_VS_VARIANT_SW
+                                              : HK_VS_VARIANT_HW;
+
+      for (unsigned v = 0; v < hk_num_variants(sw_stage); ++v) {
          if (v == HK_VS_VARIANT_SW && !compile_sw)
             continue;
 
+         if (v == HK_TES_VARIANT_HW_TESS && !compile_hw_tess)
+            continue;
+
          struct hk_shader *shader = &obj->variants[v];
-         bool hw = v == HK_VS_VARIANT_HW;
+         bool hw = v != HK_VS_VARIANT_SW;
+         bool hw_tess = v == HK_TES_VARIANT_HW_TESS;
          bool last = v == last_variant;
 
          /* Each variant gets its own NIR. To save an extra clone, we use the
@@ -2165,7 +2191,7 @@ hk_compile_shader(struct hk_device *dev, struct vk_shader_compile_info *info,
          result =
             hk_compile_nir(dev, pAllocator, clone, info->flags,
                            info->robustness, key, features, shader, sw_stage,
-                           hw, nir->xfb_info, info->set_layout_count);
+                           hw, hw_tess, nir->xfb_info, info->set_layout_count);
          if (result != VK_SUCCESS) {
             ralloc_free(clone);
             hk_api_shader_destroy(&dev->vk, &obj->vk, pAllocator);
@@ -2190,7 +2216,7 @@ hk_compile_shader(struct hk_device *dev, struct vk_shader_compile_info *info,
       /* hk_compile_nir does not free the NIR, even on failure */
       result = hk_compile_nir(dev, pAllocator, nir, info->flags,
                               info->robustness, key, features, shader, sw_stage,
-                              true, NULL, info->set_layout_count);
+                              true, false, NULL, info->set_layout_count);
       if (result != VK_SUCCESS) {
          ralloc_free(nir);
          hk_api_shader_destroy(&dev->vk, &obj->vk, pAllocator);

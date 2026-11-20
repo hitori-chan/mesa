@@ -52,6 +52,8 @@ static const struct debug_named_value hk_perf_options[] = {
    {"nooverlap", HK_PERF_NOOVERLAP, "G15: no render's vertex stage under the previous render's fragment stage"},
    {"zsstore",   HK_PERF_ZSSTORE,  "Load and store depth and stencil as the pass begins, written or not"},
    {"imgchain",  HK_PERF_IMGCHAIN, "G15: an image barrier chained to memory writes holds the next vertex stage"},
+   {"swtess",    HK_PERF_SWTESS,   "G15: tessellate in compute shaders, not the hardware tessellator"},
+   {"hwtess32",  HK_PERF_HWTESS32, "G15: the hardware tessellator with FP32 factors"},
    DEBUG_NAMED_VALUE_END
 };
 /* clang-format on */
@@ -345,6 +347,13 @@ hk_CreateDevice(VkPhysicalDevice physicalDevice,
    if (instance->drirc.misc.disable_border_emulation) {
       dev->perftest |= HK_PERF_NOBORDER;
    }
+
+   /* G15 tessellates triangle and quad domains in hardware, as Metal; G13's
+    * tessellator is not ours */
+   if (pdev->dev.params.gpu_generation >= 15 && !HK_PERF(dev, SWTESS))
+      dev->perftest |= HK_PERF_HWTESS;
+   else
+      dev->perftest &= ~(HK_PERF_HWTESS | HK_PERF_HWTESS32);
 
    if (HK_PERF(dev, NOROBUST)) {
       dev->vk.enabled_features.robustBufferAccess = false;
