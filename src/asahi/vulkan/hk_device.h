@@ -133,6 +133,14 @@ enum hk_perftest {
 
 #define HK_PERF(dev, flag) unlikely((dev)->perftest &HK_PERF_##flag)
 
+/* The options that change the code compiled, part of the shader cache's key:
+ * a shader compiled under one is never loaded under another */
+#define HK_PERF_SHADER_CODE                                                    \
+   (HK_PERF_NOBORDER | HK_PERF_NOROBUST | HK_PERF_HWTESS | HK_PERF_HWTESS32)
+
+/* HK_PERFTEST, with the driconf options and the defaults that set its bits */
+uint32_t hk_parse_perftest(const struct hk_physical_device *pdev);
+
 static inline struct hk_physical_device *
 hk_device_physical(struct hk_device *dev)
 {
