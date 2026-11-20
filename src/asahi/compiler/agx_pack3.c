@@ -2834,14 +2834,15 @@ agx3_assign_groups(agx_context *ctx)
  * edge may bring the last iteration's. A texture is presumed to read its
  * crs until its result's group completes too (a3_tex_group; not verified),
  * so the crs still being read are kept per group, and a 1D or 2D texture
- * takes the next pair of cr0-cr31 that none is reading, or with a LOD word
- * (a bias, a level, an offset or a layer in slot 3) the next such quad, so
- * that a texture need not wait for the one before it.
+ * takes the lowest pair that none is reading and the texture before it did
+ * not take, or with a LOD word (a bias, a level, an offset or a layer in slot
+ * 3) the lowest such quad, so that a texture need not wait for the one before
+ * it. The shader's cr count (specTPR) is the highest cr + 1, 8 B a thread.
  */
 void
 agx3_assign_crs(agx_context *ctx)
 {
-   unsigned next_vary = 0, next_imgw = 0, next_tex = 0;
+   unsigned next_vary = 0, next_imgw = 0, last_tex = ~0u;
    uint64_t (*pending_out)[A3_GROUPS] =
       calloc(ctx->num_blocks, sizeof(*pending_out));
    unsigned *order = calloc(ctx->num_blocks, sizeof(unsigned));
@@ -2891,13 +2892,15 @@ agx3_assign_crs(agx_context *ctx)
             I->vary_cr = 8 * (1 + t % A3_IMGW_TUPLES);
             crs = BITFIELD64_RANGE(I->vary_cr, 8);
          } else if (tex) {
-            /* A 1D or 2D read takes the next pair still free, as Apple's 2D
-             * reads take cr0-cr31 in turn (even firsts only), and one with a
-             * LOD word the next quad: at cr0 each such read waited for the one
-             * before it, as Honeykrisp biases every sample by its sampler's
-             * LOD bias (Apple's compiler takes a uniform bias as F28 instead).
-             * The others keep cr0 (Apple's 3D samples all read from cr0; other
-             * firsts not verified) */
+            /* A 1D or 2D read takes the lowest pair still free but the one
+             * the texture before took, as Apple's (Grim Dawn's G-buffer shader
+             * 10b36f20: cr2 and cr4 in turn down its chain of dependent
+             * samples, cr0-cr7 in all, where the next pair in turn reached
+             * cr31), and one with a LOD word the lowest such quad: at cr0 each
+             * such read waited for the one before it, as Honeykrisp biases
+             * every sample by its sampler's LOD bias (Apple's compiler takes a
+             * uniform bias as F28 instead). The others keep cr0 (Apple's 3D
+             * samples all read from cr0; other firsts not verified) */
             unsigned span = a3_tex_crs(I);
             bool flat = I->dim == AGX_DIM_1D || I->dim == AGX_DIM_1D_ARRAY ||
                         I->dim == AGX_DIM_2D || I->dim == AGX_DIM_2D_ARRAY;
@@ -2905,17 +2908,16 @@ agx3_assign_crs(agx_context *ctx)
             I->g15_cr = 0;
             if (span == 2 || (flat && span <= 4 &&
                               !(agx_compiler_debug & AGX_DBG_CRQUAD0))) {
-               unsigned start = ALIGN_POT(next_tex, step) % A3_TEX_CRS;
-               unsigned cr = start;
-               for (unsigned i = 0; i < A3_TEX_CRS; i += step) {
-                  unsigned c = (start + i) % A3_TEX_CRS;
-                  if (!(all & BITFIELD64_RANGE(c, span))) {
+               /* None free: the lowest but the last, after a wait */
+               unsigned cr = last_tex == 0 ? step : 0;
+               for (unsigned c = 0; c < A3_TEX_CRS; c += step) {
+                  if (c != last_tex && !(all & BITFIELD64_RANGE(c, span))) {
                      cr = c;
                      break;
                   }
                }
                I->g15_cr = cr;
-               next_tex = (cr + step) % A3_TEX_CRS;
+               last_tex = cr;
             }
             crs = BITFIELD64_RANGE(I->g15_cr, span);
          } else {
