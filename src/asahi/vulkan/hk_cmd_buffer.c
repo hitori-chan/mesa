@@ -196,6 +196,10 @@ hk_pool_alloc_internal(struct hk_cmd_buffer *cmd, uint32_t size,
       uint32_t flags = usc ? AGX_BO_LOW_VA : 0;
       struct agx_bo *bo =
          agx_bo_create(&dev->dev, size, 0, flags, "Large pool allocation");
+      if (unlikely(bo == NULL)) {
+         vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+         return (struct agx_ptr){0};
+      }
 
       util_dynarray_append(&cmd->large_bos, bo);
       return (struct agx_ptr){
