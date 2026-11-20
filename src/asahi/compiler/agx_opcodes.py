@@ -154,6 +154,11 @@ SR = enum("sr", {
    # the tile's layer, which Apple's end-of-tile program reads for its
    # layered block writes (G13 reads threadgroup_position_in_grid.z)
    258: 'layer_id',
+   # a vertex shader fed by the hardware tessellator: the patch and the
+   # domain coordinates (Apple's post-tessellation vertex functions)
+   259: 'patch_id',
+   260: 'tess_u',
+   261: 'tess_v',
 })
 
 ATOMIC_OPC = enum("atomic_opc", {

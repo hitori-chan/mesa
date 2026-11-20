@@ -217,6 +217,51 @@ poly_nir_lower_tcs(nir_shader *tcs, bool can_ignore_shader_out_barriers)
       (void *)(uintptr_t)can_ignore_shader_out_barriers);
 }
 
+/*
+ * For a hardware tessellator, mirror each store of a tessellation level into
+ * the factor buffer as well (poly_tcs_store_hw_factor), which does nothing
+ * unless the draw gives one. Runs before poly_nir_lower_tcs, which lowers the
+ * store itself to the TCS output buffer, where the TCS and TES read the levels
+ * back.
+ */
+static bool
+lower_tcs_hw_factor(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   if (intr->intrinsic != nir_intrinsic_store_output)
+      return false;
+
+   gl_varying_slot location = nir_intrinsic_io_semantics(intr).location;
+   if (location != VARYING_SLOT_TESS_LEVEL_OUTER &&
+       location != VARYING_SLOT_TESS_LEVEL_INNER)
+      return false;
+
+   b->cursor = nir_after_instr(&intr->instr);
+
+   nir_def *value = intr->src[0].ssa;
+   nir_def *p = nir_load_tess_param_buffer_poly(b);
+   nir_def *patch = tcs_unrolled_id(b);
+   nir_def *inner =
+      nir_imm_int(b, location == VARYING_SLOT_TESS_LEVEL_INNER);
+
+   /* The levels are one slot each: a slot offset is four elements */
+   nir_def *base = nir_imul_imm(b, nir_get_io_offset_src(intr)->ssa, 4);
+   base = nir_iadd_imm(b, base, nir_intrinsic_component(intr));
+
+   u_foreach_bit(c, nir_intrinsic_write_mask(intr)) {
+      poly_tcs_store_hw_factor(b, p, patch, inner, nir_iadd_imm(b, base, c),
+                               nir_f2f32(b, nir_channel(b, value, c)));
+   }
+
+   return true;
+}
+
+bool
+poly_nir_lower_tcs_hw_factors(nir_shader *tcs)
+{
+   return nir_shader_intrinsics_pass(tcs, lower_tcs_hw_factor,
+                                     nir_metadata_none, NULL);
+}
+
 static nir_def *
 lower_tes_impl(nir_builder *b, nir_intrinsic_instr *intr, void *data)
 {
@@ -311,6 +356,91 @@ poly_nir_lower_tes(nir_shader *tes, bool to_hw_vs)
       nir_shader_intrinsics_pass(tes, lower_tes_indexing,
                                  nir_metadata_control_flow, NULL);
    }
+
+   nir_lower_idiv(tes, &(nir_lower_idiv_options){.allow_fp16 = true});
+   return nir_progress(true, nir_shader_get_entrypoint(tes), nir_metadata_none);
+}
+
+/*
+ * A TES run by a hardware tessellator as the hardware vertex shader (hk on
+ * G15). The draw unrolls its instances into one run of patches, so the patch
+ * ID the hardware gives (load_primitive_id in the vertex shader, which the
+ * backend reads from a special register) is the unrolled patch, as the TCS
+ * output's. load_tess_coord_xy stays for the backend, which reads the
+ * hardware's u and v. The levels are read from the TCS output as in software.
+ *
+ * The replacements load the hardware's patch ID before the instruction they
+ * replace, which nir_shader_intrinsics_pass does not visit again.
+ */
+static nir_def *
+lower_tes_hw_load(nir_builder *b, nir_intrinsic_instr *intr)
+{
+   gl_varying_slot location = nir_intrinsic_io_semantics(intr).location;
+   nir_src *offset_src = nir_get_io_offset_src(intr);
+
+   nir_def *vertex = nir_imm_int(b, 0);
+   nir_def *offset = offset_src ? offset_src->ssa : nir_imm_int(b, 0);
+
+   if (intr->intrinsic == nir_intrinsic_load_per_vertex_input)
+      vertex = intr->src[0].ssa;
+
+   nir_def *addr = poly_tes_hw_in_address(
+      b, nir_load_tess_param_buffer_poly(b), nir_load_primitive_id(b), vertex,
+      nir_iadd_imm(b, offset, location));
+
+   if (nir_intrinsic_has_component(intr))
+      addr = nir_iadd_imm(b, addr, nir_intrinsic_component(intr) * 4);
+
+   return nir_load_global_constant(b, intr->def.num_components,
+                                   intr->def.bit_size, addr, .align_mul = 4);
+}
+
+static bool
+lower_tes_hw(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   b->cursor = nir_before_instr(&intr->instr);
+   nir_def *repl;
+
+   switch (intr->intrinsic) {
+   case nir_intrinsic_load_primitive_id:
+      repl = poly_tes_hw_patch_id(b, nir_load_tess_param_buffer_poly(b),
+                                  nir_load_primitive_id(b));
+      break;
+
+   case nir_intrinsic_load_input:
+   case nir_intrinsic_load_per_vertex_input:
+   case nir_intrinsic_load_tess_level_inner:
+   case nir_intrinsic_load_tess_level_outer:
+      repl = lower_tes_hw_load(b, intr);
+      break;
+
+   case nir_intrinsic_load_patch_vertices_in:
+      repl = poly_tes_patch_vertices_in(b, nir_load_tess_param_buffer_poly(b));
+      break;
+
+   default:
+      return false;
+   }
+
+   nir_def_replace(&intr->def, repl);
+   return true;
+}
+
+bool
+poly_nir_lower_tes_hw(nir_shader *tes)
+{
+   assert(!tes->info.tess.point_mode &&
+          tes->info.tess._primitive_mode != TESS_PRIMITIVE_ISOLINES);
+
+   nir_lower_tess_coord_z(
+      tes, tes->info.tess._primitive_mode == TESS_PRIMITIVE_TRIANGLES);
+
+   nir_shader_intrinsics_pass(tes, lower_tes_hw, nir_metadata_control_flow,
+                              NULL);
+
+   tes->info.stage = MESA_SHADER_VERTEX;
+   memset(&tes->info.vs, 0, sizeof(tes->info.vs));
+   tes->info.vs.tes_poly = true;
 
    nir_lower_idiv(tes, &(nir_lower_idiv_options){.allow_fp16 = true});
    return nir_progress(true, nir_shader_get_entrypoint(tes), nir_metadata_none);

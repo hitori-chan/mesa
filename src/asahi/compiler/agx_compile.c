@@ -2748,6 +2748,16 @@ agx_emit_intrinsic(agx_builder *b, nir_intrinsic_instr *instr)
       return agx_mov_to(b, dst, agx_abs(agx_vertex_id(b)));
 
    case nir_intrinsic_load_primitive_id:
+      /* G15: a vertex shader reading the primitive ID is a tessellation
+       * evaluation shader run by the hardware tessellator, whose patch ID is
+       * a special register */
+      if (agx_ids_in_sr(b)) {
+         return agx_mov_to(b, dst,
+                           agx_abs(agx_cached_sr(b->shader,
+                                                 &b->shader->patch_id_sr,
+                                                 AGX_SR_PATCH_ID)));
+      }
+
       assert(stage == MESA_SHADER_TESS_EVAL);
       return agx_mov_to(b, dst, agx_abs(agx_vertex_id(b)));
 
@@ -2755,6 +2765,17 @@ agx_emit_intrinsic(agx_builder *b, nir_intrinsic_instr *instr)
       return agx_mov_to(b, dst, agx_abs(agx_instance_id(b)));
 
    case nir_intrinsic_load_tess_coord_xy: {
+      /* G15: as the patch ID, the hardware tessellator's u and v (f32,
+       * inferred: Apple's shaders add and subtract them as floats) */
+      if (agx_ids_in_sr(b)) {
+         agx_index coords[] = {
+            agx_cached_sr(b->shader, &b->shader->tess_u_sr, AGX_SR_TESS_U),
+            agx_cached_sr(b->shader, &b->shader->tess_v_sr, AGX_SR_TESS_V),
+         };
+
+         return agx_emit_collect_to(b, dst, 2, coords);
+      }
+
       assert(stage == MESA_SHADER_TESS_EVAL);
 
       agx_index coords[] = {agx_tess_coord_x(b), agx_tess_coord_y(b)};
