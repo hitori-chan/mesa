@@ -159,12 +159,14 @@ agx_nir_lower_address(nir_shader *nir)
 
    /* First, clean up as much as possible. This will make fusing more effective.
     */
+   struct set *skip = _mesa_pointer_set_create(NULL);
    do {
       progress = false;
-      NIR_PASS(progress, nir, agx_nir_cleanup_amul);
-      NIR_PASS(progress, nir, nir_opt_constant_folding);
-      NIR_PASS(progress, nir, nir_opt_dce);
+      NIR_LOOP_PASS_NOT_IDEMPOTENT(progress, skip, nir, agx_nir_cleanup_amul);
+      NIR_LOOP_PASS(progress, skip, nir, nir_opt_constant_folding);
+      NIR_LOOP_PASS(progress, skip, nir, nir_opt_dce);
    } while (progress);
+   _mesa_set_destroy(skip, NULL);
 
    /* Then, fuse as many lea as possible */
    NIR_PASS(progress, nir, agx_nir_fuse_lea);
