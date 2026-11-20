@@ -803,9 +803,11 @@ hk_CmdBeginRendering(VkCommandBuffer commandBuffer,
     * tile into the 1-sample image. The block write averages every format
     * but the 32-bit floats, which Metal cannot resolve either, and sRGB
     * ones not in linear space; those and the integers' sample-zero resolves
-    * keep the resolve pass. */
+    * keep the resolve pass. A suspended pass leaves the resolve to the one
+    * resuming it, whose result is the final one. */
    if (hk_cmd_buffer_device(cmd)->dev.params.gpu_generation >= 15 &&
        render->tilebuffer.nr_samples > 1 && !incomplete_render_area &&
+       !(render->flags & VK_RENDERING_SUSPENDING_BIT) &&
        !(hk_cmd_buffer_device(cmd)->perftest & HK_PERF_NOEOTRESOLVE)) {
       for (unsigned i = 0; i < render->color_att_count; ++i) {
          enum pipe_format f =
