@@ -395,8 +395,9 @@ hk_vertex_side(VkPipelineStageFlags2 src)
 /*
  * Whether a dependency reaches the next render's vertex stage: one into the
  * fragment stage alone leaves it free, as the fragment stages run in order,
- * each on the previous one's retire. A layout change records no work here
- * (hk_CmdPipelineBarrier2), so it does not count.
+ * each on the previous one's retire. A layout change records no render work
+ * (one out of VK_IMAGE_LAYOUT_ZERO_INITIALIZED_EXT records a compute fill,
+ * which a render waits for as for any compute work), so it does not count.
  */
 static bool
 hk_render_to_render(VkPipelineStageFlags2 src, VkPipelineStageFlags2 dst)
@@ -556,8 +557,10 @@ hk_CmdPipelineBarrier2(VkCommandBuffer commandBuffer,
 
    hk_cmd_buffer_dependency(cmd, pDependencyInfo);
 
-   if (HK_PERF(dev, NOBARRIER))
+   if (HK_PERF(dev, NOBARRIER)) {
+      hk_zero_initialized_transitions(cmd, pDependencyInfo);
       return;
+   }
 
    perf_debug(cmd, "Pipeline barrier");
 
@@ -567,6 +570,7 @@ hk_CmdPipelineBarrier2(VkCommandBuffer commandBuffer,
     * XXX: perf. */
    hk_cmd_buffer_end_compute(cmd);
    hk_cmd_buffer_end_graphics(cmd);
+   hk_zero_initialized_transitions(cmd, pDependencyInfo);
 }
 
 void
