@@ -51,6 +51,7 @@ static const struct debug_named_value hk_perf_options[] = {
    {"allext",    HK_PERF_ALLEXT,   "virtio: every swapchain image on every submit"},
    {"nooverlap", HK_PERF_NOOVERLAP, "G15: no render's vertex stage under the previous render's fragment stage"},
    {"zsstore",   HK_PERF_ZSSTORE,  "Load and store depth and stencil as the pass begins, written or not"},
+   {"imgchain",  HK_PERF_IMGCHAIN, "G15: an image barrier chained to memory writes holds the next vertex stage"},
    DEBUG_NAMED_VALUE_END
 };
 /* clang-format on */

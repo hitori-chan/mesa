@@ -409,6 +409,28 @@ hk_render_to_render(VkPipelineStageFlags2 src, VkPipelineStageFlags2 dst)
 }
 
 /*
+ * A barrier chained to writes (hk_chain) that reaches the next render's
+ * vertex stage. Writes chained as memory reach it as memory through a memory
+ * or buffer barrier, whose visibility covers all memory; an image barrier's
+ * covers its image alone, so through one (or when the writes were an
+ * image's) they reach the vertex stage only through images, and the chain
+ * orders its writes after the earlier reads (HK_PERFTEST=imgchain: an image
+ * barrier passes them as memory).
+ */
+static void
+hk_chained_vertex_dep(struct hk_cmd_buffer *cmd, unsigned chained, bool image)
+{
+   struct hk_device *dev = hk_cmd_buffer_device(cmd);
+
+   if (chained == 2 && (!image || HK_PERF(dev, IMGCHAIN))) {
+      cmd->vertex_dep = true;
+   } else {
+      cmd->vertex_dep_image = true;
+      cmd->vertex_dep_exec = true;
+   }
+}
+
+/*
  * A barrier whose source names no render stage (compute's alone, say) that
  * chains to a render's writes and reaches the next render's vertex stage: the
  * chain runs through stages with no work recorded between its barriers (a
@@ -417,16 +439,13 @@ hk_render_to_render(VkPipelineStageFlags2 src, VkPipelineStageFlags2 dst)
  */
 static void
 hk_chained_dependency(struct hk_cmd_buffer *cmd, unsigned chained,
-                      VkPipelineStageFlags2 dst)
+                      VkPipelineStageFlags2 dst, bool image)
 {
    if (!chained || hk_fragment_side(dst) ||
        !hk_render_stages(dst, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT))
       return;
 
-   if (chained == 2)
-      cmd->vertex_dep = true;
-   else
-      cmd->vertex_dep_image = true;
+   hk_chained_vertex_dep(cmd, chained, image);
 }
 
 /*
@@ -470,13 +489,15 @@ hk_memory_dependency(struct hk_cmd_buffer *cmd, VkPipelineStageFlags2 src,
    if (!hk_render_to_render(src, dst)) {
       if (writes && hk_render_stages(src, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT))
          cmd->avail_mem |= dst;
-      hk_chained_dependency(cmd, chained, dst);
+      hk_chained_dependency(cmd, chained, dst, false);
       return;
    }
 
-   if (writes || chained == 2)
+   if (writes)
       cmd->vertex_dep = true;
-   else if (chained || !hk_vertex_side(src))
+   else if (chained)
+      hk_chained_vertex_dep(cmd, chained, false);
+   else if (!hk_vertex_side(src))
       cmd->vertex_dep_exec = true;
 }
 
@@ -515,12 +536,12 @@ hk_cmd_buffer_dependency(struct hk_cmd_buffer *cmd,
              hk_render_stages(b->srcStageMask,
                               VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT))
             cmd->avail_img |= b->dstStageMask;
-         hk_chained_dependency(cmd, chained, b->dstStageMask);
+         hk_chained_dependency(cmd, chained, b->dstStageMask, true);
          continue;
       }
 
-      if (chained == 2)
-         cmd->vertex_dep = true;
+      if (chained)
+         hk_chained_vertex_dep(cmd, chained, true);
       else
          cmd->vertex_dep_image = true;
    }
