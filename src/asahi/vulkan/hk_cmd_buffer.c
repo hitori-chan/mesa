@@ -584,6 +584,16 @@ hk_cmd_bind_shaders(struct vk_command_buffer *vk_cmd, uint32_t stage_count,
       struct hk_api_shader *shader =
          container_of(shaders[i], struct hk_api_shader, vk);
 
+      /* A pipeline's stages may still be compiling (hk_compile_shaders) */
+      if (shader != NULL) {
+         hk_api_shader_wait(shader);
+
+         if (shader->result != VK_SUCCESS) {
+            vk_command_buffer_set_error(&cmd->vk, shader->result);
+            continue;
+         }
+      }
+
       if (stages[i] == MESA_SHADER_COMPUTE || stages[i] == MESA_SHADER_KERNEL)
          hk_cmd_bind_compute_shader(cmd, shader);
       else
