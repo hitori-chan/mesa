@@ -34,6 +34,8 @@
 struct match_state {
    unsigned fp_math_ctrl;
    uint8_t comm_op_direction;
+   /* The bits of comm_op_direction the match has read so far */
+   uint8_t comm_op_read;
    unsigned variables_seen;
 
    /* Used for running the automaton on newly-constructed instructions. */
@@ -361,11 +363,12 @@ match_expression(const nir_algebraic_table *table, const nir_search_expression *
     * up its direction for the current search operation.  We'll use that value
     * to possibly flip the sources for the match.
     */
-   unsigned comm_op_flip =
-      (expr->comm_expr_idx >= 0 &&
-       expr->comm_expr_idx < NIR_SEARCH_MAX_COMM_OPS)
-         ? ((state->comm_op_direction >> expr->comm_expr_idx) & 1)
-         : 0;
+   unsigned comm_op_flip = 0;
+   if (expr->comm_expr_idx >= 0 &&
+       expr->comm_expr_idx < NIR_SEARCH_MAX_COMM_OPS) {
+      comm_op_flip = (state->comm_op_direction >> expr->comm_expr_idx) & 1;
+      state->comm_op_read |= 1 << expr->comm_expr_idx;
+   }
 
    bool matched = true;
    for (unsigned i = 0; i < nir_op_infos[instr->op].num_inputs; i++) {
@@ -662,12 +665,42 @@ nir_replace_instr(nir_builder *build, nir_alu_instr *instr,
    unsigned comm_expr_combinations =
       1 << MIN2(search->comm_exprs, NIR_SEARCH_MAX_COMM_OPS);
 
+   /* A failed match depends only on the directions it read: every later
+    * combination that agrees with it on those fails the same way, so it is
+    * skipped.  The first combination that matches is the same.
+    */
+   uint8_t failed_read[1 << NIR_SEARCH_MAX_COMM_OPS];
+   uint8_t failed_dir[1 << NIR_SEARCH_MAX_COMM_OPS];
+   unsigned num_failed = 0;
+
    bool found = false;
    for (unsigned comb = 0; comb < comm_expr_combinations; comb++) {
+      bool known = false;
+      for (unsigned f = 0; f < num_failed; f++) {
+         if ((comb & failed_read[f]) == failed_dir[f]) {
+            known = true;
+            break;
+         }
+      }
+      if (known) {
+#ifndef NDEBUG
+         struct match_state check = state;
+         check.comm_op_direction = comb;
+         check.comm_op_read = 0;
+         check.fp_math_ctrl = nir_fp_fast_math;
+         check.variables_seen = 0;
+         assert(!match_expression(table, search, instr,
+                                  instr->def.num_components,
+                                  identity_swizzle, &check));
+#endif
+         continue;
+      }
+
       /* The bitfield of directions is just the current iteration.  Hooray for
        * binary.
        */
       state.comm_op_direction = comb;
+      state.comm_op_read = 0;
       state.fp_math_ctrl = nir_fp_fast_math;
       state.variables_seen = 0;
 
@@ -680,6 +713,14 @@ nir_replace_instr(nir_builder *build, nir_alu_instr *instr,
             break;
          }
       }
+
+      /* It read no direction: every combination fails */
+      if (!state.comm_op_read)
+         break;
+
+      failed_read[num_failed] = state.comm_op_read;
+      failed_dir[num_failed] = comb & state.comm_op_read;
+      num_failed++;
    }
    if (!found)
       return false;
