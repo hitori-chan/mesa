@@ -262,15 +262,17 @@ lower_global_id_for_quads(nir_builder *b, nir_intrinsic_instr *intr,
    return true;
 }
 
-static void
-hk_preprocess_nir(struct vk_physical_device *vk_pdev, nir_shader *nir,
-                  UNUSED const struct vk_pipeline_robustness_state *rs)
-{
-   if (mesa_shader_stage_is_rt(nir->info.stage)) {
-      hk_preprocess_rt_stage(nir);
-      return;
-   }
+static void hk_hash_nir(struct mesa_blake3 *ctx, nir_shader *nir);
+static void *hk_result_cache_get(struct hk_result_cache *cache,
+                                 const blake3_hash hash, size_t *size);
+static void hk_result_cache_put(struct hk_result_cache *cache,
+                                const blake3_hash hash, const void *a,
+                                size_t a_size, const void *b, size_t b_size);
 
+static void
+hk_preprocess_nir_uncached(struct vk_physical_device *vk_pdev,
+                           nir_shader *nir)
+{
    hk_preprocess_nir_internal(vk_pdev, nir);
    nir_lower_compute_system_values_options csv_options = {
       /* Task and mesh shaders use the graphics root, without a base */
@@ -285,6 +287,85 @@ hk_preprocess_nir(struct vk_physical_device *vk_pdev, nir_shader *nir,
    }
 
    NIR_PASS(_, nir, nir_lower_compute_system_values, &csv_options);
+}
+
+/* A module's preprocessing, or its result for the same NIR: modules often
+ * translate alike (Elden Ring's 6,027 come in as 2,743). The preprocessing is
+ * a function of the NIR, so the physical device keeps each result,
+ * serialized, and either way the module goes on from the result as
+ * serialized, so that a hit compiles as a miss does. Asserts-on builds
+ * preprocess a hit's input as well and assert that both agree.
+ */
+static void
+hk_preprocess_nir(struct vk_physical_device *vk_pdev, nir_shader *nir,
+                  UNUSED const struct vk_pipeline_robustness_state *rs)
+{
+   struct hk_physical_device *pdev =
+      container_of(vk_pdev, struct hk_physical_device, vk);
+
+   if (mesa_shader_stage_is_rt(nir->info.stage)) {
+      hk_preprocess_rt_stage(nir);
+      return;
+   }
+
+   if (HK_PERF(pdev, NOLOWERCACHE) || !pdev->preprocess_cache.ht) {
+      hk_preprocess_nir_uncached(vk_pdev, nir);
+      return;
+   }
+
+   blake3_hash hash;
+   struct mesa_blake3 ctx;
+   _mesa_blake3_init(&ctx);
+   hk_hash_nir(&ctx, nir);
+   _mesa_blake3_final(&ctx, hash);
+
+   struct blob blob;
+   blob_init(&blob);
+
+   size_t size;
+   void *data = hk_result_cache_get(&pdev->preprocess_cache, hash, &size);
+   bool hit = data != NULL;
+
+   if (!hit) {
+      hk_preprocess_nir_uncached(vk_pdev, nir);
+      nir_serialize(&blob, nir, false);
+      if (blob.out_of_memory) {
+         blob_finish(&blob);
+         return;
+      }
+
+      hk_result_cache_put(&pdev->preprocess_cache, hash, blob.data, blob.size,
+                          NULL, 0);
+      data = blob.data;
+      size = blob.size;
+   }
+
+   struct blob_reader reader;
+   blob_reader_init(&reader, data, size);
+   nir_shader *pre = nir_deserialize(NULL, nir->options, &reader);
+   memcpy(pre->info.source_blake3, nir->info.source_blake3,
+          sizeof(pre->info.source_blake3));
+
+#ifndef NDEBUG
+   if (hit) {
+      hk_preprocess_nir_uncached(vk_pdev, nir);
+      blake3_hash a, b;
+      _mesa_blake3_init(&ctx);
+      hk_hash_nir(&ctx, nir);
+      _mesa_blake3_final(&ctx, a);
+      _mesa_blake3_init(&ctx);
+      hk_hash_nir(&ctx, pre);
+      _mesa_blake3_final(&ctx, b);
+      assert(memcmp(a, b, sizeof(a)) == 0);
+   }
+#endif
+
+   if (hit)
+      free(data);
+   else
+      blob_finish(&blob);
+
+   nir_shader_replace(nir, pre);
 }
 
 static void

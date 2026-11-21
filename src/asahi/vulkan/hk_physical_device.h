@@ -30,6 +30,10 @@ struct hk_memory_heap {
 
 struct hk_physical_device {
    struct vk_physical_device vk;
+
+   /* The modules preprocessed, by the hash of their NIR (hk_preprocess_nir) */
+   struct hk_result_cache preprocess_cache;
+
    dev_t render_dev;
    int master_fd;
 

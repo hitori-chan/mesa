@@ -9,8 +9,19 @@
 
 #include <assert.h>
 
+#include "util/simple_mtx.h"
 #include "vk_log.h"
 #include "vk_util.h"
+
+struct hash_table;
+
+/* Results by the hash of their input, up to a size, then cleared
+ * (hk_shader.c) */
+struct hk_result_cache {
+   simple_mtx_t lock;
+   struct hash_table *ht;
+   size_t bytes;
+};
 
 #define HK_MAX_SETS                      8
 #define HK_MAX_PUSH_SIZE                 256

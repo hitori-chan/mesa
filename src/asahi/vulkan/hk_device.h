@@ -62,13 +62,6 @@ struct hk_sampler_heap {
    struct hash_table *ht;
 };
 
-/* Results by the hash of their input, up to a size, then cleared */
-struct hk_result_cache {
-   simple_mtx_t lock;
-   struct hash_table *ht;
-   size_t bytes;
-};
-
 struct hk_device {
    struct vk_device vk;
    struct agx_device dev;

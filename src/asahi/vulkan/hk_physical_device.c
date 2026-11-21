@@ -1614,6 +1614,7 @@ hk_create_drm_physical_device(struct vk_instance *_instance,
       goto fail_disk_cache;
 
    simple_mtx_init(&pdev->debug_compile_lock, mtx_plain);
+   hk_result_cache_init(&pdev->preprocess_cache);
    *pdev_out = &pdev->vk;
 
    return VK_SUCCESS;
@@ -1645,6 +1646,7 @@ hk_physical_device_destroy(struct vk_physical_device *vk_pdev)
       close(pdev->master_fd);
 
    simple_mtx_destroy(&pdev->debug_compile_lock);
+   hk_result_cache_finish(&pdev->preprocess_cache);
    hk_physical_device_free_disk_cache(pdev);
    agx_close_device(&pdev->dev);
    vk_physical_device_finish(&pdev->vk);

@@ -56,7 +56,7 @@ static const struct debug_named_value hk_perf_options[] = {
    {"hwtess32",  HK_PERF_HWTESS32, "G15: the hardware tessellator with FP32 factors"},
    {"serialcompile", HK_PERF_SERIALCOMPILE, "Compile a pipeline's stages one after another on the calling thread"},
    {"nobackendcache", HK_PERF_NOBACKENDCACHE, "Compile every stage, not a result kept for the same input"},
-   {"nolowercache", HK_PERF_NOLOWERCACHE, "Lower every stage, not a result kept for the same input"},
+   {"nolowercache", HK_PERF_NOLOWERCACHE, "Preprocess and lower every stage, not a result kept for the same input"},
    DEBUG_NAMED_VALUE_END
 };
 /* clang-format on */
