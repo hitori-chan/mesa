@@ -2685,7 +2685,10 @@ hk_compile_queue_init(const void *data)
 
    dev->compile.ok =
       util_queue_init(&dev->compile.queue, "hk_compile", 32,
-                      HK_COMPILE_THREADS, UTIL_QUEUE_INIT_RESIZE_IF_FULL, NULL);
+                      HK_COMPILE_THREADS,
+                      UTIL_QUEUE_INIT_RESIZE_IF_FULL |
+                         UTIL_QUEUE_INIT_SET_FULL_THREAD_AFFINITY,
+                      NULL);
 }
 
 static void
@@ -2889,9 +2892,14 @@ hk_later_queue_init(const void *data)
    int threads = debug_get_num_option(
       "HK_LATER_THREADS", MAX2(util_get_cpu_caps()->nr_cpus - 2, 1));
 
+   /* u_queue starts one thread and adds the others from the thread that
+    * queues a job, which a game may pin (Elden Ring pins the one creating its
+    * pipelines to a core): each worker takes the process's CPUs instead */
    dev->later.ok = threads > 0 &&
                    util_queue_init(&dev->later.queue, "hk_later", threads,
-                                   threads, 0, NULL);
+                                   threads,
+                                   UTIL_QUEUE_INIT_SET_FULL_THREAD_AFFINITY,
+                                   NULL);
 }
 
 /* An hk_shader holds no pointer to itself or to its api shader: the
