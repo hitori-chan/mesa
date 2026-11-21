@@ -441,16 +441,20 @@ vk_pipeline_cache_add_object(struct vk_pipeline_cache *cache,
 
       struct disk_cache *disk_cache = get_disk_cache(cache);
       if (!cache->skip_disk_cache && object->ops->serialize && disk_cache) {
+         cache_key cache_key;
+         disk_cache_compute_key(disk_cache, object->key_data,
+                                object->key_size, cache_key);
+
+         /* An object still being built puts itself there once complete */
+         if (object->ops->put_when_complete &&
+             object->ops->put_when_complete(object, disk_cache, cache_key))
+            return inserted;
+
          struct blob blob;
          blob_init(&blob);
 
-         if (object->ops->serialize(object, &blob) && !blob.out_of_memory) {
-            cache_key cache_key;
-            disk_cache_compute_key(disk_cache, object->key_data,
-                                   object->key_size, cache_key);
-
+         if (object->ops->serialize(object, &blob) && !blob.out_of_memory)
             disk_cache_put(disk_cache, cache_key, blob.data, blob.size, NULL);
-         }
 
          blob_finish(&blob);
       }
