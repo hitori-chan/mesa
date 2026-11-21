@@ -1264,14 +1264,16 @@ hk_lower_nir(struct hk_device *dev, nir_shader *nir,
     * lower_load_global_constant_offset_instr has special optimizations for
     * constant offsets, so we want as many offsets to be constant as possible.
     */
+   struct set *skip = _mesa_pointer_set_create(NULL);
    bool progress;
    do {
       progress = false;
-      NIR_PASS(progress, nir, nir_opt_constant_folding);
-      NIR_PASS(progress, nir, nir_opt_algebraic);
-      NIR_PASS(progress, nir, nir_opt_copy_prop);
-      NIR_PASS(progress, nir, nir_opt_dce);
+      NIR_LOOP_PASS(progress, skip, nir, nir_opt_constant_folding);
+      NIR_LOOP_PASS_NOT_IDEMPOTENT(progress, skip, nir, nir_opt_algebraic);
+      NIR_LOOP_PASS(progress, skip, nir, nir_opt_copy_prop);
+      NIR_LOOP_PASS(progress, skip, nir, nir_opt_dce);
    } while (progress);
+   _mesa_set_destroy(skip, NULL);
 
    nir_move_options opts = nir_move_load_ssbo | nir_move_load_ubo;
    NIR_PASS(progress, nir, nir_opt_sink, opts);
@@ -2597,34 +2599,38 @@ hk_compile_shader(struct hk_device *dev, struct vk_shader_compile_info *info,
 static void
 nir_opts(nir_shader *nir, void *data)
 {
+   /* A pass runs again only once another has changed the shader */
+   struct set *skip = _mesa_pointer_set_create(NULL);
    bool progress;
 
    do {
       progress = false;
 
-      NIR_PASS(progress, nir, nir_opt_loop);
-      NIR_PASS(progress, nir, nir_opt_copy_prop);
-      NIR_PASS(progress, nir, nir_opt_remove_phis);
-      NIR_PASS(progress, nir, nir_opt_dce);
+      NIR_LOOP_PASS_NOT_IDEMPOTENT(progress, skip, nir, nir_opt_loop);
+      NIR_LOOP_PASS(progress, skip, nir, nir_opt_copy_prop);
+      NIR_LOOP_PASS(progress, skip, nir, nir_opt_remove_phis);
+      NIR_LOOP_PASS(progress, skip, nir, nir_opt_dce);
 
-      NIR_PASS(progress, nir, nir_opt_if, 0);
-      NIR_PASS(progress, nir, nir_opt_dead_cf);
-      NIR_PASS(progress, nir, nir_opt_cse);
+      NIR_LOOP_PASS_NOT_IDEMPOTENT(progress, skip, nir, nir_opt_if, 0);
+      NIR_LOOP_PASS(progress, skip, nir, nir_opt_dead_cf);
+      NIR_LOOP_PASS(progress, skip, nir, nir_opt_cse);
 
-      NIR_PASS(progress, nir, nir_opt_peephole_select,
-               &(nir_opt_peephole_select_options){
-                  .limit = 8,
-                  .expensive_alu_ok = true,
-                  .discard_ok = true,
-               });
+      NIR_LOOP_PASS(progress, skip, nir, nir_opt_peephole_select,
+                    &(nir_opt_peephole_select_options){
+                       .limit = 8,
+                       .expensive_alu_ok = true,
+                       .discard_ok = true,
+                    });
 
-      NIR_PASS(progress, nir, nir_opt_phi_precision);
-      NIR_PASS(progress, nir, nir_opt_algebraic);
-      NIR_PASS(progress, nir, nir_opt_constant_folding);
+      NIR_LOOP_PASS(progress, skip, nir, nir_opt_phi_precision);
+      NIR_LOOP_PASS_NOT_IDEMPOTENT(progress, skip, nir, nir_opt_algebraic);
+      NIR_LOOP_PASS(progress, skip, nir, nir_opt_constant_folding);
 
-      NIR_PASS(progress, nir, nir_opt_undef);
-      NIR_PASS(progress, nir, nir_opt_loop_unroll);
+      NIR_LOOP_PASS(progress, skip, nir, nir_opt_undef);
+      NIR_LOOP_PASS_NOT_IDEMPOTENT(progress, skip, nir, nir_opt_loop_unroll);
    } while (progress);
+
+   _mesa_set_destroy(skip, NULL);
 }
 
 /* A pipeline's stages are compiled beside each other once linked: an
