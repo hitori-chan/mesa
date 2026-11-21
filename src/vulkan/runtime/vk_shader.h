@@ -107,6 +107,14 @@ struct vk_shader_compile_info {
 
    uint32_t push_constant_range_count;
    const VkPushConstantRange *push_constant_ranges;
+
+   /* The stage belongs to a monolithic graphics pipeline (no libraries): its
+    * creating thread waits for the compile, so a driver may finish it after
+    * the creation returns.  A library's stages, and a pipeline linked from
+    * libraries, are what layers such as DXVK create on their own worker
+    * threads to bind as soon as they are created.
+    */
+   bool may_complete_later;
 };
 
 struct vk_shader_ops;
@@ -157,6 +165,8 @@ struct vk_shader {
 VK_DEFINE_NONDISP_HANDLE_CASTS(vk_shader, base, VkShaderEXT,
                                VK_OBJECT_TYPE_SHADER_EXT);
 
+struct disk_cache;
+
 struct vk_shader_ops {
    /** Destroy a vk_shader_object */
    void (*destroy)(struct vk_device *device,
@@ -174,6 +184,18 @@ struct vk_shader_ops {
    bool (*serialize)(struct vk_device *device,
                      const struct vk_shader *shader,
                      struct blob *blob);
+
+   /** Puts a shader still compiling in the disk cache once compiled
+    *
+    * Optional.  A driver may compile a pipeline's shaders after its creation
+    * returns.  Returns true when the shader keeps disk_cache and cache_key
+    * and puts its serialization there once compiled, false when it is
+    * compiled already.
+    */
+   bool (*put_when_compiled)(struct vk_device *device,
+                             struct vk_shader *shader,
+                             struct disk_cache *disk_cache,
+                             const unsigned char *cache_key);
 
    /** Returns executable properties for this shader
     *

@@ -497,6 +497,20 @@ vk_pipeline_shader_serialize(struct vk_pipeline_cache_object *object,
    return shader->ops->serialize(device, shader, blob);
 }
 
+static bool
+vk_pipeline_shader_put_when_complete(struct vk_pipeline_cache_object *object,
+                                     struct disk_cache *disk_cache,
+                                     const unsigned char *cache_key)
+{
+   struct vk_shader *shader = vk_shader_from_cache_obj(object);
+
+   if (shader->ops->put_when_compiled == NULL)
+      return false;
+
+   return shader->ops->put_when_compiled(shader->base.device, shader,
+                                         disk_cache, cache_key);
+}
+
 static void
 vk_shader_init_cache_obj(struct vk_device *device, struct vk_shader *shader,
                          const void *key_data, size_t key_size)
@@ -555,6 +569,7 @@ static const struct vk_pipeline_cache_object_ops pipeline_shader_cache_ops = {
    .serialize = vk_pipeline_shader_serialize,
    .deserialize = vk_pipeline_shader_deserialize_cb,
    .destroy = vk_pipeline_shader_destroy,
+   .put_when_complete = vk_pipeline_shader_put_when_complete,
 };
 
 static struct vk_shader *
@@ -1308,6 +1323,8 @@ struct vk_graphics_pipeline_compile_info {
 
    bool retain_precomp;
    bool optimize;
+   /* No libraries, and not a library */
+   bool monolithic;
 
    uint32_t part_count;
    uint32_t partition[MESA_VK_MAX_GRAPHICS_PIPELINE_STAGES + 1];
@@ -1505,6 +1522,10 @@ vk_get_graphics_pipeline_compile_info(struct vk_graphics_pipeline_compile_info *
     * performance for the cases that actually matter: monolithic, GPL fast link,
     * GPL optimized link.)
     */
+   info->monolithic =
+      libs_info == NULL &&
+      !(pipeline_flags & VK_PIPELINE_CREATE_2_LIBRARY_BIT_KHR);
+
    info->optimize =
       !device->disable_lto &&
       (libs_info == NULL ||
@@ -1825,6 +1846,7 @@ vk_graphics_pipeline_compile_shaders(struct vk_device *device,
             .embedded_samplers = stage->precomp->embedded_samplers,
             .push_constant_range_count = push_range != NULL,
             .push_constant_ranges = push_range != NULL ? push_range : NULL,
+            .may_complete_later = compile_info->monolithic,
          };
       }
 
