@@ -823,17 +823,16 @@ lookup_ycbcr_conversion(const void *_state, uint32_t set, uint32_t binding,
    const struct hk_descriptor_set_binding_layout *bind_layout =
       &set_layout->binding[binding];
 
-   if (bind_layout->immutable_samplers == NULL)
+   /* The layout's copy: the samplers may be destroyed by now */
+   if (bind_layout->ycbcr == NULL)
       return NULL;
 
    array_index = MIN2(array_index, bind_layout->array_size - 1);
 
-   const struct hk_sampler *sampler =
-      bind_layout->immutable_samplers[array_index];
+   const struct vk_ycbcr_conversion_state *ycbcr =
+      &bind_layout->ycbcr[array_index];
 
-   return sampler && sampler->vk.ycbcr_conversion
-             ? &sampler->vk.ycbcr_conversion->state
-             : NULL;
+   return ycbcr->format != VK_FORMAT_UNDEFINED ? ycbcr : NULL;
 }
 
 static unsigned
