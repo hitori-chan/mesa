@@ -1269,7 +1269,7 @@ hk_lower_nir(struct hk_device *dev, nir_shader *nir,
    do {
       progress = false;
       NIR_LOOP_PASS(progress, skip, nir, nir_opt_constant_folding);
-      NIR_LOOP_PASS_NOT_IDEMPOTENT(progress, skip, nir, nir_opt_algebraic);
+      NIR_LOOP_PASS(progress, skip, nir, nir_opt_algebraic);
       NIR_LOOP_PASS(progress, skip, nir, nir_opt_copy_prop);
       NIR_LOOP_PASS(progress, skip, nir, nir_opt_dce);
    } while (progress);
@@ -2623,7 +2623,7 @@ nir_opts(nir_shader *nir, void *data)
                     });
 
       NIR_LOOP_PASS(progress, skip, nir, nir_opt_phi_precision);
-      NIR_LOOP_PASS_NOT_IDEMPOTENT(progress, skip, nir, nir_opt_algebraic);
+      NIR_LOOP_PASS(progress, skip, nir, nir_opt_algebraic);
       NIR_LOOP_PASS(progress, skip, nir, nir_opt_constant_folding);
 
       NIR_LOOP_PASS(progress, skip, nir, nir_opt_undef);

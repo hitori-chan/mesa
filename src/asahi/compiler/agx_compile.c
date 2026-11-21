@@ -4204,7 +4204,7 @@ agx_optimize_loop_nir(nir_shader *nir)
       NIR_LOOP_PASS(progress, skip, nir, nir_opt_peephole_select,
                     &peephole_select_options);
       NIR_LOOP_PASS(progress, skip, nir, nir_opt_phi_precision);
-      NIR_LOOP_PASS_NOT_IDEMPOTENT(progress, skip, nir, nir_opt_algebraic);
+      NIR_LOOP_PASS(progress, skip, nir, nir_opt_algebraic);
       NIR_LOOP_PASS(progress, skip, nir, nir_opt_constant_folding);
       NIR_LOOP_PASS(progress, skip, nir, nir_opt_undef);
       NIR_LOOP_PASS_NOT_IDEMPOTENT(progress, skip, nir, nir_opt_loop_unroll);
@@ -4435,7 +4435,7 @@ agx_optimize_nir(nir_shader *nir, bool soft_fault, uint16_t *preamble_size,
    do {
       progress = false;
 
-      NIR_LOOP_PASS_NOT_IDEMPOTENT(progress, skip, nir, nir_opt_algebraic);
+      NIR_LOOP_PASS(progress, skip, nir, nir_opt_algebraic);
       NIR_LOOP_PASS(progress, skip, nir, nir_opt_constant_folding);
       NIR_LOOP_PASS(progress, skip, nir, nir_opt_dce);
    } while (progress);
@@ -4467,7 +4467,7 @@ agx_optimize_nir(nir_shader *nir, bool soft_fault, uint16_t *preamble_size,
       do {
          progress = false;
 
-         NIR_LOOP_PASS_NOT_IDEMPOTENT(progress, skip, nir, nir_opt_algebraic);
+         NIR_LOOP_PASS(progress, skip, nir, nir_opt_algebraic);
          NIR_LOOP_PASS(progress, skip, nir, nir_opt_constant_folding);
          NIR_LOOP_PASS(progress, skip, nir, nir_opt_dce);
       } while (progress);
@@ -5468,7 +5468,7 @@ agx_compile_shader_nir_impl(nir_shader *nir, struct agx_shader_key *key,
    do {
       progress = false;
 
-      NIR_LOOP_PASS_NOT_IDEMPOTENT(progress, skip, nir, nir_opt_algebraic);
+      NIR_LOOP_PASS(progress, skip, nir, nir_opt_algebraic);
       NIR_LOOP_PASS(progress, skip, nir, nir_opt_constant_folding);
       NIR_LOOP_PASS(progress, skip, nir, nir_opt_dce);
    } while (progress);
