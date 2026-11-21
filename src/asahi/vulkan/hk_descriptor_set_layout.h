@@ -10,6 +10,7 @@
 #include "hk_private.h"
 
 #include "vk_descriptor_set_layout.h"
+#include "vk_ycbcr_conversion.h"
 #include "vk_object.h"
 
 struct hk_device;
@@ -40,6 +41,12 @@ struct hk_descriptor_set_binding_layout {
 
    /* Immutable samplers (or NULL if no immutable samplers) */
    struct hk_sampler **immutable_samplers;
+
+   /* Each immutable sampler's YCbCr conversion, copied at creation (format
+    * VK_FORMAT_UNDEFINED where it has none), or NULL if no immutable sampler
+    * has one: a pipeline's stages compile after its creation returns, when
+    * the application may have destroyed the samplers (hk_compile_shaders) */
+   struct vk_ycbcr_conversion_state *ycbcr;
 };
 
 struct hk_descriptor_set_layout {

@@ -159,6 +159,8 @@ hk_CreateDescriptorSetLayout(VkDevice device,
                       num_bindings);
    VK_MULTIALLOC_DECL(&ma, struct hk_sampler *, samplers,
                       immutable_sampler_count);
+   VK_MULTIALLOC_DECL(&ma, struct vk_ycbcr_conversion_state, ycbcr,
+                      immutable_sampler_count);
 
    if (!vk_descriptor_set_layout_multizalloc(&dev->vk, &ma, pCreateInfo))
       return vk_error(dev, VK_ERROR_OUT_OF_HOST_MEMORY);
@@ -231,6 +233,11 @@ hk_CreateDescriptorSetLayout(VkDevice device,
          for (uint32_t i = 0; i < binding->descriptorCount; i++) {
             VK_FROM_HANDLE(hk_sampler, sampler, binding->pImmutableSamplers[i]);
             layout->binding[b].immutable_samplers[i] = sampler;
+
+            if (sampler->vk.ycbcr_conversion != NULL) {
+               layout->binding[b].ycbcr = ycbcr;
+               ycbcr[i] = sampler->vk.ycbcr_conversion->state;
+            }
             const uint8_t sampler_plane_count =
                sampler->vk.ycbcr_conversion
                   ? vk_format_get_plane_count(
@@ -239,6 +246,7 @@ hk_CreateDescriptorSetLayout(VkDevice device,
             if (max_plane_count < sampler_plane_count)
                max_plane_count = sampler_plane_count;
          }
+         ycbcr += binding->descriptorCount;
       }
 
       stride *= max_plane_count;
