@@ -48,6 +48,8 @@ struct vk_pipeline_cache_object;
 
 #define VK_PIPELINE_CACHE_BLOB_ALIGN 8
 
+struct disk_cache;
+
 struct vk_pipeline_cache_object_ops {
    /** Writes this cache object to the given blob
     *
@@ -88,6 +90,17 @@ struct vk_pipeline_cache_object_ops {
     */
    void (*destroy)(struct vk_device *device,
                    struct vk_pipeline_cache_object *object);
+
+   /** Puts the object in the disk cache once it is complete
+    *
+    * Optional.  An object still being built (a shader that compiles after its
+    * pipeline's creation returned) cannot be serialized yet.  Returns true
+    * when the object keeps disk_cache and cache_key and puts itself there
+    * once complete, false when it can be serialized now.
+    */
+   bool (*put_when_complete)(struct vk_pipeline_cache_object *object,
+                             struct disk_cache *disk_cache,
+                             const unsigned char *cache_key);
 };
 
 /** Base struct for cached objects
