@@ -57,6 +57,7 @@ static const struct debug_named_value hk_perf_options[] = {
    {"serialcompile", HK_PERF_SERIALCOMPILE, "Compile a pipeline's stages one after another on the calling thread"},
    {"nobackendcache", HK_PERF_NOBACKENDCACHE, "Compile every stage, not a result kept for the same input"},
    {"nolowercache", HK_PERF_NOLOWERCACHE, "Lower every stage, not a result kept for the same input"},
+   {"synccompile", HK_PERF_SYNCCOMPILE, "Compile a pipeline's stages before its creation returns"},
    DEBUG_NAMED_VALUE_END
 };
 /* clang-format on */
@@ -525,6 +526,12 @@ hk_DestroyDevice(VkDevice _device, const VkAllocationCallbacks *pAllocator)
    util_dynarray_fini(&dev->external_bos.counts);
    util_dynarray_fini(&dev->external_bos.list);
    u_rwlock_destroy(&dev->external_bos.lock);
+
+   /* Each pipeline was destroyed, so each of its stages compiled */
+   if (dev->later.ok) {
+      util_queue_finish(&dev->later.queue);
+      util_queue_destroy(&dev->later.queue);
+   }
 
    if (dev->compile.ok)
       util_queue_destroy(&dev->compile.queue);

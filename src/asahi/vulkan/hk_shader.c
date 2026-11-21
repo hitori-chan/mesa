@@ -7,6 +7,9 @@
  * SPDX-License-Identifier: MIT
  */
 #include "hk_shader.h"
+#include "util/disk_cache.h"
+#include "util/u_cpu_detect.h"
+#include "util/u_debug.h"
 #include "util/u_queue.h"
 
 #include "poly/nir/poly_nir.h"
@@ -2190,6 +2193,23 @@ hk_shader_destroy(struct hk_device *dev, struct hk_shader *s)
    }
 }
 
+static struct hk_api_shader *
+hk_api_shader_alloc(struct hk_device *dev, mesa_shader_stage stage,
+                    const VkAllocationCallbacks *pAllocator)
+{
+   size_t size = sizeof(struct hk_api_shader) +
+                 sizeof(struct hk_shader) * hk_num_variants(stage);
+   struct hk_api_shader *obj =
+      vk_shader_zalloc(&dev->vk, &hk_shader_ops, stage, pAllocator, size);
+
+   if (obj != NULL) {
+      util_queue_fence_init(&obj->ready);
+      simple_mtx_init(&obj->later_lock, mtx_plain);
+   }
+
+   return obj;
+}
+
 void
 hk_api_shader_destroy(struct vk_device *vk_dev, struct vk_shader *vk_shader,
                       const VkAllocationCallbacks *pAllocator)
@@ -2198,6 +2218,9 @@ hk_api_shader_destroy(struct vk_device *vk_dev, struct vk_shader *vk_shader,
    struct hk_api_shader *obj =
       container_of(vk_shader, struct hk_api_shader, vk);
 
+   /* A pipeline destroyed while its stages compile waits for them */
+   hk_api_shader_wait(obj);
+
    hk_foreach_variant(obj, shader) {
       hk_shader_destroy(dev, shader);
    }
@@ -2205,6 +2228,8 @@ hk_api_shader_destroy(struct vk_device *vk_dev, struct vk_shader *vk_shader,
    free(obj->debug_nir_dump);
    free(obj->debug_agx_dump);
 
+   util_queue_fence_destroy(&obj->ready);
+   simple_mtx_destroy(&obj->later_lock);
    vk_shader_free(&dev->vk, pAllocator, &obj->vk);
 }
 
@@ -2225,10 +2250,7 @@ hk_compile_shader(struct hk_device *dev, struct vk_shader_compile_info *info,
    /* We consume the NIR, regardless of success or failure */
    nir_shader *nir = info->nir;
 
-   size_t size = sizeof(struct hk_api_shader) +
-                 sizeof(struct hk_shader) * hk_num_variants(info->stage);
-   struct hk_api_shader *obj =
-      vk_shader_zalloc(&dev->vk, &hk_shader_ops, info->stage, pAllocator, size);
+   struct hk_api_shader *obj = hk_api_shader_alloc(dev, info->stage, pAllocator);
 
    if (obj == NULL) {
       ralloc_free(nir);
@@ -2676,16 +2698,15 @@ hk_compile_job_execute(void *data, UNUSED void *gdata, UNUSED int thread_index)
    p_atomic_dec(&job->dev->compile.busy);
 }
 
+/* SERIAL keeps every stage on the calling thread (a pool job's) */
 static VkResult
-hk_compile_shaders(struct vk_device *vk_dev, uint32_t shader_count,
-                   struct vk_shader_compile_info *infos,
-                   const struct vk_graphics_pipeline_state *state,
-                   const struct vk_features *features,
-                   const VkAllocationCallbacks *pAllocator,
-                   struct vk_shader **shaders_out)
+hk_compile_shaders_now(struct hk_device *dev, uint32_t shader_count,
+                       struct vk_shader_compile_info *infos,
+                       const struct vk_graphics_pipeline_state *state,
+                       const struct vk_features *features,
+                       const VkAllocationCallbacks *pAllocator,
+                       struct vk_shader **shaders_out, bool serial)
 {
-   struct hk_device *dev = container_of(vk_dev, struct hk_device, vk);
-
    /* The runtime compiles ray-tracing stages one by one, without
     * get_rt_group_linking
     */
@@ -2745,7 +2766,7 @@ hk_compile_shaders(struct vk_device *vk_dev, uint32_t shader_count,
    nir_opt_varyings_bulk(shaders, shader_count, true, UINT32_MAX, UINT32_MAX,
                          nir_opts, NULL, NULL);
 
-   if (shader_count > 1 && !HK_PERF(dev, SERIALCOMPILE)) {
+   if (shader_count > 1 && !serial && !HK_PERF(dev, SERIALCOMPILE)) {
       util_call_once_data(&dev->compile.once, hk_compile_queue_init, dev);
 
       if (dev->compile.ok) {
@@ -2830,6 +2851,262 @@ hk_compile_shaders(struct vk_device *vk_dev, uint32_t shader_count,
    return VK_SUCCESS;
 }
 
+/* A graphics pipeline's stages compile on the device's pool after its creation
+ * returns: an application that creates its pipelines on one thread (Elden
+ * Ring's startup set, 8,825 pipelines) otherwise waits for each in turn, and
+ * Elden Ring letterboxes only once its set is created. The objects returned
+ * are allocated now and filled by the job; each reader of their variants
+ * waits for it (hk_api_shader_wait: binding, serializing, the executables'
+ * queries, destroying), and the runtime's disk cache takes a shader once it is
+ * compiled (put_when_compiled). The queue holds as many jobs waiting as it has
+ * threads: a full queue makes the creating thread wait, which bounds the
+ * memory the jobs hold and the wait of a bind. The inputs that outlive the
+ * call only as the pipeline's (its state, robustness, set layouts, samplers)
+ * are copied or referenced.
+ */
+static bool hk_api_shader_serialize_compiled(struct vk_device *vk_dev,
+                                             struct hk_api_shader *obj,
+                                             struct blob *blob);
+
+struct hk_later_job {
+   struct hk_device *dev;
+   uint32_t count;
+   struct vk_shader_compile_info infos[MESA_VK_MAX_GRAPHICS_PIPELINE_STAGES];
+   struct vk_pipeline_robustness_state rs[MESA_VK_MAX_GRAPHICS_PIPELINE_STAGES];
+   VkPushConstantRange push[MESA_VK_MAX_GRAPHICS_PIPELINE_STAGES];
+   struct vk_sampler_state *samplers[MESA_VK_MAX_GRAPHICS_PIPELINE_STAGES];
+   uint32_t set_layout_count;
+   struct vk_descriptor_set_layout *set_layouts[MESA_VK_MAX_DESCRIPTOR_SETS];
+   struct vk_graphics_pipeline_state state;
+   void *state_mem;
+   struct hk_api_shader *out[MESA_VK_MAX_GRAPHICS_PIPELINE_STAGES];
+};
+
+static void
+hk_later_queue_init(const void *data)
+{
+   struct hk_device *dev = (struct hk_device *)data;
+   int threads = debug_get_num_option(
+      "HK_LATER_THREADS", MAX2(util_get_cpu_caps()->nr_cpus - 2, 1));
+
+   dev->later.ok = threads > 0 &&
+                   util_queue_init(&dev->later.queue, "hk_later", threads,
+                                   threads, 0, NULL);
+}
+
+/* An hk_shader holds no pointer to itself or to its api shader: the
+ * variants move by copy */
+static void
+hk_api_shader_take(struct hk_device *dev, struct hk_api_shader *obj,
+                   struct hk_api_shader *built)
+{
+   obj->is_passthrough = built->is_passthrough;
+   obj->debug_nir_dump = built->debug_nir_dump;
+   obj->debug_agx_dump = built->debug_agx_dump;
+   memcpy(obj->variants, built->variants,
+          sizeof(struct hk_shader) * hk_num_variants(obj->vk.stage));
+
+   util_queue_fence_destroy(&built->ready);
+   simple_mtx_destroy(&built->later_lock);
+   vk_shader_free(&dev->vk, NULL, &built->vk);
+}
+
+/* The shader is compiled: it goes to the disk cache the runtime gave it, then
+ * its readers go on */
+static void
+hk_api_shader_compiled(struct hk_device *dev, struct hk_api_shader *obj)
+{
+   simple_mtx_lock(&obj->later_lock);
+   obj->compiling = false;
+   struct disk_cache *disk_cache = obj->disk_cache;
+   obj->disk_cache = NULL;
+   simple_mtx_unlock(&obj->later_lock);
+
+   if (disk_cache != NULL && obj->result == VK_SUCCESS) {
+      struct blob blob;
+      blob_init(&blob);
+
+      if (hk_api_shader_serialize_compiled(&dev->vk, obj, &blob) &&
+          !blob.out_of_memory)
+         disk_cache_put(disk_cache, obj->disk_key, blob.data, blob.size, NULL);
+
+      blob_finish(&blob);
+   }
+
+   util_queue_fence_signal(&obj->ready);
+}
+
+static void
+hk_later_job_execute(void *data, UNUSED void *gdata, UNUSED int thread_index)
+{
+   struct hk_later_job *job = data;
+   struct hk_device *dev = job->dev;
+   struct vk_shader *built[MESA_VK_MAX_GRAPHICS_PIPELINE_STAGES];
+
+   VkResult result =
+      hk_compile_shaders_now(dev, job->count, job->infos, &job->state,
+                             &dev->vk.enabled_features, NULL, built, true);
+
+   for (uint32_t i = 0; i < job->count; i++) {
+      struct hk_api_shader *obj = job->out[i];
+
+      if (result == VK_SUCCESS) {
+         hk_api_shader_take(dev, obj,
+                            container_of(built[i], struct hk_api_shader, vk));
+      } else {
+         mesa_loge("hk: a pipeline's %s shader failed to compile after its "
+                   "creation returned (%d)",
+                   _mesa_shader_stage_to_string(obj->vk.stage), result);
+      }
+
+      obj->result = result;
+      hk_api_shader_compiled(dev, obj);
+   }
+}
+
+static void
+hk_later_job_cleanup(void *data, UNUSED void *gdata, UNUSED int thread_index)
+{
+   struct hk_later_job *job = data;
+   struct hk_device *dev = job->dev;
+
+   for (uint32_t i = 0; i < job->set_layout_count; i++) {
+      if (job->set_layouts[i])
+         vk_descriptor_set_layout_unref(&dev->vk, job->set_layouts[i]);
+   }
+
+   for (uint32_t i = 0; i < job->count; i++)
+      free(job->samplers[i]);
+
+   vk_free(&dev->vk.alloc, job->state_mem);
+   free(job);
+}
+
+static bool
+hk_compile_later_ok(struct hk_device *dev, uint32_t shader_count,
+                    const struct vk_shader_compile_info *infos,
+                    const struct vk_graphics_pipeline_state *state)
+{
+   /* Monolithic graphics pipelines only (may_complete_later): shader objects'
+    * binaries are read at once, compute and ray tracing pipelines are few */
+   if (state == NULL || shader_count == 0 || HK_PERF(dev, SYNCCOMPILE) ||
+       shader_count > MESA_VK_MAX_GRAPHICS_PIPELINE_STAGES)
+      return false;
+
+   for (uint32_t i = 0; i < shader_count; i++) {
+      if (!infos[i].may_complete_later ||
+          mesa_shader_stage_is_rt(infos[i].stage) ||
+          mesa_shader_stage_is_compute(infos[i].stage) ||
+          infos[i].nir->info.internal ||
+          infos[i].set_layout_count > MESA_VK_MAX_DESCRIPTOR_SETS ||
+          infos[i].push_constant_range_count > 1 ||
+          infos[i].set_layouts != infos[0].set_layouts ||
+          infos[i].set_layout_count != infos[0].set_layout_count ||
+          (infos[i].flags &
+           VK_SHADER_CREATE_CAPTURE_INTERNAL_REPRESENTATIONS_BIT_MESA))
+         return false;
+   }
+
+   util_call_once_data(&dev->later.once, hk_later_queue_init, dev);
+   return dev->later.ok;
+}
+
+static VkResult
+hk_compile_shaders_later(struct hk_device *dev, uint32_t shader_count,
+                         struct vk_shader_compile_info *infos,
+                         const struct vk_graphics_pipeline_state *state,
+                         const VkAllocationCallbacks *pAllocator,
+                         struct vk_shader **shaders_out)
+{
+   struct hk_later_job *job = calloc(1, sizeof(*job));
+   if (job == NULL)
+      return VK_ERROR_OUT_OF_HOST_MEMORY;
+
+   job->dev = dev;
+   job->count = shader_count;
+
+   if (vk_graphics_pipeline_state_copy(&dev->vk, &job->state, state, NULL,
+                                       VK_SYSTEM_ALLOCATION_SCOPE_OBJECT,
+                                       &job->state_mem) != VK_SUCCESS) {
+      free(job);
+      return VK_ERROR_OUT_OF_HOST_MEMORY;
+   }
+
+   for (uint32_t i = 0; i < shader_count; i++) {
+      job->out[i] = hk_api_shader_alloc(dev, infos[i].stage, pAllocator);
+
+      if (job->out[i] != NULL && infos[i].embedded_sampler_count > 0) {
+         size_t size =
+            infos[i].embedded_sampler_count * sizeof(*infos[i].embedded_samplers);
+         job->samplers[i] = malloc(size);
+
+         if (job->samplers[i] != NULL)
+            memcpy(job->samplers[i], infos[i].embedded_samplers, size);
+      }
+
+      if (job->out[i] == NULL || (infos[i].embedded_sampler_count > 0 &&
+                                  job->samplers[i] == NULL)) {
+         for (uint32_t j = 0; j <= i; j++) {
+            if (job->out[j] != NULL)
+               hk_api_shader_destroy(&dev->vk, &job->out[j]->vk, pAllocator);
+         }
+
+         job->count = i + 1;
+         hk_later_job_cleanup(job, NULL, 0);
+         return VK_ERROR_OUT_OF_HOST_MEMORY;
+      }
+   }
+
+   job->set_layout_count = infos[0].set_layout_count;
+   for (uint32_t i = 0; i < job->set_layout_count; i++) {
+      job->set_layouts[i] = infos[0].set_layouts[i];
+      if (job->set_layouts[i])
+         vk_descriptor_set_layout_ref(job->set_layouts[i]);
+   }
+
+   for (uint32_t i = 0; i < shader_count; i++) {
+      struct hk_api_shader *obj = job->out[i];
+
+      job->infos[i] = infos[i];
+      job->rs[i] = *infos[i].robustness;
+      job->infos[i].robustness = &job->rs[i];
+      job->infos[i].set_layouts = job->set_layouts;
+      job->infos[i].embedded_samplers = job->samplers[i];
+
+      if (infos[i].push_constant_range_count > 0) {
+         job->push[i] = infos[i].push_constant_ranges[0];
+         job->infos[i].push_constant_ranges = &job->push[i];
+      }
+
+      obj->compiling = true;
+      util_queue_fence_reset(&obj->ready);
+      shaders_out[i] = &obj->vk;
+   }
+
+   util_queue_add_job(&dev->later.queue, job, NULL, hk_later_job_execute,
+                      hk_later_job_cleanup, 0);
+   return VK_SUCCESS;
+}
+
+static VkResult
+hk_compile_shaders(struct vk_device *vk_dev, uint32_t shader_count,
+                   struct vk_shader_compile_info *infos,
+                   const struct vk_graphics_pipeline_state *state,
+                   const struct vk_features *features,
+                   const VkAllocationCallbacks *pAllocator,
+                   struct vk_shader **shaders_out)
+{
+   struct hk_device *dev = container_of(vk_dev, struct hk_device, vk);
+
+   if (hk_compile_later_ok(dev, shader_count, infos, state) &&
+       hk_compile_shaders_later(dev, shader_count, infos, state, pAllocator,
+                                shaders_out) == VK_SUCCESS)
+      return VK_SUCCESS;
+
+   return hk_compile_shaders_now(dev, shader_count, infos, state, features,
+                                 pAllocator, shaders_out, false);
+}
+
 /* A ray-tracing pipeline's kernel (hk_rt_pipeline.c), lowered as an API
  * compute shader
  */
@@ -2906,11 +3183,7 @@ hk_deserialize_api_shader(struct vk_device *vk_dev, struct blob_reader *blob,
    if (mesa_shader_stage_is_rt(stage))
       return hk_rt_stage_deserialize(dev, blob, stage, pAllocator, shader_out);
 
-   size_t size = sizeof(struct hk_api_shader) +
-                 sizeof(struct hk_shader) * hk_num_variants(stage);
-
-   struct hk_api_shader *obj =
-      vk_shader_zalloc(&dev->vk, &hk_shader_ops, stage, pAllocator, size);
+   struct hk_api_shader *obj = hk_api_shader_alloc(dev, stage, pAllocator);
 
    if (obj == NULL)
       return vk_error(dev, VK_ERROR_OUT_OF_HOST_MEMORY);
@@ -2942,19 +3215,47 @@ hk_shader_serialize(struct vk_device *vk_dev, const struct hk_shader *shader,
 }
 
 static bool
-hk_api_shader_serialize(struct vk_device *vk_dev,
-                        const struct vk_shader *vk_shader, struct blob *blob)
+hk_api_shader_serialize_compiled(struct vk_device *vk_dev,
+                                 struct hk_api_shader *obj, struct blob *blob)
 {
-   struct hk_api_shader *obj =
-      container_of(vk_shader, struct hk_api_shader, vk);
-
-   blob_write_uint8(blob, vk_shader->stage);
+   blob_write_uint8(blob, obj->vk.stage);
 
    hk_foreach_variant(obj, shader) {
       hk_shader_serialize(vk_dev, shader, blob);
    }
 
    return !blob->out_of_memory;
+}
+
+static bool
+hk_api_shader_serialize(struct vk_device *vk_dev,
+                        const struct vk_shader *vk_shader, struct blob *blob)
+{
+   struct hk_api_shader *obj =
+      container_of(vk_shader, struct hk_api_shader, vk);
+
+   hk_api_shader_wait(obj);
+   return hk_api_shader_serialize_compiled(vk_dev, obj, blob);
+}
+
+static bool
+hk_api_shader_put_when_compiled(UNUSED struct vk_device *vk_dev,
+                                struct vk_shader *vk_shader,
+                                struct disk_cache *disk_cache,
+                                const unsigned char *cache_key)
+{
+   struct hk_api_shader *obj =
+      container_of(vk_shader, struct hk_api_shader, vk);
+
+   simple_mtx_lock(&obj->later_lock);
+   bool compiling = obj->compiling;
+   if (compiling) {
+      obj->disk_cache = disk_cache;
+      memcpy(obj->disk_key, cache_key, sizeof(obj->disk_key));
+   }
+   simple_mtx_unlock(&obj->later_lock);
+
+   return compiling;
 }
 
 static VkResult
@@ -2988,6 +3289,8 @@ hk_shader_get_executable_statistics(
 {
    struct hk_api_shader *obj =
       container_of(vk_shader, struct hk_api_shader, vk);
+
+   hk_api_shader_wait(obj);
 
    VK_OUTARRAY_MAKE_TYPED(VkPipelineExecutableStatisticKHR, out, statistics,
                           statistic_count);
@@ -3063,6 +3366,8 @@ hk_shader_get_executable_internal_representations(
    struct hk_api_shader *obj =
       container_of(vk_shader, struct hk_api_shader, vk);
 
+   hk_api_shader_wait(obj);
+
    VkPipelineExecutableInternalRepresentationKHR *p = internal_representations;
    VkPipelineExecutableInternalRepresentationKHR *end =
       p + (internal_representations ? *internal_representation_count : 0);
@@ -3109,6 +3414,7 @@ hk_shader_get_executable_internal_representations(
 static const struct vk_shader_ops hk_shader_ops = {
    .destroy = hk_api_shader_destroy,
    .serialize = hk_api_shader_serialize,
+   .put_when_compiled = hk_api_shader_put_when_compiled,
    .get_executable_properties = hk_shader_get_executable_properties,
    .get_executable_statistics = hk_shader_get_executable_statistics,
    .get_executable_internal_representations =

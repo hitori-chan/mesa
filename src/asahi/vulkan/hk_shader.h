@@ -9,6 +9,7 @@
 
 #include "asahi/compiler/agx_compile.h"
 #include "poly/nir/poly_nir.h"
+#include "util/disk_cache.h"
 #include "util/macros.h"
 #include "agx_linker.h"
 #include "agx_nir_lower_vbo.h"
@@ -285,6 +286,22 @@ hk_num_variants(mesa_shader_stage stage)
 struct hk_api_shader {
    struct vk_shader vk;
 
+   /* Signalled once the variants are compiled: a graphics pipeline's stages
+    * compile on the device's pool after its creation returns
+    * (hk_compile_shaders_later). Every reader of the variants waits first
+    * (hk_api_shader_wait). */
+   struct util_queue_fence ready;
+
+   /* The compile's result, an error when it failed after creation returned */
+   VkResult result;
+
+   /* While compiling, the disk cache the shader puts itself in once compiled
+    * and its key (put_when_compiled) */
+   simple_mtx_t later_lock;
+   bool compiling;
+   struct disk_cache *disk_cache;
+   cache_key disk_key;
+
    /* Is this an internal passthrough geometry shader? */
    bool is_passthrough;
 
@@ -293,6 +310,12 @@ struct hk_api_shader {
 
    struct hk_shader variants[];
 };
+
+static inline void
+hk_api_shader_wait(struct hk_api_shader *obj)
+{
+   util_queue_fence_wait(&obj->ready);
+}
 
 #define hk_foreach_variant(api_shader, var)                                    \
    for (struct hk_shader *var = api_shader->variants;                          \

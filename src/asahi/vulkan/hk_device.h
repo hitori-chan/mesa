@@ -120,6 +120,15 @@ struct hk_device {
       uint32_t busy;
    } compile;
 
+   /* A graphics pipeline's stages, compiled on these threads after its
+    * creation returns (hk_compile_shaders_later): started at the first such
+    * pipeline. A full queue makes the creating thread wait for room. */
+   struct {
+      struct util_queue queue;
+      util_once_flag once;
+      bool ok;
+   } later;
+
    struct {
       struct u_rwlock lock;
       struct util_dynarray list;
@@ -154,6 +163,7 @@ enum hk_perftest {
    HK_PERF_SERIALCOMPILE = BITFIELD_BIT(16),
    HK_PERF_NOBACKENDCACHE = BITFIELD_BIT(17),
    HK_PERF_NOLOWERCACHE = BITFIELD_BIT(18),
+   HK_PERF_SYNCCOMPILE = BITFIELD_BIT(19),
 };
 
 #define HK_PERF(dev, flag) unlikely((dev)->perftest &HK_PERF_##flag)
