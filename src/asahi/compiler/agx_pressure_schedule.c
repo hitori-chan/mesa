@@ -9,6 +9,7 @@
 #include "util/bitset.h"
 #include "util/dag.h"
 #include "util/sparse_bitset.h"
+#include "util/u_dynarray.h"
 #include "util/u_debug.h"
 #include "agx_compile.h"
 #include "agx_compiler.h"
@@ -28,6 +29,11 @@ struct sched_ctx {
     * registers (pressure, in 16-bit halves) stay within budget */
    bool early_tex;
    signed pressure, budget;
+
+   /* The block's readers of each value, so that a value becoming live marks
+    * the deltas that change: first_reader[value] indexes readers, -1 none */
+   int32_t *first_reader;
+   struct util_dynarray readers;
 };
 
 struct sched_node {
@@ -35,6 +41,17 @@ struct sched_node {
 
    /* Instruction this node represents */
    agx_instr *instr;
+
+   /* calculate_pressure_delta of the instruction, unless dirty: only a source
+    * becoming live changes it once the node is a candidate, since its readers
+    * are scheduled by then */
+   int32_t delta;
+   bool dirty;
+};
+
+struct sched_reader {
+   struct sched_node *node;
+   int32_t next;
 };
 
 static void
@@ -53,13 +70,13 @@ serialize(struct sched_node *a, struct sched_node **b)
    *b = a;
 }
 
+/* last_write is all NULL on entry and on return */
 static struct dag *
-create_dag(agx_context *ctx, agx_block *block, void *memctx)
+create_dag(agx_context *ctx, agx_block *block, void *memctx,
+           struct sched_node **last_write, struct sched_ctx *s)
 {
    struct dag *dag = dag_create(ctx);
 
-   struct sched_node **last_write =
-      calloc(ctx->alloc, sizeof(struct sched_node *));
    struct sched_node *coverage = NULL;
    struct sched_node *preload = NULL;
 
@@ -76,11 +93,18 @@ create_dag(agx_context *ctx, agx_block *block, void *memctx)
 
       struct sched_node *node = rzalloc(memctx, struct sched_node);
       node->instr = I;
+      node->dirty = true;
       dag_init_node(dag, &node->dag);
 
       /* Reads depend on writes, no other hazards in SSA */
-      agx_foreach_ssa_src(I, s) {
-         add_dep(node, last_write[I->src[s].value]);
+      agx_foreach_ssa_src(I, src) {
+         unsigned v = I->src[src].value;
+         add_dep(node, last_write[v]);
+
+         struct sched_reader r = {node, s->first_reader[v]};
+         s->first_reader[v] = util_dynarray_num_elements(&s->readers,
+                                                         struct sched_reader);
+         util_dynarray_append(&s->readers, r);
       }
 
       agx_foreach_ssa_dest(I, d) {
@@ -125,7 +149,13 @@ create_dag(agx_context *ctx, agx_block *block, void *memctx)
          add_dep(node, preload);
    }
 
-   free(last_write);
+   agx_foreach_instr_in_block(block, I) {
+      if (instr_after_logical_end(I))
+         break;
+
+      agx_foreach_ssa_dest(I, d)
+         last_write[I->dest[d].value] = NULL;
+   }
 
    return dag;
 }
@@ -209,7 +239,12 @@ choose_instr(struct sched_ctx *s)
       if (n->instr->op == AGX_OPCODE_WAIT_PIX)
          return n;
 
-      int32_t delta = calculate_pressure_delta(n->instr, s->live);
+      if (n->dirty) {
+         n->delta = calculate_pressure_delta(n->instr, s->live);
+         n->dirty = false;
+      }
+
+      int32_t delta = n->delta;
 
       /* G15 heuristic: hide a texture's latency by choosing it after the
        * instructions that do not need it, so that it issues before them, the
@@ -313,6 +348,20 @@ pressure_schedule_block(agx_context *ctx, agx_block *block, struct sched_ctx *s,
       dag_prune_head(s->dag, &node->dag);
 
       schedule[nr_ins++] = node;
+
+      /* A source becoming live changes the deltas of its other readers */
+      agx_foreach_ssa_src(node->instr, src) {
+         unsigned v = node->instr->src[src].value;
+         if (!BITSET_TEST(s->live, v)) {
+            for (int32_t r = s->first_reader[v]; r >= 0;) {
+               struct sched_reader *e = util_dynarray_element(
+                  &s->readers, struct sched_reader, r);
+               e->node->dirty = true;
+               r = e->next;
+            }
+         }
+      }
+
       live_update(s->live, node->instr);
    }
 
@@ -397,17 +446,30 @@ agx_pressure_schedule(agx_context *ctx)
    }
 
    BITSET_WORD *live = ralloc_array(memctx, BITSET_WORD, BITSET_WORDS(ctx->alloc));
+   struct sched_node **last_write =
+      rzalloc_array(memctx, struct sched_node *, ctx->alloc);
+   int32_t *first_reader = ralloc_array(memctx, int32_t, ctx->alloc);
+   memset(first_reader, 0xff, ctx->alloc * sizeof(int32_t));
+
+   struct sched_ctx sctx = {
+      .live = live,
+      .alloc = ctx->alloc,
+      .early_tex = early_tex,
+      .budget = budget,
+      .first_reader = first_reader,
+   };
+   util_dynarray_init(&sctx.readers, memctx);
 
    agx_foreach_block(ctx, block) {
-      struct sched_ctx sctx = {
-         .dag = create_dag(ctx, block, memctx),
-         .live = live,
-         .alloc = ctx->alloc,
-         .early_tex = early_tex,
-         .budget = budget,
-      };
-
+      sctx.dag = create_dag(ctx, block, memctx, last_write, &sctx);
       pressure_schedule_block(ctx, block, &sctx, size);
+
+      /* Back to no readers for the next block */
+      util_dynarray_foreach(&sctx.readers, struct sched_reader, r) {
+         agx_foreach_ssa_src(r->node->instr, src)
+            first_reader[r->node->instr->src[src].value] = -1;
+      }
+      util_dynarray_clear(&sctx.readers);
    }
 
    /* Clean up after liveness analysis */
