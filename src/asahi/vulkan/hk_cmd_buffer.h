@@ -1076,8 +1076,8 @@ void hk_cmd_dispatch_dgc(struct hk_cmd_buffer *cmd, uint64_t addr);
 uint64_t hk_predicate_args(struct hk_cmd_buffer *cmd, uint64_t in,
                            uint64_t count, uint32_t n, uint32_t stride_B,
                            uint32_t words, bool gfx);
-void hk_draw(struct hk_cmd_buffer *cmd, uint16_t draw_id, struct agx_draw draw);
-void hk_draw_mesh(struct hk_cmd_buffer *cmd, uint16_t draw_id,
+void hk_draw(struct hk_cmd_buffer *cmd, uint32_t draw_id, struct agx_draw draw);
+void hk_draw_mesh(struct hk_cmd_buffer *cmd, uint32_t draw_id,
                   struct agx_grid grid);
 void hk_cmd_dispatch_unaligned(VkCommandBuffer commandBuffer, uint32_t x,
                                uint32_t y, uint32_t z);

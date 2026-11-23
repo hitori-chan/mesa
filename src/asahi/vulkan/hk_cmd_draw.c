@@ -3668,7 +3668,7 @@ hk_flush_dynamic_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
 
    if (sw_vs->b.info.uses_draw_id) {
       /* TODO: rodata? */
-      gfx->draw_id_ptr = hk_pool_upload(cmd, &draw_id, 2, 4);
+      gfx->draw_id_ptr = hk_pool_upload(cmd, &draw_id, 4, 4);
    } else {
       gfx->draw_id_ptr = 0;
    }
@@ -4621,7 +4621,7 @@ hk_vdm_tessellate(struct hk_cmd_buffer *cmd, uint32_t *out)
 }
 
 void
-hk_draw(struct hk_cmd_buffer *cmd, uint16_t draw_id, struct agx_draw draw_)
+hk_draw(struct hk_cmd_buffer *cmd, uint32_t draw_id, struct agx_draw draw_)
 {
    const struct vk_dynamic_graphics_state *dyn =
       &cmd->vk.dynamic_graphics_state;
@@ -4897,7 +4897,7 @@ hk_CmdDrawMultiEXT(VkCommandBuffer commandBuffer, uint32_t drawCount,
 }
 
 static void
-hk_draw_indexed(VkCommandBuffer commandBuffer, uint16_t draw_id,
+hk_draw_indexed(VkCommandBuffer commandBuffer, uint32_t draw_id,
                 uint32_t indexCount, uint32_t instanceCount,
                 uint32_t firstIndex, int32_t vertexOffset,
                 uint32_t firstInstance)
@@ -5194,7 +5194,7 @@ hk_mesh_queries(struct hk_cmd_buffer *cmd, uint64_t params, bool task,
  * then rasterize the mesh workgroups' outputs (poly_nir_lower_mesh.c).
  */
 void
-hk_draw_mesh(struct hk_cmd_buffer *cmd, uint16_t draw_id, struct agx_grid grid)
+hk_draw_mesh(struct hk_cmd_buffer *cmd, uint32_t draw_id, struct agx_grid grid)
 {
    struct hk_device *dev = hk_cmd_buffer_device(cmd);
    struct hk_graphics_state *gfx = &cmd->state.gfx;

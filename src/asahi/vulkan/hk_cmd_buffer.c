@@ -1087,7 +1087,7 @@ hk_upload_usc_words(struct hk_cmd_buffer *cmd, struct hk_shader *s,
       }
 
       if (cmd->state.gfx.draw_id_ptr) {
-         agx_usc_uniform(&b, AGX_ABI_VUNI_DRAW_ID(count), 1,
+         agx_usc_uniform(&b, AGX_ABI_VUNI_DRAW_ID(count), 2,
                          cmd->state.gfx.draw_id_ptr);
       }
 
