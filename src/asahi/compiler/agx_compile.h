@@ -319,6 +319,7 @@ void agx3_emit_wait(struct util_dynarray *out, unsigned slot);
 void agx3_emit_uniform_store(struct util_dynarray *out, unsigned uniform,
                              unsigned src);
 void agx3_emit_stop(struct util_dynarray *out);
+void agx3_emit_branch_abs(struct util_dynarray *out, uint64_t va);
 void agx3_emit_signal_pix(struct util_dynarray *out, unsigned mask);
 void agx3_emit_speclm(struct util_dynarray *out, unsigned samples,
                       unsigned stride, unsigned shape, bool imageblock,

@@ -80,8 +80,9 @@ agx_instr_accepts_uniform(enum agx_opcode op, unsigned src_index,
 
 /*
  * G15: a memory instruction whose base is a uniform the preamble wrote reads a
- * stale address: the preamble runs inline in the entry program right before
- * the shader, and the entry program cannot read back the uniforms it writes
+ * stale address: the preamble ends the entry program (copied in or branched
+ * to), right before the shader, and the entry program cannot read back the
+ * uniforms it writes
  * (agx_esl.c). The geometry shader's dispatches stored to wrong addresses with
  * such bases and right ones with the base moved to registers first. Pushed
  * uniforms (below reserved_preamble) are written early and work as bases.
