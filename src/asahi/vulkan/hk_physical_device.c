@@ -337,8 +337,11 @@ hk_get_device_features(
       .sparseResidencyImage2D = true,
       .sparseResidencyBuffer = true,
 
-      /* This needs investigation. */
-      .sparseResidencyImage3D = false,
+      /* G15: a 3D image's slices are layers with page-aligned strides and a
+       * sparse table each, as an array's, so its sparse block is the 2D one,
+       * one slice deep (hk_fill_sparse_image_fmt_props).
+       */
+      .sparseResidencyImage3D = dev->params.gpu_generation >= 15,
       .variableMultisampleRate = false,
       .inheritedQueries = true,
 
@@ -961,7 +964,9 @@ hk_get_device_properties(const struct agx_device *dev,
       .sparseResidencyStandard2DMultisampleBlockShape = false,
 
       /* As far as I can tell, there is no way to implement this on G13. This
-       * is a shame because D3D12 requires it for FL12.2.
+       * is a shame because D3D12 requires it for FL12.2. Nor on G15: a
+       * standard 3D block spans 16 to 32 slices, 2 to 4 KiB of each, and a
+       * page lies within a slice.
        */
       .sparseResidencyStandard3DBlockShape = false,
 

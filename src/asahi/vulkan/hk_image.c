@@ -521,6 +521,15 @@ hk_GetPhysicalDeviceImageFormatProperties2(
         pImageFormatInfo->tiling == VK_IMAGE_TILING_LINEAR))
       return VK_ERROR_FORMAT_NOT_SUPPORTED;
 
+   /* VUID-VkImageCreateInfo-imageType-00972: "If the sparseResidencyImage3D
+    * feature is not enabled, and imageType is VK_IMAGE_TYPE_3D, flags must
+    * not contain VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT"
+    */
+   if (pImageFormatInfo->flags & VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT &&
+       pImageFormatInfo->type == VK_IMAGE_TYPE_3D &&
+       !pdev->vk.supported_features.sparseResidencyImage3D)
+      return VK_ERROR_FORMAT_NOT_SUPPORTED;
+
    /* From the Vulkan 1.3.279 spec:
     *
     *    VUID-VkImageCreateInfo-flags-09403
@@ -761,7 +770,7 @@ hk_GetPhysicalDeviceImageFormatProperties2(
 
 static VkSparseImageFormatProperties
 hk_fill_sparse_image_fmt_props(enum pipe_format format, unsigned samples,
-                               VkImageAspectFlags aspects)
+                               VkImageType type, VkImageAspectFlags aspects)
 {
    /* Apple tile sizes are exactly 16KiB. The Vulkan standard block sizes are
     * sized to be exactly 64KiB. Fortunately, they correspond directly to the
@@ -778,9 +787,20 @@ hk_fill_sparse_image_fmt_props(enum pipe_format format, unsigned samples,
       1,
    };
 
+   VkSparseImageFormatFlags flags = VK_SPARSE_IMAGE_FORMAT_SINGLE_MIPTAIL_BIT;
+
+   /* A 3D image's slices are layers (ail), each page in one slice, so its
+    * block is the 2D one, one slice deep: not the standard 3D shape, whose
+    * 64 KiB span 16 to 32 slices. The binding code steps the slices of a
+    * bind's extent as an array's layers (hk_sparse_image_bind_memory), and
+    * the single mip tail holds every slice's tail.
+    */
+   if (type == VK_IMAGE_TYPE_3D)
+      flags |= VK_SPARSE_IMAGE_FORMAT_NONSTANDARD_BLOCK_SIZE_BIT;
+
    return (VkSparseImageFormatProperties){
       .aspectMask = aspects,
-      .flags = VK_SPARSE_IMAGE_FORMAT_SINGLE_MIPTAIL_BIT,
+      .flags = flags,
       .imageGranularity = granularity,
    };
 }
@@ -834,7 +854,7 @@ hk_GetPhysicalDeviceSparseImageFormatProperties2(
    {
       props->properties = hk_fill_sparse_image_fmt_props(
          vk_format_to_pipe_format(pFormatInfo->format), pFormatInfo->samples,
-         aspects);
+         pFormatInfo->type, aspects);
    }
 }
 
@@ -1298,11 +1318,11 @@ hk_GetDeviceImageMemoryRequirements(VkDevice device,
 
 static VkSparseImageMemoryRequirements
 hk_fill_sparse_image_memory_reqs(const struct ail_layout *layout,
-                                 VkImageAspectFlags aspects)
+                                 VkImageType type, VkImageAspectFlags aspects)
 {
    VkSparseImageFormatProperties sparse_format_props =
       hk_fill_sparse_image_fmt_props(layout->format, layout->sample_count_sa,
-                                     aspects);
+                                     type, aspects);
 
    unsigned tail_level = layout->mip_tail_first_lod;
    assert(tail_level <= layout->levels);
@@ -1361,8 +1381,8 @@ hk_get_image_sparse_memory_requirements(
 
    vk_outarray_append_typed(VkSparseImageMemoryRequirements2, &out, reqs)
    {
-      reqs->memoryRequirements =
-         hk_fill_sparse_image_memory_reqs(&image->planes[0].layout, aspects);
+      reqs->memoryRequirements = hk_fill_sparse_image_memory_reqs(
+         &image->planes[0].layout, image->vk.image_type, aspects);
    };
 }
 
