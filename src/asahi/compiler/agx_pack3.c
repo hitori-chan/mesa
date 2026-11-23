@@ -20,6 +20,7 @@
 #include <setjmp.h>
 #include "util/bitscan.h"
 #include "util/u_atomic.h"
+#include "util/u_call_once.h"
 #include "util/u_debug.h"
 #include "agx3_pack.h"
 #include "agx_builder.h"
@@ -4531,6 +4532,48 @@ agx3_emit_stop(struct util_dynarray *out)
 {
    agx_instr I = {.op = AGX_OPCODE_STOP};
    a3_memo_pack(out, a3_memo_key(A3_MEMO_STOP, 0), &I);
+}
+
+/* An absolute branch to va, Metal's entry program's to its constant-calculation
+ * program (0f 00 54 ..: the target's bits 47:1 and bit 0 set in bits 24-71, as
+ * in the 2026-11-20 capture's `b 0x1000000de40`, AGXMetalG15X_M1_272
+ * 0x24bf26ff0); the relative form (bit 0 clear) is agx3_fixup_branches'. Every
+ * draw's entry program with a long preamble has one: it is packed once, with
+ * target 0, and the target deposited as mov_imm's immediate is. */
+static uint8_t a3_branch_code[AGX3_MAX_BYTES];
+static unsigned a3_branch_length;
+static util_once_flag a3_branch_once = UTIL_ONCE_FLAG_INIT;
+
+static void
+a3_branch_pack(void)
+{
+   struct util_dynarray tmp;
+   util_dynarray_init(&tmp, NULL);
+
+   struct a3 a = {0};
+   agx_instr I = {.op = AGX_OPCODE_JMP_EXEC_ANY};
+   a3_begin(&a, &I, AGX3_JMP_EXEC_ANY, T_JMP);
+   a3_set(&a, JMP_TARGET, 0);
+   a3_emit(&a, &tmp);
+
+   assert(tmp.size >= 9 && tmp.size <= AGX3_MAX_BYTES);
+   memcpy(a3_branch_code, tmp.data, tmp.size);
+   a3_branch_length = tmp.size;
+   util_dynarray_fini(&tmp);
+}
+
+void
+agx3_emit_branch_abs(struct util_dynarray *out, uint64_t va)
+{
+   assert(!(va & 1) && va < BITFIELD64_BIT(48));
+   util_call_once(&a3_branch_once, a3_branch_pack);
+
+   uint8_t *p = util_dynarray_grow_bytes(out, 1, a3_branch_length);
+   memcpy(p, a3_branch_code, a3_branch_length);
+
+   uint64_t v = va | 1;
+   for (unsigned i = 0; i < 6; i++)
+      p[3 + i] = v >> (8 * i);
 }
 
 void

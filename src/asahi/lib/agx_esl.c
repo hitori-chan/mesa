@@ -243,28 +243,38 @@ esl_pixrel(struct util_dynarray *out, unsigned waited)
       agx3_emit_signal_pix(out, mask);
 }
 
-/* Inline the preamble (Apple's constant-calculation program) up to its
- * stop. It runs after ldshdr, as Metal's branch to it does. */
-static bool
+/* Metal copies a constant-calculation program (the preamble) of 0x100 B or
+ * less into the entry program and branches to a longer one, whose own stop
+ * ends the entry (AGXMetalG15X_M1_272 0x24bf26ff0) */
+#define ESL_PREAMBLE_COPY_MAX 0x100
+
+/* The preamble (Apple's constant-calculation program) at the entry program's
+ * end, after ldshdr as Metal runs it: copied in up to its stop, or reached by
+ * a branch. Returns whether the entry still needs its stop. */
+static int
 esl_preamble(struct util_dynarray *out, const struct agx_esl_code *code,
              uint64_t va)
 {
    if (!code || va < code->va || va >= code->va + code->size)
-      return false;
+      return -1;
 
    uint64_t off = va - code->va;
    int size = off == code->preamble_offset && code->preamble_size
                  ? code->preamble_size
                  : agx3_stop_offset(code->cpu + off, code->size - off);
    if (size < 0)
-      return false;
+      return -1;
+
+   if (size > ESL_PREAMBLE_COPY_MAX) {
+      agx3_emit_branch_abs(out, va);
+      return 0;
+   }
 
    memcpy(util_dynarray_grow_bytes(out, 1, size), code->cpu + off, size);
-   return true;
+   return 1;
 }
 
 /* Read once: the entry program is built for every draw */
-DEBUG_GET_ONCE_BOOL_OPTION(esl_preamble_last, "AGX_G15_PREAMBLE_LAST", false)
 DEBUG_GET_ONCE_BOOL_OPTION(esl_fs_notpr, "AGX_G15_FS_NOTPR", false)
 
 bool
@@ -354,14 +364,6 @@ agx_esl_from_usc(struct util_dynarray *out, const uint8_t *usc,
 
    esl_uniforms_reach(out, ranges, nr_ranges);
 
-   /* The preamble runs before the tail, as G13's preshader runs before the
-    * shader (AGX_G15_PREAMBLE_LAST=1: after it, where Metal branches to its
-    * constant-calculation program). */
-   bool last = debug_get_option_esl_preamble_last();
-
-   if (preamble_va && !last && !esl_preamble(out, code, preamble_va))
-      goto no_preamble;
-
    switch (stage) {
    case AGX_ESL_COMPUTE:
       esl_speclm(out, shared_bytes);
@@ -415,10 +417,13 @@ agx_esl_from_usc(struct util_dynarray *out, const uint8_t *usc,
       break;
    }
 
-   if (preamble_va && last && !esl_preamble(out, code, preamble_va))
+   int stop = 1;
+   if (preamble_va && (stop = esl_preamble(out, code, preamble_va)) < 0)
       goto no_preamble;
 
-   agx3_emit_stop(out);
+   if (stop)
+      agx3_emit_stop(out);
+
    return true;
 
 no_preamble:

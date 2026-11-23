@@ -5538,8 +5538,8 @@ agx_compile_shader_nir_impl(nir_shader *nir, struct agx_shader_key *key,
       }
    }
 
-   /* G15's entry program copies the preamble at every draw: find its stop
-    * once
+   /* G15's entry program copies a short preamble at every draw and branches
+    * to a long one (agx_esl.c): find its stop once
     */
    if (info->has_preamble && key->dev.gpu_generation >= 15) {
       int stop =

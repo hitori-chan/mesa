@@ -1494,9 +1494,10 @@ agx_ra(agx_context *ctx)
 
    /* G15 spills to the thread-private stack, which the entry program sizes
     * from the program's stack (agx3_stack_size, esl_spectpr): it needs no
-    * scratch buffer, so internal programs spill too. A preamble does not: it
-    * runs inside the entry program, before the specTPR. Nor does a prolog or
-    * epilog, whose stack the entry program does not see. */
+    * scratch buffer, so internal programs spill too. A preamble does not:
+    * it ran inside the entry program before the specTPR, and since the entry
+    * program runs it after (agx_esl.c) its spilling is not tried. Nor does a
+    * prolog or epilog, whose stack the entry program does not see. */
    bool can_spill =
       g15 ? !ctx->is_preamble && !ctx->key->secondary : ctx->key->has_scratch;
 
