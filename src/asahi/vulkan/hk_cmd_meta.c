@@ -98,12 +98,17 @@ hk_meta_begin(struct hk_cmd_buffer *cmd, struct hk_meta_save *save,
       save->occlusion = cmd->state.gfx.occlusion.mode;
       cmd->state.gfx.occlusion.mode = AGX_VISIBILITY_MODE_NONE;
       cmd->state.gfx.dirty |= HK_DIRTY_OCCLUSION;
-
-      save->pipeline_stats_flags = desc->root.draw.pipeline_stats_flags;
-      desc->root.draw.pipeline_stats_flags = 0;
-      desc->root_dirty = true;
    } else {
       save->shaders[MESA_SHADER_COMPUTE] = cmd->state.cs.shader;
+   }
+
+   /* The pipeline statistics live in the graphics root, which dispatches read
+    * too (hk_pipeline_stat_addr): meta's compute work pauses them as well */
+   struct hk_descriptor_state *gfx_desc = &cmd->state.gfx.descriptors;
+   save->pipeline_stats_flags = gfx_desc->root.draw.pipeline_stats_flags;
+   if (save->pipeline_stats_flags) {
+      gfx_desc->root.draw.pipeline_stats_flags = 0;
+      gfx_desc->root_dirty = true;
    }
 
    save->vb0 = cmd->state.gfx.vb[0];
@@ -183,11 +188,14 @@ hk_meta_end(struct hk_cmd_buffer *cmd, struct hk_meta_save *save,
       /* Restore queries */
       cmd->state.gfx.occlusion.mode = save->occlusion;
       cmd->state.gfx.dirty |= HK_DIRTY_OCCLUSION;
-
-      desc->root.draw.pipeline_stats_flags = save->pipeline_stats_flags;
-      desc->root_dirty = true;
    } else {
       hk_cmd_bind_compute_shader(cmd, save->shaders[MESA_SHADER_COMPUTE]);
+   }
+
+   if (save->pipeline_stats_flags) {
+      struct hk_descriptor_state *gfx_desc = &cmd->state.gfx.descriptors;
+      gfx_desc->root.draw.pipeline_stats_flags = save->pipeline_stats_flags;
+      gfx_desc->root_dirty = true;
    }
 
    memcpy(desc->root.push, save->push, sizeof(save->push));
