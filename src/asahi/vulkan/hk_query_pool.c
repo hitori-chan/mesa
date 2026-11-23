@@ -55,6 +55,7 @@ hk_reports_per_query(struct hk_query_pool *pool)
    case VK_QUERY_TYPE_OCCLUSION:
    case VK_QUERY_TYPE_TIMESTAMP:
    case VK_QUERY_TYPE_PRIMITIVES_GENERATED_EXT:
+   case VK_QUERY_TYPE_MESH_PRIMITIVES_GENERATED_EXT:
    case VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR:
    case VK_QUERY_TYPE_ACCELERATION_STRUCTURE_SERIALIZATION_SIZE_KHR:
    case VK_QUERY_TYPE_ACCELERATION_STRUCTURE_SIZE_KHR:
@@ -528,6 +529,18 @@ hk_cmd_begin_end_query(struct hk_cmd_buffer *cmd, struct hk_query_pool *pool,
       cmd->state.gfx.xfb_query[index] = end ? 0 : addr;
       break;
    }
+
+   /* Only mesh draws count it, after their mesh stage (hk_draw_mesh): the
+    * draws of other pipelines must not run while it is active, nor may
+    * transform feedback or primitives generated queries during a mesh draw
+    * (VUID-vkCmdDraw-stage-07073, VUID-vkCmdDrawMeshTasksEXT-None-07074 and
+    * 07075).
+    */
+   case VK_QUERY_TYPE_MESH_PRIMITIVES_GENERATED_EXT:
+      cmd->state.gfx.mesh_prims_query =
+         end ? 0 : hk_query_report_addr(dev, pool, query);
+      graphics = true;
+      break;
 
    case VK_QUERY_TYPE_PIPELINE_STATISTICS: {
       struct hk_root_descriptor_table *root = &cmd->state.gfx.descriptors.root;

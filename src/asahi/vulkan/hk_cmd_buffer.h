@@ -357,6 +357,9 @@ struct hk_graphics_state {
     */
    uint64_t xfb_query[4];
 
+   /* The active mesh primitives generated query's report, else zero */
+   uint64_t mesh_prims_query;
+
    struct hk_index_buffer_state index;
    enum agx_primitive topology;
    enum agx_object_type object_type;
