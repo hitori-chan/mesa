@@ -106,6 +106,11 @@ struct hk_root_descriptor_table {
          uint16_t rasterization_stream;
          uint16_t _pad6;
 
+         /* Conservative rasterization's extra overestimation size, while a
+          * draw is widened (FullyCoveredEXT)
+          */
+         float conservative_extra;
+
          /* Mapping from varying slots written by the last vertex stage to UVS
           * indices. This mapping must be compatible with the fragment shader.
           */

@@ -1490,6 +1490,17 @@ hk_conservative_params(struct hk_cmd_buffer *cmd,
       params->conservative_r =
          (edges && samples > 1 ? 1.0f : 0.5f) + extra + (1.0f / 256.0f);
       params->conservative_extra = extra;
+      gfx->descriptors.root.draw.conservative_extra = extra;
+
+      /* Widened draws go through the passthrough or a mesh shader, so the
+       * hardware takes the front face as the API gives it, with no
+       * tessellation flip (hk_flush_ppp_state)
+       */
+      if (dyn->rs.front_face != VK_FRONT_FACE_CLOCKWISE)
+         params->conservative_flags |= POLY_CONSERVATIVE_FRONT_CCW;
+
+      if (rast->info.conservative != AGX_CONSERVATIVE_NONE)
+         params->conservative_flags |= POLY_CONSERVATIVE_TESTED;
 
       unsigned vp_count = MAX2(dyn->vp.viewport_count, 1);
       float vp[HK_MAX_VIEWPORTS][4];
