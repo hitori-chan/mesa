@@ -54,13 +54,14 @@ hk_get_device_extensions(const struct agx_device *dev,
 {
    bool g15 = dev->params.gpu_generation >= 15;
 
-   /* Software ray queries (hk_nir_ray_tracing.c) on G15, where the CTS's
-    * ray_query group passes whole. Ray-tracing pipelines (hk_rt_pipeline.c)
-    * only by the flag until tier 2 (recursion) has run, and on G15 alone:
-    * its frames take a thread-private stack that each dispatch's specTPR
-    * sizes (G13's scratch is the shader's static size).
+   /* Software ray queries (hk_nir_ray_tracing.c) and ray-tracing pipelines
+    * (hk_rt_pipeline.c) on G15, where the CTS's ray_query and
+    * ray_tracing_pipeline groups pass whole, tier 2 included, and a DXR game
+    * renders through vkd3d-proton. G15 alone: a pipeline's frames take a
+    * thread-private stack that each dispatch's specTPR sizes (G13's scratch
+    * is the shader's static size).
     */
-   bool rtp = g15 && (dev->debug & AGX_DBG_RTPIPELINE);
+   bool rtp = g15;
    bool rq = g15 || rtp;
 
    /* Task and mesh shaders as compute (hk_draw_mesh) */
@@ -973,7 +974,7 @@ hk_get_device_properties(const struct agx_device *dev,
          (dev->params.gpu_generation >= 15
              ? VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT
              : 0) |
-         (dev->params.gpu_generation >= 15 && (dev->debug & AGX_DBG_RTPIPELINE)
+         (dev->params.gpu_generation >= 15
              ? VK_SHADER_STAGE_RAYGEN_BIT_KHR |
                   VK_SHADER_STAGE_ANY_HIT_BIT_KHR |
                   VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
