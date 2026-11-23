@@ -3909,6 +3909,94 @@ hk_flush_dynamic_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
    gfx->descriptors.root_dirty = false;
 }
 
+/* A multi-draw's robust index draws, for one kernel launch after the last
+ * (in the pre-graphics stream, before the pass's draws run). The draws of one
+ * launch share the index buffer, restart, topology and index size. */
+struct hk_robust_batch {
+   struct util_dynarray draws; /* struct libagx_robust_index */
+   uint64_t index_buffer;
+   uint32_t index_buffer_range_B;
+   uint16_t restart;
+   enum agx_primitive topology;
+   enum agx_index_size index_size;
+};
+
+void
+hk_robust_batch_flush(struct hk_cmd_buffer *cmd)
+{
+   struct hk_robust_batch *b = cmd->state.gfx.robust;
+   if (!b)
+      return;
+
+   unsigned n = util_dynarray_num_elements(&b->draws, struct libagx_robust_index);
+   if (!n)
+      return;
+
+   struct hk_device *dev = hk_cmd_buffer_device(cmd);
+   uint64_t table = hk_pool_upload(cmd, b->draws.data, b->draws.size, 8);
+
+   /* The launch may end nothing: clear first */
+   util_dynarray_clear(&b->draws);
+
+   if (!table)
+      return;
+
+   libagx_draw_robust_index_multi(cmd, agx_1d(32 * n),
+                                  AGX_BARRIER_ALL | AGX_PREGFX, table,
+                                  hk_heap(cmd), b->index_buffer,
+                                  b->index_buffer_range_B, b->restart,
+                                  b->topology, dev->dev.chip, b->index_size);
+}
+
+struct hk_robust_batch *
+hk_robust_batch_begin(struct hk_cmd_buffer *cmd)
+{
+   assert(!cmd->state.gfx.robust && "multi-draws do not nest");
+
+   struct hk_robust_batch *b = calloc(1, sizeof(*b));
+   if (!b)
+      return NULL;
+
+   util_dynarray_init(&b->draws, NULL);
+   cmd->state.gfx.robust = b;
+   return b;
+}
+
+void
+hk_robust_batch_end(struct hk_cmd_buffer *cmd, struct hk_robust_batch *b)
+{
+   if (!b)
+      return;
+
+   hk_robust_batch_flush(cmd);
+   cmd->state.gfx.robust = NULL;
+   util_dynarray_fini(&b->draws);
+   free(b);
+}
+
+static void
+hk_robust_batch_add(struct hk_cmd_buffer *cmd, uint64_t target,
+                    struct agx_draw draw, enum agx_primitive topology)
+{
+   struct hk_robust_batch *b = cmd->state.gfx.robust;
+
+   if (util_dynarray_num_elements(&b->draws, struct libagx_robust_index) &&
+       (b->index_buffer != draw.index_buffer ||
+        b->index_buffer_range_B != draw.index_buffer_range_B ||
+        b->restart != draw.restart || b->topology != topology ||
+        b->index_size != draw.index_size))
+      hk_robust_batch_flush(cmd);
+
+   b->index_buffer = draw.index_buffer;
+   b->index_buffer_range_B = draw.index_buffer_range_B;
+   b->restart = draw.restart;
+   b->topology = topology;
+   b->index_size = draw.index_size;
+
+   struct libagx_robust_index d = {.target = target, .args = draw.b.ptr};
+   util_dynarray_append(&b->draws, d);
+}
+
 static bool
 hk_needs_index_robustness(struct hk_cmd_buffer *cmd, struct agx_draw *draw)
 {
@@ -4667,10 +4755,15 @@ hk_draw(struct hk_cmd_buffer *cmd, uint16_t draw_id, struct agx_draw draw_)
          size_t size_B = libagx_draw_robust_index_vdm_size(dev->dev.chip);
          uint64_t target = hk_cs_alloc_for_indirect(cs, size_B);
 
-         libagx_draw_robust_index(
-            cmd, agx_1d(32), AGX_BARRIER_ALL | AGX_PREGFX, target, hk_heap(cmd),
-            draw.b.ptr, draw.index_buffer, draw.index_buffer_range_B,
-            draw.restart, topology, dev->dev.chip, draw.index_size);
+         if (cmd->state.gfx.robust) {
+            hk_robust_batch_add(cmd, target, draw, topology);
+         } else {
+            libagx_draw_robust_index(
+               cmd, agx_1d(32), AGX_BARRIER_ALL | AGX_PREGFX, target,
+               hk_heap(cmd), draw.b.ptr, draw.index_buffer,
+               draw.index_buffer_range_B, draw.restart, topology,
+               dev->dev.chip, draw.index_size);
+         }
       } else if (dgc_index && !adj) {
          size_t size_B = libagx_dgc_vdm_size(dev->dev.chip, draw.restart);
          struct libagx_dgc_vdm vdm = {
@@ -4968,6 +5061,10 @@ hk_draw_indexed_indirect_inner(VkCommandBuffer commandBuffer, uint64_t buffer,
       assert(stride >= sizeof(VkDrawIndexedIndirectCommand));
    }
 
+   /* The draws' robust index kernels: one launch after the last */
+   struct hk_robust_batch *robust =
+      drawCount > 1 ? hk_robust_batch_begin(cmd) : NULL;
+
    for (unsigned draw_id = 0; draw_id < drawCount; ++draw_id) {
       uint64_t addr = buffer + stride * draw_id;
       struct hk_addr_range buf = cmd->state.gfx.index.buffer;
@@ -4975,6 +5072,8 @@ hk_draw_indexed_indirect_inner(VkCommandBuffer commandBuffer, uint64_t buffer,
       hk_draw(cmd, draw_id,
               agx_draw_indexed_indirect(addr, buf.addr, buf.range, 0, 0));
    }
+
+   hk_robust_batch_end(cmd, robust);
 }
 
 VKAPI_ATTR void VKAPI_CALL

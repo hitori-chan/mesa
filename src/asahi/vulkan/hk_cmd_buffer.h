@@ -334,6 +334,10 @@ struct hk_graphics_state {
       struct util_dynarray *vdm;
    } dgc;
 
+   /* During a multi-draw: its robust index draws, which one kernel launch
+    * writes (hk_robust_batch_flush) */
+   struct hk_robust_batch *robust;
+
    uint32_t shaders_dirty;
    struct hk_api_shader *shaders[MESA_SHADER_MESH + 1];
 
@@ -909,6 +913,9 @@ hk_cmd_buffer_end_compute(struct hk_cmd_buffer *cmd)
 }
 
 void hk_optimize_empty_vdm(struct hk_cmd_buffer *cmd);
+void hk_robust_batch_flush(struct hk_cmd_buffer *cmd);
+struct hk_robust_batch *hk_robust_batch_begin(struct hk_cmd_buffer *cmd);
+void hk_robust_batch_end(struct hk_cmd_buffer *cmd, struct hk_robust_batch *b);
 
 static void
 hk_cmd_buffer_end_graphics(struct hk_cmd_buffer *cmd)
@@ -953,6 +960,10 @@ hk_cmd_buffer_end_graphics(struct hk_cmd_buffer *cmd)
       /* TODO: maybe free scissor/depth_bias now? */
       cs->current = agx_vdm_terminate(cs->current);
    }
+
+   /* A multi-draw's robust index draws are written before the pass that
+    * holds them */
+   hk_robust_batch_flush(cmd);
 
    cmd->current_cs.gfx = NULL;
 

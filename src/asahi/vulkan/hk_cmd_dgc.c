@@ -236,6 +236,10 @@ hk_dgc_graphics(struct hk_cmd_buffer *cmd,
    cmd->state.dgc_roots = roots;
    cmd->state.dgc_roots_left = max * views;
 
+   /* The sequences' robust index kernels (an index buffer bound outside them):
+    * one launch after the last */
+   struct hk_robust_batch *robust = hk_robust_batch_begin(cmd);
+
    for (uint32_t seq = 0; seq < max; ++seq) {
       uint64_t addr = args.gpu + (seq * words * 4);
 
@@ -256,6 +260,7 @@ hk_dgc_graphics(struct hk_cmd_buffer *cmd,
    }
 
    cmd->state.dgc_roots_left = 0;
+   hk_robust_batch_end(cmd, robust);
 
    if (util_dynarray_num_elements(&vdm, struct libagx_dgc_vdm)) {
       uint64_t table = hk_pool_upload(cmd, vdm.data, vdm.size, 8);

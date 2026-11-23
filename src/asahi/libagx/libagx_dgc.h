@@ -789,6 +789,14 @@ libagx_draw_robust_index_vdm_size(enum agx_chip chip)
    return agx_vdm_draw_size(chip, draw);
 }
 
+/* A robust indexed indirect draw of a multi-draw: where its VDM words go and
+ * its VkDrawIndexedIndirectCommand (libagx_draw_robust_index_multi) */
+struct libagx_robust_index {
+   uint64_t target;
+   uint64_t args;
+};
+static_assert(sizeof(struct libagx_robust_index) == 16);
+
 static inline unsigned
 libagx_remap_adj_count(unsigned count, enum mesa_prim prim)
 {
