@@ -14,6 +14,7 @@
 #include "hk_descriptor_set_layout.h"
 #include "hk_shader.h"
 #include "libagx.h"
+#include "poly/nir/poly_nir.h"
 
 #include "nir.h"
 #include "nir_builder.h"
@@ -638,6 +639,74 @@ hk_lower_uvs_index(nir_shader *s, mesa_shader_stage sw_stage, unsigned nr_vbos,
    };
    return nir_shader_intrinsics_pass(s, lower_uvs_index,
                                      nir_metadata_control_flow, &args);
+}
+
+/*
+ * FullyCoveredEXT: whether the pixel square lies inside the triangle that
+ * conservative rasterization widened. The rasterization shader writes the
+ * triangle's edge functions for the fragment test (poly_conservative_corner),
+ * each n.(v - q) / |n|_1 + extra |n|_2 / |n|_1 + 1/512 at v: the square lies
+ * inside the edge's half-plane iff n.(c - q) / |n|_1 >= 0.5 at its centre c.
+ * An edge's coefficients are n / |n|_1, so the extra size's term comes off
+ * exactly. A draw writes the edges only when it is widened with the edge test,
+ * so otherwise the input reads false: rasterization not conservative, or the
+ * widening not tested (the UVS full, hk_lower_conservative_budget). A pixel on
+ * the boundary, within float error, reads not covered (a slack of 1/512).
+ */
+static bool
+lower_fully_covered(nir_builder *b, nir_intrinsic_instr *intr,
+                    UNUSED void *data)
+{
+   if (intr->intrinsic != nir_intrinsic_load_fully_covered)
+      return false;
+
+   b->cursor = nir_before_instr(&intr->instr);
+
+   nir_io_semantics sem = {
+      .location = POLY_VARYING_SLOT_CONSERVATIVE_EDGES,
+      .num_slots = 1,
+   };
+
+   nir_def *uvs = nir_load_uvs_index_agx(b, .io_semantics = sem);
+   nir_def *extra = load_root(
+      b, 1, 32,
+      nir_imm_int(b, hk_root_descriptor_offset(draw.conservative_extra)), 4);
+
+   nir_def *bary = nir_load_barycentric_pixel(
+      b, 32, .interp_mode = INTERP_MODE_NOPERSPECTIVE);
+   nir_def *edges =
+      nir_load_interpolated_input(b, 3, 32, bary, nir_imm_int(b, 0),
+                                  .dest_type = nir_type_float32,
+                                  .io_semantics = sem);
+
+   nir_def *inside = nir_ine_imm(b, uvs, 0);
+
+   for (unsigned k = 0; k < 3; ++k) {
+      nir_def *cf = nir_load_coefficients_agx(
+         b, nir_imm_int(b, 0), .component = k,
+         .interp_mode = INTERP_MODE_NOPERSPECTIVE, .io_semantics = sem);
+
+      nir_def *norm = nir_fsqrt(
+         b, nir_ffma(b, nir_channel(b, cf, 0), nir_channel(b, cf, 0),
+                     nir_fmul(b, nir_channel(b, cf, 1), nir_channel(b, cf, 1))));
+
+      nir_def *widening = nir_ffma(b, extra, norm, nir_imm_float(b, 1.0 / 512));
+      nir_def *e = nir_fsub(b, nir_channel(b, edges, k), widening);
+
+      inside = nir_iand(b, inside, nir_fge_imm(b, e, 0.5 + 1.0 / 512));
+   }
+
+   nir_def_replace(&intr->def, inside);
+   b->shader->info.inputs_read |= BITFIELD64_BIT(sem.location);
+   return true;
+}
+
+bool
+hk_nir_lower_fully_covered(nir_shader *s)
+{
+   assert(s->info.stage == MESA_SHADER_FRAGMENT);
+   return nir_shader_intrinsics_pass(s, lower_fully_covered,
+                                     nir_metadata_control_flow, NULL);
 }
 
 static bool

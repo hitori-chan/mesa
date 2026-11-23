@@ -1116,16 +1116,19 @@ hk_get_device_properties(const struct agx_device *dev,
       /* VK_EXT_conservative_rasterization: triangles widened in a geometry
        * shader, then an exact test of the pixel square in the fragment
        * shader, up to its slack of 1/512 pixel. Both take any extra size,
-       * read at each draw: 4 is the CTS's largest.
+       * read at each draw: 4 is the CTS's largest. A triangle with no area
+       * once snapped is drawn as its segment or point, facing back, and
+       * FullyCoveredEXT tests the square against the unwidened edges
+       * (poly_conservative_corner, hk_nir_lower_fully_covered).
        */
       .primitiveOverestimationSize = 1.0f / 256.0f,
       .maxExtraPrimitiveOverestimationSize = 4.0f,
       .extraPrimitiveOverestimationSizeGranularity = 0.0f,
       .primitiveUnderestimation = false,
       .conservativePointAndLineRasterization = false,
-      .degenerateTrianglesRasterized = false,
+      .degenerateTrianglesRasterized = true,
       .degenerateLinesRasterized = false,
-      .fullyCoveredFragmentShaderInputVariable = false,
+      .fullyCoveredFragmentShaderInputVariable = true,
       .conservativeRasterizationPostDepthCoverage = false,
 
       /* VK_EXT_custom_border_color */

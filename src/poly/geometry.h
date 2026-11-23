@@ -250,6 +250,16 @@ struct poly_indirect_draw {
 static_assert(sizeof(struct poly_indirect_draw) == 5 * 4,
               "struct poly_indirect_draw must be 5 words");
 
+/* Counter-clockwise triangles face front, so a degenerate triangle is drawn
+ * facing back
+ */
+#define POLY_CONSERVATIVE_FRONT_CCW (1 << 0)
+
+/* The fragment test cuts what is drawn down to the primitive (its box at
+ * least), so a degenerate triangle is drawn, else culled
+ */
+#define POLY_CONSERVATIVE_TESTED (1 << 1)
+
 struct poly_geometry_params {
    /* Address of count buffer. For an indirect draw, this will be written by the
     * indirect setup kernel.
@@ -335,9 +345,12 @@ struct poly_geometry_params {
     */
    float conservative_r;
    float conservative_extra;
+
+   /* Conservative rasterization: POLY_CONSERVATIVE_* */
+   uint32_t conservative_flags;
 } PACKED;
-static_assert(sizeof(struct poly_geometry_params) == 86 * 4,
-              "struct poly_geometry_params must be 86 words");
+static_assert(sizeof(struct poly_geometry_params) == 87 * 4,
+              "struct poly_geometry_params must be 87 words");
 
 static inline void
 poly_geometry_params_init(struct poly_geometry_params *p,

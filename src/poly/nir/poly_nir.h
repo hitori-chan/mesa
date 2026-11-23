@@ -55,6 +55,11 @@ struct poly_gs_info {
 #define POLY_VARYING_SLOT_CONSERVATIVE_BOX   VARYING_SLOT_TESS_LEVEL_OUTER
 #define POLY_VARYING_SLOT_CONSERVATIVE_EDGES VARYING_SLOT_TESS_LEVEL_INNER
 
+/* poly_conservative_weights' results: poly_conservative_corner's "what" 0 to
+ * 4, then whether the last vertex provokes
+ */
+#define POLY_CONSERVATIVE_WEIGHTS 6
+
 void poly_conservative_weights(struct nir_builder *b, nir_def **pos,
                                nir_def *corner, nir_def *viewport,
                                nir_def **weights);

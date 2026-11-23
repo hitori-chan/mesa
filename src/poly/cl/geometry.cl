@@ -441,7 +441,9 @@ cr_bary(float2 s0, float2 s1, float2 s2, float area, float2 v)
 }
 
 /* Edge value for the fragment test: the pixel square touches the edge's
- * half-plane iff the value at its centre is >= -0.5.
+ * half-plane iff the value at its centre is >= -0.5. Less the extra size's
+ * term and the slack, the value is >= +0.5 iff the square lies inside the
+ * half-plane, which FullyCoveredEXT tests (hk_nir_lower_fully_covered).
  */
 static float
 cr_edge(float2 n, float2 q, float2 v, float extra)
@@ -451,21 +453,62 @@ cr_edge(float2 n, float2 q, float2 v, float extra)
 }
 
 /*
+ * A triangle with no area once snapped is drawn as the segment (or the point)
+ * it snapped to, from a to b: a triangle holding the segment widened by r on
+ * every side and a pixel more, which the fragment test cuts down to the
+ * segment's box and its two edges. Returns the triangle's corner `corner`.
+ * Vulkan has a degenerate triangle face back, so it is wound as a back face.
+ */
+static float2
+cr_degenerate_corner(float2 a, float2 b, float r, bool front_ccw, uint corner)
+{
+   float2 d = b - a;
+   float len = sqrt(dot(d, d));
+   float2 dir = len > 0.0f ? d / len : (float2)(1.0f, 0.0f);
+   float2 m = (float2)(-dir.y, dir.x);
+
+   /* The widened segment lies in [-e, len + e] along dir and [-e, e] across
+    * it, from a: the right triangle on that rectangle's corner, its legs twice
+    * the rectangle's sides, holds it.
+    */
+   float e = r * cr_l1(dir) + 1.0f;
+   float2 o = a - e * (dir + m);
+   float2 c1 = o + (2.0f * (len + 2.0f * e)) * dir;
+   float2 c2 = o + (4.0f * e) * m;
+
+   /* cr_cross(c1 - o, c2 - o) > 0, a back face where counter-clockwise
+    * triangles face front (Vulkan's area is -cr_cross / 2)
+    */
+   if (!front_ccw) {
+      float2 t = c1;
+      c1 = c2;
+      c2 = t;
+   }
+
+   return corner == 0 ? o : corner == 1 ? c1 : c2;
+}
+
+/*
  * For output corner `corner`, returns:
  *
  *    what = 0: the perspective weights of the three vertices, and the status
  *    what = 1: the screen-space weights, and the status
  *    what = 2: the bounding box (x0, y0, x1, y1) in pixels
  *    what = 3: the three edge values, for the edges opposite each vertex
+ *    what = 4: with status 3, the corner's clip-space position
  *
  * Status 0: widened. 1: a vertex has w <= 0 or the widened triangle reaches
- * the plane's horizon, so the triangle is not widened and the fragment test
- * passes. 2: the snapped triangle is degenerate, cull it.
+ * the plane's horizon, so the triangle is not widened, the fragment test
+ * passes and no pixel reads as fully covered. 2: no area before snapping, cull
+ * it (Vulkan allows it), or none once snapped with no fragment test to cut its
+ * segment out. 3: no area once snapped, drawn as its segment or point with the
+ * provoking vertex's values (degenerateTrianglesRasterized). `provoking` is the
+ * provoking vertex: 0 or 2.
  */
 float4
 poly_conservative_corner(constant struct poly_geometry_params *p, float4 P0,
                          float4 P1, float4 P2, uint corner, uint viewport,
-                         uint what)
+                         uint provoking, uint what)
 {
    uint vp = min(viewport, p->conservative_viewport_count - 1);
    float4 xf = vload4(vp, p->conservative_viewports);
@@ -502,13 +545,34 @@ poly_conservative_corner(constant struct poly_geometry_params *p, float4 P0,
    if (!(P0.w > 0.0f && P1.w > 0.0f && P2.w > 0.0f))
       status = 1;
    else if (area == 0.0f)
-      status = 2;
+      status = area_s == 0.0f || !(p->conservative_flags & POLY_CONSERVATIVE_TESTED)
+                  ? 2
+                  : 3;
    else if (!(area_s != 0.0f && fmin(h0, fmin(h1, h2)) > eps))
       status = 1;
+
+   /* A degenerate triangle's segment: its two snapped vertices furthest
+    * apart
+    */
+   float2 a = q0, b = q1;
+   float d01 = dot(q1 - q0, q1 - q0), d12 = dot(q2 - q1, q2 - q1),
+         d20 = dot(q0 - q2, q0 - q2);
+
+   if (d12 > d01 && d12 >= d20) {
+      a = q1;
+      b = q2;
+   } else if (d20 > d01) {
+      a = q2;
+      b = q0;
+   }
 
    float2 v = corner == 0 ? v0 : corner == 1 ? v1 : v2;
    float3 mu = corner == 0 ? mu0 : corner == 1 ? mu1 : mu2;
    float h = corner == 0 ? h0 : corner == 1 ? h1 : h2;
+
+   if (status == 3)
+      v = cr_degenerate_corner(
+         a, b, r, p->conservative_flags & POLY_CONSERVATIVE_FRONT_CCW, corner);
 
    if (what == 0 || what == 1) {
       float3 w = what == 0 ? (mu * rw) / h : mu;
@@ -518,18 +582,37 @@ poly_conservative_corner(constant struct poly_geometry_params *p, float4 P0,
 
       return (float4)(w, (float)status);
    } else if (what == 2) {
-      if (status != 0)
+      if (status == 1 || status == 2)
          return (float4)(-1.0e30f, -1.0e30f, 1.0e30f, 1.0e30f);
 
       float2 lo = fmin(q0, fmin(q1, q2)) - extra;
       float2 hi = fmax(q0, fmax(q1, q2)) + extra;
       return (float4)(lo, hi);
-   } else {
-      if (status != 0)
-         return (float4)(1.0e30f, 1.0e30f, 1.0e30f, 0.0f);
+   } else if (what == 3) {
+      /* Values the test passes and no square is inside of */
+      if (status == 1 || status == 2)
+         return (float4)(0.0f, 0.0f, 0.0f, 0.0f);
+
+      if (status == 3) {
+         /* The segment's two sides; a point has only its box */
+         float2 n = cr_normal(a, b, 1.0f);
+         if (n.x == 0.0f && n.y == 0.0f)
+            return (float4)(0.0f, 0.0f, 0.0f, 0.0f);
+
+         return (float4)(cr_edge(n, a, v, extra), cr_edge(-n, a, v, extra),
+                         0.0f, 0.0f);
+      }
 
       return (float4)(cr_edge(n0, q1, v, extra), cr_edge(n1, q2, v, extra),
                       cr_edge(n2, q0, v, extra), 0.0f);
+   } else {
+      if (status != 3)
+         return (float4)(0.0f, 0.0f, 0.0f, 0.0f);
+
+      /* Back to clip space at the provoking vertex's depth and w */
+      float4 P = provoking == 0 ? P0 : provoking == 1 ? P1 : P2;
+      float2 ndc = (v - xf.zw) / xf.xy;
+      return (float4)(ndc * P.w, P.z, P.w);
    }
 }
 

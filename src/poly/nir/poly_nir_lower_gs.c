@@ -725,25 +725,35 @@ mix_corners(nir_builder *b, nir_def **corners, nir_def *weights)
 }
 
 /* The conservative widening of a triangle corner, from its three corners'
- * positions: weights[0..3] as poly_conservative_corner's "what" 0..3.
+ * positions: weights[0..4] as poly_conservative_corner's "what" 0..4, and
+ * weights[5] whether the last vertex provokes (else the first: the hardware's
+ * flat shading vertex, corner 2 or 0).
  */
 void
 poly_conservative_weights(nir_builder *b, nir_def **pos, nir_def *corner,
                           nir_def *viewport, nir_def **weights)
 {
    nir_def *params = nir_load_geometry_param_buffer_poly(b);
+   nir_def *last = nir_i2b(b, nir_load_provoking_last(b));
+   nir_def *provoking =
+      nir_bcsel(b, last, nir_imm_int(b, 2), nir_imm_int(b, 0));
 
-   for (unsigned i = 0; i < 4; ++i) {
+   for (unsigned i = 0; i < 5; ++i) {
       weights[i] =
          poly_conservative_corner(b, params, pos[0], pos[1], pos[2], corner,
-                                  viewport, nir_imm_int(b, i));
+                                  viewport, provoking, nir_imm_int(b, i));
    }
+
+   weights[5] = last;
 }
 
 /*
  * The value of an output at a conservatively rasterized triangle corner: value
  * is the corner's own, corners the triangle's three. It is extrapolated on the
  * triangle's plane by its interpolation (flat outputs keep the corner's own).
+ * A triangle with no area once snapped takes the provoking vertex's values
+ * (degenerateTrianglesRasterized), and its corner's position from
+ * poly_conservative_corner.
  */
 nir_def *
 poly_conservative_output(nir_builder *b, gl_varying_slot slot,
@@ -751,21 +761,25 @@ poly_conservative_output(nir_builder *b, gl_varying_slot slot,
                          unsigned clip_distance_array_size)
 {
    nir_def *status = nir_channel(b, weights[0], 3);
+   nir_def *degenerate = nir_feq_imm(b, status, 3.0);
 
    if (conservative_extrapolates(slot)) {
       nir_def *mixed = mix_corners(b, corners, weights[0]);
+      nir_def *provoking = nir_bcsel(b, weights[5], corners[2], corners[0]);
 
       if (slot == VARYING_SLOT_CLIP_DIST0 || slot == VARYING_SLOT_CLIP_DIST1) {
          /* Culling tests each vertex's own cull distances */
-         nir_def *comps[4];
+         nir_def *comps[4], *prov[4];
          unsigned base = (slot - VARYING_SLOT_CLIP_DIST0) * 4;
 
          for (unsigned c = 0; c < value->num_components; ++c) {
             bool clip = base + c < clip_distance_array_size;
             comps[c] = nir_channel(b, clip ? mixed : value, c);
+            prov[c] = nir_channel(b, clip ? provoking : value, c);
          }
 
          mixed = nir_vec(b, comps, value->num_components);
+         provoking = nir_vec(b, prov, value->num_components);
       } else if (slot != VARYING_SLOT_POS) {
          nir_def *bit = nir_imm_int64(b, BITFIELD64_BIT(slot));
          nir_def *flat_mask = load_geometry_param(b, flat_outputs);
@@ -778,11 +792,14 @@ poly_conservative_output(nir_builder *b, gl_varying_slot slot,
          mixed = nir_bcsel(b, flat, value, mixed);
       }
 
-      value = nir_bcsel(b, nir_feq_imm(b, status, 0.0), mixed, value);
+      value = nir_bcsel(b, nir_feq_imm(b, status, 0.0), mixed,
+                        nir_bcsel(b, degenerate, provoking, value));
    }
 
-   /* Degenerate after snapping: cull */
+   /* Degenerate after snapping: its segment's corner. Before: cull */
    if (slot == VARYING_SLOT_POS) {
+      value = nir_bcsel(b, degenerate, weights[4], value);
+
       nir_def *w = nir_bcsel(b, nir_feq_imm(b, status, 2.0),
                              nir_imm_float(b, NAN), nir_channel(b, value, 3));
       value = nir_vector_insert_imm(b, value, w, 3);
@@ -832,7 +849,7 @@ forward_conservative_outputs(nir_builder *b, nir_shader *shader,
                            nir_channel(b, nir_load_var(b, vp[0]), 0));
    }
 
-   nir_def *weights[4];
+   nir_def *weights[POLY_CONSERVATIVE_WEIGHTS];
    poly_conservative_weights(b, pos, rs->output_id, viewport, weights);
 
    u_foreach_bit64(slot, shader->info.outputs_written) {

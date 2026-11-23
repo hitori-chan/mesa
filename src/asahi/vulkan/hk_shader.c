@@ -1366,6 +1366,7 @@ hk_lower_nir(struct hk_device *dev, nir_shader *nir,
    if (nir->info.stage == MESA_SHADER_FRAGMENT) {
       NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_viewport_fs,
                nir_metadata_control_flow, NULL);
+      NIR_PASS(_, nir, hk_nir_lower_fully_covered);
    }
 
    if (dev->dev.params.gpu_generation >= 15) {

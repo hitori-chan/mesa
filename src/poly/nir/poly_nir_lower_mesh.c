@@ -434,7 +434,7 @@ build_rast_shader(const nir_shader *mesh, const struct poly_mesh_info *info,
    /* The corner's index sits at the vertex ID */
    nir_def *corner = load_record_index(b, info, record, vertex);
 
-   nir_def *corners[3], *weights[4];
+   nir_def *corners[3], *weights[POLY_CONSERVATIVE_WEIGHTS];
    if (conservative) {
       assert(vpp == 3);
 
