@@ -33,6 +33,7 @@
 
 #include "util/list.h"
 #include "util/macros.h"
+#include "util/u_debug.h"
 #include "util/u_dynarray.h"
 #include "vulkan/vulkan_core.h"
 
@@ -1019,11 +1020,111 @@ hk_upload_esl(struct hk_cmd_buffer *cmd, struct hk_shader *s,
                              usc);
 }
 
-uint32_t
-hk_upload_usc_words(struct hk_cmd_buffer *cmd, struct hk_shader *s,
-                    struct hk_linked_shader *linked)
+/* Experimental knobs, read once, for hk_cmd_draw.c: HK_G15_STUB=1 gives a
+ * direct draw's per-draw vertex uniforms a stub branching to a shared entry
+ * program, ldshdr and specTPR in the shared program; 2 puts them in the stub,
+ * before its branch. HK_G15_VDMCALL=1 moves a direct draw's VDM words into a
+ * sub-stream the render stream calls. */
+DEBUG_GET_ONCE_NUM_OPTION(hk_g15_stub, "HK_G15_STUB", 0)
+DEBUG_GET_ONCE_BOOL_OPTION(hk_g15_vdmcall, "HK_G15_VDMCALL", false)
+
+unsigned
+hk_g15_stub_mode(void)
+{
+   return debug_get_option_hk_g15_stub();
+}
+
+bool
+hk_g15_vdmcall(void)
+{
+   return debug_get_option_hk_g15_vdmcall();
+}
+
+/* HK_G15_STUB: this draw's stub, for the vertex program's USC words at usc.
+ * The shared entry program is built when the words or the program change.
+ * Returns its USC address, 0 where a stub cannot provide the words (the
+ * caller then takes the uploaded parameters' path). */
+static uint32_t
+hk_upload_g15_stub(struct hk_cmd_buffer *cmd, struct hk_shader *s,
+                   struct hk_linked_shader *linked, const uint8_t *usc,
+                   size_t usc_size)
 {
    struct hk_device *dev = hk_cmd_buffer_device(cmd);
+   struct hk_g15_stub *st = &cmd->state.gfx.g15_stub;
+
+   if (!st->valid || st->shader != s || st->linked != linked ||
+       st->usc_size != usc_size || memcmp(st->usc, usc, usc_size)) {
+      struct agx_esl_code code = agx_esl_code_for_shader(
+         s->bo ? s->bo->va->addr : 0, s->b.binary, &s->b.info, &linked->b);
+
+      uint8_t stack[1024], tail_stack[sizeof(st->tail)];
+      struct util_dynarray esl, tail;
+      util_dynarray_init_from_stack(&esl, stack, sizeof(stack));
+      util_dynarray_init_from_stack(&tail, tail_stack, sizeof(tail_stack));
+
+      struct agx_esl_shared shared = {
+         .tail = hk_g15_stub_mode() == 2 ? &tail : NULL,
+      };
+
+      for (unsigned i = 0; i < st->nr_words; i++)
+         shared.provided[st->words[i] / 64] |= 1ull << (st->words[i] % 64);
+
+      st->valid = true;
+      st->shared = 0;
+      st->shader = s;
+      st->linked = linked;
+      st->usc_size = usc_size;
+      memcpy(st->usc, usc, usc_size);
+
+      if (agx_esl_shared_from_usc(&esl, usc, dev->dev.shader_base, &code,
+                                  agx_esl_stage_for(s->b.info.stage),
+                                  &shared) &&
+          tail.size <= sizeof(st->tail)) {
+         struct agx_ptr t = hk_pool_usc_alloc(cmd, esl.size, 64);
+         if (t.cpu) {
+            memcpy(t.cpu, esl.data, esl.size);
+            st->shared = t.gpu;
+            st->tail_size = tail.size;
+            memcpy(st->tail, tail.data, tail.size);
+         }
+      }
+
+      util_dynarray_fini(&esl);
+      util_dynarray_fini(&tail);
+   }
+
+   if (!st->shared)
+      return 0;
+
+   /* The pipeline pointer is VA >> 6: a stub a 64 B line */
+   struct agx_ptr t = hk_pool_usc_alloc(cmd, AGX_ESL_STUB_MAX, 64);
+   if (!t.cpu)
+      return 0;
+
+   uint8_t stack[AGX_ESL_STUB_MAX];
+   struct util_dynarray stub;
+   util_dynarray_init_from_stack(&stub, stack, sizeof(stack));
+
+   agx_esl_stub(&stub, st->words, st->values, st->nr_words, st->tail,
+                st->tail_size, st->shared);
+
+   assert(stub.size <= AGX_ESL_STUB_MAX);
+   memcpy(t.cpu, stub.data, stub.size);
+
+   util_dynarray_fini(&stub);
+
+   return agx_usc_addr(&dev->dev, t.gpu);
+}
+
+/* The USC words of a shader, as a G15 entry program or a G13 word list. With
+ * stub (HK_G15_STUB), the vertex program's per-draw ranges are provided by a
+ * stub (hk_upload_g15_stub), 0 where they cannot be. */
+static uint32_t
+hk_usc_words(struct hk_cmd_buffer *cmd, struct hk_shader *s,
+             struct hk_linked_shader *linked, bool stub)
+{
+   struct hk_device *dev = hk_cmd_buffer_device(cmd);
+   struct hk_g15_stub *st = &cmd->state.gfx.g15_stub;
 
    mesa_shader_stage sw_stage = s->info.stage;
 
@@ -1041,6 +1142,9 @@ hk_upload_usc_words(struct hk_cmd_buffer *cmd, struct hk_shader *s,
    alignas(16) uint8_t stack[HK_USC_WORDS_STACK];
    bool g15 = dev->dev.params.gpu_generation >= 15;
    struct agx_ptr t = {0};
+
+   if (stub && (!g15 || usc_size > sizeof(stack)))
+      return 0;
 
    if (g15 && usc_size <= sizeof(stack))
       t.cpu = stack;
@@ -1081,14 +1185,26 @@ hk_upload_usc_words(struct hk_cmd_buffer *cmd, struct hk_shader *s,
             root_ptr + hk_root_descriptor_offset(draw.attrib_clamps));
       }
 
-      if (cmd->state.gfx.draw_params) {
+      /* A stub's ranges are in its registers: their buffer is not read */
+      if (stub)
+         st->nr_words = 0;
+
+      if (cmd->state.gfx.draw_params || (stub && st->base_param)) {
          agx_usc_uniform(&b, AGX_ABI_VUNI_FIRST_VERTEX(count), 4,
                          cmd->state.gfx.draw_params);
+
+         if (stub) {
+            st->words[st->nr_words++] = AGX_ABI_VUNI_FIRST_VERTEX(count) / 2;
+            st->words[st->nr_words++] = AGX_ABI_VUNI_BASE_INSTANCE(count) / 2;
+         }
       }
 
-      if (cmd->state.gfx.draw_id_ptr) {
+      if (cmd->state.gfx.draw_id_ptr || (stub && st->draw_id)) {
          agx_usc_uniform(&b, AGX_ABI_VUNI_DRAW_ID(count), 2,
                          cmd->state.gfx.draw_id_ptr);
+
+         if (stub)
+            st->words[st->nr_words++] = AGX_ABI_VUNI_DRAW_ID(count) / 2;
       }
 
       if (linked->sw_indexing) {
@@ -1123,10 +1239,29 @@ hk_upload_usc_words(struct hk_cmd_buffer *cmd, struct hk_shader *s,
 
    agx_usc_push_blob(&b, linked->usc.data, linked->usc.size);
 
+   if (stub)
+      return hk_upload_g15_stub(cmd, s, linked, t.cpu,
+                                b.head - (uint8_t *)t.cpu);
+
    if (g15)
       return hk_upload_esl(cmd, s, linked, t.cpu);
 
    return agx_usc_addr(&dev->dev, t.gpu);
+}
+
+uint32_t
+hk_upload_usc_words(struct hk_cmd_buffer *cmd, struct hk_shader *s,
+                    struct hk_linked_shader *linked)
+{
+   return hk_usc_words(cmd, s, linked, false);
+}
+
+uint32_t
+hk_upload_g15_stub_words(struct hk_cmd_buffer *cmd, struct hk_shader *s,
+                         struct hk_linked_shader *linked)
+{
+   assert(s->info.stage == MESA_SHADER_VERTEX);
+   return hk_usc_words(cmd, s, linked, true);
 }
 
 void

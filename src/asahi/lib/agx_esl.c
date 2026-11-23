@@ -92,18 +92,27 @@ esl_uniforms(struct util_dynarray *out, const struct esl_range *r)
    }
 }
 
+/* Whether a stub provides uniform word u (agx_esl_shared) */
+static bool
+esl_provided(const uint64_t *provided, unsigned u)
+{
+   return provided && u < 128 && ((provided[u / 64] >> (u % 64)) & 1);
+}
+
 /* The words within reach, from every range, each into its push register: all
  * the loads go out before one wait. Each range's buffer address takes a
  * register pair of its own, r0:r1 or a pair no pushed word lands in, so that
  * no load's address is overwritten while it is in flight; a range left
- * without one waits for the loads before it and takes r0:r1. */
+ * without one waits for the loads before it and takes r0:r1. A range a stub
+ * provides (provided, NULL for none) is in its registers already: it is only
+ * stored. */
 static void
 esl_uniforms_reach(struct util_dynarray *out, const struct esl_range *ranges,
-                   unsigned nr_ranges)
+                   unsigned nr_ranges, const uint64_t *provided)
 {
    BITSET_DECLARE(used, ESL_LAST_REG + 1) = {0};
    unsigned from[ESL_MAX_RANGES], to[ESL_MAX_RANGES];
-   bool any = false;
+   bool any = false, stores = false;
 
    for (unsigned i = 0; i < nr_ranges; i++) {
       assert((ranges[i].start_halfs & 1) == 0 &&
@@ -118,6 +127,10 @@ esl_uniforms_reach(struct util_dynarray *out, const struct esl_range *ranges,
 
    for (unsigned i = 0, next = ESL_BASE; i < nr_ranges; i++) {
       if (from[i] >= to[i])
+         continue;
+
+      stores = true;
+      if (esl_provided(provided, from[i]))
          continue;
 
       unsigned base = ESL_BASE;
@@ -143,10 +156,11 @@ esl_uniforms_reach(struct util_dynarray *out, const struct esl_range *ranges,
       any = true;
    }
 
-   if (!any)
+   if (!stores)
       return;
 
-   agx3_emit_wait(out, ESL_SLOT);
+   if (any)
+      agx3_emit_wait(out, ESL_SLOT);
 
    for (unsigned i = 0; i < nr_ranges; i++) {
       for (unsigned u = from[i]; u < to[i]; u++)
@@ -277,10 +291,38 @@ esl_preamble(struct util_dynarray *out, const struct agx_esl_code *code,
 /* Read once: the entry program is built for every draw */
 DEBUG_GET_ONCE_BOOL_OPTION(esl_fs_notpr, "AGX_G15_FS_NOTPR", false)
 
-bool
-agx_esl_from_usc(struct util_dynarray *out, const uint8_t *usc,
-                 uint64_t shader_base, const struct agx_esl_code *code,
-                 enum agx_esl_stage stage)
+/* A stub can provide the words: every range within reach (out of it, the
+ * loads go through r2 up, which hold the stub's values), each range wholly
+ * provided or not at all, each provided word in a range */
+static bool
+esl_shared_ok(const struct esl_range *ranges, unsigned nr_ranges,
+              const uint64_t *provided)
+{
+   uint64_t covered[2] = {0};
+
+   for (unsigned i = 0; i < nr_ranges; i++) {
+      unsigned from = ranges[i].start_halfs / 2;
+      unsigned end = from + DIV_ROUND_UP(ranges[i].size_halfs, 2);
+
+      if (end > ESL_PUSH_REGS)
+         return false;
+
+      for (unsigned u = from; u < end; u++) {
+         if (esl_provided(provided, u) != esl_provided(provided, from))
+            return false;
+
+         if (esl_provided(provided, u))
+            covered[u / 64] |= 1ull << (u % 64);
+      }
+   }
+
+   return covered[0] == provided[0] && covered[1] == provided[1];
+}
+
+static bool
+esl_build(struct util_dynarray *out, const uint8_t *usc, uint64_t shader_base,
+          const struct agx_esl_code *code, enum agx_esl_stage stage,
+          const struct agx_esl_shared *shared)
 {
    uint64_t main_va = 0, preamble_va = 0;
    struct esl_range ranges[ESL_MAX_RANGES];
@@ -357,12 +399,17 @@ agx_esl_from_usc(struct util_dynarray *out, const uint8_t *usc,
    if (!main_va)
       return false;
 
+   const uint64_t *provided = shared ? shared->provided : NULL;
+   if (shared &&
+       (stage != AGX_ESL_VERTEX || !esl_shared_ok(ranges, nr_ranges, provided)))
+      return false;
+
    /* The words out of reach go through r2-r5 first, before the push
     * registers hold anything */
    for (unsigned i = 0; i < nr_ranges; i++)
       esl_uniforms(out, &ranges[i]);
 
-   esl_uniforms_reach(out, ranges, nr_ranges);
+   esl_uniforms_reach(out, ranges, nr_ranges, provided);
 
    switch (stage) {
    case AGX_ESL_COMPUTE:
@@ -371,14 +418,17 @@ agx_esl_from_usc(struct util_dynarray *out, const uint8_t *usc,
       esl_spectpr(out, code ? code->stack_size : 0, code ? code->cr_count : 0);
       break;
 
-   case AGX_ESL_VERTEX:
+   case AGX_ESL_VERTEX: {
       /* Apple's vertex programs (the 2026-10-16 triangle) have specLM,
        * ldshdr and specTPR. demo15's has a 0x6F7-family word with every
        * field set after ldshdr: after the specTPR it loses the stack, so a
-       * spilling vertex program reads its spills back wrong. */
-      esl_ldshdr(out, main_va, code ? code->main_size : 0);
-      esl_spectpr(out, code ? code->stack_size : 0, code ? code->cr_count : 0);
+       * spilling vertex program reads its spills back wrong. A stub may run
+       * the two itself (agx_esl_shared). */
+      struct util_dynarray *tail = shared && shared->tail ? shared->tail : out;
+      esl_ldshdr(tail, main_va, code ? code->main_size : 0);
+      esl_spectpr(tail, code ? code->stack_size : 0, code ? code->cr_count : 0);
       break;
+   }
 
    case AGX_ESL_FRAGMENT:
       /* Apple's fragment programs have a specTPR after ldshdr */
@@ -429,4 +479,40 @@ agx_esl_from_usc(struct util_dynarray *out, const uint8_t *usc,
 no_preamble:
    fprintf(stderr, "G15: the preamble is not in the shader's code\n");
    return false;
+}
+
+bool
+agx_esl_from_usc(struct util_dynarray *out, const uint8_t *usc,
+                 uint64_t shader_base, const struct agx_esl_code *code,
+                 enum agx_esl_stage stage)
+{
+   return esl_build(out, usc, shader_base, code, stage, NULL);
+}
+
+bool
+agx_esl_shared_from_usc(struct util_dynarray *out, const uint8_t *usc,
+                        uint64_t shader_base, const struct agx_esl_code *code,
+                        enum agx_esl_stage stage,
+                        const struct agx_esl_shared *shared)
+{
+   return esl_build(out, usc, shader_base, code, stage, shared);
+}
+
+void
+agx_esl_stub(struct util_dynarray *out, const unsigned *words,
+             const uint32_t *values, unsigned count, const void *tail,
+             size_t tail_size, uint64_t shared_va)
+{
+   ASSERTED size_t start = out->size;
+
+   for (unsigned i = 0; i < count; i++) {
+      assert(words[i] < ESL_PUSH_REGS);
+      agx3_emit_mov_imm(out, words[i] + AGX_G15_PUSH_REG, values[i]);
+   }
+
+   if (tail_size)
+      memcpy(util_dynarray_grow_bytes(out, 1, tail_size), tail, tail_size);
+
+   agx3_emit_branch_abs(out, shared_va);
+   assert(out->size - start <= AGX_ESL_STUB_MAX);
 }

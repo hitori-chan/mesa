@@ -3297,6 +3297,78 @@ agx_fill_velem_keys(const struct vk_vertex_input_state *vi,
    }
 }
 
+/* HK_G15_STUB (experimental): whether this draw's per-draw vertex uniforms
+ * go into a stub (agx_esl_stub). A direct draw of a plain hardware vertex
+ * program that reads them: no geometry, tessellation or mesh stage, no
+ * software indexing, transform feedback, adjacency or generated commands. The
+ * words' reach is checked on the vertex program's USC words
+ * (hk_upload_g15_stub), the draw falling back there. */
+static bool
+hk_g15_stub_draw(struct hk_cmd_buffer *cmd, uint32_t draw_id,
+                 struct agx_draw draw)
+{
+   struct hk_graphics_state *gfx = &cmd->state.gfx;
+   struct hk_g15_stub *st = &gfx->g15_stub;
+   st->active = false;
+
+   if (!hk_g15_stub_mode())
+      return false;
+
+   struct hk_device *dev = hk_cmd_buffer_device(cmd);
+   const struct vk_dynamic_graphics_state *dyn =
+      &cmd->vk.dynamic_graphics_state;
+   struct hk_api_shader *vs = gfx->shaders[MESA_SHADER_VERTEX];
+   struct hk_shader *hw_vs = hk_bound_hw_vs(gfx);
+   struct hk_linked_shader *linked = gfx->linked[MESA_SHADER_VERTEX];
+
+   bool base_param = linked->b.uses_base_param;
+   bool uses_draw_id = hw_vs->b.info.uses_draw_id;
+
+   if (dev->dev.params.gpu_generation < 15 || agx_is_indirect(draw.b) || !vs ||
+       hw_vs != &vs->variants[HK_VS_VARIANT_HW] ||
+       gfx->shaders[MESA_SHADER_TESS_EVAL] ||
+       gfx->shaders[MESA_SHADER_GEOMETRY] || gfx->shaders[MESA_SHADER_MESH] ||
+       linked->sw_indexing || gfx->xfb_enabled || gfx->dgc.vdm ||
+       mesa_prim_has_adjacency(
+          vk_topology_to_mesa(dyn->ia.primitive_topology)) ||
+       !(base_param || uses_draw_id))
+      return false;
+
+   unsigned n = 0;
+   if (base_param) {
+      st->values[n++] = draw.indexed ? draw.index_bias : draw.start;
+      st->values[n++] = draw.start_instance;
+   }
+
+   if (uses_draw_id)
+      st->values[n++] = draw_id;
+
+   st->active = true;
+   st->base_param = base_param;
+   st->draw_id = uses_draw_id;
+   return true;
+}
+
+/* The words a stub cannot provide are uploaded, as without one */
+static void
+hk_g15_stub_fallback(struct hk_cmd_buffer *cmd)
+{
+   struct hk_graphics_state *gfx = &cmd->state.gfx;
+   struct hk_g15_stub *st = &gfx->g15_stub;
+   unsigned n = 0;
+
+   assert(st->active);
+   st->active = false;
+
+   if (st->base_param) {
+      gfx->draw_params = hk_pool_upload(cmd, st->values, 8, 4);
+      n += 2;
+   }
+
+   if (st->draw_id)
+      gfx->draw_id_ptr = hk_pool_upload(cmd, &st->values[n], 4, 4);
+}
+
 static void
 hk_flush_dynamic_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
                        uint32_t draw_id, struct agx_draw draw)
@@ -3642,9 +3714,13 @@ hk_flush_dynamic_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
     * draw. Fragment uniforms are unaffected.
     *
     * For a direct draw, we upload the draw parameters as-if indirect to
-    * avoid keying to indirectness.
+    * avoid keying to indirectness. Under HK_G15_STUB a stub moves them into
+    * their registers (hk_upload_g15_stub).
     */
-   if (gfx->linked[MESA_SHADER_VERTEX]->b.uses_base_param) {
+   if (hk_g15_stub_draw(cmd, draw_id, draw)) {
+      gfx->draw_params = 0;
+      gfx->draw_id_ptr = 0;
+   } else if (gfx->linked[MESA_SHADER_VERTEX]->b.uses_base_param) {
       if (agx_is_indirect(draw.b)) {
          gfx->draw_params = draw.b.ptr;
 
@@ -3666,7 +3742,9 @@ hk_flush_dynamic_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
       gfx->draw_params = 0;
    }
 
-   if (sw_vs->b.info.uses_draw_id) {
+   if (gfx->g15_stub.active) {
+      /* in the stub */
+   } else if (sw_vs->b.info.uses_draw_id) {
       /* TODO: rodata? */
       gfx->draw_id_ptr = hk_pool_upload(cmd, &draw_id, 4, 4);
    } else {
@@ -3835,7 +3913,8 @@ hk_flush_dynamic_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
     */
    if ((gfx->dirty & (HK_DIRTY_PROVOKING | HK_DIRTY_VARYINGS)) ||
        IS_DIRTY(RS_RASTERIZER_DISCARD_ENABLE) || linked_vs_dirty || vgt_dirty ||
-       gfx->descriptors.root_dirty || gfx->draw_id_ptr || gfx->draw_params) {
+       gfx->descriptors.root_dirty || gfx->draw_id_ptr || gfx->draw_params ||
+       gfx->g15_stub.active) {
 
       /* TODO: Do less often? */
       hk_reserve_scratch(cmd, cs, hw_vs);
@@ -3852,7 +3931,19 @@ hk_flush_dynamic_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
       struct hk_linked_shader *linked_hw_vs =
          (hw_vs == sw_vs) ? linked_vs : hw_vs->only_linked;
 
-      uint32_t pipeline = hk_upload_usc_words(cmd, hw_vs, linked_hw_vs);
+      uint32_t pipeline = 0;
+      if (gfx->g15_stub.active) {
+         pipeline = hk_upload_g15_stub_words(cmd, hw_vs, linked_hw_vs);
+
+         /* The words cannot be provided: upload them, as without a stub */
+         if (!pipeline) {
+            hk_g15_stub_fallback(cmd);
+            perf_debug(cmd, "G15 stub: the vertex program's words");
+         }
+      }
+
+      if (!pipeline)
+         pipeline = hk_upload_usc_words(cmd, hw_vs, linked_hw_vs);
 
       out = agx_push_vertex_shader_word_1(out, dev->dev.params.gpu_generation,
                                           dev->dev.shader_base, pipeline);
@@ -4333,6 +4424,7 @@ hk_flush_gfx_state(struct hk_cmd_buffer *cmd, uint32_t draw_id,
    }
 
    hk_ensure_cs_has_space(cmd, cs, 0x2000 /* TODO */);
+   cs->draw_start = cs->current;
 
 #ifndef NDEBUG
    if (unlikely(dev->dev.debug & AGX_DBG_DIRTY)) {
@@ -4620,6 +4712,40 @@ hk_vdm_tessellate(struct hk_cmd_buffer *cmd, uint32_t *out)
    return out;
 }
 
+/* HK_G15_VDMCALL (experimental): a direct draw's VDM words, its state's
+ * from hk_flush_gfx_state's to its draw's, move into a sub-stream that ends in
+ * a return and that the render stream calls, as Apple's indirect command
+ * buffers are (RenderContext<G15>::executeCommandsInBufferCommon,
+ * AGXMetalG15X_M1_272 0x24c3eeeac): the call 0x900000hh, VA[31:0], the return
+ * 0x28000000. The words are the in-stream ones, moved. */
+static void
+hk_g15_vdm_call(struct hk_cmd_buffer *cmd, struct hk_cs *cs)
+{
+   struct hk_device *dev = hk_cmd_buffer_device(cmd);
+   uint8_t *start = cs->draw_start, *end = cs->current;
+
+   cs->draw_start = NULL;
+   if (!start || start >= end)
+      return;
+
+   /* The return, then room for the VDM's overread (hk_ensure_cs_has_space) */
+   size_t size = end - start;
+   struct agx_ptr sub =
+      hk_pool_alloc(cmd, size + AGX_VDM_BARRIER_LENGTH + 0x800, 256);
+   if (!sub.cpu)
+      return;
+
+   memcpy(sub.cpu, start, size);
+   agx_vdm_return((uint32_t *)((uint8_t *)sub.cpu + size));
+
+   cs->current =
+      agx_vdm_call((uint32_t *)start, agx_vdm_va(&dev->dev, sub.gpu));
+
+   /* After the return the hardware holds the sub-stream's vertex state: the
+    * next draw emits its own, as a GPU-written sub-stream's will need */
+   cmd->state.gfx.dirty |= HK_DIRTY_VARYINGS;
+}
+
 void
 hk_draw(struct hk_cmd_buffer *cmd, uint32_t draw_id, struct agx_draw draw_)
 {
@@ -4779,6 +4905,11 @@ hk_draw(struct hk_cmd_buffer *cmd, uint32_t draw_id, struct agx_draw draw_)
       } else {
          cs->current = (void *)agx_vdm_draw((uint32_t *)out, dev->dev.chip,
                                             draw, topology);
+
+         /* The call is the render's command, counted below */
+         if (hk_g15_vdmcall() && dev->dev.params.gpu_generation >= 15 &&
+             !geom && !tess && !agx_is_indirect(draw.b))
+            hk_g15_vdm_call(cmd, cs);
       }
 
       cs->stats.cmds++;
