@@ -243,7 +243,8 @@ insert_backoff(nir_builder *b, nir_loop *loop)
    nir_store_var(b, count, nir_imm_int(b, 0), 1);
    nir_store_var(b, amount, nir_imm_intN_t(b, INITIAL, 16), 1);
 
-   b->cursor = nir_before_cf_list(&loop->body);
+   /* After the header's phis: an if may not split a block before one */
+   b->cursor = nir_after_phis(nir_loop_first_block(loop));
    nir_def *c = nir_load_var(b, count);
    nir_store_var(b, count, nir_iadd_imm(b, c, 1), 1);
    nir_push_if(b, nir_uge_imm(b, c, SKIP + 1));
