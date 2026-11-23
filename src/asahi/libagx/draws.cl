@@ -288,18 +288,18 @@ libagx_memset_small(global uchar *dst, uchar b, int len, uint tid)
  * access occurs. Otherwise we could use a hardware indirect draw, rather than
  * generating VDM words directly in shader.
  *
- * TODO: Handle multiple draws in parallel.
+ * A multi-draw's draws run in parallel, a subgroup each
+ * (libagx_draw_robust_index_multi).
  */
-KERNEL(32)
-libagx_draw_robust_index(global uint32_t *vdm, global struct poly_heap *heap,
+static void
+libagx_robust_index_draw(global uint32_t *vdm, global struct poly_heap *heap,
                          constant VkDrawIndexedIndirectCommand *cmd,
                          uint64_t in_buf_ptr, uint32_t in_buf_range_B,
                          ushort restart, enum agx_primitive topology,
-                         enum agx_chip chip, enum agx_index_size index_size__3)
+                         enum agx_chip chip, enum agx_index_size index_size)
 {
    uint tid = get_sub_group_local_id();
    bool first = tid == 0;
-   enum agx_index_size index_size = index_size__3;
 
    struct agx_draw draw = agx_draw_indexed(
       cmd->indexCount, cmd->instanceCount, cmd->firstIndex, cmd->vertexOffset,
@@ -352,4 +352,32 @@ libagx_draw_robust_index(global uint32_t *vdm, global struct poly_heap *heap,
    if (first) {
       agx_vdm_draw(vdm, chip, draw, topology);
    }
+}
+
+KERNEL(32)
+libagx_draw_robust_index(global uint32_t *vdm, global struct poly_heap *heap,
+                         constant VkDrawIndexedIndirectCommand *cmd,
+                         uint64_t in_buf_ptr, uint32_t in_buf_range_B,
+                         ushort restart, enum agx_primitive topology,
+                         enum agx_chip chip, enum agx_index_size index_size__3)
+{
+   libagx_robust_index_draw(vdm, heap, cmd, in_buf_ptr, in_buf_range_B, restart,
+                            topology, chip, index_size__3);
+}
+
+/* A multi-draw's robust draws, one workgroup (a subgroup) each */
+KERNEL(32)
+libagx_draw_robust_index_multi(constant struct libagx_robust_index *draws,
+                               global struct poly_heap *heap,
+                               uint64_t in_buf_ptr, uint32_t in_buf_range_B,
+                               ushort restart, enum agx_primitive topology,
+                               enum agx_chip chip,
+                               enum agx_index_size index_size__3)
+{
+   constant struct libagx_robust_index *d = &draws[cl_group_id.x];
+
+   libagx_robust_index_draw(
+      (global uint32_t *)d->target, heap,
+      (constant VkDrawIndexedIndirectCommand *)d->args, in_buf_ptr,
+      in_buf_range_B, restart, topology, chip, index_size__3);
 }
