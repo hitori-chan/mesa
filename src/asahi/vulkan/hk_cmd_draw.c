@@ -5051,6 +5051,45 @@ hk_CmdDrawIndexedIndirectCount(VkCommandBuffer commandBuffer, VkBuffer _buffer,
                           countBufferOffset, maxDrawCount, stride, true);
 }
 
+static uint64_t
+hk_mesh_stat(struct hk_cmd_buffer *cmd, VkQueryPipelineStatisticFlagBits stat)
+{
+   uint64_t addr = hk_pipeline_stat_addr(cmd, stat);
+   return hk_stat_enabled(addr) ? addr : 0;
+}
+
+/*
+ * The active queries a mesh draw counts, after its mesh stage. Its primitives
+ * are those it rasterizes, its records' counts, which a primitive culled in
+ * the shader (CullPrimitiveEXT) is among, as RADV counts them. They reach the
+ * clipper too: the clipping statistics count them as hk_ia_update counts a
+ * draw's input primitives, before clipping.
+ */
+static void
+hk_mesh_queries(struct hk_cmd_buffer *cmd, uint64_t params, bool task,
+                const struct poly_mesh_info *info)
+{
+   VkQueryPipelineStatisticFlagBits ts =
+      VK_QUERY_PIPELINE_STATISTIC_TASK_SHADER_INVOCATIONS_BIT_EXT;
+
+   uint64_t ts_inv = task ? hk_mesh_stat(cmd, ts) : 0;
+   uint64_t ms_inv = hk_mesh_stat(
+      cmd, VK_QUERY_PIPELINE_STATISTIC_MESH_SHADER_INVOCATIONS_BIT_EXT);
+   uint64_t c_prims =
+      hk_mesh_stat(cmd, VK_QUERY_PIPELINE_STATISTIC_CLIPPING_PRIMITIVES_BIT);
+   uint64_t c_inv =
+      hk_mesh_stat(cmd, VK_QUERY_PIPELINE_STATISTIC_CLIPPING_INVOCATIONS_BIT);
+   uint64_t prims = cmd->state.gfx.mesh_prims_query;
+
+   if (!(ts_inv || ms_inv || c_prims || c_inv || prims))
+      return;
+
+   perf_debug(cmd, "Mesh draw queries");
+   libagx_mesh_queries(cmd, agx_1d(1024), AGX_BARRIER_ALL | AGX_PREGFX, params,
+                       ts_inv, ms_inv, prims, c_prims, c_inv,
+                       info->record_stride, info->max_primitives);
+}
+
 /*
  * Mesh draws run the task and mesh stages as compute before the render pass,
  * then rasterize the mesh workgroups' outputs (poly_nir_lower_mesh.c).
@@ -5118,6 +5157,8 @@ hk_draw_mesh(struct hk_cmd_buffer *cmd, uint16_t draw_id, struct agx_grid grid)
          agx_grid_indirect_local(params +
                                  offsetof(struct poly_mesh_params, mesh_grid)),
          agx_workgroup(wg[0], wg[1], wg[2]));
+
+      hk_mesh_queries(cmd, params, ts != NULL, info);
 
       struct agx_draw draw =
          agx_draw_indirect(params + offsetof(struct poly_mesh_params, draw));

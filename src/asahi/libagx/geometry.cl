@@ -282,3 +282,48 @@ libagx_mesh_setup_from_task(global struct poly_mesh_params *p,
    p->draw.vertex_count = draw_vertices;
    p->draw.instance_count = total;
 }
+
+/*
+ * A mesh draw's queries, after its mesh stage: the task and mesh invocations
+ * are its grids' threads; the primitives, counted for the mesh primitives
+ * generated query and the clipping statistics, are what each mesh workgroup's
+ * record holds (poly_nir_lower_mesh.c), as many as it rasterizes. A null
+ * counter is not counted.
+ */
+KERNEL(1024)
+libagx_mesh_queries(global struct poly_mesh_params *p,
+                    global uint32_t *ts_invocations,
+                    global uint32_t *ms_invocations,
+                    global uint32_t *prims_generated, global uint32_t *c_prims,
+                    global uint32_t *c_invs, uint record_stride_B,
+                    uint max_primitives)
+{
+   uint tid = cl_global_id.x;
+   local uint scratch;
+   uint partial = 0;
+
+   /* A record's second word is its primitive count */
+   if (prims_generated || c_prims || c_invs) {
+      for (uint i = tid; i < p->draw.instance_count; i += 1024) {
+         global uint *record =
+            (global uint *)(p->outputs + (uint64_t)i * record_stride_B);
+
+         partial += min(record[1], max_primitives);
+      }
+   }
+
+   scratch = 0;
+   barrier(CLK_LOCAL_MEM_FENCE);
+   atomic_add(&scratch, partial);
+   barrier(CLK_LOCAL_MEM_FENCE);
+
+   if (tid == 0) {
+      poly_increment_counters(prims_generated, c_prims, c_invs, scratch);
+
+      if (ts_invocations)
+         *ts_invocations += p->task_grid[0] * p->task_grid[1] * p->task_grid[2];
+
+      if (ms_invocations)
+         *ms_invocations += p->mesh_grid[0] * p->mesh_grid[1] * p->mesh_grid[2];
+   }
+}
