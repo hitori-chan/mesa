@@ -281,7 +281,7 @@ ail_get_blocksize_B(const struct ail_layout *layout)
    return util_format_get_blocksize(layout->format);
 }
 
-static inline uint32_t
+static inline uint64_t
 ail_get_twiddled_block_B(const struct ail_layout *layout, unsigned level,
                          uint32_t x_px, uint32_t y_px, uint32_t z_px)
 {
@@ -304,7 +304,8 @@ ail_get_twiddled_block_B(const struct ail_layout *layout, unsigned level,
 
    unsigned tile_idx = y_tile + (x_el / tile_size.width_el);
    unsigned tile_offset_el = tile_idx * tile_area_el;
-   unsigned tile_offset_B = tile_offset_el * ail_get_blocksize_B(layout);
+   uint64_t tile_offset_B =
+      (uint64_t)tile_offset_el * ail_get_blocksize_B(layout);
 
    return ail_get_layer_level_B(layout, z_px, level) + tile_offset_B;
 }
@@ -616,8 +617,8 @@ ail_is_drm_modifier_compressed(uint64_t modifier)
 #define AIL_FOLIO_SIZE_EL          (AIL_PAGES_PER_FOLIO * 2)
 #define AIL_FOLIO_SIZE_B           (AIL_FOLIO_SIZE_EL * AIL_SPARSE_ELSIZE_B)
 
-static inline unsigned
-ail_bytes_to_pages(unsigned x_B)
+static inline uint64_t
+ail_bytes_to_pages(uint64_t x_B)
 {
    assert((x_B % AIL_PAGESIZE) == 0);
    return x_B / AIL_PAGESIZE;
