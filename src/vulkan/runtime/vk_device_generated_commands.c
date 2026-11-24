@@ -171,8 +171,10 @@ vk_indirect_command_layout_create(struct vk_device *device,
       }
    }
 
-   qsort(elayout->pc_layouts, elayout->n_pc_layouts,
-         sizeof(elayout->pc_layouts[0]), compare_pc_layout);
+   /* No push-constant token: the array is NULL, which qsort must not get */
+   if (elayout->n_pc_layouts > 1)
+      qsort(elayout->pc_layouts, elayout->n_pc_layouts,
+            sizeof(elayout->pc_layouts[0]), compare_pc_layout);
 
    elayout->stages = pCreateInfo->shaderStages;
    elayout->usage = pCreateInfo->flags;
