@@ -692,9 +692,11 @@ static inline void
 agx_usc_words_precomp(GLOBAL uint32_t *out, CONST struct agx_shader *s,
                       uint64_t data, unsigned data_size)
 {
-   /* Map the data directly as uniforms starting at u0 */
+   /* Map the data directly as uniforms starting at u0, if the kernel takes
+    * any (libagx_nop takes none) */
    struct agx_usc_builder b = agx_usc_builder(out, sizeof(s->usc.data));
-   agx_usc_uniform(&b, 0, DIV_ROUND_UP(data_size, 2), data);
+   if (data_size)
+      agx_usc_uniform(&b, 0, DIV_ROUND_UP(data_size, 2), data);
    agx_usc_push_blob(&b, s->usc.data, s->usc.size);
 }
 
