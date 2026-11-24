@@ -531,6 +531,10 @@ lower_rq_load(nir_builder *b, nir_def *index, nir_intrinsic_instr *instr,
    case nir_ray_query_value_intersection_triangle_vertex_positions:
       return hk_load_vertex_position(
          b, rq_load_var(b, index, intersection->primitive_addr), column);
+   case nir_ray_query_value_intersection_instance_node_agx:
+      return rq_load_var(b, index, intersection->instance_addr);
+   case nir_ray_query_value_intersection_primitive_node_agx:
+      return rq_load_var(b, index, intersection->primitive_addr);
    default:
       UNREACHABLE("Invalid nir_ray_query_value!");
    }

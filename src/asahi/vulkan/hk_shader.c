@@ -221,6 +221,10 @@ hk_preprocess_rt_stage(nir_shader *nir)
 {
    NIR_PASS(_, nir, nir_lower_global_vars_to_local);
    NIR_PASS(_, nir, nir_lower_system_values);
+
+   /* Into variables of plain values, before they go to SSA */
+   NIR_PASS(_, nir, hk_nir_lower_hit_objects);
+
    NIR_PASS(_, nir, nir_split_var_copies);
    NIR_PASS(_, nir, nir_lower_var_copies);
 

@@ -57,6 +57,11 @@ union rt_vars {
       nir_variable *terminate;
       nir_variable *opaque;
 
+      /* Whether the last trace committed a hit: a hit object's
+       * (hk_nir_lower_hit_objects.c), or a run's
+       */
+      nir_variable *hit;
+
       /* Tier 2: the case to run next, the current frame's base on the
        * thread-private stack, and the callee's payload relative to its frame
        */
@@ -64,10 +69,10 @@ union rt_vars {
       nir_variable *stack_ptr;
       nir_variable *arg;
    };
-   nir_variable *all[24];
+   nir_variable *all[25];
 };
 
-static_assert(sizeof(union rt_vars) == 24 * sizeof(nir_variable *),
+static_assert(sizeof(union rt_vars) == 25 * sizeof(nir_variable *),
               "every variable in the array");
 
 struct rt_traversal {
@@ -154,6 +159,7 @@ rt_vars_create(nir_shader *s, union rt_vars *v)
    VAR(accept, bool_type);
    VAR(terminate, bool_type);
    VAR(opaque, bool_type);
+   VAR(hit, bool_type);
    VAR(next, u32);
    VAR(stack_ptr, u32);
    VAR(arg, u32);
@@ -209,9 +215,11 @@ sbt_lookup(struct rt_clone *c, nir_builder *b, unsigned table, nir_def *index,
    nir_def *entry = base;
 
    if (index) {
-      /* maxShaderGroupStride fits the stride's low 32 bits */
+      /* maxShaderGroupStride fits the stride's low 32 bits; the offset is
+       * 64-bit, for any index (maxShaderBindingTableRecordIndex)
+       */
       nir_def *stride = load_param(b, table + 16, 1, 32);
-      entry = nir_iadd(b, entry, nir_u2u64(b, nir_imul(b, index, stride)));
+      entry = nir_iadd(b, entry, nir_umul_2x32_64(b, index, stride));
    }
 
    nir_store_var(b, c->vars.shader_record_ptr,
@@ -472,6 +480,9 @@ build_walk(struct rt_clone *c, nir_builder *b)
    nir_pop_if(b, NULL);
 }
 
+static void build_shading(struct rt_clone *c, nir_builder *b, nir_def *hit,
+                          nir_def *miss_index);
+
 static void
 lower_trace_ray(struct rt_clone *c, nir_builder *b, nir_intrinsic_instr *intr)
 {
@@ -487,11 +498,103 @@ lower_trace_ray(struct rt_clone *c, nir_builder *b, nir_intrinsic_instr *intr)
    store_ray(c, b, intr);
    build_walk(c, b);
 
-   nir_def *flags = nir_load_var(b, v->flags);
-   nir_def *miss_index = nir_load_var(b, v->miss_index);
-   struct rt_traversal *t = &c->trav;
+   build_shading(c, b, nir_load_var(b, c->trav.hit),
+                 nir_load_var(b, v->miss_index));
+}
 
-   nir_push_if(b, nir_load_var(b, t->hit));
+/* A hit object's trace: the walk alone, its result left in the state */
+static void
+lower_hit_object_trace(struct rt_clone *c, nir_builder *b,
+                       nir_intrinsic_instr *intr)
+{
+   if (c->stage != MESA_SHADER_RAYGEN)
+      return;
+
+   nir_store_var(b, c->vars.call_data, intr->src[10].ssa, 0x1);
+   store_ray(c, b, intr);
+   build_walk(c, b);
+   nir_store_var(b, c->vars.hit, nir_load_var(b, c->trav.hit), 0x1);
+}
+
+/* A hit object's run: the shading of a trace whose result the state holds
+ * (store_hit_state_agx), a miss shader's index there too
+ */
+static void
+lower_hit_object_execute(struct rt_clone *c, nir_builder *b,
+                         nir_intrinsic_instr *intr)
+{
+   if (c->stage != MESA_SHADER_RAYGEN)
+      return;
+
+   union rt_vars *v = &c->vars;
+   nir_store_var(b, v->call_data, intr->src[10].ssa, 0x1);
+   store_ray(c, b, intr);
+   build_shading(c, b, nir_load_var(b, v->hit), nir_load_var(b, v->sbt_index));
+}
+
+static nir_def *
+lower_hit_state(struct rt_clone *c, nir_builder *b, nir_intrinsic_instr *intr)
+{
+   union rt_vars *v = &c->vars;
+   unsigned base = nir_intrinsic_base(intr);
+   bool load = intr->intrinsic == nir_intrinsic_load_hit_state_agx;
+
+   /* The hit attributes: the kernel's, at 0 */
+   if (base >= HK_HIT_STATE_ATTRIB) {
+      nir_def *offset = nir_imm_int(b, (base - HK_HIT_STATE_ATTRIB) * 4);
+      if (load)
+         return nir_load_scratch(b, 1, 32, offset, .align_mul = 4);
+
+      nir_store_scratch(b, intr->src[0].ssa, offset, .align_mul = 4);
+      return NULL;
+   }
+
+   nir_variable *var;
+   switch (base) {
+   case HK_HIT_STATE_HIT:
+      var = v->hit;
+      break;
+   case HK_HIT_STATE_INSTANCE_ADDR:
+      var = v->instance_addr;
+      break;
+   case HK_HIT_STATE_PRIMITIVE_ADDR:
+      var = v->primitive_addr;
+      break;
+   case HK_HIT_STATE_PRIMITIVE_ID:
+      var = v->primitive_id;
+      break;
+   case HK_HIT_STATE_GEOMETRY_ID_AND_FLAGS:
+      var = v->geometry_id_and_flags;
+      break;
+   case HK_HIT_STATE_HIT_KIND:
+      var = v->hit_kind;
+      break;
+   case HK_HIT_STATE_SBT_INDEX:
+      var = v->sbt_index;
+      break;
+   case HK_HIT_STATE_TMAX:
+      var = v->tmax;
+      break;
+   default:
+      UNREACHABLE("no such hit state");
+   }
+
+   if (load)
+      return nir_load_var(b, var);
+
+   nir_store_var(b, var, intr->src[0].ssa, 0x1);
+   return NULL;
+}
+
+/* The closest-hit shader of a committed hit, or the miss shader */
+static void
+build_shading(struct rt_clone *c, nir_builder *b, nir_def *hit,
+              nir_def *miss_index)
+{
+   union rt_vars *v = &c->vars;
+   nir_def *flags = nir_load_var(b, v->flags);
+
+   nir_push_if(b, hit);
    {
       nir_def *skip_chit =
          nir_test_mask(b, flags, SpvRayFlagsSkipClosestHitShaderKHRMask);
@@ -636,6 +739,15 @@ lower_rt_intrinsic(struct rt_clone *c, nir_builder *b,
    case nir_intrinsic_execute_callable:
       lower_execute_callable(c, b, intr);
       return NULL;
+   case nir_intrinsic_hit_object_trace_ray_agx:
+      lower_hit_object_trace(c, b, intr);
+      return NULL;
+   case nir_intrinsic_hit_object_execute_agx:
+      lower_hit_object_execute(c, b, intr);
+      return NULL;
+   case nir_intrinsic_load_hit_state_agx:
+   case nir_intrinsic_store_hit_state_agx:
+      return lower_hit_state(c, b, intr);
    case nir_intrinsic_report_ray_intersection:
       return lower_report_intersection(c, b, intr);
    case nir_intrinsic_ignore_ray_intersection:
@@ -741,6 +853,10 @@ is_rt_intrinsic(nir_intrinsic_op op)
    switch (op) {
    case nir_intrinsic_trace_ray:
    case nir_intrinsic_execute_callable:
+   case nir_intrinsic_hit_object_trace_ray_agx:
+   case nir_intrinsic_hit_object_execute_agx:
+   case nir_intrinsic_load_hit_state_agx:
+   case nir_intrinsic_store_hit_state_agx:
    case nir_intrinsic_report_ray_intersection:
    case nir_intrinsic_ignore_ray_intersection:
    case nir_intrinsic_terminate_ray:
@@ -957,7 +1073,9 @@ stage_calls(const nir_shader *nir, bool *traces, bool *calls)
                continue;
 
             nir_intrinsic_op op = nir_instr_as_intrinsic(instr)->intrinsic;
-            *traces |= op == nir_intrinsic_trace_ray;
+            *traces |= op == nir_intrinsic_trace_ray ||
+                       op == nir_intrinsic_hit_object_trace_ray_agx ||
+                       op == nir_intrinsic_hit_object_execute_agx;
             *calls |= op == nir_intrinsic_execute_callable;
          }
       }
@@ -1256,6 +1374,10 @@ is_ray_state(nir_intrinsic_op op)
    switch (op) {
    case nir_intrinsic_trace_ray:
    case nir_intrinsic_execute_callable:
+   case nir_intrinsic_hit_object_trace_ray_agx:
+   case nir_intrinsic_hit_object_execute_agx:
+   case nir_intrinsic_load_hit_state_agx:
+   case nir_intrinsic_store_hit_state_agx:
    case nir_intrinsic_report_ray_intersection:
    case nir_intrinsic_ignore_ray_intersection:
    case nir_intrinsic_terminate_ray:
@@ -1293,6 +1415,58 @@ hoist_ray_state(nir_shader *s)
    util_dynarray_fini(&moved);
 }
 
+/* A hit object's trace or run is a call to the traversal's case, as a trace
+ * is: a trace_ray whose flags carry which (build_traversal_case). An
+ * application's flags lose those bits, which no valid ray sets.
+ */
+static void
+hit_objects_to_traces(nir_shader *s)
+{
+   nir_function_impl *impl = nir_shader_get_entrypoint(s);
+   nir_builder b = nir_builder_create(impl);
+   bool progress = false;
+
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr_safe(instr, block) {
+         if (instr->type != nir_instr_type_intrinsic)
+            continue;
+
+         nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+         uint32_t bit;
+         if (intr->intrinsic == nir_intrinsic_hit_object_trace_ray_agx)
+            bit = HK_RAY_FLAG_NO_SHADE;
+         else if (intr->intrinsic == nir_intrinsic_hit_object_execute_agx)
+            bit = HK_RAY_FLAG_REPLAY;
+         else if (intr->intrinsic == nir_intrinsic_trace_ray)
+            bit = 0;
+         else
+            continue;
+
+         b.cursor = nir_before_instr(instr);
+         nir_def *flags = nir_ior_imm(
+            &b,
+            nir_iand_imm(&b, intr->src[1].ssa,
+                         ~(HK_RAY_FLAG_NO_SHADE | HK_RAY_FLAG_REPLAY)),
+            bit);
+
+         progress = true;
+
+         if (bit == 0) {
+            nir_src_rewrite(&intr->src[1], flags);
+            continue;
+         }
+
+         nir_trace_ray(&b, intr->src[0].ssa, flags, intr->src[2].ssa,
+                       intr->src[3].ssa, intr->src[4].ssa, intr->src[5].ssa,
+                       intr->src[6].ssa, intr->src[7].ssa, intr->src[8].ssa,
+                       intr->src[9].ssa, intr->src[10].ssa);
+         nir_instr_remove(instr);
+      }
+   }
+
+   nir_progress(progress, impl, nir_metadata_control_flow);
+}
+
 /* A ray generation, closest-hit, miss or callable shader in parts, its
  * frame-relative scratch at offsets from its frame's base
  */
@@ -1300,6 +1474,8 @@ static struct rt_split
 split_stage(void *mem_ctx, const nir_shader *nir)
 {
    nir_shader *s = nir_shader_clone(mem_ctx, nir);
+   hit_objects_to_traces(s);
+
    bool traces, calls;
    stage_calls(s, &traces, &calls);
    bool calling = traces || calls;
@@ -1690,9 +1866,39 @@ build_traversal_case(struct rt_clone *k, nir_builder *b)
       b, v->call_data,
       nir_iadd(b, nir_load_var(b, v->stack_ptr), nir_load_var(b, v->arg)), 0x1);
 
-   build_walk(k, b);
+   /* A hit object's trace walks and returns; its run takes the hit or miss
+    * stored before it (hit_objects_to_traces), the miss shader's index in
+    * the SBT index. The flags lose the bits before any shader reads them.
+    */
+   nir_def *flags = nir_load_var(b, v->flags);
+   nir_def *replay = nir_test_mask(b, flags, HK_RAY_FLAG_REPLAY);
+   nir_def *no_shade = nir_test_mask(b, flags, HK_RAY_FLAG_NO_SHADE);
+   nir_store_var(
+      b, v->flags,
+      nir_iand_imm(b, flags, ~(HK_RAY_FLAG_REPLAY | HK_RAY_FLAG_NO_SHADE)),
+      0x1);
 
-   nir_push_if(b, nir_load_var(b, k->trav.hit));
+   struct rt_traversal *t = rt_traversal(k, b->impl);
+   nir_push_if(b, replay);
+   {
+      nir_store_var(b, t->hit, nir_load_var(b, v->hit), 0x1);
+   }
+   nir_push_else(b, NULL);
+   {
+      build_walk(k, b);
+      nir_store_var(b, v->hit, nir_load_var(b, t->hit), 0x1);
+   }
+   nir_pop_if(b, NULL);
+
+   nir_def *miss_index = nir_bcsel(b, replay, nir_load_var(b, v->sbt_index),
+                                   nir_load_var(b, v->miss_index));
+
+   nir_push_if(b, no_shade);
+   {
+      build_return(k, b);
+   }
+   nir_push_else(b, NULL);
+   nir_push_if(b, nir_load_var(b, t->hit));
    {
       nir_def *skip_chit = nir_test_mask(
          b, nir_load_var(b, v->flags), SpvRayFlagsSkipClosestHitShaderKHRMask);
@@ -1715,9 +1921,10 @@ build_traversal_case(struct rt_clone *k, nir_builder *b)
       nir_def *id = sbt_lookup(k, b,
                                offsetof(VkTraceRaysIndirectCommand2KHR,
                                         missShaderBindingTableAddress),
-                               nir_load_var(b, v->miss_index), 0);
+                               miss_index, 0);
       goto_case(k, b, select_case(k, b, id, MESA_SHADER_MISS));
    }
+   nir_pop_if(b, NULL);
    nir_pop_if(b, NULL);
 }
 

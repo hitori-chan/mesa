@@ -1730,6 +1730,9 @@ print_intrinsic_instr(nir_intrinsic_instr *instr, print_state *state)
             VAL(flags);
             VAL(world_ray_direction);
             VAL(world_ray_origin);
+            VAL(intersection_triangle_vertex_positions);
+            VAL(intersection_instance_node_agx);
+            VAL(intersection_primitive_node_agx);
 #undef VAL
          default:
             fprintf(fp, "unknown");
