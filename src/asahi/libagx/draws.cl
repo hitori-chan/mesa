@@ -381,3 +381,66 @@ libagx_draw_robust_index_multi(constant struct libagx_robust_index *draws,
       (constant VkDrawIndexedIndirectCommand *)d->args, in_buf_ptr,
       in_buf_range_B, restart, topology, chip, index_size__3);
 }
+
+/*
+ * G15 multi-draws (libagx_dgc.h's struct libagx_mdi, hk_cmd_draw.c): draw i's
+ * record and stub, one thread each, and the return after the last draw. The
+ * grid is draw_count + 1 threads, so the return has its thread when the count
+ * reaches draw_count.
+ */
+KERNEL(32)
+libagx_mdi_g15(constant struct libagx_mdi *p)
+{
+   uint i = cl_global_id.x;
+   uint n =
+      libagx_mdi_count(p, (constant uint *)p->count, (constant uint *)p->cond);
+   global uint32_t *record =
+      (global uint32_t *)(p->records + (uint64_t)i * p->record_B);
+
+   if (i < n) {
+      uint64_t args = p->args + (uint64_t)i * p->stride_B;
+
+      libagx_mdi_write(
+         p, i, (constant uint32_t *)args, args, record,
+         (global uint8_t *)(p->stubs + (uint64_t)i * LIBAGX_MDI_STUB_B));
+   } else if (i == n) {
+      agx_vdm_return(record);
+   }
+}
+
+/* The robust index form: a subgroup each (libagx_robust_index_draw), over
+ * draw_count + 1 subgroups */
+KERNEL(32)
+libagx_mdi_g15_robust(constant struct libagx_mdi *p,
+                      global struct poly_heap *heap)
+{
+   uint i = cl_group_id.x;
+   bool first = get_sub_group_local_id() == 0;
+   uint n =
+      libagx_mdi_count(p, (constant uint *)p->count, (constant uint *)p->cond);
+   global uint32_t *record =
+      (global uint32_t *)(p->records + (uint64_t)i * p->record_B);
+
+   if (i < n) {
+      constant VkDrawIndexedIndirectCommand *cmd =
+         (constant VkDrawIndexedIndirectCommand *)(p->args +
+                                                   (uint64_t)i * p->stride_B);
+      global uint32_t *list = record + p->vs_B / 4;
+
+      if (first && p->vs_B) {
+         list = libagx_mdi_write_vs(
+            p, i, (constant uint32_t *)cmd, record,
+            (global uint8_t *)(p->stubs + (uint64_t)i * LIBAGX_MDI_STUB_B));
+      }
+
+      libagx_robust_index_draw(
+         list, heap, cmd, p->index_buffer, p->index_buffer_range_B, p->restart,
+         (enum agx_primitive)p->topology, (enum agx_chip)p->chip,
+         (enum agx_index_size)p->index_size);
+
+      if (first)
+         libagx_mdi_pad(p, record);
+   } else if (i == n && first) {
+      agx_vdm_return(record);
+   }
+}

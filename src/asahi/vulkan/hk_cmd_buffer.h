@@ -1134,6 +1134,9 @@ bool hk_g15_vdmcall(void);
 uint32_t hk_upload_g15_stub_words(struct hk_cmd_buffer *cmd,
                                   struct hk_shader *s,
                                   struct hk_linked_shader *linked);
+bool hk_g15_mdi_mode(void);
+bool hk_g15_mdi_shared(struct hk_cmd_buffer *cmd, struct hk_shader *s,
+                       struct hk_linked_shader *linked);
 
 uint64_t hk_upload_esl_va(struct hk_cmd_buffer *cmd,
                           const struct agx_esl_code *code,

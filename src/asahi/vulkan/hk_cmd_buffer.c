@@ -1028,6 +1028,17 @@ hk_upload_esl(struct hk_cmd_buffer *cmd, struct hk_shader *s,
 DEBUG_GET_ONCE_NUM_OPTION(hk_g15_stub, "HK_G15_STUB", 0)
 DEBUG_GET_ONCE_BOOL_OPTION(hk_g15_vdmcall, "HK_G15_VDMCALL", false)
 
+/* HK_G15_MDI=1: vkCmdDraw(Indexed)Indirect of more than one draw and
+ * vkCmdDraw(Indexed)IndirectCount as one VDM call into records a kernel writes
+ * (hk_g15_mdi) */
+DEBUG_GET_ONCE_BOOL_OPTION(hk_g15_mdi, "HK_G15_MDI", false)
+
+bool
+hk_g15_mdi_mode(void)
+{
+   return debug_get_option_hk_g15_mdi();
+}
+
 unsigned
 hk_g15_stub_mode(void)
 {
@@ -1040,14 +1051,14 @@ hk_g15_vdmcall(void)
    return debug_get_option_hk_g15_vdmcall();
 }
 
-/* HK_G15_STUB: this draw's stub, for the vertex program's USC words at usc.
- * The shared entry program is built when the words or the program change.
- * Returns its USC address, 0 where a stub cannot provide the words (the
- * caller then takes the uploaded parameters' path). */
-static uint32_t
-hk_upload_g15_stub(struct hk_cmd_buffer *cmd, struct hk_shader *s,
-                   struct hk_linked_shader *linked, const uint8_t *usc,
-                   size_t usc_size)
+/* HK_G15_STUB, HK_G15_MDI: the shared entry program for the vertex program's
+ * USC words at usc, built when the words or the program change. Returns
+ * false where a stub cannot provide the words (the caller then takes the
+ * uploaded parameters' path). */
+static bool
+hk_g15_shared(struct hk_cmd_buffer *cmd, struct hk_shader *s,
+              struct hk_linked_shader *linked, const uint8_t *usc,
+              size_t usc_size)
 {
    struct hk_device *dev = hk_cmd_buffer_device(cmd);
    struct hk_g15_stub *st = &cmd->state.gfx.g15_stub;
@@ -1093,8 +1104,16 @@ hk_upload_g15_stub(struct hk_cmd_buffer *cmd, struct hk_shader *s,
       util_dynarray_fini(&tail);
    }
 
-   if (!st->shared)
-      return 0;
+   return st->shared != 0;
+}
+
+/* HK_G15_STUB: this draw's stub (hk_g15_stub_draw's values), branching to the
+ * shared entry program. Returns its USC address, 0 on failure. */
+static uint32_t
+hk_upload_g15_stub(struct hk_cmd_buffer *cmd)
+{
+   struct hk_device *dev = hk_cmd_buffer_device(cmd);
+   struct hk_g15_stub *st = &cmd->state.gfx.g15_stub;
 
    /* The pipeline pointer is VA >> 6: a stub a 64 B line */
    struct agx_ptr t = hk_pool_usc_alloc(cmd, AGX_ESL_STUB_MAX, 64);
@@ -1106,7 +1125,7 @@ hk_upload_g15_stub(struct hk_cmd_buffer *cmd, struct hk_shader *s,
    util_dynarray_init_from_stack(&stub, stack, sizeof(stack));
 
    agx_esl_stub(&stub, st->words, st->values, st->nr_words, st->tail,
-                st->tail_size, st->shared);
+                st->tail_size, st->shared, NULL);
 
    assert(stub.size <= AGX_ESL_STUB_MAX);
    memcpy(t.cpu, stub.data, stub.size);
@@ -1116,15 +1135,27 @@ hk_upload_g15_stub(struct hk_cmd_buffer *cmd, struct hk_shader *s,
    return agx_usc_addr(&dev->dev, t.gpu);
 }
 
-/* The USC words of a shader, as a G15 entry program or a G13 word list. With
- * stub (HK_G15_STUB), the vertex program's per-draw ranges are provided by a
- * stub (hk_upload_g15_stub), 0 where they cannot be. */
+/* What hk_usc_words makes of a shader's USC words */
+enum hk_usc_mode {
+   /* A G15 entry program, or a G13 word list: its USC address */
+   HK_USC_PROGRAM,
+
+   /* HK_G15_STUB: the vertex program's per-draw ranges provided by a stub
+    * (hk_upload_g15_stub), the stub's USC address */
+   HK_USC_STUB,
+
+   /* HK_G15_MDI: the same ranges provided, the shared program alone: 1 */
+   HK_USC_SHARED,
+};
+
+/* The USC words of a shader, as the mode wants them, 0 where they cannot be */
 static uint32_t
 hk_usc_words(struct hk_cmd_buffer *cmd, struct hk_shader *s,
-             struct hk_linked_shader *linked, bool stub)
+             struct hk_linked_shader *linked, enum hk_usc_mode mode)
 {
    struct hk_device *dev = hk_cmd_buffer_device(cmd);
    struct hk_g15_stub *st = &cmd->state.gfx.g15_stub;
+   bool stub = mode != HK_USC_PROGRAM;
 
    mesa_shader_stage sw_stage = s->info.stage;
 
@@ -1185,13 +1216,14 @@ hk_usc_words(struct hk_cmd_buffer *cmd, struct hk_shader *s,
             root_ptr + hk_root_descriptor_offset(draw.attrib_clamps));
       }
 
-      /* A stub's ranges are in its registers: their buffer is not read */
+      /* A stub's ranges are in its registers: their buffer is not read, and
+       * 0 keeps the words the same from draw to draw (hk_g15_shared's key) */
       if (stub)
          st->nr_words = 0;
 
-      if (cmd->state.gfx.draw_params || (stub && st->base_param)) {
+      if (stub ? st->base_param : cmd->state.gfx.draw_params != 0) {
          agx_usc_uniform(&b, AGX_ABI_VUNI_FIRST_VERTEX(count), 4,
-                         cmd->state.gfx.draw_params);
+                         stub ? 0 : cmd->state.gfx.draw_params);
 
          if (stub) {
             st->words[st->nr_words++] = AGX_ABI_VUNI_FIRST_VERTEX(count) / 2;
@@ -1199,9 +1231,9 @@ hk_usc_words(struct hk_cmd_buffer *cmd, struct hk_shader *s,
          }
       }
 
-      if (cmd->state.gfx.draw_id_ptr || (stub && st->draw_id)) {
+      if (stub ? st->draw_id : cmd->state.gfx.draw_id_ptr != 0) {
          agx_usc_uniform(&b, AGX_ABI_VUNI_DRAW_ID(count), 2,
-                         cmd->state.gfx.draw_id_ptr);
+                         stub ? 0 : cmd->state.gfx.draw_id_ptr);
 
          if (stub)
             st->words[st->nr_words++] = AGX_ABI_VUNI_DRAW_ID(count) / 2;
@@ -1239,9 +1271,12 @@ hk_usc_words(struct hk_cmd_buffer *cmd, struct hk_shader *s,
 
    agx_usc_push_blob(&b, linked->usc.data, linked->usc.size);
 
-   if (stub)
-      return hk_upload_g15_stub(cmd, s, linked, t.cpu,
-                                b.head - (uint8_t *)t.cpu);
+   if (stub) {
+      if (!hk_g15_shared(cmd, s, linked, t.cpu, b.head - (uint8_t *)t.cpu))
+         return 0;
+
+      return mode == HK_USC_SHARED ? 1 : hk_upload_g15_stub(cmd);
+   }
 
    if (g15)
       return hk_upload_esl(cmd, s, linked, t.cpu);
@@ -1253,7 +1288,7 @@ uint32_t
 hk_upload_usc_words(struct hk_cmd_buffer *cmd, struct hk_shader *s,
                     struct hk_linked_shader *linked)
 {
-   return hk_usc_words(cmd, s, linked, false);
+   return hk_usc_words(cmd, s, linked, HK_USC_PROGRAM);
 }
 
 uint32_t
@@ -1261,7 +1296,15 @@ hk_upload_g15_stub_words(struct hk_cmd_buffer *cmd, struct hk_shader *s,
                          struct hk_linked_shader *linked)
 {
    assert(s->info.stage == MESA_SHADER_VERTEX);
-   return hk_usc_words(cmd, s, linked, true);
+   return hk_usc_words(cmd, s, linked, HK_USC_STUB);
+}
+
+bool
+hk_g15_mdi_shared(struct hk_cmd_buffer *cmd, struct hk_shader *s,
+                  struct hk_linked_shader *linked)
+{
+   assert(s->info.stage == MESA_SHADER_VERTEX);
+   return hk_usc_words(cmd, s, linked, HK_USC_SHARED) != 0;
 }
 
 void

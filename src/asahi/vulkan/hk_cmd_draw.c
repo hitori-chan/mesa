@@ -3297,6 +3297,41 @@ agx_fill_velem_keys(const struct vk_vertex_input_state *vi,
    }
 }
 
+/* The vertex state block: the hardware vertex program's words, its entry
+ * program at pipeline (a USC address), its outputs and the provoking vertex,
+ * padded to 8 bytes. HK_G15_MDI's records take a copy (hk_g15_mdi). */
+static uint8_t *
+hk_push_vs_state(struct hk_cmd_buffer *cmd, uint8_t *out,
+                 struct hk_shader *hw_vs, uint32_t pipeline)
+{
+   struct hk_device *dev = hk_cmd_buffer_device(cmd);
+   struct hk_graphics_state *gfx = &cmd->state.gfx;
+
+   agx_push(out, VDM_STATE, cfg) {
+      cfg.vertex_shader_word_0_present = true;
+      cfg.vertex_shader_word_1_present = true;
+      cfg.vertex_outputs_present = true;
+      cfg.vertex_unknown_present = true;
+   }
+
+   agx_push_packed(out, hw_vs->counts, VDM_STATE_VERTEX_SHADER_WORD_0);
+
+   out = agx_push_vertex_shader_word_1(out, dev->dev.params.gpu_generation,
+                                       dev->dev.shader_base, pipeline);
+   agx_push_packed(out, hw_vs->info.uvs.vdm, VDM_STATE_VERTEX_OUTPUTS);
+
+   agx_push(out, VDM_STATE_VERTEX_UNKNOWN, cfg) {
+      cfg.flat_shading_control = translate_vdm_vertex(gfx->provoking);
+      cfg.unknown_4 = cfg.unknown_5 = hk_rast_discard(cmd);
+      cfg.generate_primitive_id = gfx->generate_primitive_id;
+   }
+
+   /* Pad up to a multiple of 8 bytes */
+   memset(out, 0, 4);
+   out += 4;
+   return out;
+}
+
 /* HK_G15_STUB (experimental): whether this draw's per-draw vertex uniforms
  * go into a stub (agx_esl_stub). A direct draw of a plain hardware vertex
  * program that reads them: no geometry, tessellation or mesh stage, no
@@ -3919,15 +3954,6 @@ hk_flush_dynamic_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
       /* TODO: Do less often? */
       hk_reserve_scratch(cmd, cs, hw_vs);
 
-      agx_push(out, VDM_STATE, cfg) {
-         cfg.vertex_shader_word_0_present = true;
-         cfg.vertex_shader_word_1_present = true;
-         cfg.vertex_outputs_present = true;
-         cfg.vertex_unknown_present = true;
-      }
-
-      agx_push_packed(out, hw_vs->counts, VDM_STATE_VERTEX_SHADER_WORD_0);
-
       struct hk_linked_shader *linked_hw_vs =
          (hw_vs == sw_vs) ? linked_vs : hw_vs->only_linked;
 
@@ -3945,20 +3971,8 @@ hk_flush_dynamic_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
       if (!pipeline)
          pipeline = hk_upload_usc_words(cmd, hw_vs, linked_hw_vs);
 
-      out = agx_push_vertex_shader_word_1(out, dev->dev.params.gpu_generation,
-                                          dev->dev.shader_base, pipeline);
-      agx_push_packed(out, hw_vs->info.uvs.vdm, VDM_STATE_VERTEX_OUTPUTS);
+      out = hk_push_vs_state(cmd, out, hw_vs, pipeline);
       cs->writes_layer |= hw_vs->info.uvs.components[VARYING_SLOT_LAYER] != 0;
-
-      agx_push(out, VDM_STATE_VERTEX_UNKNOWN, cfg) {
-         cfg.flat_shading_control = translate_vdm_vertex(gfx->provoking);
-         cfg.unknown_4 = cfg.unknown_5 = hk_rast_discard(cmd);
-         cfg.generate_primitive_id = gfx->generate_primitive_id;
-      }
-
-      /* Pad up to a multiple of 8 bytes */
-      memset(out, 0, 4);
-      out += 4;
    }
 
    if (IS_DIRTY(RS_DEPTH_BIAS_FACTORS)) {
@@ -5125,6 +5139,220 @@ hk_CmdDrawMultiIndexedEXT(VkCommandBuffer commandBuffer, uint32_t drawCount,
    }
 }
 
+/*
+ * HK_G15_MDI (experimental): a multi-draw's draws as one VDM call into records
+ * a kernel writes before the pass (libagx_mdi_g15, libagx_dgc.h's struct
+ * libagx_mdi), as Apple's indirect command buffers run (gpu-mdi.md's Q3).
+ * The state is flushed once, as for the first draw; a vertex program that
+ * reads its draw's parameters gets a shared entry program for the flush
+ * (hk_g15_shared) and a stub a draw, branching to it. Returns false where the
+ * draws take the CPU's loop: the flush it may have done leaves the stream as
+ * any draw's would.
+ *
+ * Memory per call: (draw_count + 1) records (64 B with a stub, the index list
+ * alone without) plus 0x800 B, and draw_count 64 B stubs in the USC pool.
+ */
+
+/* What keeps a multi-draw from one call before the flush: the rest of
+ * gpu-mdi.md's eligibility follows it (hk_g15_mdi) */
+static const char *
+hk_g15_mdi_ineligible(struct hk_cmd_buffer *cmd)
+{
+   struct hk_graphics_state *gfx = &cmd->state.gfx;
+   const struct vk_dynamic_graphics_state *dyn =
+      &cmd->vk.dynamic_graphics_state;
+
+   static const VkQueryPipelineStatisticFlagBits ia_stats[] = {
+      VK_QUERY_PIPELINE_STATISTIC_INPUT_ASSEMBLY_VERTICES_BIT,
+      VK_QUERY_PIPELINE_STATISTIC_INPUT_ASSEMBLY_PRIMITIVES_BIT,
+      VK_QUERY_PIPELINE_STATISTIC_VERTEX_SHADER_INVOCATIONS_BIT,
+      VK_QUERY_PIPELINE_STATISTIC_CLIPPING_INVOCATIONS_BIT,
+      VK_QUERY_PIPELINE_STATISTIC_CLIPPING_PRIMITIVES_BIT,
+   };
+
+   if (!gfx->shaders[MESA_SHADER_VERTEX])
+      return "no vertex shader";
+
+   if (gfx->shaders[MESA_SHADER_TESS_EVAL] ||
+       gfx->shaders[MESA_SHADER_GEOMETRY] || gfx->shaders[MESA_SHADER_MESH])
+      return "tessellation, geometry or mesh";
+
+   if (gfx->xfb_enabled)
+      return "transform feedback";
+
+   if (mesa_prim_has_adjacency(vk_topology_to_mesa(dyn->ia.primitive_topology)))
+      return "adjacency";
+
+   /* Each view flushes its own state (hk_foreach_view): a call a view is not
+    * written yet */
+   if (gfx->render.view_mask)
+      return "multiview";
+
+   if (gfx->dgc.vdm)
+      return "generated commands";
+
+   /* hk_ia_update counts each draw on the CPU */
+   for (unsigned i = 0; i < ARRAY_SIZE(ia_stats); i++) {
+      if (hk_stat_enabled(hk_pipeline_stat_addr(cmd, ia_stats[i])))
+         return "pipeline statistics";
+   }
+
+   return NULL;
+}
+
+static bool
+hk_g15_mdi(struct hk_cmd_buffer *cmd, uint64_t args, uint32_t stride_B,
+           uint64_t count, uint32_t draw_count, bool indexed)
+{
+   struct hk_device *dev = hk_cmd_buffer_device(cmd);
+   struct hk_graphics_state *gfx = &cmd->state.gfx;
+   struct hk_g15_stub *st = &gfx->g15_stub;
+   const struct vk_dynamic_graphics_state *dyn =
+      &cmd->vk.dynamic_graphics_state;
+
+   if (!hk_g15_mdi_mode() || dev->dev.params.gpu_generation < 15 || !draw_count)
+      return false;
+
+   if (hk_g15_mdi_ineligible(cmd))
+      return false;
+
+   /* hk_draw's: the restart and index size are the state's */
+   struct hk_addr_range buf = gfx->index.buffer;
+   struct agx_draw draw =
+      indexed ? agx_draw_indexed_indirect(args, buf.addr, buf.range, 0, 0)
+              : agx_draw_indirect(args);
+   draw.restart = dyn->ia.primitive_restart_enable && draw.indexed;
+   draw.index_size = gfx->index.size;
+
+   struct hk_cs *cs = hk_flush_gfx_state(cmd, 0, draw);
+
+   /* The device is lost: dropped, as hk_draw drops a draw */
+   if (!cs)
+      return true;
+
+   /* What the flush settles: the linked vertex program, a passthrough
+    * geometry shader */
+   struct hk_api_shader *vs = gfx->shaders[MESA_SHADER_VERTEX];
+   struct hk_shader *hw_vs = hk_bound_hw_vs(gfx);
+   struct hk_linked_shader *linked = gfx->linked[MESA_SHADER_VERTEX];
+
+   if (hw_vs != &vs->variants[HK_VS_VARIANT_HW] ||
+       gfx->shaders[MESA_SHADER_GEOMETRY] || linked->sw_indexing)
+      return false;
+
+   /* The zero page for an empty index buffer, as hk_draw has it */
+   bool robust = hk_needs_index_robustness(cmd, &draw);
+   bool base_param = linked->b.uses_base_param;
+   bool uses_draw_id = hw_vs->b.info.uses_draw_id;
+   bool stub = base_param || uses_draw_id;
+
+   struct libagx_mdi p = {
+      .args = args,
+      .count = count,
+      .cond = cmd->state.cond.addr,
+      .cond_inv = cmd->state.cond.inverted,
+      .index_buffer = draw.indexed ? draw.index_buffer : 0,
+      .index_buffer_range_B = draw.indexed ? draw.index_buffer_range_B : 0,
+      .draw_count = draw_count,
+      .stride_B = stride_B,
+      .indexed = draw.indexed,
+      .restart = draw.restart,
+      .index_size = draw.index_size,
+      .topology = gfx->topology,
+      .chip = dev->dev.chip,
+      .list_B = robust ? libagx_draw_robust_index_vdm_size(dev->dev.chip)
+                       : agx_vdm_draw_size(dev->dev.chip, draw),
+   };
+
+   if (stub) {
+      /* The shared entry program, for this flush's words */
+      st->base_param = base_param;
+      st->draw_id = uses_draw_id;
+
+      if (!hk_g15_mdi_shared(cmd, hw_vs, linked))
+         return false;
+
+      /* The stub's template: its mov_imms of 0, their offsets */
+      static const uint32_t zeros[LIBAGX_MDI_MAX_IMM] = {0};
+      uint8_t stack[AGX_ESL_STUB_MAX];
+      struct util_dynarray template;
+      util_dynarray_init_from_stack(&template, stack, sizeof(stack));
+
+      assert(st->nr_words <= LIBAGX_MDI_MAX_IMM);
+      agx_esl_stub(&template, st->words, zeros, st->nr_words, st->tail,
+                   st->tail_size, st->shared, p.imm_offset);
+
+      assert(template.size <= sizeof(p.stub));
+      memcpy(p.stub, template.data, template.size);
+      p.stub_B = template.size;
+      util_dynarray_fini(&template);
+
+      /* In hk_usc_words' order of the words */
+      if (base_param) {
+         p.imm_value[p.nr_imm++] = LIBAGX_MDI_FIRST;
+         p.imm_value[p.nr_imm++] = LIBAGX_MDI_BASE_INSTANCE;
+      }
+
+      if (uses_draw_id)
+         p.imm_value[p.nr_imm++] = LIBAGX_MDI_DRAW_ID;
+
+      assert(p.nr_imm == st->nr_words);
+      p.nr_fields = agx3_mov_imm_fields(p.field_start, p.field_size,
+                                        p.field_vpos, LIBAGX_MDI_MAX_FIELDS);
+
+      /* The vertex state block, its word 1 the kernel's */
+      uint8_t *end = hk_push_vs_state(cmd, (uint8_t *)p.vs_state, hw_vs, 0);
+      p.vs_B = end - (uint8_t *)p.vs_state;
+      p.vs_word1_B =
+         AGX_VDM_STATE_LENGTH + AGX_VDM_STATE_VERTEX_SHADER_WORD_0_LENGTH;
+      p.record_B = 64;
+      assert(p.vs_B <= sizeof(p.vs_state) && p.vs_B + p.list_B <= p.record_B);
+   } else {
+      p.record_B = p.list_B;
+   }
+
+   uint64_t slots = (uint64_t)draw_count + 1;
+   uint64_t records_B = slots * p.record_B + 0x800;
+   uint64_t stubs_B = (uint64_t)draw_count * LIBAGX_MDI_STUB_B;
+
+   if (records_B > UINT32_MAX || stubs_B > UINT32_MAX)
+      return false;
+
+   struct agx_ptr records = hk_pool_alloc(cmd, records_B, 256);
+   struct agx_ptr stubs = {0};
+   if (stub)
+      stubs = hk_pool_usc_alloc(cmd, stubs_B, 64);
+
+   /* Out of memory: the command buffer has its error */
+   if (!records.cpu || (stub && !stubs.cpu))
+      return true;
+
+   p.records = records.gpu;
+   p.stubs = stubs.gpu;
+
+   /* A return in the first slot, for a kernel that does not run (no G15
+    * build): its first thread writes there */
+   agx_vdm_return(records.cpu);
+
+   uint64_t params = hk_pool_upload(cmd, &p, sizeof(p), 8);
+
+   if (robust) {
+      libagx_mdi_g15_robust(cmd, agx_1d(32 * slots),
+                            AGX_BARRIER_ALL | AGX_PREGFX, params, hk_heap(cmd));
+   } else {
+      libagx_mdi_g15(cmd, agx_1d(slots), AGX_BARRIER_ALL | AGX_PREGFX, params);
+   }
+
+   cs->current =
+      agx_vdm_call((uint32_t *)cs->current, agx_vdm_va(&dev->dev, records.gpu));
+   cs->stats.calls++;
+   cs->stats.cmds++;
+
+   /* After the return the hardware holds the last record's vertex state */
+   gfx->dirty |= HK_DIRTY_VARYINGS;
+   return true;
+}
+
 static void
 hk_draw_indirect_inner(VkCommandBuffer commandBuffer, uint64_t base,
                        uint32_t drawCount, uint32_t stride)
@@ -5160,6 +5388,9 @@ hk_CmdDrawIndirect(VkCommandBuffer commandBuffer, VkBuffer _buffer,
    VK_FROM_HANDLE(hk_cmd_buffer, cmd, commandBuffer);
    VK_FROM_HANDLE(hk_buffer, buffer, _buffer);
    uint64_t addr = hk_buffer_address_ro(buffer, offset);
+
+   if (drawCount > 1 && hk_g15_mdi(cmd, addr, stride, 0, drawCount, false))
+      return;
 
    if (cmd->state.cond.addr && drawCount) {
       addr = hk_predicate_args(cmd, addr, 0, drawCount, stride, 4, true);
@@ -5216,6 +5447,9 @@ hk_CmdDrawIndexedIndirect(VkCommandBuffer commandBuffer, VkBuffer _buffer,
    VK_FROM_HANDLE(hk_buffer, buffer, _buffer);
    uint64_t addr = hk_buffer_address_ro(buffer, offset);
 
+   if (drawCount > 1 && hk_g15_mdi(cmd, addr, stride, 0, drawCount, true))
+      return;
+
    if (cmd->state.cond.addr && drawCount) {
       addr = hk_predicate_args(cmd, addr, 0, drawCount, stride, 5, true);
       stride = sizeof(VkDrawIndexedIndirectCommand);
@@ -5243,10 +5477,14 @@ hk_draw_indirect_count(VkCommandBuffer commandBuffer, VkBuffer _buffer,
 
    assert((stride % 4) == 0 && "aligned");
 
-   size_t out_stride = sizeof(uint32_t) * (indexed ? 5 : 4);
-   uint64_t patched = hk_pool_alloc(cmd, out_stride * maxDrawCount, 4).gpu;
    uint64_t in = hk_buffer_address_ro(buffer, offset);
    uint64_t count_addr = hk_buffer_address_ro(count_buffer, countBufferOffset);
+
+   if (hk_g15_mdi(cmd, in, stride, count_addr, maxDrawCount, indexed))
+      return;
+
+   size_t out_stride = sizeof(uint32_t) * (indexed ? 5 : 4);
+   uint64_t patched = hk_pool_alloc(cmd, out_stride * maxDrawCount, 4).gpu;
 
    libagx_predicate_indirect(
       cmd, agx_1d(maxDrawCount), AGX_BARRIER_ALL | AGX_PREGFX, patched, in,

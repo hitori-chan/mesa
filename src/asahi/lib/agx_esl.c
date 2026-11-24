@@ -501,12 +501,16 @@ agx_esl_shared_from_usc(struct util_dynarray *out, const uint8_t *usc,
 void
 agx_esl_stub(struct util_dynarray *out, const unsigned *words,
              const uint32_t *values, unsigned count, const void *tail,
-             size_t tail_size, uint64_t shared_va)
+             size_t tail_size, uint64_t shared_va, unsigned *offsets)
 {
-   ASSERTED size_t start = out->size;
+   size_t start = out->size;
 
    for (unsigned i = 0; i < count; i++) {
       assert(words[i] < ESL_PUSH_REGS);
+
+      if (offsets)
+         offsets[i] = out->size - start;
+
       agx3_emit_mov_imm(out, words[i] + AGX_G15_PUSH_REG, values[i]);
    }
 

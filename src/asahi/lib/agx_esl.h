@@ -136,7 +136,9 @@ bool agx_esl_shared_from_usc(struct util_dynarray *out, const uint8_t *usc,
                              const struct agx_esl_shared *shared);
 
 /* A draw's stub: each value into its uniform word's push register, the tail
- * (agx_esl_shared), then the branch to the shared program */
+ * (agx_esl_shared), then the branch to the shared program. offsets, if not
+ * NULL, gets each mov_imm's byte offset in the stub (a GPU writer deposits
+ * the values there, agx3_mov_imm_fields). */
 void agx_esl_stub(struct util_dynarray *out, const unsigned *words,
                   const uint32_t *values, unsigned count, const void *tail,
-                  size_t tail_size, uint64_t shared_va);
+                  size_t tail_size, uint64_t shared_va, unsigned *offsets);
