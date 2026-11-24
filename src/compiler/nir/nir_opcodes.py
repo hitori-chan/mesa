@@ -1458,7 +1458,10 @@ dst.p = src15.x;
 # sources, such that lower precision integer multiplies can be used.
 # This is useful on hw that has 24b or perhaps 16b integer multiply
 # instructions.
-binop("amul", tint, _2src_commutative + associative, "src0 * src1")
+binop("amul", tint, _2src_commutative + associative, """
+   /* As imul: a signed product's overflow is undefined in C */
+   dst = (uint64_t)src0 * (uint64_t)src1;
+""")
 
 # ir3-specific instruction that maps directly to mul-add shift high mix,
 # (IMADSH_MIX16 i.e. al * bh << 16 + c). It is used for lowering integer
