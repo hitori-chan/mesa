@@ -256,7 +256,13 @@ typedef enum {
    nir_ray_query_value_flags,
    nir_ray_query_value_world_ray_direction,
    nir_ray_query_value_world_ray_origin,
-   nir_ray_query_value_intersection_triangle_vertex_positions
+   nir_ray_query_value_intersection_triangle_vertex_positions,
+
+   /* Honeykrisp's: the BVH nodes of the intersection's instance and primitive,
+    * for its hit objects
+    */
+   nir_ray_query_value_intersection_instance_node_agx,
+   nir_ray_query_value_intersection_primitive_node_agx,
 } nir_ray_query_value;
 
 /**

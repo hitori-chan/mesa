@@ -171,4 +171,35 @@ hk_nir_build_rt_dispatcher(const nir_shader_compiler_options *options,
  */
 unsigned hk_nir_rt_stage_stack_size(const nir_shader *nir);
 
+/* A ray-tracing stage's hit objects (hk_nir_lower_hit_objects.c), lowered
+ * before the stage is inlined or split: a struct of values each, and the
+ * intrinsics below for the traces and runs.
+ */
+bool hk_nir_lower_hit_objects(nir_shader *nir);
+
+/* The kernel's hit state, by load_hit_state_agx and store_hit_state_agx's
+ * BASE: what a trace leaves (hit_object_trace_ray_agx) and what the run of a
+ * recorded closest-hit or miss shader takes (hit_object_execute_agx), with
+ * the ray in the intrinsic's sources. The hit attributes are its last words.
+ */
+enum hk_hit_state {
+   HK_HIT_STATE_HIT,                   /* 1-bit: a hit, not a miss */
+   HK_HIT_STATE_INSTANCE_ADDR,         /* 64-bit */
+   HK_HIT_STATE_PRIMITIVE_ADDR,        /* 64-bit */
+   HK_HIT_STATE_PRIMITIVE_ID,
+   HK_HIT_STATE_GEOMETRY_ID_AND_FLAGS,
+   HK_HIT_STATE_HIT_KIND,
+   HK_HIT_STATE_SBT_INDEX,             /* the hit group's or the miss shader's */
+   HK_HIT_STATE_TMAX,
+   HK_HIT_STATE_ATTRIB,                /* + i: the hit attributes' word i */
+};
+
+#define HK_HIT_ATTRIB_WORDS 8
+
+/* Tier 2: the ray flags' bits that make a trace_ray one of the two above in
+ * the traversal's case, cleared there
+ */
+#define HK_RAY_FLAG_NO_SHADE (1u << 30)
+#define HK_RAY_FLAG_REPLAY   (1u << 31)
+
 #endif

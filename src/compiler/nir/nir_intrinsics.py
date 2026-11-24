@@ -743,6 +743,70 @@ intrinsic("terminate_ray")
 # src[] = { sbt_index, payload }
 intrinsic("execute_callable", src_comp=[1, -1])
 
+# Shader execution reordering (SPV_EXT_shader_invocation_reorder). A hit object
+# is a Function or Private variable of an opaque type, never loaded, stored or
+# copied: each intrinsic takes its deref first, and the driver lowers them.
+#
+# As trace_ray, but the closest-hit and miss shaders do not run: the hit or the
+# miss is recorded in the hit object. The ray's origin and direction take its
+# tmin and tmax as their w, for the limit on sources.
+# src[] = { hit_object, accel_struct, ray_flags, cull_mask, sbt_offset,
+#           sbt_stride, miss_index, vec4(origin, tmin), vec4(direction, tmax),
+#           payload }
+intrinsic("hit_object_trace_ray", src_comp=[-1, -1, 1, 1, 1, 1, 1, 4, 4, -1])
+# src[] = { hit_object, ray_flags, miss_index, vec4(origin, tmin),
+#           vec4(direction, tmax) }
+intrinsic("hit_object_record_miss", src_comp=[-1, 1, 1, 4, 4])
+# src[] = { hit_object }
+intrinsic("hit_object_record_empty", src_comp=[-1])
+# The ray query's committed intersection, an empty hit object without one. A
+# triangle's hit kind and attributes are the query's, an AABB's the sources':
+# the attributes a variable (SPIR-V's HitObjectAttributeEXT storage class).
+# src[] = { hit_object, ray_query, sbt_record_index, hit_kind, attributes }
+intrinsic("hit_object_record_from_query", src_comp=[-1, -1, 1, 1, -1])
+# Runs the closest-hit or miss shader the hit object records, none if empty.
+# src[] = { hit_object, payload }
+intrinsic("hit_object_execute_shader", src_comp=[-1, -1])
+# Copies the hit object's attributes into a variable.
+# src[] = { hit_object, attributes }
+intrinsic("hit_object_get_attributes", src_comp=[-1, -1])
+# src[] = { hit_object, sbt_record_index }
+intrinsic("hit_object_set_sbt_record_index", src_comp=[-1, 1])
+# Reorders the invocations by the hint's low bits (the second source), then,
+# for the second form, by the hit object. A hint of no bits orders by the hit
+# object alone. Reordering nothing is legal.
+# src[] = { hint, bits }
+intrinsic("reorder_thread", src_comp=[1, 1])
+# src[] = { hit_object, hint, bits }
+intrinsic("hit_object_reorder_thread", src_comp=[-1, 1, 1])
+
+# The hit object's values, as the builtins of the shaders it would run.
+# src[] = { hit_object }
+def hit_object_get(name, comps, bit_size, indices=[]):
+    intrinsic("hit_object_get_" + name, src_comp=[-1], dest_comp=comps,
+              bit_sizes=[bit_size], indices=indices, flags=[CAN_ELIMINATE])
+
+hit_object_get("is_empty", 1, 1)
+hit_object_get("is_hit", 1, 1)
+hit_object_get("is_miss", 1, 1)
+hit_object_get("ray_flags", 1, 32)
+hit_object_get("ray_t_min", 1, 32)
+hit_object_get("ray_t_max", 1, 32)
+hit_object_get("world_ray_origin", 3, 32)
+hit_object_get("world_ray_direction", 3, 32)
+hit_object_get("object_ray_origin", 3, 32)
+hit_object_get("object_ray_direction", 3, 32)
+hit_object_get("object_to_world", 3, 32, indices=[COLUMN])
+hit_object_get("world_to_object", 3, 32, indices=[COLUMN])
+hit_object_get("instance_custom_index", 1, 32)
+hit_object_get("instance_id", 1, 32)
+hit_object_get("primitive_index", 1, 32)
+hit_object_get("geometry_index", 1, 32)
+hit_object_get("hit_kind", 1, 32)
+hit_object_get("sbt_record_index", 1, 32)
+hit_object_get("shader_record_buffer_handle", 2, 32)
+hit_object_get("triangle_vertex_positions", 3, 32, indices=[COLUMN])
+
 # Initialize a ray query
 #
 #   0. Ray Query
@@ -2708,6 +2772,15 @@ system_value("rt_params_agx", 1, bit_sizes=[64])
 # The range of the thread-private stack a ray-tracing pipeline's frames take:
 # its start, past the kernel's own stack, and its end
 system_value("rt_stack_agx", 2, bit_sizes=[32])
+
+# Honeykrisp's hit objects (hk_nir_lower_hit_objects.c), with trace_ray's
+# sources: a trace that runs no closest-hit or miss shader, and the run of the
+# shader a hit object records, from the hit state stored before it. The state a
+# trace leaves and a run takes, by the index of its value (enum hk_hit_state).
+intrinsic("hit_object_trace_ray_agx", src_comp=[-1, 1, 1, 1, 1, 1, 3, 1, 3, 1, -1])
+intrinsic("hit_object_execute_agx", src_comp=[-1, 1, 1, 1, 1, 1, 3, 1, 3, 1, -1])
+intrinsic("load_hit_state_agx", dest_comp=0, indices=[BASE], flags=[CAN_ELIMINATE])
+intrinsic("store_hit_state_agx", src_comp=[0], indices=[BASE])
 
 # Image loads go through the texture cache, which is not coherent with the PBE
 # or memory access, so fencing is necessary for writes to become visible.

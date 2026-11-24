@@ -232,6 +232,7 @@ hk_get_device_extensions(const struct agx_device *dev,
       .EXT_primitives_generated_query = false,
       .EXT_provoking_vertex = true,
       .EXT_queue_family_foreign = true,
+      .EXT_ray_tracing_invocation_reorder = rtp,
       .EXT_robustness2 = true,
       .EXT_sample_locations = true,
       .EXT_sampler_filter_minmax = false,
@@ -503,6 +504,10 @@ hk_get_device_features(
       /* VK_KHR_ray_tracing_position_fetch */
       .rayTracingPositionFetch =
          supported_extensions->KHR_ray_tracing_position_fetch,
+
+      /* VK_EXT_ray_tracing_invocation_reorder */
+      .rayTracingInvocationReorder =
+         supported_extensions->EXT_ray_tracing_invocation_reorder,
 
       /* VK_KHR_pipeline_library_group_handles */
       .pipelineLibraryGroupHandles =
@@ -1103,6 +1108,13 @@ hk_get_device_properties(const struct agx_device *dev,
       .maxRayDispatchInvocationCount = 1 << 30,
       .shaderGroupHandleAlignment = 16,
       .maxRayHitAttributeSize = 32,
+
+      /* VK_EXT_ray_tracing_invocation_reorder: hit objects, no reordering
+       * (hk_nir_lower_hit_objects.c). A record's offset is 64-bit.
+       */
+      .rayTracingInvocationReorderReorderingHint =
+         VK_RAY_TRACING_INVOCATION_REORDER_MODE_NONE_EXT,
+      .maxShaderBindingTableRecordIndex = UINT32_MAX,
 
       /* VK_KHR_acceleration_structure: the spec's minimums. A node reference
        * is a 32-bit byte offset, which holds about 40 million triangles.

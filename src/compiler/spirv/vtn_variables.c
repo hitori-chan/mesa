@@ -1915,6 +1915,11 @@ vtn_storage_class_to_mode(struct vtn_builder *b,
       mode = vtn_variable_mode_hit_attrib;
       nir_mode = nir_var_ray_hit_attrib;
       break;
+   case SpvStorageClassHitObjectAttributeEXT:
+      /* The invocation's own, read and written by hit object instructions */
+      mode = vtn_variable_mode_private;
+      nir_mode = nir_var_shader_temp;
+      break;
    case SpvStorageClassShaderRecordBufferKHR:
       mode = vtn_variable_mode_shader_record;
       nir_mode = nir_var_mem_constant;
