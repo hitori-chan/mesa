@@ -95,6 +95,9 @@ agx_pool_upload_aligned_with_bo(struct agx_pool *pool, const void *data,
 {
    struct agx_ptr transfer =
       agx_pool_alloc_aligned_with_bo(pool, sz, alignment, bo);
-   memcpy(transfer.cpu, data, sz);
+
+   /* An empty array's data may be NULL (a batch with no scissor) */
+   if (sz)
+      memcpy(transfer.cpu, data, sz);
    return transfer.gpu;
 }
