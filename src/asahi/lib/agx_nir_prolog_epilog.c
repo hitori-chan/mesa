@@ -672,17 +672,17 @@ agx_nir_fs_epilog(nir_builder *b, const void *key_)
  * target the epilog stores in full: its location written, every component in
  * the colour mask, blending off, not spilled. A program that reads the tile
  * buffer, discards, writes memory or runs a logic op or alpha-to-coverage
- * marks none, and so does one at 2 or 4 samples: there a marked word fails
- * dEQP-VK's sample location, raster sample and sampled image cases (78 of a
- * tenth), as if a draw covering part of a pixel dropped the samples it leaves
- * (not traced).
+ * marks none. At 2 and 4 samples the hardware hides the background only in
+ * the samples the draw covers, and the background program stores only the
+ * samples its coverage names (agx_nir_lower_tile_raw), as Metal's, which
+ * marks at any sample count.
  */
 uint32_t
 agx_fs_epilog_tib_written(const struct agx_fs_epilog_key *key,
                           const struct agx_linked_shader *linked)
 {
-   if (linked->no_op || linked->writes_memory || key->nr_samples > 1 ||
-       key->blend.logicop_enable || key->blend.alpha_to_coverage)
+   if (linked->no_op || linked->writes_memory || key->blend.logicop_enable ||
+       key->blend.alpha_to_coverage)
       return 0;
 
    agx_unpack(NULL, &linked->fragment_control, FRAGMENT_CONTROL, fc);
