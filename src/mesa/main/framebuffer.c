@@ -996,6 +996,10 @@ _mesa_get_read_renderbuffer_for_format(const struct gl_context *ctx,
    const struct gl_framebuffer *rfb = ctx->ReadBuffer;
 
    if (_mesa_is_color_format(format)) {
+      /* -1: the read buffer is GL_NONE */
+      if (rfb->_ColorReadBufferIndex < 0)
+         return NULL;
+
       return rfb->Attachment[rfb->_ColorReadBufferIndex].Renderbuffer;
    } else if (_mesa_is_depth_format(format) ||
               _mesa_is_depthstencil_format(format)) {
