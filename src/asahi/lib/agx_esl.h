@@ -79,9 +79,66 @@ agx_esl_ldshdr_va(const uint8_t *p)
    return ((w >> 23) << 6) | ((uint64_t)(p[8] & 1) << 47);
 }
 
+/* The target of the absolute branch at p (agx3_emit_branch_abs: 0f 00 54,
+ * then the target with bit 0 set in bits 24-71), 0 if p holds another
+ * instruction */
+static inline uint64_t
+agx_esl_branch_abs_va(const uint8_t *p)
+{
+   if (p[0] != 0x0f || p[1] != 0x00 || p[2] != 0x54 || !(p[3] & 1))
+      return 0;
+
+   uint64_t va = 0;
+   for (unsigned i = 0; i < 6; i++)
+      va |= (uint64_t)p[3 + i] << (8 * i);
+
+   return va & ~1ull;
+}
+
 /* Append the entry program for the USC words at usc (code offsets are
  * relative to shader_base) to out. Returns false for a word G15 does not
  * support yet. */
 bool agx_esl_from_usc(struct util_dynarray *out, const uint8_t *usc,
                       uint64_t shader_base, const struct agx_esl_code *code,
                       enum agx_esl_stage stage);
+
+/*
+ * A stub and a shared entry program (Honeykrisp's HK_G15_MDI and
+ * HK_G15_STUB): the per-draw uniform words of a vertex program (its first
+ * vertex, base instance and draw ID) go into their push registers in a stub of
+ * a few mov_imm, which branches to an entry program the draws share, as
+ * Apple's indirect command buffers do. The shared program is the one
+ * agx_esl_from_usc builds, but for the provided words' ranges: no mov_imm or
+ * load for them, their registers kept from every other range's address pair,
+ * their uniform_store kept.
+ */
+struct agx_esl_shared {
+   /* The uniform words (32-bit) the stub provides: whole ranges, within the
+    * push registers' reach */
+   uint64_t provided[2];
+
+   /* NULL: ldshdr and specTPR stay in the shared program, after the stub's
+    * branch. Else they go here, for the stub to run before its branch. */
+   struct util_dynarray *tail;
+};
+
+/* At most a stub's size: three mov_imm, ldshdr, specTPR and the branch */
+#define AGX_ESL_STUB_MAX 64
+
+/* The shared entry program for the USC words at usc, as agx_esl_from_usc.
+ * Returns false where a stub cannot provide the words: a uniform word out of
+ * the push registers' reach (the program loads those through r2 up), a
+ * range only partly provided, or a stage other than the vertex one. */
+bool agx_esl_shared_from_usc(struct util_dynarray *out, const uint8_t *usc,
+                             uint64_t shader_base,
+                             const struct agx_esl_code *code,
+                             enum agx_esl_stage stage,
+                             const struct agx_esl_shared *shared);
+
+/* A draw's stub: each value into its uniform word's push register, the tail
+ * (agx_esl_shared), then the branch to the shared program. offsets, if not
+ * NULL, gets each mov_imm's byte offset in the stub (a GPU writer deposits
+ * the values there, agx3_mov_imm_fields). */
+void agx_esl_stub(struct util_dynarray *out, const unsigned *words,
+                  const uint32_t *values, unsigned count, const void *tail,
+                  size_t tail_size, uint64_t shared_va, unsigned *offsets);

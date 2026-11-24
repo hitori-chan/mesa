@@ -4477,6 +4477,30 @@ agx3_emit_mov_imm(struct util_dynarray *out, unsigned reg, uint32_t imm)
 #endif
 }
 
+/* mov_imm's immediate fields, as agx3_emit_mov_imm deposits them, for a GPU
+ * writer of its code (Honeykrisp's G15 multi-draw stubs): bits vpos up of the
+ * immediate, size of them, go to bit start of the first 8 bytes. Returns the
+ * field count, at most max. */
+unsigned
+agx3_mov_imm_fields(uint8_t *start, uint8_t *size, uint8_t *vpos, unsigned max)
+{
+   const struct agx3_pack_spec *spec = agx3_spec(AGX3_MOV_IMM32);
+   unsigned n = 0;
+
+   for (unsigned f = spec->op_start[MOV_IMM_IMM];
+        f < spec->op_start[MOV_IMM_IMM + 1]; f++) {
+      const struct agx3_field *field = &spec->fields[f];
+
+      assert(field->start + field->size <= 64 && n < max);
+      start[n] = field->start;
+      size[n] = field->size;
+      vpos[n] = field->vpos;
+      n++;
+   }
+
+   return n;
+}
+
 void
 agx3_emit_load(struct util_dynarray *out, unsigned slot, unsigned dst,
                unsigned base, unsigned index16, unsigned count)

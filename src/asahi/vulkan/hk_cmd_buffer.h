@@ -300,6 +300,35 @@ enum hk_dirty {
    HK_DIRTY_VARYINGS = BITFIELD_BIT(3),
 };
 
+/* Room for a draw's USC words on the stack: G15 only reads them back */
+#define HK_USC_WORDS_STACK 512
+
+/* G15, HK_G15_STUB (experimental, hk_cmd_draw.c): a direct draw's per-draw
+ * vertex uniforms (first vertex, base instance, draw ID) are moved into their
+ * push registers by a stub, which branches to an entry program the draws
+ * share (agx_esl_stub) */
+struct hk_g15_stub {
+   /* This draw's: whether it takes a stub, the ranges, their values */
+   bool active, base_param, draw_id;
+   uint32_t values[3];
+
+   /* The provided words, from the vertex program's USC words */
+   unsigned nr_words;
+   unsigned words[3];
+
+   /* The shared entry program, 0 where the words cannot be provided, valid
+    * for these USC words of this vertex program */
+   bool valid;
+   uint64_t shared;
+   const void *shader, *linked;
+   uint32_t usc_size;
+   uint8_t usc[HK_USC_WORDS_STACK];
+
+   /* HK_G15_STUB=2: ldshdr and specTPR, in the stub before its branch */
+   uint32_t tail_size;
+   uint8_t tail[32];
+};
+
 struct hk_graphics_state {
    struct hk_rendering_state render;
    struct hk_descriptor_state descriptors;
@@ -315,6 +344,7 @@ struct hk_graphics_state {
    uint64_t root;
    uint64_t draw_params;
    uint64_t draw_id_ptr;
+   struct hk_g15_stub g15_stub;
 
    /* During VK_EXT_device_generated_commands (hk_cmd_dgc.c) */
    struct {
@@ -505,6 +535,11 @@ struct hk_cs {
 
    /* End pointer of the current chunk of the control stream */
    void *end;
+
+   /* G15, HK_G15_VDMCALL (experimental): where the draw's words start, past
+    * hk_flush_gfx_state's space check, for a draw moved into a called
+    * sub-stream */
+   void *draw_start;
 
    /* Whether there is more than just the root chunk */
    bool stream_linked;
@@ -1087,8 +1122,8 @@ void hk_cmd_dispatch_dgc(struct hk_cmd_buffer *cmd, uint64_t addr);
 uint64_t hk_predicate_args(struct hk_cmd_buffer *cmd, uint64_t in,
                            uint64_t count, uint32_t n, uint32_t stride_B,
                            uint32_t words, bool gfx);
-void hk_draw(struct hk_cmd_buffer *cmd, uint16_t draw_id, struct agx_draw draw);
-void hk_draw_mesh(struct hk_cmd_buffer *cmd, uint16_t draw_id,
+void hk_draw(struct hk_cmd_buffer *cmd, uint32_t draw_id, struct agx_draw draw);
+void hk_draw_mesh(struct hk_cmd_buffer *cmd, uint32_t draw_id,
                   struct agx_grid grid);
 void hk_cmd_dispatch_unaligned(VkCommandBuffer commandBuffer, uint32_t x,
                                uint32_t y, uint32_t z);
@@ -1102,11 +1137,17 @@ uint64_t hk_cmd_buffer_upload_root(struct hk_cmd_buffer *cmd,
 void hk_reserve_scratch(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
                         struct hk_shader *s);
 
-/* Room for a draw's USC words on the stack: G15 only reads them back */
-#define HK_USC_WORDS_STACK 512
-
 uint32_t hk_upload_usc_words(struct hk_cmd_buffer *cmd, struct hk_shader *s,
                              struct hk_linked_shader *linked);
+
+unsigned hk_g15_stub_mode(void);
+bool hk_g15_vdmcall(void);
+uint32_t hk_upload_g15_stub_words(struct hk_cmd_buffer *cmd,
+                                  struct hk_shader *s,
+                                  struct hk_linked_shader *linked);
+bool hk_g15_mdi_mode(void);
+bool hk_g15_mdi_shared(struct hk_cmd_buffer *cmd, struct hk_shader *s,
+                       struct hk_linked_shader *linked);
 
 uint64_t hk_upload_esl_va(struct hk_cmd_buffer *cmd,
                           const struct agx_esl_code *code,

@@ -569,7 +569,6 @@ lower_uvs_index(nir_builder *b, nir_intrinsic_instr *intrin, void *data)
          base = AGX_ABI_VUNI_BASE_INSTANCE(args->nr_vbos);
       } else if (intrin->intrinsic == nir_intrinsic_load_draw_id) {
          base = AGX_ABI_VUNI_DRAW_ID(args->nr_vbos);
-         size = 16;
       }
 
       nir_def *val = nir_load_preamble(b, 1, size, .base = base);

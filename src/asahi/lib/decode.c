@@ -430,7 +430,8 @@ agxdecode_usc(struct agxdecode_ctx *ctx, const uint8_t *map,
 }
 
 /* G15: a pipeline is an entry program (agx_esl.c) up to its stop, which names
- * the shader with ldshdr */
+ * the shader with ldshdr. An absolute branch (a stub's to its shared program,
+ * a long preamble's) is followed, a few at most. */
 static void
 agxdecode_entry_program(struct agxdecode_ctx *ctx, const char *label,
                         uint64_t va)
@@ -439,13 +440,20 @@ agxdecode_entry_program(struct agxdecode_ctx *ctx, const char *label,
    size_t size = agxdecode_grab_mapped(ctx, va, &map);
    uint8_t *code = map;
    uint64_t shader = 0;
+   unsigned hops = 0;
 
    fprintf(agxdecode_dump_stream, "%s entry program (%" PRIx64 "):\n", label,
            va);
 
    for (size_t i = 0; i < size;) {
-      if (!shader && i + 9 <= size)
-         shader = agx_esl_ldshdr_va(code + i);
+      uint64_t target = 0;
+
+      if (i + 9 <= size) {
+         if (!shader)
+            shader = agx_esl_ldshdr_va(code + i);
+
+         target = agx_esl_branch_abs_va(code + i);
+      }
 
       signed n = agx3_disassemble_instr((BITSET_WORD *)(code + i),
                                         agxdecode_dump_stream, i, true);
@@ -453,6 +461,15 @@ agxdecode_entry_program(struct agxdecode_ctx *ctx, const char *label,
       /* stop */
       if (!memcmp(code + i, (uint8_t[]){0x0e, 0, 0, 0}, 4))
          break;
+
+      if (target && hops++ < 4) {
+         fprintf(agxdecode_dump_stream,
+                 "%s entry program, branched to %" PRIx64 ":\n", label, target);
+         size = agxdecode_grab_mapped(ctx, target, &map);
+         code = map;
+         i = 0;
+         continue;
+      }
 
       i += abs(n);
    }

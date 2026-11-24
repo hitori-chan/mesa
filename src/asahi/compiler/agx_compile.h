@@ -313,6 +313,8 @@ agx_compact_kernel_info(struct agx_shader_info *info)
  * G15 packer (agx_pack3.c). Registers and uniforms are 32-bit indices. */
 struct util_dynarray;
 void agx3_emit_mov_imm(struct util_dynarray *out, unsigned reg, uint32_t imm);
+unsigned agx3_mov_imm_fields(uint8_t *start, uint8_t *size, uint8_t *vpos,
+                             unsigned max);
 void agx3_emit_load(struct util_dynarray *out, unsigned slot, unsigned dst,
                     unsigned base, unsigned index16, unsigned count);
 void agx3_emit_wait(struct util_dynarray *out, unsigned slot);
