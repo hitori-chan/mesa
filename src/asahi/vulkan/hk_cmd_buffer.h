@@ -887,6 +887,7 @@ hk_cs_destroy(struct hk_cs *cs)
 }
 
 void hk_dispatch_imm_writes(struct hk_cmd_buffer *cmd, struct hk_cs *cs);
+void hk_dispatch_timestamp_nop(struct hk_cmd_buffer *cmd);
 
 static void
 hk_cmd_buffer_end_compute_internal(struct hk_cmd_buffer *cmd,
@@ -894,6 +895,16 @@ hk_cmd_buffer_end_compute_internal(struct hk_cmd_buffer *cmd,
 {
    if (*ptr) {
       struct hk_cs *cs = *ptr;
+
+      /* G15's firmware from macOS 27 skips a CDM stream's timestamps, the
+       * application's and the job's own times, when the stream launched
+       * nothing, and a compute timestamp ends a stream of its own
+       * (hk_CmdWriteTimestamp2): such a stream gets one thread to launch.
+       * Not needed for macOS 14's firmware, harmless there.
+       */
+      if (ptr == &cmd->current_cs.cs && cs->timestamp.end.addr &&
+          !cs->stats.cmds)
+         hk_dispatch_timestamp_nop(cmd);
 
       /* This control stream may write immediates as it ends. Queue the writes
        * now that we're done emitting everything else.
