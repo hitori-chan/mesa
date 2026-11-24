@@ -1959,7 +1959,8 @@ hk_compile_backend(struct hk_device *dev, nir_shader *nir,
       agx_compile_shader_nir(clone, key, &check);
       ralloc_free(clone);
       assert(memcmp(&check.info, &out->info, sizeof(check.info)) == 0);
-      assert(memcmp(check.binary, out->binary, check.info.binary_size) == 0);
+      assert(check.info.binary_size == 0 ||
+             memcmp(check.binary, out->binary, check.info.binary_size) == 0);
       free(check.binary);
 #endif
       return;
