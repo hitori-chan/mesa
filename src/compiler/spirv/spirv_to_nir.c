@@ -279,7 +279,8 @@ void
 vtn_log(struct vtn_builder *b, enum nir_spirv_debug_level level,
         size_t spirv_offset, const char *message)
 {
-   if (b->options->debug.func) {
+   /* vtn_create_builder()'s header checks log before the options are set */
+   if (b->options && b->options->debug.func) {
       b->options->debug.func(b->options->debug.private_data,
                              level, spirv_offset, message);
    }
