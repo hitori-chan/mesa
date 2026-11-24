@@ -257,7 +257,10 @@ hk_pool_upload(struct hk_cmd_buffer *cmd, const void *data, uint32_t size,
    if (unlikely(T.cpu == NULL))
       return 0;
 
-   memcpy(T.cpu, data, size);
+   /* An empty upload may come from an empty array, whose data is NULL */
+   if (size)
+      memcpy(T.cpu, data, size);
+
    return T.gpu;
 }
 
