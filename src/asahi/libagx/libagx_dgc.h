@@ -222,11 +222,14 @@ enum agx_chip {
    AGX_CHIP_G15X,
 };
 
-/* G15: an entry program's VA as its pipeline words split it (cmdbuf.xml) */
+/* G15: an entry program's VA as its pipeline words split it (cmdbuf.xml).
+ * The bound is tested as va >> 48: on a sum (a GPU-written stub's VA, as
+ * libagx_mdi_write_vs has it) clang folds va < (1 << 48) into a 128-bit
+ * compare, which the SPIR-V translator refuses. */
 static inline uint32_t
 agx_g15_pipeline_hi(uint64_t va)
 {
-   assert((va & 63) == 0 && va < (1ull << 48));
+   assert((va & 63) == 0 && (va >> 48) == 0);
    return va >> 38;
 }
 
@@ -798,6 +801,178 @@ struct libagx_robust_index {
    uint64_t args;
 };
 static_assert(sizeof(struct libagx_robust_index) == 16);
+
+/*
+ * G15 multi-draws written on the GPU (Honeykrisp's HK_G15_MDI,
+ * hk_cmd_draw.c): a kernel writes draw i's record at records + i * record_B,
+ * a sub-stream the render stream calls, and the return after the last draw
+ * the count allows. A record holds, for a vertex program that reads its
+ * draw's parameters, the vertex state block with word 1 at draw i's stub (a
+ * copy of the CPU's template, its mov_imm immediates deposited: first vertex
+ * or vertex offset, first instance, draw ID), then the index list (indirect,
+ * or the robust form's direct one), then barriers without bits (Apple's
+ * indirect command buffers' no-op) to the record's end. Without a stub a
+ * record is the index list alone.
+ */
+#define LIBAGX_MDI_STUB_B     64
+#define LIBAGX_MDI_MAX_IMM    3
+#define LIBAGX_MDI_MAX_FIELDS 8
+
+enum libagx_mdi_value {
+   LIBAGX_MDI_FIRST,
+   LIBAGX_MDI_BASE_INSTANCE,
+   LIBAGX_MDI_DRAW_ID,
+};
+
+struct libagx_mdi {
+   /* The first draw's arguments, the next stride_B on */
+   uint64_t args;
+
+   /* The draw count's word (0: draw_count draws) and conditional rendering's
+    * (0: none), as libagx_predicate_indirect reads them */
+   uint64_t count;
+   uint64_t cond;
+
+   uint64_t records;
+
+   /* Draw i's stub at stubs + i * LIBAGX_MDI_STUB_B (0: no stub) */
+   uint64_t stubs;
+
+   uint64_t index_buffer;
+   uint32_t index_buffer_range_B;
+
+   /* drawCount or maxDrawCount: the records' slots but the return's */
+   uint32_t draw_count;
+   uint32_t stride_B;
+   uint32_t record_B;
+   uint32_t cond_inv;
+   uint32_t indexed;
+   uint32_t restart;
+   uint32_t index_size;
+   uint32_t topology;
+   uint32_t chip;
+
+   /* The vertex state block (0 B without a stub), its word 1's offset; the
+    * index list's bytes */
+   uint32_t vs_B;
+   uint32_t vs_word1_B;
+   uint32_t list_B;
+   uint32_t vs_state[8];
+
+   /* The stub's template and its mov_imms: their offsets in it, their values
+    * (enum libagx_mdi_value), mov_imm's immediate fields (agx3_mov_imm_fields)
+    */
+   uint32_t stub_B;
+   uint32_t nr_imm;
+   uint32_t imm_offset[LIBAGX_MDI_MAX_IMM];
+   uint32_t imm_value[LIBAGX_MDI_MAX_IMM];
+   uint32_t nr_fields;
+   uint8_t field_start[LIBAGX_MDI_MAX_FIELDS];
+   uint8_t field_size[LIBAGX_MDI_MAX_FIELDS];
+   uint8_t field_vpos[LIBAGX_MDI_MAX_FIELDS];
+   uint8_t stub[LIBAGX_MDI_STUB_B];
+};
+static_assert(sizeof(struct libagx_mdi) == 256);
+
+/* The draws the records run: the count's, at most draw_count, none if the
+ * conditional rendering predicate fails (libagx_predicate_indirect's) */
+static inline uint32_t
+libagx_mdi_count(CONST struct libagx_mdi *p, CONST uint32_t *count,
+                 CONST uint32_t *cond)
+{
+   uint32_t n = count ? MIN2(*count, p->draw_count) : p->draw_count;
+
+   if (cond && ((*cond != 0) == (p->cond_inv != 0)))
+      n = 0;
+
+   return n;
+}
+
+/* imm into the stub's mov_imm k, the template's zero immediate, as
+ * agx3_emit_mov_imm deposits it */
+static inline void
+libagx_mdi_scatter(CONST struct libagx_mdi *p, GLOBAL uint8_t *stub, uint32_t k,
+                   uint32_t imm)
+{
+   uint64_t word = 0;
+
+   for (uint32_t f = 0; f < p->nr_fields; ++f) {
+      word |=
+         (uint64_t)((imm >> p->field_vpos[f]) & BITFIELD_MASK(p->field_size[f]))
+         << p->field_start[f];
+   }
+
+   GLOBAL uint8_t *code = stub + p->imm_offset[k];
+   for (uint32_t b = 0; b < 8; ++b)
+      code[b] |= (uint8_t)(word >> (8 * b));
+}
+
+/* Draw i's stub, its vertex state block: returns where the index list goes */
+static inline GLOBAL uint32_t *
+libagx_mdi_write_vs(CONST struct libagx_mdi *p, uint32_t i,
+                    CONST uint32_t *args, GLOBAL uint32_t *record,
+                    GLOBAL uint8_t *stub)
+{
+   for (uint32_t b = 0; b < p->stub_B; ++b)
+      stub[b] = p->stub[b];
+
+   for (uint32_t k = 0; k < p->nr_imm; ++k) {
+      /* first vertex or vertex offset, then first instance */
+      uint32_t first = p->indexed ? 3 : 2;
+      uint32_t imm = p->imm_value[k] == LIBAGX_MDI_DRAW_ID ? i
+                     : p->imm_value[k] == LIBAGX_MDI_FIRST ? args[first]
+                                                           : args[first + 1];
+
+      libagx_mdi_scatter(p, stub, k, imm);
+   }
+
+   for (uint32_t w = 0; w < p->vs_B / 4; ++w)
+      record[w] = p->vs_state[w];
+
+   uint64_t va = p->stubs + (uint64_t)i * LIBAGX_MDI_STUB_B;
+   GLOBAL uint32_t *word1 = record + p->vs_word1_B / 4;
+   agx_push(word1, VDM_STATE_VERTEX_SHADER_WORD_1_G15, cfg) {
+      cfg.pipeline_hi = agx_g15_pipeline_hi(va);
+      cfg.pipeline_lo = agx_g15_pipeline_lo(va);
+   }
+
+   return record + p->vs_B / 4;
+}
+
+/* No-ops from the index list's end to the record's */
+static inline void
+libagx_mdi_pad(CONST struct libagx_mdi *p, GLOBAL uint32_t *record)
+{
+   GLOBAL uint32_t *out = record + (p->vs_B + p->list_B) / 4;
+   GLOBAL uint32_t *end = record + p->record_B / 4;
+
+   while (out < end) {
+      agx_push(out, VDM_BARRIER, cfg)
+         ;
+   }
+}
+
+/* Draw i's record, the plain forms: args at its GPU address args_va */
+static inline void
+libagx_mdi_write(CONST struct libagx_mdi *p, uint32_t i, CONST uint32_t *args,
+                 uint64_t args_va, GLOBAL uint32_t *record,
+                 GLOBAL uint8_t *stub)
+{
+   GLOBAL uint32_t *out = record;
+
+   if (p->vs_B)
+      out = libagx_mdi_write_vs(p, i, args, record, stub);
+
+   struct agx_draw draw =
+      p->indexed ? agx_draw_indexed_indirect(
+                      args_va, p->index_buffer, p->index_buffer_range_B,
+                      (enum agx_index_size)p->index_size, p->restart)
+                 : agx_draw_indirect(args_va);
+
+   agx_vdm_draw(out, (enum agx_chip)p->chip, draw,
+                (enum agx_primitive)p->topology);
+   libagx_mdi_pad(p, record);
+}
 
 static inline unsigned
 libagx_remap_adj_count(unsigned count, enum mesa_prim prim)
