@@ -1105,11 +1105,12 @@ hk_image_plane_alloc_vma(struct hk_device *dev, struct hk_image_plane *plane,
    if (sparse_bound) {
       size_t size = align(plane->layout.size_B, HK_SPARSE_ALIGN_B);
       plane->va = agx_va_alloc(&dev->dev, size, AIL_PAGESIZE, 0, 0);
-      plane->addr = plane->va->addr;
-      if (plane->addr == 0) {
+      if (plane->va == NULL) {
          return vk_errorf(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY,
                           "Sparse VMA allocation failed");
       }
+
+      plane->addr = plane->va->addr;
 
       /* Bind scratch pages to discard writes, including from lowered software
        * texture atomics. Reads will use the hardware texture unit sparse
@@ -1125,6 +1126,10 @@ hk_image_plane_alloc_vma(struct hk_device *dev, struct hk_image_plane *plane,
       plane->sparse_map =
          agx_bo_create(&dev->dev, plane->layout.sparse_table_size_B,
                        AIL_PAGESIZE, 0, "Sparse map");
+      if (plane->sparse_map == NULL) {
+         return vk_errorf(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY,
+                          "Sparse map allocation failed");
+      }
 
       /* Zero-initialize the sparse map. This ensures all tiles are disabled,
        * which provides correct behaviour for unmapped tiles.
