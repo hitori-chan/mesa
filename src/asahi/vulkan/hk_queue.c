@@ -516,7 +516,7 @@ hk_flush_bind(struct hk_bind_builder *b)
             cfg.unknown = cfg.enabled;
 
             if (cfg.enabled) {
-               cfg.address = va_addr + (offs_page * AIL_PAGESIZE);
+               cfg.address = va_addr + ((uint64_t)offs_page * AIL_PAGESIZE);
             }
          }
       }
@@ -692,7 +692,7 @@ hk_sparse_image_opaque_bind_memory(
                 "must bind whole miptail... maybe...");
 
          const struct ail_layout *layout = &image->planes[0].layout;
-         unsigned tail_offset_B =
+         uint64_t tail_offset_B =
             layout->level_offsets_B[layout->mip_tail_first_lod];
 
          for (unsigned z = 0; z < layout->depth_px; ++z) {
@@ -715,7 +715,7 @@ static void
 bind_hw_tile(struct hk_bind_builder *b, struct hk_device_memory *mem,
              struct ail_layout *layout, unsigned layer, unsigned level,
              VkOffset3D offset, VkExtent3D extent, struct ail_tile std_size_el,
-             unsigned mem_offset, unsigned x, unsigned y, unsigned z)
+             uint64_t mem_offset, unsigned x, unsigned y, unsigned z)
 {
    uint64_t bo_offset_B = ail_get_twiddled_block_B(
       layout, level, offset.x + x, offset.y + y, layer + offset.z + z);
@@ -733,7 +733,8 @@ bind_hw_tile(struct hk_bind_builder *b, struct hk_device_memory *mem,
    /* There are 4 hardware tiles per standard tile, so offset
     * accordingly for each hardware tile.
     */
-   unsigned mem_offset_B = mem_offset + (mem_offs_stl * 4 * AIL_PAGESIZE);
+   uint64_t mem_offset_B =
+      mem_offset + ((uint64_t)mem_offs_stl * 4 * AIL_PAGESIZE);
 
    if (x % std_size_el.width_el)
       mem_offset_B += AIL_PAGESIZE;

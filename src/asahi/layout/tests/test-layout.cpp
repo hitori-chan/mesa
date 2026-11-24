@@ -143,3 +143,25 @@ TEST(Miptree, SmallPartialMiptree3D)
    EXPECT_EQ(layout.sparse_folios_per_layer, 1);
    EXPECT_EQ(layout.sparse_table_size_B, 0x20000);
 }
+
+/* A sparse array's tile address past 4 GiB: hk binds its pages there */
+TEST(Sparse, TwiddledBlockPast4GiB)
+{
+   struct ail_layout layout = {
+      .width_px = 16384,
+      .height_px = 16384,
+      .depth_px = 8,
+      .sample_count_sa = 1,
+      .levels = 1,
+      .tiling = AIL_TILING_GPU,
+      .format = PIPE_FORMAT_R8G8B8A8_UNORM,
+   };
+
+   ail_make_miptree(&layout);
+
+   EXPECT_EQ(layout.layer_stride_B, 1ull << 30);
+   EXPECT_EQ(ail_get_twiddled_block_B(&layout, 0, 0, 0, 5), 5ull << 30);
+   EXPECT_EQ(ail_get_twiddled_block_B(&layout, 0, 128, 128, 7),
+             (7ull << 30) + ail_get_twiddled_block_B(&layout, 0, 128, 128, 0));
+   EXPECT_EQ(ail_bytes_to_pages(5ull << 30), (5ull << 30) / AIL_PAGESIZE);
+}
