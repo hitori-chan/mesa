@@ -4626,6 +4626,104 @@ hk_ia_update(struct hk_cmd_buffer *cmd, struct agx_draw draw,
 }
 
 /*
+ * A multi-draw's input assembly counters, which hk_draw would count with a
+ * launch and a barrier a draw (hk_ia_update), in one launch over its n draws'
+ * arguments, stride_B apart: the first *count of them when count is set, none
+ * when predicated is set and conditional rendering's predicate fails (for
+ * arguments hk_predicate_args has not zeroed). The draws' first words are
+ * those of a VkDrawIndirectCommand or a VkDrawIndexedIndirectCommand. Returns
+ * whether hk_draw is to skip its own (set in cmd->state.gfx.ia_batched until
+ * the multi-draw ends): false when no counter is enabled.
+ */
+bool
+hk_ia_update_multi(struct hk_cmd_buffer *cmd, uint64_t draws, uint32_t stride_B,
+                   uint64_t count, uint32_t n, bool indexed, bool predicated)
+{
+   struct hk_device *dev = hk_cmd_buffer_device(cmd);
+   struct vk_dynamic_graphics_state *dyn = &cmd->vk.dynamic_graphics_state;
+   struct hk_graphics_state *gfx = &cmd->state.gfx;
+
+   uint64_t ia_vertices = hk_pipeline_stat_addr(
+      cmd, VK_QUERY_PIPELINE_STATISTIC_INPUT_ASSEMBLY_VERTICES_BIT);
+   uint64_t ia_prims = hk_pipeline_stat_addr(
+      cmd, VK_QUERY_PIPELINE_STATISTIC_INPUT_ASSEMBLY_PRIMITIVES_BIT);
+   uint64_t vs_invocations = hk_pipeline_stat_addr(
+      cmd, VK_QUERY_PIPELINE_STATISTIC_VERTEX_SHADER_INVOCATIONS_BIT);
+   uint64_t c_inv = hk_pipeline_stat_addr(
+      cmd, VK_QUERY_PIPELINE_STATISTIC_CLIPPING_INVOCATIONS_BIT);
+   uint64_t c_prims = hk_pipeline_stat_addr(
+      cmd, VK_QUERY_PIPELINE_STATISTIC_CLIPPING_PRIMITIVES_BIT);
+
+   if (!(hk_stat_enabled(ia_vertices) || hk_stat_enabled(ia_prims) ||
+         hk_stat_enabled(vs_invocations) || hk_stat_enabled(c_inv) ||
+         hk_stat_enabled(c_prims)))
+      return false;
+
+   if (n == 0)
+      return true;
+
+   perf_debug(cmd, "Input assembly counters, %u draws", n);
+
+   bool geom = gfx->shaders[MESA_SHADER_GEOMETRY];
+   bool tess = gfx->shaders[MESA_SHADER_TESS_EVAL];
+
+   /* hk_draw counts nothing for a draw it drops */
+   if (tess && HK_PERF(dev, NOTESS))
+      return true;
+
+   /* As hk_ia_update: the clipper's counters go with the geometry or
+    * tessellation output */
+   if (geom || tess) {
+      c_prims = 0;
+      c_inv = 0;
+   }
+
+   /* A disabled counter is not added to at all (hk_ia_update's kernels write
+    * the scratch page) */
+   uint64_t *stats[] = {&ia_vertices, &ia_prims, &vs_invocations, &c_inv,
+                        &c_prims};
+   for (unsigned i = 0; i < ARRAY_SIZE(stats); i++) {
+      if (!hk_stat_enabled(*stats[i]))
+         *stats[i] = 0;
+   }
+
+   enum mesa_prim prim = vk_topology_to_mesa(dyn->ia.primitive_topology);
+   uint32_t patch_size = dyn->ts.patch_control_points;
+   uint32_t views = util_bitcount(gfx->render.view_mask ?: 1);
+   uint64_t cond = predicated ? cmd->state.cond.addr : 0;
+   assert(stride_B % 4 == 0);
+
+   if (indexed && dyn->ia.primitive_restart_enable) {
+      /* hk_draw's index buffer, hk_needs_index_robustness's zero page for an
+       * empty one */
+      struct hk_addr_range ib = gfx->index.buffer;
+      if (ib.range == 0) {
+         ib.addr = AGX_ZERO_PAGE_ADDRESS;
+         ib.range = 4;
+      }
+
+      uint32_t groups = MIN2(n, 4096);
+
+      libagx_increment_ia_restart_multi(
+         cmd, agx_1d(32 * groups), AGX_BARRIER_ALL | AGX_PREGFX, ia_vertices,
+         ia_prims, vs_invocations, c_prims, c_inv, draws, stride_B / 4, count,
+         cond, cmd->state.cond.inverted, n, groups, views, ib.addr,
+         ib.range >> gfx->index.size, dyn->ia.primitive_restart_index,
+         agx_index_size_to_B(gfx->index.size), prim, patch_size);
+   } else {
+      /* A thread a draw, up to 256 workgroups */
+      uint32_t threads = n < 1024 * 256 ? ALIGN_POT(n, 1024) : 1024 * 256;
+
+      libagx_increment_ia_multi(
+         cmd, agx_1d(threads), AGX_BARRIER_ALL | AGX_PREGFX, ia_vertices,
+         ia_prims, vs_invocations, c_prims, c_inv, draws, stride_B / 4, count,
+         cond, cmd->state.cond.inverted, n, threads, views, prim, patch_size);
+   }
+
+   return true;
+}
+
+/*
  * A draw on G15's hardware tessellator, as Apple's drawPatches emits it
  * (HWTessellationContext<G15>::drawPatches, AGXMetalG15X 27.2): a VDM state
  * update with the tessellation word and the factor scale, then the Tessellate
@@ -4831,7 +4929,7 @@ hk_draw(struct hk_cmd_buffer *cmd, uint32_t draw_id, struct agx_draw draw_)
             return;
       }
 
-      if (ia_stats) {
+      if (ia_stats && !cmd->state.gfx.ia_batched) {
          hk_ia_update(cmd, draw, stat_ia_verts, stat_ia_prims, stat_vs_inv,
                       stat_c_prims, stat_c_inv);
       }
@@ -5162,14 +5260,6 @@ hk_g15_mdi_ineligible(struct hk_cmd_buffer *cmd)
    const struct vk_dynamic_graphics_state *dyn =
       &cmd->vk.dynamic_graphics_state;
 
-   static const VkQueryPipelineStatisticFlagBits ia_stats[] = {
-      VK_QUERY_PIPELINE_STATISTIC_INPUT_ASSEMBLY_VERTICES_BIT,
-      VK_QUERY_PIPELINE_STATISTIC_INPUT_ASSEMBLY_PRIMITIVES_BIT,
-      VK_QUERY_PIPELINE_STATISTIC_VERTEX_SHADER_INVOCATIONS_BIT,
-      VK_QUERY_PIPELINE_STATISTIC_CLIPPING_INVOCATIONS_BIT,
-      VK_QUERY_PIPELINE_STATISTIC_CLIPPING_PRIMITIVES_BIT,
-   };
-
    if (!gfx->shaders[MESA_SHADER_VERTEX])
       return "no vertex shader";
 
@@ -5190,12 +5280,6 @@ hk_g15_mdi_ineligible(struct hk_cmd_buffer *cmd)
 
    if (gfx->dgc.vdm)
       return "generated commands";
-
-   /* hk_ia_update counts each draw on the CPU */
-   for (unsigned i = 0; i < ARRAY_SIZE(ia_stats); i++) {
-      if (hk_stat_enabled(hk_pipeline_stat_addr(cmd, ia_stats[i])))
-         return "pipeline statistics";
-   }
 
    return NULL;
 }
@@ -5327,6 +5411,11 @@ hk_g15_mdi(struct hk_cmd_buffer *cmd, uint64_t args, uint32_t stride_B,
    if (!records.cpu || (stub && !stubs.cpu))
       return true;
 
+   /* The draws' input assembly counters, one launch: the records count none
+    * (the arguments as the kernel reads them, its count and predicate) */
+   hk_ia_update_multi(cmd, args, stride_B, count, draw_count, draw.indexed,
+                      true);
+
    p.records = records.gpu;
    p.stubs = stubs.gpu;
 
@@ -5375,10 +5464,17 @@ hk_draw_indirect_inner(VkCommandBuffer commandBuffer, uint64_t base,
       assert(stride >= sizeof(VkDrawIndirectCommand));
    }
 
+   /* The draws' input assembly counters: one launch */
+   cmd->state.gfx.ia_batched =
+      drawCount > 1 &&
+      hk_ia_update_multi(cmd, base, stride, 0, drawCount, false, false);
+
    for (unsigned draw_id = 0; draw_id < drawCount; ++draw_id) {
       uint64_t addr = base + stride * draw_id;
       hk_draw(cmd, draw_id, agx_draw_indirect(addr));
    }
+
+   cmd->state.gfx.ia_batched = false;
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -5427,6 +5523,11 @@ hk_draw_indexed_indirect_inner(VkCommandBuffer commandBuffer, uint64_t buffer,
    struct hk_robust_batch *robust =
       drawCount > 1 ? hk_robust_batch_begin(cmd) : NULL;
 
+   /* and their input assembly counters: one launch */
+   cmd->state.gfx.ia_batched =
+      drawCount > 1 &&
+      hk_ia_update_multi(cmd, buffer, stride, 0, drawCount, true, false);
+
    for (unsigned draw_id = 0; draw_id < drawCount; ++draw_id) {
       uint64_t addr = buffer + stride * draw_id;
       struct hk_addr_range buf = cmd->state.gfx.index.buffer;
@@ -5435,6 +5536,7 @@ hk_draw_indexed_indirect_inner(VkCommandBuffer commandBuffer, uint64_t buffer,
               agx_draw_indexed_indirect(addr, buf.addr, buf.range, 0, 0));
    }
 
+   cmd->state.gfx.ia_batched = false;
    hk_robust_batch_end(cmd, robust);
 }
 

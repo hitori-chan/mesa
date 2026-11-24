@@ -368,6 +368,10 @@ struct hk_graphics_state {
     * writes (hk_robust_batch_flush) */
    struct hk_robust_batch *robust;
 
+   /* During a multi-draw: its input assembly counters are counted by one
+    * kernel launch (hk_ia_update_multi), not a launch a draw */
+   bool ia_batched;
+
    uint32_t shaders_dirty;
    struct hk_api_shader *shaders[MESA_SHADER_MESH + 1];
 
@@ -962,6 +966,9 @@ void hk_optimize_empty_vdm(struct hk_cmd_buffer *cmd);
 void hk_robust_batch_flush(struct hk_cmd_buffer *cmd);
 struct hk_robust_batch *hk_robust_batch_begin(struct hk_cmd_buffer *cmd);
 void hk_robust_batch_end(struct hk_cmd_buffer *cmd, struct hk_robust_batch *b);
+bool hk_ia_update_multi(struct hk_cmd_buffer *cmd, uint64_t draws,
+                        uint32_t stride_B, uint64_t count, uint32_t n,
+                        bool indexed, bool predicated);
 
 static void
 hk_cmd_buffer_end_graphics(struct hk_cmd_buffer *cmd)

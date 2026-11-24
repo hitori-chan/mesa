@@ -86,6 +86,139 @@ libagx_increment_ia_restart(global uint32_t *ia_vertices,
    }
 }
 
+static void
+libagx_add_counters(global uint32_t *a, global uint32_t *b, global uint32_t *c,
+                    uint count)
+{
+   global uint32_t *ptr[] = {a, b, c};
+
+   for (uint i = 0; i < 3; ++i) {
+      if (ptr[i] && count) {
+         atomic_fetch_add((volatile atomic_uint *)(ptr[i]), count);
+      }
+   }
+}
+
+/*
+ * A multi-draw's input assembly counters in one launch (hk_ia_update_multi),
+ * as libagx_increment_ia counts each draw: the first n draws, their arguments
+ * stride_el words apart (the first *count of them when count is set), each
+ * counted views times; none when cond is set and conditional rendering's
+ * predicate fails (libagx_predicate_indirect's test). The grid is threads (a
+ * whole number of workgroups), a thread counting every threads-th draw; the
+ * workgroups add their sums.
+ */
+KERNEL(1024)
+libagx_increment_ia_multi(global uint32_t *ia_vertices,
+                          global uint32_t *ia_primitives,
+                          global uint32_t *vs_invocations,
+                          global uint32_t *c_prims, global uint32_t *c_invs,
+                          constant uint32_t *draws, uint32_t stride_el,
+                          constant uint32_t *count, constant uint32_t *cond,
+                          uint32_t cond_inv, uint32_t n, uint32_t threads,
+                          uint32_t views, enum mesa_prim prim,
+                          unsigned verts_per_patch)
+{
+   local uint scratch[32];
+   uint verts = 0, prims = 0;
+
+   if (cond && (*cond != 0) == (cond_inv != 0))
+      return;
+
+   if (count)
+      n = min(n, *count);
+
+   /* The step stops at n rather than wrap past 2^32 */
+   for (uint i = cl_global_id.x; i < n; i += min(threads, n - i)) {
+      constant uint32_t *draw = draws + (i * stride_el);
+
+      verts += draw[0] * draw[1];
+      prims += poly_decomposed_prims_for_vertices_with_tess(prim, draw[0],
+                                                            verts_per_patch) *
+               draw[1];
+   }
+
+   verts = poly_work_group_scan_inclusive_add(verts, scratch)[1];
+   prims = poly_work_group_scan_inclusive_add(prims, scratch)[1];
+
+   if (cl_local_id.x == 0) {
+      libagx_add_counters(ia_vertices, vs_invocations, NULL, verts * views);
+      libagx_add_counters(ia_primitives, c_prims, c_invs, prims * views);
+   }
+}
+
+/*
+ * The same with primitive restart, as libagx_increment_ia_restart counts each
+ * draw: a subgroup a draw, every groups-th draw.
+ */
+KERNEL(32)
+libagx_increment_ia_restart_multi(
+   global uint32_t *ia_vertices, global uint32_t *ia_primitives,
+   global uint32_t *vs_invocations, global uint32_t *c_prims,
+   global uint32_t *c_invs, constant uint32_t *draws, uint32_t stride_el,
+   constant uint32_t *count, constant uint32_t *cond, uint32_t cond_inv,
+   uint32_t n, uint32_t groups, uint32_t views, uint64_t index_buffer,
+   uint32_t index_buffer_range_el, uint32_t restart_index,
+   uint32_t index_size_B, enum mesa_prim prim, unsigned verts_per_patch)
+{
+   uint lane = get_sub_group_local_id();
+
+   if (cond && (*cond != 0) == (cond_inv != 0))
+      return;
+
+   if (count)
+      n = min(n, *count);
+
+   for (uint d = cl_group_id.x; d < n; d += min(groups, n - d)) {
+      constant uint32_t *draw = draws + (d * stride_el);
+      uint index_count = draw[0], instances = draw[1], start = draw[2];
+
+      if (index_count == 0 || instances == 0)
+         continue;
+
+      /* Count non-restart indices */
+      uint partial = 0;
+      for (uint i = lane; i < index_count; i += 32) {
+         uint index = poly_load_index(index_buffer, index_buffer_range_el,
+                                      start + i, index_size_B);
+
+         if (index != restart_index)
+            partial++;
+      }
+
+      uint verts =
+         sub_group_broadcast(sub_group_scan_inclusive_add(partial), 31);
+
+      /* The primitives a run of indices between restarts, in order: one
+       * thread, as libagx_increment_ia_restart */
+      if (lane == 0) {
+         libagx_add_counters(ia_vertices, vs_invocations, NULL,
+                             verts * instances * views);
+
+         if (ia_primitives || c_prims || c_invs) {
+            uint accum = 0;
+            int last_restart = -1;
+            for (uint i = 0; i < index_count; ++i) {
+               uint index = poly_load_index(index_buffer, index_buffer_range_el,
+                                            start + i, index_size_B);
+
+               if (index == restart_index) {
+                  accum += poly_decomposed_prims_for_vertices_with_tess(
+                     prim, i - last_restart - 1, verts_per_patch);
+                  last_restart = i;
+               }
+            }
+
+            accum += poly_decomposed_prims_for_vertices_with_tess(
+               prim, index_count - last_restart - 1, verts_per_patch);
+
+            libagx_add_counters(ia_primitives, c_prims, c_invs,
+                                accum * instances * views);
+         }
+      }
+   }
+}
+
 KERNEL(1024)
 libagx_unroll_restart(global struct poly_heap *heap, uint64_t index_buffer,
                       constant uint *in_draw, global uint32_t *out_draw,
