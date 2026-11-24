@@ -458,10 +458,11 @@ clamp_sample_mask(nir_builder *b, nir_intrinsic_instr *intr, void *data)
 
 /*
  * G15's tile store writes every sample its mask names, whether the primitive
- * covers it or not: Apple's multisampled fragment programs mask their tile
- * stores with the coverage (get_sr sr66, SR_CVGINFO), all of it or one bit of
- * it per sample (draws.md, Multisampling). zs_emit's target takes the
- * coverage too (not verified on a multisampled target).
+ * covers it or not: Apple's multisampled fragment programs, the background
+ * program among them, mask their tile stores with the coverage (get_sr sr66,
+ * SR_CVGINFO), all of it or one bit of it per sample (draws.md,
+ * Multisampling). zs_emit's target takes the coverage too (not verified on a
+ * multisampled target).
  */
 static bool
 and_coverage(nir_builder *b, nir_intrinsic_instr *intr, void *data)
@@ -484,8 +485,7 @@ and_coverage(nir_builder *b, nir_intrinsic_instr *intr, void *data)
 }
 
 bool
-agx_nir_lower_tile_raw(nir_shader *shader, unsigned nr_samples,
-                       bool mask_coverage)
+agx_nir_lower_tile_raw(nir_shader *shader, unsigned nr_samples)
 {
    bool progress = nir_shader_intrinsics_pass(shader, lower_intr,
                                               nir_metadata_control_flow, NULL);
@@ -496,7 +496,7 @@ agx_nir_lower_tile_raw(nir_shader *shader, unsigned nr_samples,
          shader, clamp_sample_mask, nir_metadata_control_flow, &nr_samples);
    }
 
-   if (nr_samples > 1 && mask_coverage) {
+   if (nr_samples > 1) {
       progress |= nir_shader_intrinsics_pass(shader, and_coverage,
                                              nir_metadata_control_flow, NULL);
    }

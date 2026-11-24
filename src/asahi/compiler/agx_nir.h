@@ -28,8 +28,7 @@ bool agx_nir_lower_clip_distance(struct nir_shader *s);
 bool agx_nir_lower_subgroups(struct nir_shader *s, bool g15);
 bool agx_nir_insert_yields(struct nir_shader *s);
 bool agx_nir_lower_fminmax(struct nir_shader *s);
-bool agx_nir_lower_tile_raw(struct nir_shader *s, unsigned nr_samples,
-                            bool mask_coverage);
+bool agx_nir_lower_tile_raw(struct nir_shader *s, unsigned nr_samples);
 struct nir_def *agx_nir_unpack_isa_format(struct nir_builder *b,
                                           struct nir_def *raw,
                                           enum ail_isa_format format,

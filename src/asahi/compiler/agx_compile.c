@@ -5406,14 +5406,15 @@ agx_compile_shader_nir_impl(nir_shader *nir, struct agx_shader_key *key,
 
    NIR_PASS(_, nir, nir_lower_vars_to_ssa);
 
-   /* G15's tile accesses move raw data. A fragment program's stores write
-    * the covered samples only, the background program's (the clear shaders)
-    * all of them. */
+   /* G15's tile accesses move raw data. A multisampled fragment program's
+    * stores write the covered samples only, the background program's too, as
+    * Apple's (sr66 at 2 and 4 samples): under an opaque draw whose tile words
+    * are marked the hardware hides the background in the samples the draw
+    * covers, and a background storing every sample would overwrite them. */
    if (key->dev.gpu_generation >= 15)
-      NIR_PASS(_, nir, agx_nir_lower_tile_raw,
-               nir->info.stage == MESA_SHADER_FRAGMENT ? key->fs.nr_samples : 0,
-               nir->info.stage == MESA_SHADER_FRAGMENT &&
-                  !key->fs.ignore_tib_dependencies);
+      NIR_PASS(
+         _, nir, agx_nir_lower_tile_raw,
+         nir->info.stage == MESA_SHADER_FRAGMENT ? key->fs.nr_samples : 0);
 
    if (key->dev.gpu_generation >= 15)
       NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_load_format_g15,
