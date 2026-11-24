@@ -21,7 +21,9 @@
 #include "util/bitscan.h"
 #include "util/u_atomic.h"
 #include "util/u_call_once.h"
+#include "util/simple_mtx.h"
 #include "util/u_debug.h"
+#include "c11/threads.h"
 #include "agx3_pack.h"
 #include "agx_builder.h"
 #include "agx_compiler.h"
@@ -398,10 +400,13 @@ a3_size(enum agx_size size)
 }
 
 /* AGX3_SURVEY=1: count what the packer cannot pack, by message and opcode,
- * print the table at exit and keep going (the instruction is dropped) */
-static jmp_buf a3_survey_jmp;
+ * print the table at exit and keep going (the instruction is dropped).
+ * Shaders compile on several threads at once (hk's queues): each has its own
+ * jump buffer, and the table is updated under a lock. */
+static thread_local jmp_buf a3_survey_jmp;
 static bool a3_survey_on, a3_debug;
 static unsigned a3_survey_count[AGX_NUM_OPCODES][8];
+static simple_mtx_t a3_survey_lock = SIMPLE_MTX_INITIALIZER;
 static const char *a3_survey_what[8];
 
 static void
@@ -424,12 +429,14 @@ a3_fail(const struct a3 *a, const char *what)
       longjmp(*a->trial, 1);
 
    if (a3_survey_on) {
+      simple_mtx_lock(&a3_survey_lock);
       unsigned w = 0;
       while (w < ARRAY_SIZE(a3_survey_what) - 1 && a3_survey_what[w] &&
              strcmp(a3_survey_what[w], what))
          w++;
       a3_survey_what[w] = what;
       a3_survey_count[a->I->op][w]++;
+      simple_mtx_unlock(&a3_survey_lock);
       longjmp(a3_survey_jmp, 1);
    }
 
@@ -3992,6 +3999,19 @@ agx3_fold_waits(agx_context *ctx)
    }
 }
 
+/* Once, whichever thread compiles first: the others wait for the options */
+static void
+a3_init(void)
+{
+   assert(!strcmp(agx3_kind_names[A3_CR], "cr"));
+   assert(!strcmp(agx3_kind_names[A3_CF], "cf"));
+   assert(!strcmp(agx3_kind_names[A3_SS], "ss"));
+   a3_survey_on = debug_get_bool_option("AGX3_SURVEY", false);
+   a3_debug = debug_get_bool_option("AGX3_DEBUG", false);
+   if (a3_survey_on)
+      atexit(a3_survey_print);
+}
+
 static void
 a3_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
               const agx_instr *I, unsigned scratch_B, uint32_t hints,
@@ -4003,17 +4023,8 @@ a3_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
                   .emitted = emitted,
                   .trial = trial};
 
-   static bool once;
-   if (!once) {
-      once = true;
-      assert(!strcmp(agx3_kind_names[A3_CR], "cr"));
-      assert(!strcmp(agx3_kind_names[A3_CF], "cf"));
-      assert(!strcmp(agx3_kind_names[A3_SS], "ss"));
-      a3_survey_on = debug_get_bool_option("AGX3_SURVEY", false);
-      a3_debug = debug_get_bool_option("AGX3_DEBUG", false);
-      if (a3_survey_on)
-         atexit(a3_survey_print);
-   }
+   static util_once_flag once = UTIL_ONCE_FLAG_INIT;
+   util_call_once(&once, a3_init);
 
    if (a3_survey_on && setjmp(a3_survey_jmp))
       return;
