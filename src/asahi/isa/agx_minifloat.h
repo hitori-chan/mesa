@@ -59,6 +59,10 @@ agx_minifloat_encode(float f)
 static inline bool
 agx_minifloat_exact(float f)
 {
+   /* No infinity or NaN encoding, and encoding one converts it to unsigned */
+   if (!isfinite(f))
+      return false;
+
    float f_ = agx_minifloat_decode(agx_minifloat_encode(f));
    return memcmp(&f, &f_, sizeof(float)) == 0;
 }
