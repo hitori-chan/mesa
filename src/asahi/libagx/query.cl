@@ -142,6 +142,14 @@ libagx_write_u32s(constant struct libagx_imm_write *p)
  * is a bit unclear. It might not be necessary but - absent hardware/firmware
  * documentation - this gives me peace of mind.
  */
+/* A launch for a compute stream that ends with a timestamp and nothing else to
+ * launch: G15's firmware from macOS 27 writes no timestamps for such a stream
+ * (hk_cmd_buffer_end_compute_internal) */
+KERNEL(1)
+libagx_nop(void)
+{
+}
+
 KERNEL(1)
 libagx_copy_timestamp(global uint64_t *dest, volatile global uint64_t *src)
 {

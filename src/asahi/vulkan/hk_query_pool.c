@@ -161,6 +161,17 @@ hk_dispatch_imm_writes(struct hk_cmd_buffer *cmd, struct hk_cs *cs)
    libagx_write_u32s(cmd, agx_1d(count), AGX_BARRIER_ALL | AGX_POSTGFX, params);
 }
 
+void
+hk_dispatch_timestamp_nop(struct hk_cmd_buffer *cmd)
+{
+   struct hk_device *dev = hk_cmd_buffer_device(cmd);
+
+   if (dev->dev.params.gpu_generation >= 15) {
+      perf_debug(cmd, "A launch for a timestamp");
+      libagx_nop(cmd, agx_1d(1), AGX_BARRIER_ALL);
+   }
+}
+
 /* What the stream behind this render reads or reports comes after its retire */
 static void
 hk_post_gfx_wait_stores(struct hk_cmd_buffer *cmd)
