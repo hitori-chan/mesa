@@ -190,9 +190,12 @@ agx_pack_buffer_texture_g15(void *out, enum pipe_format format,
    w[5] = offset_el;
 
    if (ail_pixel_format[format].channels == AGX_CHANNELS_R32G32B32_EMULATED) {
-      uint64_t *q = out;
-      q[1] &= ~BITFIELD64_RANGE(2, 36);
-      q[1] |= ((address >> 4) & BITFIELD64_MASK(36)) << 2;
+      /* The descriptor may be only 4-byte aligned (a gallium sampler view's) */
+      uint64_t q1;
+      memcpy(&q1, (uint8_t *)out + 8, sizeof(q1));
+      q1 &= ~BITFIELD64_RANGE(2, 36);
+      q1 |= ((address >> 4) & BITFIELD64_MASK(36)) << 2;
+      memcpy((uint8_t *)out + 8, &q1, sizeof(q1));
    }
 }
 
