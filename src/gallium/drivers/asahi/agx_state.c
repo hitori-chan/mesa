@@ -4631,7 +4631,8 @@ agx_launch_gs_prerast(struct agx_batch *batch,
 
       struct libagx_gs_setup_indirect_args gsi = {
          .index_buffer = ib,
-         .index_buffer_range_el = ib_extent / info->index_size,
+         .index_buffer_range_el =
+            info->index_size ? ib_extent / info->index_size : 0,
          .draw = agx_indirect_buffer_ptr(batch, indirect),
          .vp = batch->uniforms.vertex_params,
          .p = batch->uniforms.geometry_params,
