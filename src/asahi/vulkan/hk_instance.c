@@ -173,8 +173,8 @@ VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
 hk_GetInstanceProcAddr(VkInstance _instance, const char *pName)
 {
    VK_FROM_HANDLE(hk_instance, instance, _instance);
-   return vk_instance_get_proc_addr(&instance->vk, &hk_instance_entrypoints,
-                                    pName);
+   return vk_instance_get_proc_addr(instance != NULL ? &instance->vk : NULL,
+                                    &hk_instance_entrypoints, pName);
 }
 
 PUBLIC VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
