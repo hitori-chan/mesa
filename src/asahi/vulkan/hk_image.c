@@ -1668,9 +1668,9 @@ hk_copy_memory_to_image(struct hk_device *device, struct hk_image *dst_image,
                             &dst_image->vk, &info->imageSubresource));
 
    unsigned level = info->imageSubresource.mipLevel;
-   uint32_t image_offset = ail_get_layer_level_B(layout, start_layer, level);
-   uint32_t dst_layer_stride = layout->layer_stride_B;
-   uint32_t src_layer_stride = copy_memcpy
+   uint64_t image_offset = ail_get_layer_level_B(layout, start_layer, level);
+   uint64_t dst_layer_stride = layout->layer_stride_B;
+   uint64_t src_layer_stride = copy_memcpy
                                   ? ail_get_level_size_B(layout, level)
                                   : (src_width * src_height * blocksize_B);
    bool tiled = ail_is_level_twiddled_uncompressed(
@@ -1747,9 +1747,9 @@ hk_copy_image_to_memory(struct hk_device *device, struct hk_image *src_image,
                             &src_image->vk, &info->imageSubresource));
    unsigned level = info->imageSubresource.mipLevel;
 
-   uint32_t image_offset = ail_get_layer_level_B(layout, start_layer, level);
-   uint32_t src_layer_stride = layout->layer_stride_B;
-   uint32_t dst_layer_stride = copy_memcpy
+   uint64_t image_offset = ail_get_layer_level_B(layout, start_layer, level);
+   uint64_t src_layer_stride = layout->layer_stride_B;
+   uint64_t dst_layer_stride = copy_memcpy
                                   ? ail_get_level_size_B(layout, level)
                                   : (dst_width * dst_height * blocksize_B);
 
@@ -1826,15 +1826,15 @@ hk_copy_image_to_image_cpu(struct hk_device *device, struct hk_image *src_image,
                                  ? dst_offset.z
                                  : info->dstSubresource.baseArrayLayer;
 
-   uint32_t src_layer_stride = src_layout->layer_stride_B;
-   uint32_t dst_layer_stride = dst_layout->layer_stride_B;
+   uint64_t src_layer_stride = src_layout->layer_stride_B;
+   uint64_t dst_layer_stride = dst_layout->layer_stride_B;
 
    uint32_t dst_block_B = util_format_get_blocksize(dst_layout->format);
    uint32_t src_block_B = util_format_get_blocksize(src_layout->format);
 
-   uint32_t src_image_offset = ail_get_layer_level_B(
+   uint64_t src_image_offset = ail_get_layer_level_B(
       src_layout, src_start_layer, info->srcSubresource.mipLevel);
-   uint32_t dst_image_offset = ail_get_layer_level_B(
+   uint64_t dst_image_offset = ail_get_layer_level_B(
       dst_layout, dst_start_layer, info->dstSubresource.mipLevel);
 
    bool src_tiled = ail_is_level_twiddled_uncompressed(
@@ -1849,9 +1849,9 @@ hk_copy_image_to_image_cpu(struct hk_device *device, struct hk_image *src_image,
         layer++, src += src_layer_stride, dst += dst_layer_stride) {
 
       if (copy_memcpy) {
-         uint32_t src_size =
+         uint64_t src_size =
             ail_get_level_size_B(src_layout, info->srcSubresource.mipLevel);
-         uint32_t dst_size =
+         uint64_t dst_size =
             ail_get_level_size_B(dst_layout, info->dstSubresource.mipLevel);
 
          assert(src_size == dst_size);

@@ -165,3 +165,37 @@ TEST(Sparse, TwiddledBlockPast4GiB)
              (7ull << 30) + ail_get_twiddled_block_B(&layout, 0, 128, 128, 0));
    EXPECT_EQ(ail_bytes_to_pages(5ull << 30), (5ull << 30) / AIL_PAGESIZE);
 }
+
+/* A layer of 4 GiB or more: its size and its levels' offsets in 64 bits */
+TEST(Miptree, LayerPast4GiB)
+{
+   struct ail_layout layout = {
+      .width_px = 16384,
+      .height_px = 16384,
+      .depth_px = 1,
+      .sample_count_sa = 1,
+      .levels = 1,
+      .tiling = AIL_TILING_GPU,
+      .format = PIPE_FORMAT_R32G32B32A32_FLOAT,
+   };
+
+   ail_make_miptree(&layout);
+   EXPECT_EQ(layout.size_B, 1ull << 32);
+   EXPECT_EQ(ail_get_level_size_B(&layout, 0), 1ull << 32);
+
+   layout = (struct ail_layout){
+      .width_px = 16384,
+      .height_px = 16384,
+      .depth_px = 2,
+      .sample_count_sa = 1,
+      .levels = 15,
+      .tiling = AIL_TILING_GPU,
+      .format = PIPE_FORMAT_R32G32B32A32_FLOAT,
+   };
+
+   ail_make_miptree(&layout);
+   EXPECT_EQ(ail_get_level_offset_B(&layout, 1), 1ull << 32);
+   EXPECT_GT(layout.layer_stride_B, 1ull << 32);
+   EXPECT_EQ(ail_get_layer_offset_B(&layout, 1), layout.layer_stride_B);
+   EXPECT_EQ(layout.size_B, 2 * layout.layer_stride_B);
+}

@@ -140,7 +140,7 @@ struct ail_layout {
     * is not actually used for imageMipTailStride due to complications with
     * standard sparse block sizes.
     */
-   uint32_t mip_tail_stride;
+   uint64_t mip_tail_stride;
 
    /* Offset of the start of the compression metadata buffer */
    uint32_t metadata_offset_B;
@@ -206,19 +206,19 @@ ail_get_wsi_stride_B(const struct ail_layout *layout, unsigned level)
       return util_format_get_stride(layout->format, layout->width_px);
 }
 
-static inline uint32_t
+static inline uint64_t
 ail_get_layer_offset_B(const struct ail_layout *layout, unsigned z_px)
 {
    return z_px * layout->layer_stride_B;
 }
 
-static inline uint32_t
+static inline uint64_t
 ail_get_level_offset_B(const struct ail_layout *layout, unsigned level)
 {
    return layout->level_offsets_B[level];
 }
 
-static inline uint32_t
+static inline uint64_t
 ail_get_layer_level_B(const struct ail_layout *layout, unsigned z_px,
                       unsigned level)
 {
@@ -226,7 +226,7 @@ ail_get_layer_level_B(const struct ail_layout *layout, unsigned z_px,
           ail_get_level_offset_B(layout, level);
 }
 
-static inline uint32_t
+static inline uint64_t
 ail_get_level_size_B(const struct ail_layout *layout, unsigned level)
 {
    if (layout->tiling == AIL_TILING_LINEAR) {
@@ -239,7 +239,7 @@ ail_get_level_size_B(const struct ail_layout *layout, unsigned level)
    }
 }
 
-static inline uint32_t
+static inline uint64_t
 ail_get_linear_pixel_B(const struct ail_layout *layout, ASSERTED unsigned level,
                        uint32_t x_px, uint32_t y_px, uint32_t z_px)
 {
