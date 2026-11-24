@@ -172,7 +172,8 @@ agx_fast_link(struct agx_linked_shader *linked, struct agx_device *dev,
    /* FS prolog happens per-pixel, outside the sample loop */
    if (prolog) {
       size_t sz = prolog->info.main_size;
-      memcpy(linked_map + offset, prolog->binary, sz);
+      if (sz)
+         memcpy(linked_map + offset, prolog->binary, sz);
       offset += sz;
    }
 
@@ -193,8 +194,10 @@ agx_fast_link(struct agx_linked_shader *linked, struct agx_device *dev,
       if (!part)
          continue;
 
+      /* An empty part (a fragment shader with no code) has no binary */
       size_t sz = part->info.main_size;
-      memcpy(linked_map + offset, part->binary + part->info.main_offset, sz);
+      if (sz)
+         memcpy(linked_map + offset, part->binary + part->info.main_offset, sz);
       offset += sz;
 
       /* The last part ends the program: replace its stop (G15's, 4 bytes) */
