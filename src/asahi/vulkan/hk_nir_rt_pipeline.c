@@ -870,6 +870,24 @@ inline_stage(struct rt_clone *parent, nir_builder *pb, uint32_t index)
    };
 
    nir_variable *call_data = lower_payloads(&c, parent->frame_end);
+
+   /* Tier 2: an any-hit or intersection shader's large locals in its frame,
+    * which the traversal's case lays out as tier 1 lays out payloads: an
+    * any-hit inlined in an intersection shader's report past the
+    * intersection shader's, the triangles' any-hit over the same bytes, as
+    * they never run at once. The case runs whole within one pass of the
+    * loop, as a leaf's, so its frames start at the leaves' base
+    * (inline_part); the backend would give each copy its own scratch.
+    */
+   if (rb->first_case) {
+      s->scratch_size = c.frame_end;
+      NIR_PASS(_, s, nir_lower_vars_to_scratch, 256,
+               glsl_get_natural_size_align_bytes,
+               glsl_get_word_size_align_bytes);
+      c.frame_end = ALIGN_POT(s->scratch_size, 16);
+      rb->scratch_end = MAX2(rb->scratch_end, c.frame_end);
+   }
+
    rt_vars_create(s, &c.vars);
 
    struct util_dynarray intrs;
