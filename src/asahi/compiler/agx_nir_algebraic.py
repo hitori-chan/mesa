@@ -341,6 +341,35 @@ lower_lea = [
     (('ilea_agx', a, b, c), ('iadd', a, ('ishl', ('i2i64', b), c))),
 ]
 
+# (a + #b) * #c as one fma, inexact: the fadd's result has no other use, and
+# b, c and b * c stay finite and a + b cannot overflow (|b|, |c| <= 2^32), so
+# an Inf or NaN in a gives what the fadd and fmul give
+distribute_fmul = [
+    (('~fmul@32', ('~fadd(is_used_once)', a, '#b(agx_is_moderate)'),
+      '#c(agx_is_moderate)'),
+     ('ffma', a, c, ('fmul', b, c))),
+]
+
+# A constant source with every component finite and of magnitude 2^32 at most
+moderate_helper = """
+static inline bool
+agx_is_moderate(UNUSED const nir_search_state *state,
+                const nir_alu_instr *instr, unsigned src,
+                unsigned num_components, const uint8_t *swizzle)
+{
+   if (!nir_src_is_const(instr->src[src].src))
+      return false;
+
+   for (unsigned i = 0; i < num_components; i++) {
+      double v = nir_src_comp_as_float(instr->src[src].src, swizzle[i]);
+      if (!(fabs(v) <= 4294967296.0))
+         return false;
+   }
+
+   return true;
+}
+"""
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('-p', '--import-path', required=True)
@@ -352,6 +381,9 @@ def run():
     import nir_algebraic  # pylint: disable=import-error
 
     print('#include "agx_nir.h"')
+    print('#include <math.h>')
+    print('#include "nir_search_helpers.h"')
+    print(moderate_helper)
 
     print(nir_algebraic.AlgebraicPass("agx_nir_cleanup_amul", cleanup_amul).render())
     print(nir_algebraic.AlgebraicPass("agx_nir_fuse_lea", fuse_lea).render())
@@ -362,6 +394,8 @@ def run():
                                       lower_selects).render())
     print(nir_algebraic.AlgebraicPass("agx_nir_fuse_selects",
                                       opt_selects).render())
+    print(nir_algebraic.AlgebraicPass("agx_nir_distribute_fmul",
+                                      distribute_fmul).render())
     print(nir_algebraic.AlgebraicPass("agx_nir_fuse_algebraic_late",
                                       fuse_extr + fuse_ubfe +
                                       fuse_imad + ixor_bcsel).render())
