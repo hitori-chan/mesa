@@ -41,6 +41,8 @@
 #include "util/format/u_formats.h"
 #include "util/macros.h"
 #include "util/ralloc.h"
+#include "util/u_atomic.h"
+#include "util/u_debug.h"
 #include "util/u_prim.h"
 #include "vulkan/vulkan_core.h"
 #include "layout.h"
@@ -3395,6 +3397,13 @@ hk_g15_stub_fallback(struct hk_cmd_buffer *cmd)
    assert(st->active);
    st->active = false;
 
+   /* [tr] the knob's first fallback, from the process */
+   static bool tr_once;
+   if (!tr_once) {
+      tr_once = true;
+      fprintf(stderr, "[tr] hk: HK_G15_STUB: a draw falls back\n");
+   }
+
    if (st->base_param) {
       gfx->draw_params = hk_pool_upload(cmd, st->values, 8, 4);
       n += 2;
@@ -4755,6 +4764,14 @@ hk_g15_vdm_call(struct hk_cmd_buffer *cmd, struct hk_cs *cs)
    cs->current =
       agx_vdm_call((uint32_t *)start, agx_vdm_va(&dev->dev, sub.gpu));
 
+   /* [tr] the knob's first call, from the process */
+   static bool tr_once;
+   if (!tr_once) {
+      tr_once = true;
+      fprintf(stderr, "[tr] hk: HK_G15_VDMCALL: call %" PRIx64 " (%zu B)\n",
+              sub.gpu, size);
+   }
+
    /* After the return the hardware holds the sub-stream's vertex state: the
     * next draw emits its own, as a GPU-written sub-stream's will need */
    cmd->state.gfx.dirty |= HK_DIRTY_VARYINGS;
@@ -5153,6 +5170,164 @@ hk_CmdDrawMultiIndexedEXT(VkCommandBuffer commandBuffer, uint32_t drawCount,
  * alone without) plus 0x800 B, and draw_count 64 B stubs in the USC pool.
  */
 
+/* [tr] HK_G15_MDI_HOST=1: the records written on the CPU at recording, by the
+ * kernel's code, the plain forms only: the drm-shim runs no kernel */
+DEBUG_GET_ONCE_BOOL_OPTION(hk_g15_mdi_host, "HK_G15_MDI_HOST", false)
+
+/* [tr] The CPU's mapping of va, and the bytes its BO has from there */
+static void *
+hk_g15_mdi_host_map(struct hk_device *dev, uint64_t va, uint64_t *size_B)
+{
+   for (uint32_t h = 0; h <= dev->dev.max_handle; h++) {
+      struct agx_bo *bo = agx_lookup_bo(&dev->dev, h);
+
+      if (p_atomic_read(&bo->refcnt) > 0 && bo->va && va >= bo->va->addr &&
+          va < bo->va->addr + bo->size) {
+         *size_B = bo->size - (va - bo->va->addr);
+         return (uint8_t *)agx_bo_map(bo) + (va - bo->va->addr);
+      }
+   }
+
+   return NULL;
+}
+
+/* [tr] Whether stub is agx_esl_stub's for these values */
+static bool
+hk_g15_mdi_stub_same(const struct libagx_mdi *p, const struct hk_g15_stub *st,
+                     const uint32_t *values, const uint8_t *stub)
+{
+   uint8_t stack[AGX_ESL_STUB_MAX];
+   struct util_dynarray ref;
+   util_dynarray_init_from_stack(&ref, stack, sizeof(stack));
+
+   agx_esl_stub(&ref, st->words, values, st->nr_words, st->tail, st->tail_size,
+                st->shared, NULL);
+
+   bool same = ref.size == p->stub_B && !memcmp(ref.data, stub, ref.size);
+   util_dynarray_fini(&ref);
+   return same;
+}
+
+/* [tr] The stubs written against agx_esl_stub's with their draws' values;
+ * once a process, each mov_imm's scatter over bit patterns */
+static void
+hk_g15_mdi_host_check(const struct libagx_mdi *p, const struct hk_g15_stub *st,
+                      const uint8_t *args, const uint8_t *stubs, uint32_t n)
+{
+   static bool said, patterns_done;
+   unsigned wrong = 0, pat = 0, pat_wrong = 0;
+   uint32_t first = p->indexed ? 3 : 2;
+
+   for (uint32_t i = 0; i < n; i++) {
+      const uint32_t *a = (const uint32_t *)(args + (uint64_t)i * p->stride_B);
+      uint32_t values[LIBAGX_MDI_MAX_IMM] = {0};
+
+      for (uint32_t k = 0; k < p->nr_imm; k++) {
+         values[k] = p->imm_value[k] == LIBAGX_MDI_DRAW_ID ? i
+                     : p->imm_value[k] == LIBAGX_MDI_FIRST ? a[first]
+                                                           : a[first + 1];
+      }
+
+      wrong += !hk_g15_mdi_stub_same(p, st, values,
+                                     stubs + (uint64_t)i * LIBAGX_MDI_STUB_B);
+   }
+
+   if (!patterns_done) {
+      static const uint32_t extra[] = {0, 0xa5a5a5a5, 0x5a5a5a5a, 0xffffffff};
+      patterns_done = true;
+
+      for (uint32_t k = 0; k < p->nr_imm; k++) {
+         for (unsigned b = 0; b < 64 + ARRAY_SIZE(extra); b++) {
+            uint32_t v = b < 32   ? 1u << b
+                         : b < 64 ? ~(1u << (b - 32))
+                                  : extra[b - 64];
+            uint32_t values[LIBAGX_MDI_MAX_IMM] = {0};
+            uint8_t buf[LIBAGX_MDI_STUB_B];
+
+            values[k] = v;
+            memcpy(buf, p->stub, p->stub_B);
+            libagx_mdi_scatter(p, buf, k, v);
+            pat_wrong += !hk_g15_mdi_stub_same(p, st, values, buf);
+            pat++;
+         }
+      }
+   }
+
+   if (!said || wrong || pat_wrong) {
+      said = true;
+      fprintf(stderr,
+              "[tr] hk: HK_G15_MDI: stubs against agx_esl_stub: %u of %u "
+              "wrong; bit patterns %u of %u wrong\n",
+              wrong, n, pat_wrong, pat);
+   }
+}
+
+/* [tr] What the kernel would write, on the CPU */
+static void
+hk_g15_mdi_host_write(struct hk_device *dev, const struct libagx_mdi *p,
+                      uint8_t *records, uint8_t *stubs,
+                      const struct hk_g15_stub *st)
+{
+   uint64_t size_B = 0;
+   const uint32_t *count =
+      p->count ? hk_g15_mdi_host_map(dev, p->count, &size_B) : NULL;
+   const uint32_t *cond =
+      p->cond ? hk_g15_mdi_host_map(dev, p->cond, &size_B) : NULL;
+   const uint8_t *args = hk_g15_mdi_host_map(dev, p->args, &size_B);
+
+   if ((p->count && !count) || (p->cond && !cond) || !args)
+      return;
+
+   uint32_t n = libagx_mdi_count(p, count, cond);
+   uint32_t cmd_B = p->indexed ? 20 : 16;
+
+   for (uint32_t i = 0; i < n; i++) {
+      if ((uint64_t)i * p->stride_B + cmd_B > size_B) {
+         n = i;
+         break;
+      }
+
+      libagx_mdi_write(p, i, (const uint32_t *)(args + i * p->stride_B),
+                       p->args + (uint64_t)i * p->stride_B,
+                       (uint32_t *)(records + (uint64_t)i * p->record_B),
+                       stubs ? stubs + (uint64_t)i * LIBAGX_MDI_STUB_B : NULL);
+   }
+
+   agx_vdm_return((uint32_t *)(records + (uint64_t)n * p->record_B));
+
+   if (stubs && st)
+      hk_g15_mdi_host_check(p, st, args, stubs, n);
+}
+
+/* [tr] The first call, and each reason to fall back once */
+static void
+hk_g15_mdi_tr(const char *why, const struct libagx_mdi *p, bool robust,
+              bool host)
+{
+   static const char *seen[16];
+   static unsigned nr_seen;
+
+   for (unsigned i = 0; i < nr_seen; i++) {
+      if (seen[i] == why)
+         return;
+   }
+
+   if (nr_seen < ARRAY_SIZE(seen))
+      seen[nr_seen++] = why;
+
+   if (p) {
+      fprintf(stderr,
+              "[tr] hk: HK_G15_MDI: call %" PRIx64 ": %u slots of %u B (%s%s"
+              "%s), list %u B, stub %u B (%u values), %s\n",
+              p->records, p->draw_count + 1, p->record_B,
+              p->indexed ? "indexed" : "non-indexed", robust ? ", robust" : "",
+              p->count ? ", count" : "", p->list_B, p->stub_B, p->nr_imm,
+              host ? "written on the CPU" : "by the kernel");
+   } else {
+      fprintf(stderr, "[tr] hk: HK_G15_MDI: the CPU's loop: %s\n", why);
+   }
+}
+
 /* What keeps a multi-draw from one call before the flush: the rest of
  * gpu-mdi.md's eligibility follows it (hk_g15_mdi) */
 static const char *
@@ -5213,8 +5388,11 @@ hk_g15_mdi(struct hk_cmd_buffer *cmd, uint64_t args, uint32_t stride_B,
    if (!hk_g15_mdi_mode() || dev->dev.params.gpu_generation < 15 || !draw_count)
       return false;
 
-   if (hk_g15_mdi_ineligible(cmd))
+   const char *why = hk_g15_mdi_ineligible(cmd);
+   if (why) {
+      hk_g15_mdi_tr(why, NULL, false, false);
       return false;
+   }
 
    /* hk_draw's: the restart and index size are the state's */
    struct hk_addr_range buf = gfx->index.buffer;
@@ -5237,14 +5415,17 @@ hk_g15_mdi(struct hk_cmd_buffer *cmd, uint64_t args, uint32_t stride_B,
    struct hk_linked_shader *linked = gfx->linked[MESA_SHADER_VERTEX];
 
    if (hw_vs != &vs->variants[HK_VS_VARIANT_HW] ||
-       gfx->shaders[MESA_SHADER_GEOMETRY] || linked->sw_indexing)
+       gfx->shaders[MESA_SHADER_GEOMETRY] || linked->sw_indexing) {
+      hk_g15_mdi_tr("not a plain hardware vertex program", NULL, false, false);
       return false;
+   }
 
    /* The zero page for an empty index buffer, as hk_draw has it */
    bool robust = hk_needs_index_robustness(cmd, &draw);
    bool base_param = linked->b.uses_base_param;
    bool uses_draw_id = hw_vs->b.info.uses_draw_id;
    bool stub = base_param || uses_draw_id;
+   bool host = debug_get_option_hk_g15_mdi_host() && !robust;
 
    struct libagx_mdi p = {
       .args = args,
@@ -5269,8 +5450,11 @@ hk_g15_mdi(struct hk_cmd_buffer *cmd, uint64_t args, uint32_t stride_B,
       st->base_param = base_param;
       st->draw_id = uses_draw_id;
 
-      if (!hk_g15_mdi_shared(cmd, hw_vs, linked))
+      if (!hk_g15_mdi_shared(cmd, hw_vs, linked)) {
+         hk_g15_mdi_tr("the vertex program's words cannot be provided", NULL,
+                       false, false);
          return false;
+      }
 
       /* The stub's template: its mov_imms of 0, their offsets */
       static const uint32_t zeros[LIBAGX_MDI_MAX_IMM] = {0};
@@ -5315,8 +5499,10 @@ hk_g15_mdi(struct hk_cmd_buffer *cmd, uint64_t args, uint32_t stride_B,
    uint64_t records_B = slots * p.record_B + 0x800;
    uint64_t stubs_B = (uint64_t)draw_count * LIBAGX_MDI_STUB_B;
 
-   if (records_B > UINT32_MAX || stubs_B > UINT32_MAX)
+   if (records_B > UINT32_MAX || stubs_B > UINT32_MAX) {
+      hk_g15_mdi_tr("too many draws", NULL, false, false);
       return false;
+   }
 
    struct agx_ptr records = hk_pool_alloc(cmd, records_B, 256);
    struct agx_ptr stubs = {0};
@@ -5334,13 +5520,19 @@ hk_g15_mdi(struct hk_cmd_buffer *cmd, uint64_t args, uint32_t stride_B,
     * build): its first thread writes there */
    agx_vdm_return(records.cpu);
 
-   uint64_t params = hk_pool_upload(cmd, &p, sizeof(p), 8);
-
-   if (robust) {
-      libagx_mdi_g15_robust(cmd, agx_1d(32 * slots),
-                            AGX_BARRIER_ALL | AGX_PREGFX, params, hk_heap(cmd));
+   if (host) {
+      hk_g15_mdi_host_write(dev, &p, records.cpu, stubs.cpu, stub ? st : NULL);
    } else {
-      libagx_mdi_g15(cmd, agx_1d(slots), AGX_BARRIER_ALL | AGX_PREGFX, params);
+      uint64_t params = hk_pool_upload(cmd, &p, sizeof(p), 8);
+
+      if (robust) {
+         libagx_mdi_g15_robust(cmd, agx_1d(32 * slots),
+                               AGX_BARRIER_ALL | AGX_PREGFX, params,
+                               hk_heap(cmd));
+      } else {
+         libagx_mdi_g15(cmd, agx_1d(slots), AGX_BARRIER_ALL | AGX_PREGFX,
+                        params);
+      }
    }
 
    cs->current =
@@ -5350,6 +5542,8 @@ hk_g15_mdi(struct hk_cmd_buffer *cmd, uint64_t args, uint32_t stride_B,
 
    /* After the return the hardware holds the last record's vertex state */
    gfx->dirty |= HK_DIRTY_VARYINGS;
+
+   hk_g15_mdi_tr("call", &p, robust, host);
    return true;
 }
 

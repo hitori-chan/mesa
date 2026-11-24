@@ -1130,6 +1130,16 @@ hk_upload_g15_stub(struct hk_cmd_buffer *cmd)
    assert(stub.size <= AGX_ESL_STUB_MAX);
    memcpy(t.cpu, stub.data, stub.size);
 
+   /* [tr] the knob's first stub, from the process */
+   static bool tr_once;
+   if (!tr_once) {
+      tr_once = true;
+      fprintf(stderr,
+              "[tr] hk: HK_G15_STUB=%u: stub %" PRIx64 " (%u B, %u words)"
+              " -> shared %" PRIx64 "\n",
+              hk_g15_stub_mode(), t.gpu, stub.size, st->nr_words, st->shared);
+   }
+
    util_dynarray_fini(&stub);
 
    return agx_usc_addr(&dev->dev, t.gpu);
