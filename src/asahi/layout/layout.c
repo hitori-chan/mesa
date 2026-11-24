@@ -69,7 +69,7 @@ ail_get_block_size_B(struct ail_layout *layout)
 static void
 ail_initialize_gpu_tiled(struct ail_layout *layout)
 {
-   unsigned offset_B = 0;
+   uint64_t offset_B = 0;
    unsigned blocksize_B = ail_get_block_size_B(layout);
    unsigned w_el = util_format_get_nblocksx(layout->format, layout->width_px);
    unsigned h_el = util_format_get_nblocksy(layout->format, layout->height_px);
@@ -123,7 +123,8 @@ ail_initialize_gpu_tiled(struct ail_layout *layout)
 
       unsigned size_el = tiles * tilesize_el.width_el * tilesize_el.height_el;
       layout->level_offsets_B[l] = offset_B;
-      offset_B = ALIGN_POT(offset_B + (blocksize_B * size_el), AIL_CACHELINE);
+      offset_B =
+         ALIGN_POT(offset_B + ((uint64_t)blocksize_B * size_el), AIL_CACHELINE);
 
       layout->stride_el[l] = util_format_get_nblocksx(
          layout->format, u_minify(layout->width_px, l));
@@ -157,7 +158,8 @@ ail_initialize_gpu_tiled(struct ail_layout *layout)
    for (unsigned l = pot_level; l < layout->levels; ++l) {
       unsigned size_el = potw_el * poth_el;
       layout->level_offsets_B[l] = offset_B;
-      offset_B = ALIGN_POT(offset_B + (blocksize_B * size_el), AIL_CACHELINE);
+      offset_B =
+         ALIGN_POT(offset_B + ((uint64_t)blocksize_B * size_el), AIL_CACHELINE);
 
       /* The tilesize is based on the true mipmap level size, not the POT
        * rounded size, except for compressed textures */
@@ -186,7 +188,7 @@ ail_initialize_gpu_tiled(struct ail_layout *layout)
    /* Determine the stride of the miptail. Sparse arrayed images inherently
     * require page-aligned layers to be able to bind individual layers.
     */
-   unsigned tail_offset_B = layout->level_offsets_B[layout->mip_tail_first_lod];
+   uint64_t tail_offset_B = layout->level_offsets_B[layout->mip_tail_first_lod];
    layout->mip_tail_stride = align(offset_B - tail_offset_B, AIL_PAGESIZE);
 
    /* Align layer size if we have mipmaps and one miptree is larger than one
@@ -241,7 +243,7 @@ ail_initialize_interchange(struct ail_layout *layout)
 static void
 ail_initialize_twiddled(struct ail_layout *layout)
 {
-   unsigned offset_B = 0;
+   uint64_t offset_B = 0;
    unsigned blocksize_B = ail_get_block_size_B(layout);
    unsigned w_el = util_format_get_nblocksx(layout->format, layout->width_px);
    unsigned h_el = util_format_get_nblocksy(layout->format, layout->height_px);
@@ -261,7 +263,8 @@ ail_initialize_twiddled(struct ail_layout *layout)
 
       unsigned size_el = alloc_w_el * alloc_h_el;
       layout->level_offsets_B[l] = offset_B;
-      offset_B = ALIGN_POT(offset_B + (blocksize_B * size_el), AIL_CACHELINE);
+      offset_B =
+         ALIGN_POT(offset_B + ((uint64_t)blocksize_B * size_el), AIL_CACHELINE);
 
       unsigned minor_el = MIN2(logical_w_el, logical_h_el);
       layout->stride_el[l] = logical_w_el;
@@ -281,7 +284,7 @@ ail_initialize_twiddled(struct ail_layout *layout)
    /* Determine the stride of the miptail. Sparse arrayed images inherently
     * require page-aligned layers to be able to bind individual layers.
     */
-   unsigned tail_offset_B = layout->level_offsets_B[layout->mip_tail_first_lod];
+   uint64_t tail_offset_B = layout->level_offsets_B[layout->mip_tail_first_lod];
    layout->mip_tail_stride = align(offset_B - tail_offset_B, AIL_PAGESIZE);
 
    layout->page_aligned_layers = true;
