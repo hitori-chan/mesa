@@ -22,6 +22,7 @@ struct disasm_ctx {
  * bytes). Keep in sync with MAX_BITS in isa.py.
  */
 #define DISASM_MAX_WORDS 6
+static_assert(DISASM_MAX_WORDS * 4 == AGX_DISASM_WINDOW_B, "one window");
 
 static inline uint64_t
 bits(BITSET_WORD *word, unsigned start, unsigned size, unsigned shift)
