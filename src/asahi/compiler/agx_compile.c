@@ -60,6 +60,7 @@ static const struct debug_named_value agx_debug_options[] = {
    {"biascr",    AGX_DBG_BIASCR,    "G15: pack a uniform bias into cr3 at every sample, not into F28's uniform in the preamble"},
    {"oldepilog", AGX_DBG_OLDEPILOG, "Fragment epilogs as m3-main's: only alphas aliased, a blend product per channel, colours copied to the export registers"},
    {"nodfdx",    AGX_DBG_NODFDX,    "G15: derivatives as quad swaps and subtractions, not dfdx and dfdy"},
+   {"oldbody",   AGX_DBG_OLDBODY,   "(a + #b) * #c as fadd and fmul, not one fma; G15: a sample's coordinates moved into its crs, not written there by the perspective multiply"},
    DEBUG_NAMED_VALUE_END
 };
 /* clang-format on */
@@ -4534,6 +4535,12 @@ agx_optimize_nir(nir_shader *nir, bool soft_fault, uint16_t *preamble_size,
     */
    NIR_PASS(_, nir, nir_opt_algebraic_late);
    NIR_PASS(_, nir, agx_nir_lower_fminmax);
+
+   /* (a + #b) * #c as one fma, a * c + b * c, as Apple's compiler emits it
+    * (Grim Dawn's terrain: (x - 0.9) * 10 is its ffma x, 10.0, -9.0, sat).
+    * After the late fusion, so a product an fadd already took stays fused. */
+   if (!(agx_compiler_debug & AGX_DBG_OLDBODY))
+      NIR_PASS(_, nir, agx_nir_distribute_fmul);
 
    /* G15 returns 16-bit texels where every use converts them to 16 bits (a
     * mediump sampler's in GLES): half the texture unit's result width, as

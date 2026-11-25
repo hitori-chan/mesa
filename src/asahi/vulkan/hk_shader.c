@@ -109,9 +109,10 @@ hk_physical_device_compiler_flags(const struct hk_physical_device *pdev)
 {
    /* This could be optimized but it doesn't matter. The device's debug flags
     * take the low 32 bits and the compiler's (AGX_MESA_DEBUG, many of which
-    * change the code, bits 0-22) the next ones, so that a cache never hands a
-    * shader compiled under other flags; HK_PERFTEST's that change the code
-    * take bits 56-59 and a driconf option that changes the code a high bit */
+    * change the code) bits 0-23 the next ones and bit 24 bit 60, so that a
+    * cache never hands a shader compiled under other flags; HK_PERFTEST's
+    * that change the code take bits 56-59 and driconf options that change
+    * the code bits 62-63 */
    const struct hk_instance *instance =
       hk_physical_device_instance((struct hk_physical_device *)pdev);
    const uint32_t perf = pdev->perftest & HK_PERF_SHADER_CODE;
@@ -120,8 +121,10 @@ hk_physical_device_compiler_flags(const struct hk_physical_device *pdev)
                              ((uint64_t)!!(perf & HK_PERF_HWTESS) << 2) |
                              ((uint64_t)!!(perf & HK_PERF_HWTESS32) << 3);
 
-   return pdev->dev.debug | (agx_get_compiler_debug() << 32) |
-          (perf_key << 56) |
+   const uint64_t cdbg = agx_get_compiler_debug();
+
+   return pdev->dev.debug | ((cdbg & BITFIELD64_MASK(24)) << 32) |
+          (perf_key << 56) | (((cdbg >> 24) & 1) << 60) |
           ((uint64_t)pdev->sampled_views_as_arrays << 63) |
           ((uint64_t)instance->drirc.misc.d3d_nearest_mip << 62);
 }

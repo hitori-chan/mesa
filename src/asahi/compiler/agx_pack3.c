@@ -2528,7 +2528,7 @@ a3_texture(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
       v.channels_m1 = 0;
       if (word && a3_tex_slot(I, c) == 3)
          layer = v;
-      else
+      else if (!(I->g15_cr_direct & BITFIELD_BIT(a3_tex_slot(I, c))))
          a3_mov_cr(a, I, cr + a3_tex_slot(I, c), v, emission);
    }
 
@@ -2969,6 +2969,90 @@ agx3_assign_groups(agx_context *ctx)
 #define A3_GROUPS      6
 #define A3_VARY_G      1
 
+/* G15: the perspective multiply that gives a sample a coordinate writes the
+ * texture's cr itself, as Apple's compiler emits it (fmul cr0, ^r2, $r12,
+ * cf0, cf1 before its first sample in 12 of the 16 programs of Grim Dawn's
+ * G-buffer capture), so the texture's mov from the register is dropped. Only
+ * when the value is the texture's coordinate alone: the coordinates die at the
+ * texture (the last-use hint agx_opt_register_cache sets from the registers'
+ * liveness, never in a divergent block), no instruction between the two
+ * reads or writes the register, and none reads or writes a cr or waits, so
+ * the cr is free from the multiply on (the caller has found no wait due for
+ * the texture's crs). A texture's coordinates are 32-bit, fmul_cf's
+ * destination is 32-bit and reaches cr63. */
+static void
+agx3_direct_crs(agx_block *block, agx_instr *I)
+{
+   agx_index coords = I->src[0];
+
+   if (I->op != AGX_OPCODE_TEXTURE_SAMPLE || !coords.discard ||
+       coords.type != AGX_INDEX_REGISTER || coords.size != AGX_SIZE_32)
+      return;
+
+   bool word = a3_tex_lod_word(I) || a3_tex_offset_in_word(I);
+   unsigned n = a3_tex_coords(I), open = 0;
+
+   for (unsigned c = 0; c < n; ++c) {
+      unsigned r = coords.value + 2 * c;
+      bool other = false;
+
+      /* the texture's other sources (a LOD, an offset) keep it too */
+      agx_foreach_src(I, s) {
+         agx_index S = I->src[s];
+         other |= s != 0 && S.type == AGX_INDEX_REGISTER &&
+                  !(S.value >= r + 2 || S.value + agx_index_size_16(S) <= r);
+      }
+
+      if (!other && !(word && a3_tex_slot(I, c) == 3))
+         open |= BITFIELD_BIT(c);
+   }
+
+   /* Apple's programs put one instruction at least between such a write and
+    * its sample (fmul cr1; pack_smpir cr3; smp in three of them) */
+   unsigned between = 0;
+   agx_instr *J = list_entry(I->link.prev, agx_instr, link);
+   for (; open && &J->link != &block->instructions;
+        J = list_entry(J->link.prev, agx_instr, link), ++between) {
+      if (J->op == AGX_OPCODE_WAIT || agx3_cr_count(J))
+         break;
+
+      /* The last writer of a coordinate before the texture */
+      agx_foreach_dest(J, d) {
+         agx_index D = J->dest[d];
+         if (D.type != AGX_INDEX_REGISTER)
+            continue;
+
+         u_foreach_bit(c, open) {
+            unsigned r = coords.value + 2 * c;
+            if (D.value >= r + 2 || D.value + agx_index_size_16(D) <= r)
+               continue;
+
+            open &= ~BITFIELD_BIT(c);
+            if (J->op == AGX_OPCODE_FMUL_CF && J->nr_dests == 1 &&
+                D.value == r && D.size == AGX_SIZE_32 && !J->g15_cr_dst &&
+                between > 0) {
+               unsigned cr = I->g15_cr + a3_tex_slot(I, c);
+               J->g15_cr_dst = cr + 1;
+               I->g15_cr_direct |= BITFIELD_BIT(a3_tex_slot(I, c));
+            }
+         }
+      }
+
+      /* A reader between the writer and the texture keeps the register */
+      agx_foreach_src(J, s) {
+         agx_index S = J->src[s];
+         if (S.type != AGX_INDEX_REGISTER)
+            continue;
+
+         u_foreach_bit(c, open) {
+            unsigned r = coords.value + 2 * c;
+            if (!(S.value >= r + 2 || S.value + agx_index_size_16(S) <= r))
+               open &= ~BITFIELD_BIT(c);
+         }
+      }
+   }
+}
+
 /* G15's st_var and image write read their coordinate registers after they
  * issue, until their group (st_var's A3_VARY_G, an image write's 0)
  * completes, and a later write to those crs does
@@ -3084,6 +3168,13 @@ agx3_assign_crs(agx_context *ctx)
              * the point size's st_var: the fetch read the wrong texel) */
             crs = BITFIELD64_MASK(MIN2(agx3_cr_count(I), 64));
          }
+
+         bool due = false;
+         for (unsigned g = 0; g < A3_GROUPS; g++)
+            due |= !!(pending[g] & crs);
+
+         if (tex && !due && !(agx_compiler_debug & AGX_DBG_OLDBODY))
+            agx3_direct_crs(block, I);
 
          for (unsigned g = 0; g < A3_GROUPS; g++) {
             if (pending[g] & crs) {
@@ -3374,7 +3465,14 @@ static void
 a3_fmul_cf(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
 {
    a3_begin(a, I, AGX3_FMUL_CF, T_FMUL_CF);
-   a3_set(a, FMUL_CF_DST, a3_reg(a, FMUL_CF_DST, I->dest[0], 0, 0, 0));
+   if (I->g15_cr_dst) {
+      /* A texture's coordinate (agx3_direct_crs), 32-bit as a3_mov_cr's */
+      uint64_t dst =
+         a3_kind_value(a, FMUL_CF_DST, A3_CR, I->g15_cr_dst - 1, 0);
+      a3_set(a, FMUL_CF_DST, dst | BITFIELD64_BIT(15));
+   } else {
+      a3_set(a, FMUL_CF_DST, a3_reg(a, FMUL_CF_DST, I->dest[0], 0, 0, 0));
+   }
    a3_set(a, FMUL_CF_A, a3_src(a, FMUL_CF_A, I->src[0], false));
    a3_set(a, FMUL_CF_B, a3_src(a, FMUL_CF_B, I->src[1], false));
    a3_set(a, FMUL_CF_W, a3_kind_value(a, FMUL_CF_W, A3_CF, I->src[2].value, 0));
