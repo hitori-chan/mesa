@@ -4539,8 +4539,15 @@ agx_optimize_nir(nir_shader *nir, bool soft_fault, uint16_t *preamble_size,
    /* (a + #b) * #c as one fma, a * c + b * c, as Apple's compiler emits it
     * (Grim Dawn's terrain: (x - 0.9) * 10 is its ffma x, 10.0, -9.0, sat).
     * After the late fusion, so a product an fadd already took stays fused. */
-   if (!(agx_compiler_debug & AGX_DBG_OLDBODY))
-      NIR_PASS(_, nir, agx_nir_distribute_fmul);
+   if (!(agx_compiler_debug & AGX_DBG_OLDBODY)) {
+      bool tr_dist = false;
+      NIR_PASS(tr_dist, nir, agx_nir_distribute_fmul);
+      /* [tr] the A/B's proof that the arm took */
+      if (tr_dist && nir->info.stage == MESA_SHADER_FRAGMENT)
+         fprintf(stderr, "agx: [tr] body: (a + #b) * #c distributed\n");
+   } else if (nir->info.stage == MESA_SHADER_FRAGMENT && !nir->info.internal) {
+      fprintf(stderr, "agx: [tr] oldbody: a fragment shader compiled as m3-main's\n");
+   }
 
    /* G15 returns 16-bit texels where every use converts them to 16 bits (a
     * mediump sampler's in GLES): half the texture unit's result width, as

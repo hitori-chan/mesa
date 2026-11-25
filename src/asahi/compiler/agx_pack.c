@@ -1215,6 +1215,16 @@ agx_pack_binary(agx_context *ctx, struct util_dynarray *emission)
    if (ctx->key->dev.gpu_generation >= 15) {
       agx3_assign_groups(ctx);
       agx3_assign_crs(ctx);
+
+      /* [tr] the A/B's proof that the arm took */
+      unsigned tr_direct = 0;
+      agx_foreach_instr_global(ctx, I) {
+         if (I->op == AGX_OPCODE_TEXTURE_SAMPLE)
+            tr_direct += util_bitcount(I->g15_cr_direct);
+      }
+      if (tr_direct)
+         fprintf(stderr, "agx: [tr] body: %u coordinates written into crs\n",
+                 tr_direct);
       agx3_fold_waits(ctx);
       agx3_end_helpers(ctx);
    }
