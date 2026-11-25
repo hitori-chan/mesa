@@ -76,9 +76,10 @@ struct hk_fs_key {
    bool force_sample_shading;
 
    /* The pipeline draws one sample with alpha to coverage off, both static:
-    * the main shader is built for its one-sample target (fs.nr_samples 1) and
-    * runs the tests unless the epilog writes depth or stencil
-    * (hk_compile_nir), as Apple's program knows its pipeline's sample count
+    * a main shader that builds a coverage word is built for its one-sample
+    * target (fs.nr_samples 1) and runs the tests unless the epilog writes
+    * depth or stencil (hk_compile_nir), as Apple's program knows its
+    * pipeline's sample count
     */
    bool one_sample;
 
@@ -2006,6 +2007,30 @@ lower_tests_zs_main(nir_builder *b, nir_intrinsic_instr *intr, UNUSED void *data
    return true;
 }
 
+static bool
+writes_coverage_intr(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   if (intr->intrinsic == nir_intrinsic_sample_mask_agx ||
+       intr->intrinsic == nir_intrinsic_store_zs_agx)
+      *(bool *)data = true;
+
+   return false;
+}
+
+/* Whether the main shader builds a coverage word (a discard, a sample mask, or
+ * depth and stencil output it emits itself): only such a shader's code depends
+ * on the sample count, so only it is built for its pipeline's, and the others
+ * keep their backend cache entries across pipelines.
+ */
+static bool
+writes_coverage(nir_shader *nir)
+{
+   bool found = false;
+   nir_shader_intrinsics_pass(nir, writes_coverage_intr, nir_metadata_all,
+                              &found);
+   return found;
+}
+
 static VkResult
 hk_compile_nir(struct hk_device *dev, const VkAllocationCallbacks *pAllocator,
                nir_shader *nir, VkShaderCreateFlagsEXT shader_flags,
@@ -2041,7 +2066,7 @@ hk_compile_nir(struct hk_device *dev, const VkAllocationCallbacks *pAllocator,
                &shader->info.fs.epilog_key);
       NIR_PASS(_, nir, agx_nir_lower_sample_mask);
 
-      if (key && key->fs.one_sample) {
+      if (key && key->fs.one_sample && writes_coverage(nir)) {
          shader->info.fs.one_sample = true;
 
          if (!shader->info.fs.epilog_key.write_z &&
