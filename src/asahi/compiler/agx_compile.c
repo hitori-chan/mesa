@@ -1002,8 +1002,13 @@ agx_coverage_word_one_g15(agx_builder *b, agx_index target, agx_index live)
       live = l;
    }
 
-   /* live + (active | target << 4) << 4 */
-   return agx_iadd(b, live, x, 4);
+   /* live + (active | target << 4) << 4, 32 bits wide: a built instruction's
+    * destination takes its first source's size, a 16-bit immediate's for
+    * zs_emit's live mask, and the stencil goes in bits 16:23 of the word.
+    */
+   agx_index w = agx_temp(b->shader, AGX_SIZE_32);
+   agx_iadd_to(b, w, live, x, 4);
+   return w;
 }
 
 /* G15: the sample mask is a value in cr0, applied by movmsk (AGX3.xml): the
@@ -1158,6 +1163,7 @@ agx_emit_store_zs(agx_builder *b, nir_intrinsic_instr *instr)
    /* The stencil goes in bits 16:23 of the coverage word, the depth in the
     * next register (Apple's depthf layout, draws.md). */
    agx_index word = agx_coverage_word_g15(b, mask, agx_immediate(0xf));
+   assert(word.size == AGX_SIZE_32 && "the stencil goes in bits 16:23");
    if (write_s) {
       agx_index s32 = agx_temp(b->shader, AGX_SIZE_32);
       agx_mov_to(b, s32, agx_src_index(&instr->src[2]));
