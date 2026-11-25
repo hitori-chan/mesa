@@ -10,6 +10,7 @@
 #include "agx_bo.h"
 #include "agx_compile.h"
 #include "agx_compiler.h"
+#include "agx_debug.h"
 #include "agx_device.h"
 #include "agx_esl.h"
 #include "agx_helpers.h"
@@ -2404,6 +2405,16 @@ hk_get_fast_linked_locked_fs(struct hk_device *dev, struct hk_shader *shader,
       dev, &key->epilog, sizeof(key->epilog), agx_nir_fs_epilog, true,
       epilog_stop, 0, key->epilog.nr_samples);
 
+   /* [tr] the A/B's proof that the arm took, per linked main */
+   if (shader->b.info.writes_sample_mask && key->epilog.nr_samples == 1 &&
+       !key->epilog.blend.alpha_to_coverage) {
+      fprintf(stderr, "hk: [tr] %s: %s main linked for a one-sample draw, main %u B\n",
+              (agx_get_compiler_debug() & AGX_DBG_OLDCOVWORD) ? "oldcovword"
+                                                               : "covword",
+              shader->info.fs.one_sample ? "a one-sample" : "an any-count",
+              shader->b.info.main_size);
+   }
+
    struct hk_linked_shader *linked =
       hk_fast_link(dev, true, shader, prolog, epilog, key->nr_samples_shaded,
                    key->epilog.nr_samples);
@@ -3697,6 +3708,13 @@ hk_flush_dynamic_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
 
       /* A main shader built for its pipeline's one sample, alpha to coverage
        * off (hk_fs_key::one_sample), is drawn so: both are static there */
+      /* [tr] a one-sample main drawn otherwise */
+      if (fs->info.fs.one_sample &&
+          (key.epilog.nr_samples != 1 || dyn->ms.alpha_to_coverage_enable))
+         fprintf(stderr, "hk: [tr] covword: a one-sample main drawn at %u samples (tib %u), a2c %u, meta %u\n",
+                 dyn->ms.rasterization_samples, gfx->render.tilebuffer.nr_samples,
+                 dyn->ms.alpha_to_coverage_enable, cmd->in_meta);
+
       assert(!fs->info.fs.one_sample ||
              (key.epilog.nr_samples == 1 &&
               !dyn->ms.alpha_to_coverage_enable));

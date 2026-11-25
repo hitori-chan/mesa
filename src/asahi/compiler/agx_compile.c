@@ -1025,8 +1025,14 @@ agx_coverage_word_one_g15(agx_builder *b, agx_index target, agx_index live)
 static agx_index
 agx_coverage_word_g15(agx_builder *b, agx_index target, agx_index live)
 {
-   if (agx_one_sample_g15(b->shader->key))
+   /* [tr] the A/B's proof that the arm took */
+   if (agx_one_sample_g15(b->shader->key)) {
+      fprintf(stderr, "agx: [tr] covword: a one-sample word\n");
       return agx_coverage_word_one_g15(b, target, live);
+   }
+
+   if (b->shader->key->fs.nr_samples == 1)
+      fprintf(stderr, "agx: [tr] oldcovword: a one-sample program's word for any count\n");
 
    agx_index active = agx_get_sr_coverage(b, 32, AGX_SR_IS_ACTIVE_THREAD);
    agx_index covered = agx_get_sr_coverage(b, 32, AGX_SR_COVERAGE_MASK);
