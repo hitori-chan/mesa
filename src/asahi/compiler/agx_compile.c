@@ -4450,7 +4450,7 @@ agx_nir_narrow_live_g15(nir_builder *b, nir_intrinsic_instr *intr,
       return false;
 
    nir_def *live = intr->src[1].ssa;
-   nir_alu_instr *alu = nir_src_as_alu_instr(intr->src[1]);
+   nir_alu_instr *alu = nir_def_as_alu_or_null(live);
    nir_def *bit;
 
    b->cursor = nir_before_instr(&intr->instr);
