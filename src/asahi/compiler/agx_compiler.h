@@ -450,6 +450,12 @@ typedef struct {
    /* G15: a texture's first coordinate register (agx3_assign_crs) */
    unsigned g15_cr : 5;
 
+   /* G15: an fmul_cf that writes a texture's coordinate register itself,
+    * that cr plus one, and the texture's slots so written, whose movs are
+    * dropped (agx3_direct_crs) */
+   unsigned g15_cr_dst    : 6;
+   unsigned g15_cr_direct : 4;
+
    /* G15: a fragment shader's last sample, which ends the quad's helper lanes
     * (agx3_end_helpers) */
    bool g15_end_helpers : 1;
