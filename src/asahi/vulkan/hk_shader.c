@@ -2066,7 +2066,13 @@ hk_compile_nir(struct hk_device *dev, const VkAllocationCallbacks *pAllocator,
                &shader->info.fs.epilog_key);
       NIR_PASS(_, nir, agx_nir_lower_sample_mask);
 
-      if (key && key->fs.one_sample && writes_coverage(nir)) {
+      /* Not Honeykrisp's own meta shaders: a meta draw is not bound by its
+       * pipeline's sample count (under the drm-shim, build 2 drew one baked
+       * to one sample at a two-sample render's: dEQP-VK.pipeline.
+       * shader_object_linked_binary.multisample.resolve.renderpass_renderarea.
+       * parallelogram_samples_2) */
+      if (key && key->fs.one_sample && !nir->info.internal &&
+          writes_coverage(nir)) {
          shader->info.fs.one_sample = true;
 
          if (!shader->info.fs.epilog_key.write_z &&
