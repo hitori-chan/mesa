@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 
+#include "asahi/lib/agx_abi.h"
 #include "util/bitset.h"
 #include "util/macros.h"
 #include "util/sparse_bitset.h"
@@ -1404,12 +1405,55 @@ agx_insert_parallel_copies(agx_context *ctx, agx_block *block)
    }
 }
 
+/*
+ * A main fragment shader's colours, under float_colour_exports, stay where the
+ * allocator left them and the epilog reads them there (colour_src): a general
+ * or a uniform register. An immediate is copied to its export register, or
+ * past every channel left in place when that one is taken. Only when every
+ * export is a colour's: r0-r3 hold the others' (and a sample loop's counter,
+ * which hk_shader.c leaves out).
+ */
+static bool
+float_colour_exports(agx_context *ctx, BITSET_WORD *held)
+{
+   if (ctx->stage != MESA_SHADER_FRAGMENT || ctx->is_preamble ||
+       !ctx->key->fs.float_colour_exports)
+      return false;
+
+   agx_foreach_instr_in_block(agx_exit_block(ctx), I) {
+      if (I->op == AGX_OPCODE_EXPORT && I->imm < AGX_ABI_FOUT_COLOUR(0))
+         return false;
+   }
+
+   agx_foreach_instr_in_block(agx_exit_block(ctx), I) {
+      if (I->op != AGX_OPCODE_EXPORT)
+         continue;
+
+      unsigned size = agx_size_align_16(I->src[0].size);
+      unsigned stride = size;
+      unsigned rel = I->imm - AGX_ABI_FOUT_COLOUR(0);
+      unsigned ch = 4 * (rel / 8) + (rel % 8) / stride;
+      assert(ch < ARRAY_SIZE(ctx->out->colour_src));
+
+      if (I->src[0].type == AGX_INDEX_REGISTER) {
+         ctx->out->colour_src[ch] = AGX_COLOUR_SRC_REG | I->src[0].value;
+         BITSET_SET_COUNT(held, I->src[0].value, size);
+      } else if (I->src[0].type == AGX_INDEX_UNIFORM) {
+         ctx->out->colour_src[ch] = AGX_COLOUR_SRC_UNIFORM | I->src[0].value;
+      }
+   }
+
+   return true;
+}
+
 static void
 lower_exports(agx_context *ctx)
 {
    struct agx_copy copies[AGX_NUM_REGS];
    unsigned nr = 0;
    agx_block *block = agx_exit_block(ctx);
+   BITSET_DECLARE(held, AGX_NUM_REGS) = {0};
+   bool floating = float_colour_exports(ctx, held);
 
    agx_foreach_instr_in_block_safe(block, I) {
       if (I->op != AGX_OPCODE_EXPORT)
@@ -1417,6 +1461,34 @@ lower_exports(agx_context *ctx)
 
       assert(agx_channels(I->src[0]) == 1 && "scalarized in frontend");
       assert(nr < ARRAY_SIZE(copies));
+
+      unsigned size = agx_size_align_16(I->src[0].size);
+
+      if (floating) {
+         unsigned rel = I->imm - AGX_ABI_FOUT_COLOUR(0);
+         unsigned ch = 4 * (rel / 8) + (rel % 8) / size;
+
+         /* Left in place: nothing to copy. The export stays, the value's last
+          * use, so that no instruction before it ends the value. */
+         if (ctx->out->colour_src[ch] != AGX_COLOUR_SRC_ABI)
+            continue;
+
+         /* Copied: to its export register unless a channel left in place
+          * holds it, else to the first free register past r3 */
+         unsigned dest = I->imm;
+         if (BITSET_TEST_RANGE(held, dest, dest + size - 1)) {
+            for (dest = 8; dest + size <= AGX_NUM_REGS; dest += size) {
+               if (!BITSET_TEST_RANGE(held, dest, dest + size - 1))
+                  break;
+            }
+
+            assert(dest + size <= AGX_NUM_REGS);
+            ctx->out->colour_src[ch] = AGX_COLOUR_SRC_REG | dest;
+         }
+
+         BITSET_SET_COUNT(held, dest, size);
+         I->imm = dest;
+      }
 
       copies[nr++] = (struct agx_copy){
          .dest = I->imm,
