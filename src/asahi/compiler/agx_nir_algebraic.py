@@ -341,11 +341,14 @@ lower_lea = [
     (('ilea_agx', a, b, c), ('iadd', a, ('ishl', ('i2i64', b), c))),
 ]
 
-# (a + #b) * #c as one fma, inexact: the fadd's result has no other use, and
-# b, c and b * c stay finite and a + b cannot overflow (|b|, |c| <= 2^32), so
-# an Inf or NaN in a gives what the fadd and fmul give
+# (a + #b) * #c as one fma, inexact (no NoContraction, precise or float
+# controls forbidding contraction or reassociation: '~') and where the sign of
+# a zero need not be kept (a = -b, c < 0 gives -0 for +0: nsz): the fadd's
+# result has no other use, and b, c and b * c stay finite and a + b cannot
+# overflow (|b|, |c| <= 2^32), so an Inf or NaN in a gives what the fadd and
+# fmul give
 distribute_fmul = [
-    (('~fmul@32', ('~fadd(is_used_once)', a, '#b(agx_is_moderate)'),
+    (('~fmul@32(nsz)', ('~fadd(is_used_once,nsz)', a, '#b(agx_is_moderate)'),
       '#c(agx_is_moderate)'),
      ('ffma', a, c, ('fmul', b, c))),
 ]

@@ -3035,9 +3035,12 @@ agx3_direct_crs(agx_block *block, agx_instr *I)
          open |= BITFIELD_BIT(c);
    }
 
+   /* Apple's programs put one instruction at least between such a write and
+    * its sample (fmul cr1; pack_smpir cr3; smp in three of them) */
+   unsigned between = 0;
    agx_instr *J = list_entry(I->link.prev, agx_instr, link);
    for (; open && &J->link != &block->instructions;
-        J = list_entry(J->link.prev, agx_instr, link)) {
+        J = list_entry(J->link.prev, agx_instr, link), ++between) {
       if (J->op == AGX_OPCODE_WAIT || agx3_cr_count(J))
          break;
 
@@ -3054,7 +3057,8 @@ agx3_direct_crs(agx_block *block, agx_instr *I)
 
             open &= ~BITFIELD_BIT(c);
             if (J->op == AGX_OPCODE_FMUL_CF && J->nr_dests == 1 &&
-                D.value == r && D.size == AGX_SIZE_32 && !J->g15_cr_dst) {
+                D.value == r && D.size == AGX_SIZE_32 && !J->g15_cr_dst &&
+                between > 0) {
                unsigned cr = I->g15_cr + a3_tex_slot(I, c);
                J->g15_cr_dst = cr + 1;
                I->g15_cr_direct |= BITFIELD_BIT(a3_tex_slot(I, c));
