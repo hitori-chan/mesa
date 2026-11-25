@@ -832,6 +832,15 @@ af3157ef03fe95e20000 rsqrt    $r119h, r127.abs, group 4, wait 0145
 2fd1545103465d0a0000 rsqrt_special cr40, -0.59375, group 5, wait 023
 2fe154ac036410280000 rsqrt_special cr86.bfloat, 1.125, group 0, wait 123
 2f015440006091200000 rsqrt_special u32l.bfloat, -1.0
+3705541a033092400000 dfdx     $r13, $r12
+3705542a023c92400000 dfdx     r21, $r15
+3707542c033092400000 dfdy     $r22, $r12
+370f541e033c90400000 dfdy     $r15, r15, end_helpers
+3715540603008e600000 dfdx     $r3l, $r0l, wait 0
+3707540503148e600000 dfdy     $r2h, $r5l
+370f540503168e600000 dfdy     $r2h, $r5h, end_helpers
+3705540603108a400000 dfdx     $r3, $r4l
+370f540403148a400000 dfdy     $r2, $r5l, end_helpers
 2fd155430152006b0100 rsqrt_special cr33.bfloat, r20h.bfloat.neg, group 6, wait 0234
 2f71559c03b24cc90100 rsqrt_special cr78, r44h.abs.neg, group 3, wait 0124
 2f815400020080200100 rsqrt_special r0l.bfloat, 0.0, wait 3

@@ -59,6 +59,7 @@ static const struct debug_named_value agx_debug_options[] = {
    {"crquad0",   AGX_DBG_CRQUAD0,   "G15: give a 1D or 2D texture with a LOD word cr0, not the next free quad of crs"},
    {"biascr",    AGX_DBG_BIASCR,    "G15: pack a uniform bias into cr3 at every sample, not into F28's uniform in the preamble"},
    {"oldepilog", AGX_DBG_OLDEPILOG, "Fragment epilogs as m3-main's: only alphas aliased, a blend product per channel, colours copied to the export registers"},
+   {"nodfdx",    AGX_DBG_NODFDX,    "G15: derivatives as quad swaps and subtractions, not dfdx and dfdy"},
    DEBUG_NAMED_VALUE_END
 };
 /* clang-format on */
@@ -1365,9 +1366,11 @@ lower_load_format_g15(nir_builder *b, nir_intrinsic_instr *intr, void *data)
 }
 
 /*
- * G15 has no derivative instruction (none in AGX3.xml): a derivative is the
+ * A fragment shader's derivatives are G15's dfdx and dfdy (Apple's
+ * f32dfdx, f32dfdy). Elsewhere (compute derivatives, which the instruction
+ * is not known to serve) and with AGX_MESA_DEBUG=nodfdx, a derivative is the
  * difference across the quad, lane bit 0 being x and bit 1 y as in Metal's
- * quads (not verified on the hardware).
+ * quads.
  */
 static bool
 lower_derivatives_g15(nir_builder *b, nir_intrinsic_instr *intr, void *data)
@@ -5429,7 +5432,9 @@ agx_compile_shader_nir_impl(nir_shader *nir, struct agx_shader_key *key,
       NIR_PASS(_, nir, nir_shader_tex_pass, lower_tex_lod_g15,
                nir_metadata_control_flow, NULL);
 
-   if (key->dev.gpu_generation >= 15)
+   if (key->dev.gpu_generation >= 15 &&
+       (nir->info.stage != MESA_SHADER_FRAGMENT ||
+        (agx_compiler_debug & AGX_DBG_NODFDX)))
       NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_derivatives_g15,
                nir_metadata_control_flow, NULL);
 

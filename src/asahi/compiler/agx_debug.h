@@ -37,6 +37,7 @@ enum agx_compiler_dbg {
    AGX_DBG_EXACTFMA    = BITFIELD_BIT(20),
    AGX_DBG_CRQUAD0     = BITFIELD_BIT(21),
    AGX_DBG_BIASCR      = BITFIELD_BIT(22),
+   AGX_DBG_NODFDX      = BITFIELD_BIT(23),
 };
 /* clang-format on */
 
