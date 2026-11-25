@@ -60,6 +60,7 @@ static const struct debug_named_value agx_debug_options[] = {
    {"biascr",    AGX_DBG_BIASCR,    "G15: pack a uniform bias into cr3 at every sample, not into F28's uniform in the preamble"},
    {"oldepilog", AGX_DBG_OLDEPILOG, "Fragment epilogs as m3-main's: only alphas aliased, a blend product per channel, colours copied to the export registers"},
    {"nodfdx",    AGX_DBG_NODFDX,    "G15: derivatives as quad swaps and subtractions, not dfdx and dfdy"},
+   {"oldcovword", AGX_DBG_OLDCOVWORD, "G15: coverage words built for an unknown sample count, and no Honeykrisp main shader built for its pipeline's one sample"},
    DEBUG_NAMED_VALUE_END
 };
 /* clang-format on */
@@ -957,6 +958,54 @@ agx_emit_local_store_pixel(agx_builder *b, nir_intrinsic_instr *instr)
                       format, mask, nir_intrinsic_base(instr), explicit);
 }
 
+/* A fragment program that knows its target holds one sample (a Honeykrisp main
+ * shader built for its pipeline's, an epilog, a GL shader) builds the coverage
+ * word as Apple's does for one sample: oldcovword builds it as for any count.
+ */
+static bool
+agx_one_sample_g15(const struct agx_shader_key *key)
+{
+   return key->fs.nr_samples == 1 &&
+          !(agx_compiler_debug & AGX_DBG_OLDCOVWORD);
+}
+
+/* G15's coverage word on a one-sample target, Apple's (depth-msaa.md, discard
+ * and depth output): live in bit 0, the thread's is_active_thread flag in bit 4
+ * and the target in bit 8, the flag again where the target holds the sample:
+ * keep | active << 4 | active << 8 for a test, three instructions and the mov
+ * to cr0, where any sample count's word takes the coverage (sr66) and a
+ * multiply. A helper thread targets nothing. The fields' bits 1:3 name samples
+ * the target lacks and change nothing (the replays), so the live mask needs
+ * only its bit 0, which agx_nir_narrow_live_g15 leaves it; an immediate keeps
+ * its four bits, as Apple's depth output (0xF).
+ */
+static agx_index
+agx_coverage_word_one_g15(agx_builder *b, agx_index target, agx_index live)
+{
+   agx_index active = agx_get_sr_coverage(b, 32, AGX_SR_IS_ACTIVE_THREAD);
+   agx_index x = active;
+
+   if (target.type == AGX_INDEX_IMMEDIATE) {
+      if (target.value & 1)
+         x = agx_iadd(b, active, active, 4);
+   } else {
+      agx_index t = agx_temp(b->shader, AGX_SIZE_32);
+      agx_mov_to(b, t, target);
+      x = agx_iadd(b, active, agx_and(b, t, active), 4);
+   }
+
+   if (live.type == AGX_INDEX_IMMEDIATE) {
+      live = agx_immediate(live.value & 0xf);
+   } else {
+      agx_index l = agx_temp(b->shader, AGX_SIZE_32);
+      agx_mov_to(b, l, live);
+      live = l;
+   }
+
+   /* live + (active | target << 4) << 4 */
+   return agx_iadd(b, live, x, 4);
+}
+
 /* G15: the sample mask is a value in cr0, applied by movmsk (AGX3.xml): the
  * live samples in bits 3:0, the thread's is_active_thread flag in bit 4 and
  * the target samples in bits 11:8, which Apple sets to the flag too (a helper
@@ -971,6 +1020,9 @@ agx_emit_local_store_pixel(agx_builder *b, nir_intrinsic_instr *instr)
 static agx_index
 agx_coverage_word_g15(agx_builder *b, agx_index target, agx_index live)
 {
+   if (agx_one_sample_g15(b->shader->key))
+      return agx_coverage_word_one_g15(b, target, live);
+
    agx_index active = agx_get_sr_coverage(b, 32, AGX_SR_IS_ACTIVE_THREAD);
    agx_index covered = agx_get_sr_coverage(b, 32, AGX_SR_COVERAGE_MASK);
 
@@ -1035,6 +1087,15 @@ agx_emit_sample_mask_g15(agx_builder *b, nir_intrinsic_instr *instr)
    bool is_const = nir_src_is_const(instr->src[1]);
    unsigned c = is_const ? nir_src_as_uint(instr->src[1]) & 0xf : 0;
 
+   /* The one-sample word folds the constant fields */
+   if (agx_one_sample_g15(b->shader->key)) {
+      if (nir_src_is_const(instr->src[0]))
+         target = agx_immediate(nir_src_as_uint(instr->src[0]) & 0xf);
+
+      if (is_const)
+         live = agx_immediate(c);
+   }
+
    if (b->shader->key->fs.nr_samples != 1 &&
        !agx_whole_live_g15(nir_get_scalar(instr->src[1].ssa, 0))) {
       agx_index t = agx_temp(b->shader, AGX_SIZE_16);
@@ -1085,6 +1146,9 @@ agx_emit_store_zs(agx_builder *b, nir_intrinsic_instr *instr)
    agx_index mask = agx_src_index(&instr->src[0]);
    if (b->shader->key->dev.gpu_generation < 15)
       return agx_zs_emit(b, mask, zs, base);
+
+   if (agx_one_sample_g15(b->shader->key) && nir_src_is_const(instr->src[0]))
+      mask = agx_immediate(nir_src_as_uint(instr->src[0]) & 0xf);
 
    /* G15 takes movmsk's coverage word with every sample live and the
     * instruction's samples as the target, as Apple's depth-output shader
@@ -4372,6 +4436,56 @@ hoist_lane_reads_g15(nir_builder *b, nir_instr *instr, UNUSED void *data)
    return true;
 }
 
+/* A one-sample target reads bit 0 of a sample mask's live mask
+ * (agx_coverage_word_one_g15). A select of two constants, a discard's
+ * keep-or-kill, keeps its select with the constants' bit 0, Apple's cmpsel of
+ * 0 and 1; any other live mask is ANDed with 1. After the optimizations, which
+ * have made the discard's live mask such a select.
+ */
+static bool
+agx_nir_narrow_live_g15(nir_builder *b, nir_intrinsic_instr *intr,
+                        UNUSED void *data)
+{
+   if (intr->intrinsic != nir_intrinsic_sample_mask_agx)
+      return false;
+
+   nir_def *live = intr->src[1].ssa;
+   nir_alu_instr *alu = nir_src_as_alu_instr(intr->src[1]);
+   nir_def *bit;
+
+   b->cursor = nir_before_instr(&intr->instr);
+
+   if (nir_src_is_const(intr->src[1])) {
+      uint64_t c = nir_src_as_uint(intr->src[1]);
+      if (c <= 1)
+         return false;
+
+      bit = nir_imm_intN_t(b, c & 1, live->bit_size);
+   } else if (alu && alu->op == nir_op_bcsel &&
+              nir_src_is_const(alu->src[1].src) &&
+              nir_src_is_const(alu->src[2].src)) {
+      uint64_t x = nir_src_comp_as_uint(alu->src[1].src, alu->src[1].swizzle[0]);
+      uint64_t y = nir_src_comp_as_uint(alu->src[2].src, alu->src[2].swizzle[0]);
+      if (x <= 1 && y <= 1)
+         return false;
+
+      bit = nir_bcsel(b, nir_mov_alu(b, alu->src[0], 1),
+                      nir_imm_intN_t(b, x & 1, live->bit_size),
+                      nir_imm_intN_t(b, y & 1, live->bit_size));
+   } else if (alu && alu->op == nir_op_iand &&
+              ((nir_src_is_const(alu->src[0].src) &&
+                nir_src_comp_as_uint(alu->src[0].src, alu->src[0].swizzle[0]) == 1) ||
+               (nir_src_is_const(alu->src[1].src) &&
+                nir_src_comp_as_uint(alu->src[1].src, alu->src[1].swizzle[0]) == 1))) {
+      return false;
+   } else {
+      bit = nir_iand_imm(b, live, 1);
+   }
+
+   nir_src_rewrite(&intr->src[1], bit);
+   return true;
+}
+
 static void
 agx_optimize_nir(nir_shader *nir, bool soft_fault, uint16_t *preamble_size,
                  uint8_t *ts_count, uint8_t *ss_count, bool g15)
@@ -5514,6 +5628,16 @@ agx_compile_shader_nir_impl(nir_shader *nir, struct agx_shader_key *key,
       (!preamble || !key->promote_textures) ? NULL : &info->texture_state_count,
       (!preamble || !key->promote_textures) ? NULL : &info->sampler_state_count,
       key->dev.gpu_generation >= 15);
+
+   if (nir->info.stage == MESA_SHADER_FRAGMENT &&
+       key->dev.gpu_generation >= 15 && agx_one_sample_g15(key)) {
+      bool narrowed = false;
+      NIR_PASS(narrowed, nir, nir_shader_intrinsics_pass,
+               agx_nir_narrow_live_g15, nir_metadata_control_flow, NULL);
+
+      if (narrowed)
+         NIR_PASS(_, nir, nir_opt_dce);
+   }
 
    if (nir->info.stage == MESA_SHADER_FRAGMENT) {
       info->varyings.fs.nr_cf = key->fs.cf_base;

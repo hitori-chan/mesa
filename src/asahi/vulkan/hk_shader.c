@@ -75,7 +75,14 @@ struct hk_fs_key {
     */
    bool force_sample_shading;
 
-   uint8_t pad[2];
+   /* The pipeline draws one sample with alpha to coverage off, both static:
+    * the main shader is built for its one-sample target (fs.nr_samples 1) and
+    * runs the tests unless the epilog writes depth or stencil
+    * (hk_compile_nir), as Apple's program knows its pipeline's sample count
+    */
+   bool one_sample;
+
+   uint8_t pad[1];
 };
 static_assert(sizeof(struct hk_fs_key) == 4, "packed");
 
@@ -355,6 +362,15 @@ hk_populate_fs_key(struct hk_fs_key *key,
    const struct vk_multisample_state *ms = state->ms;
    if (ms != NULL && ms->sample_shading_enable)
       key->force_sample_shading = true;
+
+   if (ms != NULL &&
+       !BITSET_TEST(state->dynamic, MESA_VK_DYNAMIC_MS_RASTERIZATION_SAMPLES) &&
+       !BITSET_TEST(state->dynamic,
+                    MESA_VK_DYNAMIC_MS_ALPHA_TO_COVERAGE_ENABLE) &&
+       ms->rasterization_samples <= VK_SAMPLE_COUNT_1_BIT &&
+       !ms->alpha_to_coverage_enable &&
+       !(agx_get_compiler_debug() & AGX_DBG_OLDCOVWORD))
+      key->one_sample = true;
 }
 
 enum hk_feature_key {
@@ -1974,6 +1990,22 @@ hk_compile_backend(struct hk_device *dev, nir_shader *nir,
    hk_backend_cache_put(dev, hash, out);
 }
 
+/* The main shader of a pipeline drawn with alpha to coverage off and no depth
+ * or stencil output in the epilog runs the tests itself (no_epilog_discard ~0
+ * at every draw, hk_flush_dynamic_state): the switch folds, and a discard's
+ * coverage word targets every sample.
+ */
+static bool
+lower_tests_zs_main(nir_builder *b, nir_intrinsic_instr *intr, UNUSED void *data)
+{
+   if (intr->intrinsic != nir_intrinsic_load_shader_part_tests_zs_agx)
+      return false;
+
+   b->cursor = nir_before_instr(&intr->instr);
+   nir_def_replace(&intr->def, nir_imm_intN_t(b, 0xffff, 16));
+   return true;
+}
+
 static VkResult
 hk_compile_nir(struct hk_device *dev, const VkAllocationCallbacks *pAllocator,
                nir_shader *nir, VkShaderCreateFlagsEXT shader_flags,
@@ -2008,6 +2040,16 @@ hk_compile_nir(struct hk_device *dev, const VkAllocationCallbacks *pAllocator,
       NIR_PASS(_, nir, agx_nir_lower_fs_output_to_epilog,
                &shader->info.fs.epilog_key);
       NIR_PASS(_, nir, agx_nir_lower_sample_mask);
+
+      if (key && key->fs.one_sample) {
+         shader->info.fs.one_sample = true;
+
+         if (!shader->info.fs.epilog_key.write_z &&
+             !shader->info.fs.epilog_key.write_s) {
+            NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_tests_zs_main,
+                     nir_metadata_control_flow, NULL);
+         }
+      }
 
       if (nir->info.fs.uses_sample_shading) {
          /* Ensure the sample mask is preserved in register */
@@ -2108,6 +2150,11 @@ hk_compile_nir(struct hk_device *dev, const VkAllocationCallbacks *pAllocator,
    if (nir->info.stage == MESA_SHADER_FRAGMENT &&
        nir->info.fs.uses_sample_shading)
       backend_key.fs.inside_sample_loop = true;
+
+   /* The pipeline's one sample, which the coverage words and tile accesses
+    * take literally */
+   if (nir->info.stage == MESA_SHADER_FRAGMENT && shader->info.fs.one_sample)
+      backend_key.fs.nr_samples = 1;
 
    /* The epilog reads the colours where the main shader leaves them */
    if (nir->info.stage == MESA_SHADER_FRAGMENT &&
