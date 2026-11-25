@@ -116,6 +116,13 @@ struct agx_rodata {
    uint16_t size_16;
 };
 
+/* agx_shader_info::colour_src: a channel at its export register (0), or in
+ * the general or uniform register (in halves) of the low 14 bits */
+#define AGX_COLOUR_SRC_ABI     (0)
+#define AGX_COLOUR_SRC_REG     (0x4000)
+#define AGX_COLOUR_SRC_UNIFORM (0x8000)
+#define AGX_COLOUR_SRC_INDEX   (0x3fff)
+
 struct agx_shader_info {
    mesa_shader_stage stage;
    uint32_t binary_size;
@@ -241,6 +248,13 @@ struct agx_shader_info {
    struct agx_rodata rodata;
 
    struct agx2_stats stats;
+
+   /* Under agx_fs_shader_key::float_colour_exports, where each colour channel
+    * (4 * location + component) is at the main shader's end: a general
+    * (AGX_COLOUR_SRC_REG) or uniform (AGX_COLOUR_SRC_UNIFORM) register in
+    * halves, or 0 for its export register (AGX_ABI_FOUT_COLOUR).
+    */
+   uint16_t colour_src[32];
 };
 
 struct agx_precompiled_kernel_info {
@@ -400,6 +414,13 @@ struct agx_fs_shader_key {
     * (1 << nr_samples) - 1, not G13's 0xFF.
     */
    uint8_t nr_samples;
+
+   /* A main fragment shader whose epilog reads each colour channel where the
+    * main shader left it (agx_shader_info::colour_src), not from the fixed
+    * export registers: the colours' copies into those registers are dropped.
+    * Not inside a sample loop, whose counter lives in r0l and r1l.
+    */
+   bool float_colour_exports;
 };
 
 struct agx_device_key {

@@ -14,7 +14,7 @@ extern "C" {
 
 /* clang-format off */
 enum agx_compiler_dbg {
-   /* bit 0 unused */
+   AGX_DBG_OLDEPILOG   = BITFIELD_BIT(0),
    AGX_DBG_SHADERS     = BITFIELD_BIT(1),
    AGX_DBG_SHADERDB    = BITFIELD_BIT(2),
    AGX_DBG_VERBOSE     = BITFIELD_BIT(3),

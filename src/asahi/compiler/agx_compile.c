@@ -58,6 +58,7 @@ static const struct debug_named_value agx_debug_options[] = {
    {"exactfma",  AGX_DBG_EXACTFMA,  "G15: redo the exact fp32 fmas at the flush boundary in graphics shaders too"},
    {"crquad0",   AGX_DBG_CRQUAD0,   "G15: give a 1D or 2D texture with a LOD word cr0, not the next free quad of crs"},
    {"biascr",    AGX_DBG_BIASCR,    "G15: pack a uniform bias into cr3 at every sample, not into F28's uniform in the preamble"},
+   {"oldepilog", AGX_DBG_OLDEPILOG, "Fragment epilogs as m3-main's: only alphas aliased, a blend product per channel, colours copied to the export registers"},
    DEBUG_NAMED_VALUE_END
 };
 /* clang-format on */

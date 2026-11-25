@@ -341,19 +341,30 @@ struct agx_fs_epilog_link_info {
 
    unsigned padding : 1;
 
-   /* Bit i set if location i's alpha is the value location alpha_src exports:
-    * the main shader exports it once and the epilog blends with one copy.
+   /* Bit 4 * location + component set if that channel holds the value of an
+    * earlier channel, alias_of[channel]: the main shader exports the value
+    * once and the epilog reads one copy, so the blends' clamps and products of
+    * it are computed once (a G-buffer's shared alpha, a grey written to three
+    * channels, a uniform written to two targets).
     */
-   uint8_t alpha_shared;
-   uint8_t alpha_src;
-   uint16_t padding2;
+   uint32_t alias_channels;
 
    /* Bit 4 * location + component set if that channel is written as zero: the
     * main shader does not export it and the epilog folds it.
     */
    uint32_t zero_channels;
+
+   /* For each aliased channel, the channel (4 * location + component) whose
+    * value it holds. That channel is exported and is no alias itself.
+    */
+   uint8_t alias_of[32];
+
+   /* Where the main shader leaves each channel (agx_shader_info::colour_src):
+    * a general register, a uniform register or (0) its export register.
+    */
+   uint16_t colour_src[32];
 };
-static_assert(sizeof(struct agx_fs_epilog_link_info) == 12, "packed");
+static_assert(sizeof(struct agx_fs_epilog_link_info) == 108, "packed");
 
 struct agx_fs_epilog_key {
    struct agx_fs_epilog_link_info link;

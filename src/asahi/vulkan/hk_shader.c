@@ -2109,6 +2109,12 @@ hk_compile_nir(struct hk_device *dev, const VkAllocationCallbacks *pAllocator,
        nir->info.fs.uses_sample_shading)
       backend_key.fs.inside_sample_loop = true;
 
+   /* The epilog reads the colours where the main shader leaves them */
+   if (nir->info.stage == MESA_SHADER_FRAGMENT &&
+       !backend_key.fs.inside_sample_loop &&
+       !(agx_get_compiler_debug() & AGX_DBG_OLDEPILOG))
+      backend_key.fs.float_colour_exports = true;
+
    simple_mtx_t *lock = NULL;
    if (agx_get_compiler_debug())
       lock = &hk_device_physical(dev)->debug_compile_lock;
@@ -2134,6 +2140,12 @@ hk_compile_nir(struct hk_device *dev, const VkAllocationCallbacks *pAllocator,
    shader->info.clip_distance_array_size = nir->info.clip_distance_array_size;
    shader->info.cull_distance_array_size = nir->info.cull_distance_array_size;
    shader->b.info.outputs = outputs;
+
+   if (nir->info.stage == MESA_SHADER_FRAGMENT) {
+      typed_memcpy(shader->info.fs.epilog_key.colour_src,
+                   shader->b.info.colour_src,
+                   ARRAY_SIZE(shader->info.fs.epilog_key.colour_src));
+   }
 
    if (xfb_info) {
       assert(xfb_info->output_count < ARRAY_SIZE(shader->info.xfb_outputs));

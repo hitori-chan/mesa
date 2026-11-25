@@ -164,6 +164,18 @@ agx_g15_tex_index(agx_context *ctx, agx_instr *I, unsigned s)
           (s == 3 || s == 4);
 }
 
+/*
+ * G15: a pack's channels from uniforms (an epilog storing a uniform colour the
+ * main shader left in its uniform register) share a block's copy: one colour
+ * in two channels moved twice.
+ */
+static bool
+agx_g15_pack_source(agx_context *ctx, agx_instr *I)
+{
+   return ctx->key->dev.gpu_generation >= 15 && !ctx->is_preamble &&
+          I->op == AGX_OPCODE_PACK_UNORM;
+}
+
 void
 agx_lower_uniform_sources(agx_context *ctx)
 {
@@ -196,7 +208,8 @@ agx_lower_uniform_sources(agx_context *ctx)
                 * uniform: a uniform holds one value through the program */
                bool keep = agx_g15_tex_index(ctx, I, s) ||
                            agx_g15_stale_uniform_base(ctx, I, s) ||
-                           agx_g15_register_only(ctx, I, s);
+                           agx_g15_register_only(ctx, I, s) ||
+                           agx_g15_pack_source(ctx, I);
                agx_index reg = agx_null();
 
                for (unsigned i = 0; keep && i < nr_moved; ++i) {
