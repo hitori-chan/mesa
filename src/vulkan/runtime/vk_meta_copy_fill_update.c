@@ -2344,8 +2344,18 @@ copy_image_region_gfx(struct vk_command_buffer *cmd,
       return;
    }
 
+   /* vk_meta_copy_image sanitized the extent with the source image, which
+    * leaves a 2D source's depth at 1. In a 2D to 3D copy the source's layers
+    * are the destination's slices (VUID-VkImageCopy2-srcImage-01791), so
+    * every one of them is drawn, not the first alone.
+    */
+   VkExtent3D extent = region->extent;
+   extent.depth =
+      MAX2(extent.depth,
+           vk_image_subresource_layer_count(src_img, &region->srcSubresource));
+
    copy_draw(cmd, meta, dst_img, dst_image_layout, &region->dstSubresource,
-             &region->dstOffset, &region->extent, &key.dst.view);
+             &region->dstOffset, &extent, &key.dst.view);
 }
 
 static void
