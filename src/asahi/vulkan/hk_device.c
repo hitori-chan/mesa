@@ -388,6 +388,9 @@ hk_CreateDevice(VkPhysicalDevice physicalDevice,
    dev->dev.tri_merge_derivatives =
       pdev->dev.params.gpu_generation >= 15 &&
       instance->drirc.misc.tri_merge_derivatives;
+   fprintf(stderr, "hk: [tr] merge2: tri_merge_derivatives %u (engine %s)\n",
+           dev->dev.tri_merge_derivatives,
+           instance->vk.app_info.engine_name ?: "none");
 
    vk_device_set_drm_fd(&dev->vk, dev->dev.fd);
    dev->vk.command_buffer_ops = &hk_cmd_buffer_ops;

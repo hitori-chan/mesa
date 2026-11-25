@@ -5907,6 +5907,15 @@ agx_compile_shader_nir_impl(nir_shader *nir, struct agx_shader_key *key,
       info->disable_tri_merging_derivatives =
          quad_reads == AGX_QUAD_READS_DERIVATIVES;
 
+      if (key->dev.gpu_generation >= 15 &&
+          nir->info.fs.needs_coarse_quad_helper_invocations)
+         fprintf(stderr, "agx: [tr] merge2: quad reads %s (%s%s)\n",
+                 quad_reads == AGX_QUAD_READS_EXACT         ? "exact"
+                 : quad_reads == AGX_QUAD_READS_DERIVATIVES ? "derivatives"
+                                                            : "other",
+                 nir->info.internal ? "internal " : "",
+                 nir->info.name ? nir->info.name : "-");
+
       /* Apple's compiler disables merging for barycentric coordinates */
       info->disable_tri_merging =
          nir->info.uses_wide_subgroup_intrinsics ||
