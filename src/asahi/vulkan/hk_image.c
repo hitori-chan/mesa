@@ -237,10 +237,11 @@ static bool
 hk_can_compress(const struct agx_device *dev, VkFormat format, unsigned plane,
                 unsigned width, unsigned height, unsigned samples,
                 VkImageCreateFlagBits flags, VkImageUsageFlagBits usage,
-                const void *pNext)
+                const void *pNext, bool drawn_copies)
 {
    const struct vk_format_ycbcr_info *ycbcr_info =
       vk_format_get_ycbcr_info(format);
+   bool copy_destination = false;
 
    if (ycbcr_info) {
       format = ycbcr_info->planes[plane].format;
@@ -256,15 +257,21 @@ hk_can_compress(const struct agx_device *dev, VkFormat format, unsigned plane,
 
    /* G15 compresses colour, depth and stencil images, as Gallium and Apple
     * (ASAHI_MESA_DEBUG=nocompresszs leaves depth and stencil uncompressed:
-    * Grim Dawn's menu frame took 5 % more GPU time so, 2026-11-08), and no
-    * image a copy writes unless it is also a render target, colour or depth
-    * and stencil: its compute copies write with imgwci, which cannot write a
-    * compressed image, and a render target's copies are drawn instead
-    * (hk_copy_requires_gfx, vk_meta's depth and stencil copies through the
-    * fragment depth and stencil export). D3D's render targets and depth
+    * Grim Dawn's menu frame took 5 % more GPU time so, 2026-11-08). Its
+    * compute copies write with imgwci, which cannot write a compressed image,
+    * so a copy into a compressed one is drawn (hk_copy_requires_gfx, through
+    * a format of its compression class). D3D's render targets and depth
     * buffers, DXVK's, are all created with TRANSFER_DST: Grim Dawn's frame
     * spent 12 % more GPU time with its render targets uncompressed
-    * (2026-11-02).
+    * (2026-11-02). Metal compresses every private texture of a compressible
+    * format at least 16 pixels a side, its blits' uploads included, and DXVK
+    * gives every texture TRANSFER_DST, so an image a copy writes compresses
+    * too (drawn_copies: an optimal image, Honeykrisp's own layout).
+    *
+    * Not a modifier's image, nor a multi-planar one: hk_copy_requires_gfx
+    * reads plane 0, and a plane's view in a drawn copy is not proven. Nor
+    * under ASAHI_MESA_DEBUG=nocompresscopy, which keeps a copy destination
+    * uncompressed unless it is a render target.
     */
    if (dev->params.gpu_generation >= 15) {
       if (vk_format_is_depth_or_stencil(format) &&
@@ -274,8 +281,13 @@ hk_can_compress(const struct agx_device *dev, VkFormat format, unsigned plane,
       if ((usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) &&
           !(usage & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
                      VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT))) {
-         perf_debug_dev(dev, "No compression: G15 copy destination");
-         return false;
+         if (!drawn_copies || ycbcr_info ||
+             (dev->debug & AGX_DBG_NOCOMPRESSCOPY)) {
+            perf_debug_dev(dev, "No compression: G15 copy destination");
+            return false;
+         }
+
+         copy_destination = true;
       }
 
       /* A copy reads a compressed image through its own format, and the
@@ -350,6 +362,12 @@ hk_can_compress(const struct agx_device *dev, VkFormat format, unsigned plane,
       return false;
    }
 
+   /* What ASAHI_MESA_DEBUG=nocompresscopy leaves uncompressed */
+   if (copy_destination) {
+      perf_debug_dev(dev, "Compressed: G15 copy destination %s %ux%ux%u",
+                     util_format_short_name(p_format), width, height, samples);
+   }
+
    return true;
 }
 
@@ -362,7 +380,7 @@ hk_can_compress_format(const struct agx_device *dev, VkFormat format)
     *
     * Likewise, we do not set flags as flags only disable compression.
     */
-   return hk_can_compress(dev, format, 0, 64, 64, 1, 0, 0, NULL);
+   return hk_can_compress(dev, format, 0, 64, 64, 1, 0, 0, NULL, false);
 }
 
 /*
@@ -396,7 +414,7 @@ hk_can_interchange(const struct agx_device *dev, VkFormat format,
 
    return samples == 1 && !(flags & VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT) &&
           hk_can_compress(dev, format, 0, width, height, samples, flags, usage,
-                          pNext);
+                          pNext, false);
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
@@ -487,7 +505,7 @@ hk_GetPhysicalDeviceImageFormatProperties2(
           DRM_FORMAT_MOD_APPLE_GPU_TILED_COMPRESSED &&
        !hk_can_compress(&pdev->dev, pImageFormatInfo->format, 0, 64, 64, 1,
                         pImageFormatInfo->flags, pImageFormatInfo->usage,
-                        pImageFormatInfo->pNext))
+                        pImageFormatInfo->pNext, false))
       return VK_ERROR_FORMAT_NOT_SUPPORTED;
 
    const bool interchange =
@@ -860,11 +878,11 @@ hk_GetPhysicalDeviceSparseImageFormatProperties2(
 
 static bool
 hk_can_compress_create_info(struct hk_device *dev, unsigned plane,
-                            const VkImageCreateInfo *info)
+                            const VkImageCreateInfo *info, bool drawn_copies)
 {
    return hk_can_compress(&dev->dev, info->format, plane, info->extent.width,
                           info->extent.height, info->samples, info->flags,
-                          info->usage, info->pNext);
+                          info->usage, info->pNext, drawn_copies);
 }
 
 static enum ail_tiling
@@ -895,7 +913,7 @@ hk_map_compression(struct hk_device *dev, const VkImageCreateInfo *info,
       return false;
 
    case VK_IMAGE_TILING_OPTIMAL:
-      return hk_can_compress_create_info(dev, plane, info);
+      return hk_can_compress_create_info(dev, plane, info, true);
 
    case VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT:
       return ail_is_drm_modifier_compressed(modifier);
@@ -937,7 +955,7 @@ choose_drm_format_mod(struct hk_device *dev, uint8_t plane_count,
    bool can_compress = true;
 
    for (uint8_t plane = 0; plane < plane_count; plane++) {
-      if (!hk_can_compress_create_info(dev, plane, info))
+      if (!hk_can_compress_create_info(dev, plane, info, false))
          can_compress = false;
    }
 

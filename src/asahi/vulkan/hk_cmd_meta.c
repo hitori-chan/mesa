@@ -292,11 +292,11 @@ canonical_format_pipe(enum pipe_format fmt, bool g15)
    /* clang-format on */
 #undef CASE
 
-   /* G15 compresses no image a copy writes (hk_image.c), so a copy moves bits,
-    * through a format of each size whose roundtrip is exact: through their own
-    * formats the minifloats rounded (dEQP-VK copy_and_blit E5B9G9R9 and
-    * B10G11R11 copies). A compressed source is read in its own compression
-    * class instead (hk_meta_bits).
+   /* G15's compute copies write no compressed image (hk_copy_requires_gfx),
+    * so a copy moves bits, through a format of each size whose roundtrip is
+    * exact: through their own formats the minifloats rounded (dEQP-VK
+    * copy_and_blit E5B9G9R9 and B10G11R11 copies). A compressed source is
+    * read in its own compression class instead (hk_meta_bits).
     */
    if (g15) {
       switch (util_format_get_blocksize(fmt)) {
@@ -666,8 +666,9 @@ build_image_copy_shader(const struct vk_meta_image_copy_key *key)
  * G15 copies into an image with image writes (imgwci, layered on the
  * hardware): a compute kernel's block writes have not run on G15, whose
  * imgwblk takes the descriptor's address in a uniform rather than a bindless
- * handle (agx_pack3.c), and Honeykrisp compresses no G15 image a copy
- * writes (hk_can_compress), which the block write would serve.
+ * handle (agx_pack3.c). A copy into a compressed image is drawn instead
+ * (hk_copy_requires_gfx); the block write would serve it, as Metal's compute
+ * blits do.
  */
 static bool
 hk_meta_block_copies(struct vk_device *device)
@@ -1512,7 +1513,8 @@ hk_CmdCopyBuffer2(VkCommandBuffer commandBuffer, const VkCopyBufferInfo2 *info)
 
 /* A compressed image is written by drawing: a multisampled one on every
  * generation, any on G15, whose compute copies write with imgwci, which cannot
- * write compressed memory
+ * write compressed memory. No multi-planar G15 copy destination is compressed
+ * (hk_can_compress), so plane 0 tells.
  */
 static bool
 hk_copy_requires_gfx(struct hk_image *img)
@@ -1543,6 +1545,8 @@ hk_CmdCopyBufferToImage2(VkCommandBuffer commandBuffer,
    hk_meta_begin(cmd, &save, bind_point);
 
    if (gfx) {
+      perf_debug(cmd, "Copy drawn: buffer to compressed image");
+
       struct vk_meta_copy_image_properties dst_props =
          hk_meta_copy_get_image_properties(dst_image);
 
@@ -1584,6 +1588,8 @@ hk_CmdCopyImage2(VkCommandBuffer commandBuffer,
    hk_meta_begin(cmd, &save, bind_point);
 
    if (gfx) {
+      perf_debug(cmd, "Copy drawn: image to compressed image");
+
       struct vk_meta_copy_image_properties src_props =
          hk_meta_copy_get_image_properties(src_image);
       struct vk_meta_copy_image_properties dst_props =

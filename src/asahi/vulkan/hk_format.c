@@ -36,8 +36,8 @@ hk_modifier_features(const struct agx_device *dev, uint64_t mod,
    }
 
    /* Don't advertise compression for the uncompressable, nor for the usages
-    * compression refuses (hk_can_compress): storage, and G15's copy
-    * destinations
+    * compression refuses (hk_can_compress): storage, and on G15 a shared
+    * image's copies, which only an optimal image's compression takes
     */
    if (mod == DRM_FORMAT_MOD_APPLE_GPU_TILED_COMPRESSED ||
        mod == DRM_FORMAT_MOD_APPLE_INTERCHANGE) {
