@@ -1364,13 +1364,38 @@ hk_meta_copy_image2(struct vk_command_buffer *cmd, struct vk_meta_device *meta,
    }
 }
 
+/*
+ * A drawn copy moves bits as the compute copies do (canonical_format): through
+ * a format of each size, or a compressed image's through an exact format of its
+ * compression class. Through the image's own format, a block-compressed source
+ * would be sampled decoded, and SNORM (-128), sRGB and float views need not
+ * roundtrip.
+ */
+static VkFormat
+hk_meta_copy_view_format(struct hk_image *img, unsigned plane, VkFormat format)
+{
+   bool bits =
+      hk_meta_g15(img->vk.base.device) && !img->planes[plane].layout.compressed;
+
+   return canonical_format(format, bits);
+}
+
 static inline struct vk_meta_copy_image_properties
 hk_meta_copy_get_image_properties(struct hk_image *img)
 {
    struct vk_meta_copy_image_properties props = {.tile_size = {16, 16, 1}};
+   const struct vk_format_ycbcr_info *ycbcr_info =
+      vk_format_get_ycbcr_info(img->vk.format);
 
-   if (!vk_format_is_depth_or_stencil(img->vk.format)) {
-      props.color.view_format = img->vk.format;
+   if (ycbcr_info) {
+      /* A plane copied to or from a single-plane image */
+      for (unsigned p = 0; p < ycbcr_info->n_planes; ++p) {
+         props.plane[p].view_format =
+            hk_meta_copy_view_format(img, p, ycbcr_info->planes[p].format);
+      }
+   } else if (!vk_format_is_depth_or_stencil(img->vk.format)) {
+      props.color.view_format =
+         hk_meta_copy_view_format(img, 0, img->vk.format);
    } else {
       switch (img->vk.format) {
       case VK_FORMAT_S8_UINT:
