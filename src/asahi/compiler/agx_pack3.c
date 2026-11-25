@@ -1398,6 +1398,10 @@ a3_funop(enum agx_opcode op)
       return AGX3_EXP2;
    case AGX_OPCODE_SIN_PT_2:
       return AGX3_SINC; /* sin(A pi / 2) / A */
+   case AGX_OPCODE_DFDX:
+      return AGX3_DFDX;
+   case AGX_OPCODE_DFDY:
+      return AGX3_DFDY;
    default:
       return AGX3_NUM_INSTRS;
    }
@@ -2865,10 +2869,13 @@ a3_mov_cr(struct a3 *a, const agx_instr *I, unsigned cr, agx_index value,
  * (the last column of an odd-width viewport). Apple sets it on a fragment
  * shader's last sample when no sample or derivative follows (the QuartzCore
  * corpus: 222 of 222 flagged samples, none on an earlier one), so the helpers
- * run no further. Likewise here: on the last sample in program order, when
- * nothing after it reads another lane (a sample, a derivative, a quad or
- * subgroup operation, a register of the active lanes) and no loop runs it
- * again. AGX_MESA_DEBUG=helpers keeps the helpers to the end. */
+ * run no further, and bit 11 of dfdx and dfdy likewise on a last derivative
+ * (141 of the corpus's 5,450, none with a lane reader after it; that the bit
+ * ends the helpers is inferred). Likewise here: on the last sample or
+ * derivative in program order, when nothing after it reads another lane (a
+ * sample, a derivative, a quad or subgroup operation, a register of the
+ * active lanes) and no loop runs it again. AGX_MESA_DEBUG=helpers keeps the
+ * helpers to the end. */
 static bool
 a3_reads_lanes(const agx_instr *I)
 {
@@ -2923,7 +2930,8 @@ agx3_end_helpers(agx_context *ctx)
 
    agx_foreach_block(ctx, block) {
       agx_foreach_instr_in_block(block, I) {
-         if (I->op == AGX_OPCODE_TEXTURE_SAMPLE) {
+         if (I->op == AGX_OPCODE_TEXTURE_SAMPLE || I->op == AGX_OPCODE_DFDX ||
+             I->op == AGX_OPCODE_DFDY) {
             last = I;
             last_block = block;
          } else if (a3_reads_lanes(I)) {
@@ -3882,6 +3890,11 @@ a3_hints(const agx_instr *I)
    case AGX_OPCODE_SIN_PT_2:
    case AGX_OPCODE_ITER:
       return BITFIELD_BIT(A3_CACHE) | BITFIELD_BIT(A3_LU);
+   /* Apple's encoder takes no last use on a derivative's source (its trees'
+    * f29 == 0): the other lanes of the quad read it */
+   case AGX_OPCODE_DFDX:
+   case AGX_OPCODE_DFDY:
+      return BITFIELD_BIT(A3_CACHE);
    default:
       return 0;
    }
@@ -4166,6 +4179,16 @@ a3_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
    case AGX_OPCODE_SIN_PT_2: {
       struct a3_alu d = {a3_funop(I->op), T_FUNOP, {2}, VT, -1, -1, false};
       a3_alu(&a, I, &d, I->src, emission);
+      return;
+   }
+
+   /* The unary form; bit 11 ends the quad's helper lanes (agx3_end_helpers) */
+   case AGX_OPCODE_DFDX:
+   case AGX_OPCODE_DFDY: {
+      struct a3_alu d = {a3_funop(I->op), T_FUNOP, {2}, VT, -1, -1, false};
+      a3_alu_set(&a, I, &d, I->src);
+      a3_set(&a, a3_op_at_bit(&a, 11), I->g15_end_helpers);
+      a3_emit(&a, emission);
       return;
    }
 

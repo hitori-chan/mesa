@@ -4241,6 +4241,38 @@
     <modifier name="unk" bit="18 20 22" kind="expect3"/>
   </ins>
 
+  <!--
+   dfdx, dfdy: a value's difference across the quad in x or in y (Apple's
+   f32dfdx and f32dfdy, libLLVM 32023's encoder trees 551471 and 551902),
+   in the unary ops' 10-byte form, f32 or f16 (bfloat16 in the trees, not in
+   the corpus). The trees take no last use on the source (f29 == 0). Bit 11
+   ends the quad's helper lanes, as a sample's bit 64: Apple sets it on a
+   fragment shader's last derivative when no sample or derivative follows,
+   141 of the QuartzCore corpus's 5,450 derivatives, none with a lane
+   reader after it (inferred from the corpus, not run).
+  -->
+  <ins name="dfdx" display="dfdx" length="10">
+    <exact bit="0:10">10100110111</exact>
+    <dest kind="fdst_inv" bit="24 25:31 32 33 55 61 =0 50 =1"/>
+    <modifier name="vt" bit="59 55" kind="dst_vt"/>
+    <src kind="fsrc" bit="41 42:48 49 62 53 52 =0 64 63 51 =1"/>
+    <modifier name="group" bit="54 56:57 55" kind="fgroup"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+    <modifier name="end_helpers" bit="11" display="end_helpers"/>
+  </ins>
+
+  <ins name="dfdy" display="dfdy" length="10">
+    <exact bit="0:10">11100110111</exact>
+    <dest kind="fdst_inv" bit="24 25:31 32 33 55 61 =0 50 =1"/>
+    <modifier name="vt" bit="59 55" kind="dst_vt"/>
+    <src kind="fsrc" bit="41 42:48 49 62 53 52 =0 64 63 51 =1"/>
+    <modifier name="group" bit="54 56:57 55" kind="fgroup"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+    <modifier name="end_helpers" bit="11" display="end_helpers"/>
+  </ins>
+
   <ins name="sinc" display="sinc" length="10">
     <exact bit="0:11">001100101111</exact>
     <dest kind="fdst_inv" bit="24 25:31 32 33 55 61 =0 50 =1"/>

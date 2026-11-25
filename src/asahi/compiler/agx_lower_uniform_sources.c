@@ -115,7 +115,8 @@ agx_g15_stale_uniform_base(agx_context *ctx, agx_instr *I, unsigned s)
  * program's rcp of the preamble's uniforms got the values a previous program
  * left there, while the ALU operations reading them got the new ones (KHR-GL46
  * shader_subroutine.four_subroutines_with_two_uniforms). Uniforms the entry
- * program loaded are not known to be safe either, so they move too.
+ * program loaded are not known to be safe either, so they move too. dfdx and
+ * dfdy share those ops' form, and Apple's code gives them registers only.
  */
 static bool
 agx_g15_register_only(agx_context *ctx, agx_instr *I, unsigned s)
@@ -139,6 +140,8 @@ agx_g15_register_only(agx_context *ctx, agx_instr *I, unsigned s)
    case AGX_OPCODE_LOG2:
    case AGX_OPCODE_EXP2:
    case AGX_OPCODE_SIN_PT_2:
+   case AGX_OPCODE_DFDX:
+   case AGX_OPCODE_DFDY:
       return true;
    default:
       return false;
