@@ -3003,7 +3003,8 @@ agx3_assign_groups(agx_context *ctx)
  * cf0, cf1 before its first sample in 12 of the 16 programs of Grim Dawn's
  * G-buffer capture), so the texture's mov from the register is dropped. Only
  * when the value is the texture's coordinate alone: the coordinates die at the
- * texture, no instruction between the two reads or writes the register, and
+ * texture (the last-use hint agx_opt_register_cache sets from the registers'
+ * liveness, never in a divergent block), no instruction between the two reads or writes the register, and
  * none reads or writes a cr or waits, so the cr is free from the multiply on
  * (the caller has found no wait due for the texture's crs). A texture's
  * coordinates are 32-bit, fmul_cf's destination is 32-bit and reaches cr63. */
@@ -3012,7 +3013,7 @@ agx3_direct_crs(agx_block *block, agx_instr *I)
 {
    agx_index coords = I->src[0];
 
-   if (I->op != AGX_OPCODE_TEXTURE_SAMPLE || !coords.kill ||
+   if (I->op != AGX_OPCODE_TEXTURE_SAMPLE || !coords.discard ||
        coords.type != AGX_INDEX_REGISTER || coords.size != AGX_SIZE_32)
       return;
 
