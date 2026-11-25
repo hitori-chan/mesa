@@ -75,7 +75,15 @@ struct hk_fs_key {
     */
    bool force_sample_shading;
 
-   uint8_t pad[2];
+   /* The pipeline draws one sample with alpha to coverage off, both static:
+    * a main shader that builds a coverage word is built for its one-sample
+    * target (fs.nr_samples 1) and runs the tests unless the epilog writes
+    * depth or stencil (hk_compile_nir), as Apple's program knows its
+    * pipeline's sample count
+    */
+   bool one_sample;
+
+   uint8_t pad[1];
 };
 static_assert(sizeof(struct hk_fs_key) == 4, "packed");
 
@@ -111,7 +119,8 @@ hk_physical_device_compiler_flags(const struct hk_physical_device *pdev)
     * take the low 32 bits and the compiler's (AGX_MESA_DEBUG, many of which
     * change the code) bits 0-23 the next ones and bit 24 bit 60, so that a
     * cache never hands a shader compiled under other flags; HK_PERFTEST's
-    * that change the code take bits 56-59 and driconf options that change
+    * that change the code take bits 56-59, compiler flags 24 and 25 bits 60
+    * and 61, and driconf options that change
     * the code bits 62-63 */
    const struct hk_instance *instance =
       hk_physical_device_instance((struct hk_physical_device *)pdev);
@@ -124,7 +133,7 @@ hk_physical_device_compiler_flags(const struct hk_physical_device *pdev)
    const uint64_t cdbg = agx_get_compiler_debug();
 
    return pdev->dev.debug | ((cdbg & BITFIELD64_MASK(24)) << 32) |
-          (perf_key << 56) | (((cdbg >> 24) & 1) << 60) |
+          (perf_key << 56) | (((cdbg >> 24) & 1) << 60) | (((cdbg >> 25) & 1) << 61) |
           ((uint64_t)pdev->sampled_views_as_arrays << 63) |
           ((uint64_t)instance->drirc.misc.d3d_nearest_mip << 62);
 }
@@ -358,6 +367,15 @@ hk_populate_fs_key(struct hk_fs_key *key,
    const struct vk_multisample_state *ms = state->ms;
    if (ms != NULL && ms->sample_shading_enable)
       key->force_sample_shading = true;
+
+   if (ms != NULL &&
+       !BITSET_TEST(state->dynamic, MESA_VK_DYNAMIC_MS_RASTERIZATION_SAMPLES) &&
+       !BITSET_TEST(state->dynamic,
+                    MESA_VK_DYNAMIC_MS_ALPHA_TO_COVERAGE_ENABLE) &&
+       ms->rasterization_samples <= VK_SAMPLE_COUNT_1_BIT &&
+       !ms->alpha_to_coverage_enable &&
+       !(agx_get_compiler_debug() & AGX_DBG_OLDCOVWORD))
+      key->one_sample = true;
 }
 
 enum hk_feature_key {
@@ -1977,6 +1995,46 @@ hk_compile_backend(struct hk_device *dev, nir_shader *nir,
    hk_backend_cache_put(dev, hash, out);
 }
 
+/* The main shader of a pipeline drawn with alpha to coverage off and no depth
+ * or stencil output in the epilog runs the tests itself (no_epilog_discard ~0
+ * at every draw, hk_flush_dynamic_state): the switch folds, and a discard's
+ * coverage word targets every sample.
+ */
+static bool
+lower_tests_zs_main(nir_builder *b, nir_intrinsic_instr *intr, UNUSED void *data)
+{
+   if (intr->intrinsic != nir_intrinsic_load_shader_part_tests_zs_agx)
+      return false;
+
+   b->cursor = nir_before_instr(&intr->instr);
+   nir_def_replace(&intr->def, nir_imm_intN_t(b, 0xffff, 16));
+   return true;
+}
+
+static bool
+writes_coverage_intr(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   if (intr->intrinsic == nir_intrinsic_sample_mask_agx ||
+       intr->intrinsic == nir_intrinsic_store_zs_agx)
+      *(bool *)data = true;
+
+   return false;
+}
+
+/* Whether the main shader builds a coverage word (a discard, a sample mask, or
+ * depth and stencil output it emits itself): only such a shader's code depends
+ * on the sample count, so only it is built for its pipeline's, and the others
+ * keep their backend cache entries across pipelines.
+ */
+static bool
+writes_coverage(nir_shader *nir)
+{
+   bool found = false;
+   nir_shader_intrinsics_pass(nir, writes_coverage_intr, nir_metadata_all,
+                              &found);
+   return found;
+}
+
 static VkResult
 hk_compile_nir(struct hk_device *dev, const VkAllocationCallbacks *pAllocator,
                nir_shader *nir, VkShaderCreateFlagsEXT shader_flags,
@@ -2011,6 +2069,22 @@ hk_compile_nir(struct hk_device *dev, const VkAllocationCallbacks *pAllocator,
       NIR_PASS(_, nir, agx_nir_lower_fs_output_to_epilog,
                &shader->info.fs.epilog_key);
       NIR_PASS(_, nir, agx_nir_lower_sample_mask);
+
+      /* Not Honeykrisp's own meta shaders: a meta draw is not bound by its
+       * pipeline's sample count (under the drm-shim, build 2 drew one baked
+       * to one sample at a two-sample render's: dEQP-VK.pipeline.
+       * shader_object_linked_binary.multisample.resolve.renderpass_renderarea.
+       * parallelogram_samples_2) */
+      if (key && key->fs.one_sample && !nir->info.internal &&
+          writes_coverage(nir)) {
+         shader->info.fs.one_sample = true;
+
+         if (!shader->info.fs.epilog_key.write_z &&
+             !shader->info.fs.epilog_key.write_s) {
+            NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_tests_zs_main,
+                     nir_metadata_control_flow, NULL);
+         }
+      }
 
       if (nir->info.fs.uses_sample_shading) {
          /* Ensure the sample mask is preserved in register */
@@ -2111,6 +2185,11 @@ hk_compile_nir(struct hk_device *dev, const VkAllocationCallbacks *pAllocator,
    if (nir->info.stage == MESA_SHADER_FRAGMENT &&
        nir->info.fs.uses_sample_shading)
       backend_key.fs.inside_sample_loop = true;
+
+   /* The pipeline's one sample, which the coverage words and tile accesses
+    * take literally */
+   if (nir->info.stage == MESA_SHADER_FRAGMENT && shader->info.fs.one_sample)
+      backend_key.fs.nr_samples = 1;
 
    /* The epilog reads the colours where the main shader leaves them */
    if (nir->info.stage == MESA_SHADER_FRAGMENT &&

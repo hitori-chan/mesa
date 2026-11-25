@@ -3695,6 +3695,12 @@ hk_flush_dynamic_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
       key.epilog.link.already_ran_zs |= nontrivial_force_early;
       key.epilog.g15 = dev->dev.params.gpu_generation >= 15;
 
+      /* A main shader built for its pipeline's one sample, alpha to coverage
+       * off (hk_fs_key::one_sample), is drawn so: both are static there */
+      assert(!fs->info.fs.one_sample ||
+             (key.epilog.nr_samples == 1 &&
+              !dyn->ms.alpha_to_coverage_enable));
+
       struct hk_rendering_state *render = &cmd->state.gfx.render;
       for (uint32_t i = 0; i < render->color_att_count; i++) {
          key.epilog.rt_formats[i] =

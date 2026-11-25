@@ -39,6 +39,7 @@ enum agx_compiler_dbg {
    AGX_DBG_BIASCR      = BITFIELD_BIT(22),
    AGX_DBG_NODFDX      = BITFIELD_BIT(23),
    AGX_DBG_OLDBODY     = BITFIELD_BIT(24),
+   AGX_DBG_OLDCOVWORD  = BITFIELD_BIT(25),
 };
 /* clang-format on */
 
