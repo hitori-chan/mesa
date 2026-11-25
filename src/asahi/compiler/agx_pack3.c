@@ -2969,45 +2969,17 @@ agx3_assign_groups(agx_context *ctx)
 #define A3_GROUPS      6
 #define A3_VARY_G      1
 
-/* G15's st_var and image write read their coordinate registers after they
- * issue, until their group (st_var's A3_VARY_G, an image write's 0)
- * completes, and a later write to those crs does
- * not wait for it: a mov to the cr of the st_var just before stored the new
- * value in both slots (the point size and the first varying of a vertex
- * shader with two varyings, the GS copy shader's st_vars through cr0 with
- * dynamic slots). An image write likewise: of two writes from cr0-cr7, the
- * first stored the second's data, and the second, its tuple freed by the
- * first, wrote zero to texel (0, 0); a texture fetch whose coordinates went
- * to cr0 right after a write read texel (0, 0) (dEQP-VK
- * texel_view_compatible's decompress pass). The st_vars take their crs in
- * turn, as Apple's vertex shaders take a cr per output, and the image writes
- * take tuples from cr8 in turn, clear of the crs other instructions write
- * from cr0, as Apple's shaders give each write its own tuple, or the next
- * one free when that one is still being read. A cr still being read is
- * reused only after a wait for its group, as is one another instruction
- * writes. A block starts with the crs still being read at the end of each
- * predecessor and of the block before it (a SIMD group runs both sides of a
- * branch, one after the other): a wait on one side does not cover the other
- * (dEQP-VK descriptorset_random: a write in one branch, a wait in another,
- * and the write after the join stored zero to texel (0, 0)). A loop's back
- * edge may bring the last iteration's. A texture is presumed to read its
- * crs until its result's group completes too (a3_tex_group; not verified),
- * so the crs still being read are kept per group, and a 1D or 2D texture
- * takes the lowest pair that none is reading and the texture before it did
- * not take, or with a LOD word (a bias, a level, an offset or a layer in slot
- * 3) the lowest such quad, so that a texture need not wait for the one before
- * it. The shader's cr count (specTPR) is the highest cr + 1, 8 B a thread.
- */
 /* G15: the perspective multiply that gives a sample a coordinate writes the
  * texture's cr itself, as Apple's compiler emits it (fmul cr0, ^r2, $r12,
  * cf0, cf1 before its first sample in 12 of the 16 programs of Grim Dawn's
  * G-buffer capture), so the texture's mov from the register is dropped. Only
  * when the value is the texture's coordinate alone: the coordinates die at the
  * texture (the last-use hint agx_opt_register_cache sets from the registers'
- * liveness, never in a divergent block), no instruction between the two reads or writes the register, and
- * none reads or writes a cr or waits, so the cr is free from the multiply on
- * (the caller has found no wait due for the texture's crs). A texture's
- * coordinates are 32-bit, fmul_cf's destination is 32-bit and reaches cr63. */
+ * liveness, never in a divergent block), no instruction between the two
+ * reads or writes the register, and none reads or writes a cr or waits, so
+ * the cr is free from the multiply on (the caller has found no wait due for
+ * the texture's crs). A texture's coordinates are 32-bit, fmul_cf's
+ * destination is 32-bit and reaches cr63. */
 static void
 agx3_direct_crs(agx_block *block, agx_instr *I)
 {
@@ -3081,6 +3053,35 @@ agx3_direct_crs(agx_block *block, agx_instr *I)
    }
 }
 
+/* G15's st_var and image write read their coordinate registers after they
+ * issue, until their group (st_var's A3_VARY_G, an image write's 0)
+ * completes, and a later write to those crs does
+ * not wait for it: a mov to the cr of the st_var just before stored the new
+ * value in both slots (the point size and the first varying of a vertex
+ * shader with two varyings, the GS copy shader's st_vars through cr0 with
+ * dynamic slots). An image write likewise: of two writes from cr0-cr7, the
+ * first stored the second's data, and the second, its tuple freed by the
+ * first, wrote zero to texel (0, 0); a texture fetch whose coordinates went
+ * to cr0 right after a write read texel (0, 0) (dEQP-VK
+ * texel_view_compatible's decompress pass). The st_vars take their crs in
+ * turn, as Apple's vertex shaders take a cr per output, and the image writes
+ * take tuples from cr8 in turn, clear of the crs other instructions write
+ * from cr0, as Apple's shaders give each write its own tuple, or the next
+ * one free when that one is still being read. A cr still being read is
+ * reused only after a wait for its group, as is one another instruction
+ * writes. A block starts with the crs still being read at the end of each
+ * predecessor and of the block before it (a SIMD group runs both sides of a
+ * branch, one after the other): a wait on one side does not cover the other
+ * (dEQP-VK descriptorset_random: a write in one branch, a wait in another,
+ * and the write after the join stored zero to texel (0, 0)). A loop's back
+ * edge may bring the last iteration's. A texture is presumed to read its
+ * crs until its result's group completes too (a3_tex_group; not verified),
+ * so the crs still being read are kept per group, and a 1D or 2D texture
+ * takes the lowest pair that none is reading and the texture before it did
+ * not take, or with a LOD word (a bias, a level, an offset or a layer in slot
+ * 3) the lowest such quad, so that a texture need not wait for the one before
+ * it. The shader's cr count (specTPR) is the highest cr + 1, 8 B a thread.
+ */
 void
 agx3_assign_crs(agx_context *ctx)
 {
