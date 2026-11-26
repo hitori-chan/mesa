@@ -109,6 +109,12 @@ struct agx_device {
    char name[64];
    struct drm_asahi_params_global params;
    bool is_virtio;
+
+   /* G15: keep triangle merging for fragment shaders whose derivatives or
+    * implicit LOD read interpolated data, as Metal does (a merged quad's
+    * derivatives then read the other triangle's plane). Set by the driver.
+    */
+   bool tri_merge_derivatives;
    agx_device_ops_t ops;
 
    /* vdrm device */
