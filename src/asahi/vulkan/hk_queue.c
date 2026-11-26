@@ -13,6 +13,9 @@
  * SPDX-License-Identifier: MIT
  */
 #include "hk_queue.h"
+
+#include <errno.h>
+#include <string.h>
 #include "hk_buffer.h"
 
 #include "agx_bg_eot.h"
@@ -1118,21 +1121,30 @@ hk_queue_init(struct hk_device *dev, const VkDeviceQueueCreateInfo *pCreateInfo,
       priority_info ? priority_info->globalPriority
                     : VK_QUEUE_GLOBAL_PRIORITY_MEDIUM_KHR;
 
-   /* TODO: Lift when kernel side is ready and we can handle failures in
-    * create_command_queue.
+   /* HIGH and REALTIME need CAP_SYS_NICE or the DRM master: the kernel says
+    * EACCES otherwise.
     */
    enum drm_asahi_priority drm_priority = translate_priority(priority);
-   if (drm_priority >= DRM_ASAHI_PRIORITY_HIGH) {
-      return VK_ERROR_NOT_PERMITTED_EXT;
+   int ret =
+      agx_create_command_queue(&dev->dev, drm_priority, &queue->drm.id);
+   if (ret) {
+      vk_free(&dev->vk.alloc, queue);
+      if (ret == -EACCES)
+         return VK_ERROR_NOT_PERMITTED_KHR;
+
+      return vk_errorf(dev, VK_ERROR_INITIALIZATION_FAILED,
+                       "DRM_IOCTL_ASAHI_QUEUE_CREATE failed: %s",
+                       strerror(-ret));
    }
 
    result = vk_queue_init(&queue->vk, &dev->vk, pCreateInfo, index_in_family);
-   if (result != VK_SUCCESS)
+   if (result != VK_SUCCESS) {
+      agx_destroy_command_queue(&dev->dev, queue->drm.id);
+      vk_free(&dev->vk.alloc, queue);
       return result;
+   }
 
    queue->vk.driver_submit = hk_queue_submit;
-
-   queue->drm.id = agx_create_command_queue(&dev->dev, drm_priority);
    queue->drm.virt_ring_idx = drm_priority + 1;
 
    if (drmSyncobjCreate(dev->dev.fd, 0, &queue->drm.syncobj)) {

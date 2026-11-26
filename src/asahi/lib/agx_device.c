@@ -6,6 +6,7 @@
  */
 
 #include "agx_device.h"
+#include <errno.h>
 #include <inttypes.h>
 #include "clc/asahi_clc.h"
 #include "drm-uapi/asahi_drm.h"
@@ -790,9 +791,13 @@ agx_close_device(struct agx_device *dev)
    close(dev->fd);
 }
 
-uint32_t
+/* Creates a command queue: 0 and its ID in *queue_id, or -errno. The kernel
+ * gives HIGH and REALTIME only to a process with CAP_SYS_NICE or the DRM
+ * master, else -EACCES.
+ */
+int
 agx_create_command_queue(struct agx_device *dev,
-                         enum drm_asahi_priority priority)
+                         enum drm_asahi_priority priority, uint32_t *queue_id)
 {
 
    if (dev->debug & AGX_DBG_1QUEUE) {
@@ -800,7 +805,8 @@ agx_create_command_queue(struct agx_device *dev,
       simple_mtx_lock(&dev->vma_lock);
       if (dev->queue_id) {
          simple_mtx_unlock(&dev->vma_lock);
-         return dev->queue_id;
+         *queue_id = dev->queue_id;
+         return 0;
       }
    }
 
@@ -813,16 +819,18 @@ agx_create_command_queue(struct agx_device *dev,
    int ret =
       asahi_simple_ioctl(dev, DRM_IOCTL_ASAHI_QUEUE_CREATE, &queue_create);
    if (ret) {
-      fprintf(stderr, "DRM_IOCTL_ASAHI_QUEUE_CREATE failed: %m\n");
-      assert(0);
-   }
-
-   if (dev->debug & AGX_DBG_1QUEUE) {
+      ret = -errno;
+      if (ret != -EACCES)
+         fprintf(stderr, "DRM_IOCTL_ASAHI_QUEUE_CREATE failed: %m\n");
+   } else if (dev->debug & AGX_DBG_1QUEUE) {
       dev->queue_id = queue_create.queue_id;
-      simple_mtx_unlock(&dev->vma_lock);
    }
 
-   return queue_create.queue_id;
+   if (dev->debug & AGX_DBG_1QUEUE)
+      simple_mtx_unlock(&dev->vma_lock);
+
+   *queue_id = queue_create.queue_id;
+   return ret;
 }
 
 int
