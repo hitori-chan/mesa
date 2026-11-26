@@ -281,8 +281,9 @@ agx_lookup_bo(struct agx_device *dev, uint32_t handle)
    return util_sparse_array_get(&dev->bo_map, handle);
 }
 
-uint32_t agx_create_command_queue(struct agx_device *dev,
-                                  enum drm_asahi_priority priority);
+int agx_create_command_queue(struct agx_device *dev,
+                             enum drm_asahi_priority priority,
+                             uint32_t *queue_id);
 int agx_destroy_command_queue(struct agx_device *dev, uint32_t queue_id);
 
 int agx_import_sync_file(struct agx_device *dev, struct agx_bo *bo, int fd);
