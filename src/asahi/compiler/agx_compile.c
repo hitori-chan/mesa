@@ -826,6 +826,180 @@ agx_g15_projects_off_centre(nir_shader *nir)
    return false;
 }
 
+/* G15: what a fragment shader's quad reads (derivatives, implicit LOD, quad
+ * and subgroup operations) see across a merged quad. Triangle merging puts two
+ * triangles' fragments in one quad, each lane iterating its own triangle's
+ * coefficients, and dfdx, dfdy and the sampler's LOD are differences between
+ * the quad's lanes (fragment-programs.md), so a quad read of interpolated data
+ * reads the other triangle's plane: along the shared edge of dEQP's projected
+ * mipmap quads, whose two triangles' 1/W planes differ, the LOD leaves the
+ * tolerance. Which planes two triangles have is the vertex data's, not the
+ * shader's, so only a value of the pixel's position, uniforms and memory read
+ * at such addresses is the same function in either triangle; its quad reads
+ * are exact where the whole quad reaches them (no loop, every enclosing branch
+ * on such a value).
+ */
+enum agx_quad_reads {
+   /* None, or each exact */
+   AGX_QUAD_READS_EXACT,
+
+   /* Derivatives or implicit LOD of other data, and no other inexact read */
+   AGX_QUAD_READS_DERIVATIVES,
+
+   /* A quad or subgroup operation of other data */
+   AGX_QUAD_READS_OTHER,
+};
+
+/* A value of the pixel's position, uniforms and memory alone, given its
+ * sources are */
+static bool
+agx_quad_exact_intrinsic(const nir_intrinsic_instr *intr)
+{
+   switch (intr->intrinsic) {
+   case nir_intrinsic_load_pixel_coord:
+   case nir_intrinsic_load_sample_id:
+   case nir_intrinsic_load_sample_pos:
+   case nir_intrinsic_load_samples_log2_agx:
+   case nir_intrinsic_load_preamble:
+   case nir_intrinsic_load_constant_agx:
+   case nir_intrinsic_load_agx:
+   case nir_intrinsic_image_load:
+   case nir_intrinsic_image_sparse_load:
+   case nir_intrinsic_bindless_image_load:
+   case nir_intrinsic_bindless_image_sparse_load:
+   case nir_intrinsic_bindless_image_agx:
+   case nir_intrinsic_bindless_image_base_agx:
+   case nir_intrinsic_bindless_sampler_agx:
+      return true;
+   default:
+      return false;
+   }
+}
+
+/* Reads other lanes of its quad or subgroup */
+static bool
+agx_is_lane_read(const nir_instr *instr)
+{
+   if (instr->type == nir_instr_type_tex)
+      return nir_tex_instr_has_implicit_derivative(nir_instr_as_tex(instr));
+
+   if (instr->type != nir_instr_type_intrinsic)
+      return false;
+
+   const nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+   switch (intr->intrinsic) {
+   case nir_intrinsic_quad_ballot_agx:
+   case nir_intrinsic_load_active_subgroup_invocation_agx:
+   case nir_intrinsic_load_active_subgroup_count_agx:
+      return true;
+   default:
+      return nir_intrinsic_has_semantic(intr, NIR_INTRINSIC_SUBGROUP);
+   }
+}
+
+static bool
+agx_is_derivative(const nir_instr *instr)
+{
+   if (instr->type == nir_instr_type_tex)
+      return true;
+
+   switch (nir_instr_as_intrinsic(instr)->intrinsic) {
+   case nir_intrinsic_ddx:
+   case nir_intrinsic_ddx_fine:
+   case nir_intrinsic_ddx_coarse:
+   case nir_intrinsic_ddy:
+   case nir_intrinsic_ddy_fine:
+   case nir_intrinsic_ddy_coarse:
+      return true;
+   default:
+      return false;
+   }
+}
+
+/* nir_foreach_src goes on while this returns true */
+static bool
+agx_src_exact(nir_src *src, void *data)
+{
+   return BITSET_TEST((BITSET_WORD *)data, src->ssa->index);
+}
+
+static bool
+agx_srcs_exact(nir_instr *instr, BITSET_WORD *exact)
+{
+   return nir_foreach_src(instr, agx_src_exact, exact);
+}
+
+/* The whole quad reaches the instruction: no loop around it, every branch
+ * around it on an exact value */
+static bool
+agx_quad_reaches(nir_instr *instr, BITSET_WORD *exact)
+{
+   for (nir_cf_node *n = instr->block->cf_node.parent; n; n = n->parent) {
+      if (n->type == nir_cf_node_loop)
+         return false;
+
+      if (n->type == nir_cf_node_if &&
+          !BITSET_TEST(exact, nir_cf_node_as_if(n)->condition.ssa->index))
+         return false;
+   }
+
+   return true;
+}
+
+static enum agx_quad_reads
+agx_fs_quad_reads(nir_shader *nir)
+{
+   enum agx_quad_reads reads = AGX_QUAD_READS_EXACT;
+
+   nir_foreach_function_impl(impl, nir) {
+      BITSET_WORD *exact = BITSET_CALLOC(impl->ssa_alloc);
+
+      /* In source order, which defines a value before its uses but for a
+       * phi's, and every phi counts as inexact */
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            nir_def *def = nir_instr_def(instr);
+            bool ok;
+
+            switch (instr->type) {
+            case nir_instr_type_load_const:
+            case nir_instr_type_undef:
+               ok = true;
+               break;
+            case nir_instr_type_alu:
+            case nir_instr_type_tex:
+               ok = agx_srcs_exact(instr, exact);
+               break;
+            case nir_instr_type_intrinsic:
+               ok = agx_srcs_exact(instr, exact) &&
+                    (agx_quad_exact_intrinsic(nir_instr_as_intrinsic(instr)) ||
+                     agx_is_lane_read(instr));
+               break;
+            default:
+               ok = false;
+               break;
+            }
+
+            if (agx_is_lane_read(instr)) {
+               ok &= agx_quad_reaches(instr, exact);
+
+               if (!ok && agx_is_derivative(instr))
+                  reads = MAX2(reads, AGX_QUAD_READS_DERIVATIVES);
+               else if (!ok)
+                  reads = AGX_QUAD_READS_OTHER;
+            }
+
+            if (def && ok)
+               BITSET_SET(exact, def->index);
+         }
+      }
+
+      free(exact);
+   }
+
+   return reads;
+}
+
 static void
 agx_wait_pixel_mask(agx_builder *b, uint32_t mask)
 {
@@ -5718,11 +5892,26 @@ agx_compile_shader_nir_impl(nir_shader *nir, struct agx_shader_key *key,
          nir->info.outputs_written & (VARYING_BIT_LAYER | VARYING_BIT_VIEWPORT);
 
    } else if (nir->info.stage == MESA_SHADER_FRAGMENT) {
+      /* G15 merges where the quad reads are exact (agx_fs_quad_reads), and
+       * where they are derivatives at the linker's word (Metal's rule: Apple's
+       * compiler disables merging for none of them)
+       */
+      enum agx_quad_reads quad_reads = AGX_QUAD_READS_EXACT;
+      if (nir->info.fs.needs_coarse_quad_helper_invocations) {
+         if (key->dev.gpu_generation >= 15 && !nir->info.fs.require_full_quads)
+            quad_reads = agx_fs_quad_reads(nir);
+         else
+            quad_reads = AGX_QUAD_READS_OTHER;
+      }
+
+      info->disable_tri_merging_derivatives =
+         quad_reads == AGX_QUAD_READS_DERIVATIVES;
+
       /* Apple's compiler disables merging for barycentric coordinates */
       info->disable_tri_merging =
          nir->info.uses_wide_subgroup_intrinsics ||
-         nir->info.fs.needs_coarse_quad_helper_invocations ||
-         nir->info.writes_memory || agx_fs_reads_vertices(&info->varyings.fs);
+         quad_reads == AGX_QUAD_READS_OTHER || nir->info.writes_memory ||
+         agx_fs_reads_vertices(&info->varyings.fs);
 
       /* G15: a merged pair shades a pixel holding samples of both triangles
        * once, with the first triangle's flat inputs, so a strip's seams lose

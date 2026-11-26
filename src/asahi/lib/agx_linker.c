@@ -91,6 +91,7 @@ agx_fast_link(struct agx_linked_shader *linked, struct agx_device *dev,
    unsigned nr_gprs = 0, scratch_size = 0;
    bool reads_tib = false, writes_sample_mask = false,
         disable_tri_merging = false, disable_tri_merging_msaa = false,
+        disable_tri_merging_derivatives = false,
         tag_write_disable = true;
    bool g15 = dev->params.gpu_generation >= 15;
 
@@ -131,6 +132,8 @@ agx_fast_link(struct agx_linked_shader *linked, struct agx_device *dev,
       writes_sample_mask |= part->info.writes_sample_mask;
       disable_tri_merging |= part->info.disable_tri_merging;
       disable_tri_merging_msaa |= part->info.disable_tri_merging_msaa;
+      disable_tri_merging_derivatives |=
+         part->info.disable_tri_merging_derivatives;
       linked->uses_base_param |= part->info.uses_base_param;
       linked->uses_txf |= part->info.uses_txf;
       tag_write_disable &= part->info.tag_write_disable;
@@ -288,6 +291,13 @@ agx_fast_link(struct agx_linked_shader *linked, struct agx_device *dev,
       }
 
       if (nr_samples > 1 && disable_tri_merging_msaa)
+         disable_tri_merging = true;
+
+      /* G15: merging gives a quad's derivatives the other triangle's plane
+       * (agx_fs_quad_reads), which Metal accepts and Vulkan does not: on only
+       * where the driver takes Metal's rule (hk_tri_merge_derivatives)
+       */
+      if (disable_tri_merging_derivatives && !dev->tri_merge_derivatives)
          disable_tri_merging = true;
 
       /* G15: Apple's discard and depth output disable triangle merging (their

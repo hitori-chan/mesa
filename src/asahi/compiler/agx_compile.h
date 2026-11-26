@@ -216,6 +216,12 @@ struct agx_shader_info {
    /* Shader is incompatible with triangle merging at more than one sample */
    bool disable_tri_merging_msaa;
 
+   /* G15: triangle merging changes the shader's derivatives or implicit LOD
+    * (they read the other triangle's plane in a merged quad), and nothing else:
+    * off unless the linker is told Metal's rule
+    */
+   bool disable_tri_merging_derivatives;
+
    /* Reads draw ID system value */
    bool uses_draw_id;
 
