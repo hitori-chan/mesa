@@ -385,6 +385,10 @@ hk_CreateDevice(VkPhysicalDevice physicalDevice,
       goto fail_fd;
    }
 
+   dev->dev.tri_merge_derivatives =
+      pdev->dev.params.gpu_generation >= 15 &&
+      instance->drirc.misc.tri_merge_derivatives;
+
    vk_device_set_drm_fd(&dev->vk, dev->dev.fd);
    dev->vk.command_buffer_ops = &hk_cmd_buffer_ops;
    dev->vk.check_status = hk_check_status;
