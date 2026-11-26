@@ -1919,16 +1919,32 @@ agx_create_context(struct pipe_screen *screen, void *priv, unsigned flags)
 
    enum drm_asahi_priority priority = DRM_ASAHI_PRIORITY_MEDIUM;
 
-   if (flags & PIPE_CONTEXT_PRIORITY_LOW)
-      priority = DRM_ASAHI_PRIORITY_LOW;
-   else if (flags & PIPE_CONTEXT_PRIORITY_MEDIUM)
-      priority = DRM_ASAHI_PRIORITY_MEDIUM;
-
-   /* TODO: High/realtime need us to handle errors since we might not have
-    * permission. Sort this out later.
+   /* The create flags (PIPE_CONTEXT_*_PRIORITY), not the caps mask's bits
+    * (PIPE_CONTEXT_PRIORITY_*), which here are COMPUTE_ONLY, ROBUST_BUFFER_ACCESS
+    * and PREFER_THREADED.
     */
+   if (flags & PIPE_CONTEXT_LOW_PRIORITY)
+      priority = DRM_ASAHI_PRIORITY_LOW;
+   else if (flags & PIPE_CONTEXT_HIGH_PRIORITY)
+      priority = DRM_ASAHI_PRIORITY_HIGH;
+   else if (flags & PIPE_CONTEXT_REALTIME_PRIORITY)
+      priority = DRM_ASAHI_PRIORITY_REALTIME;
 
-   ctx->queue_id = agx_create_command_queue(agx_device(screen), priority);
+   /* HIGH and REALTIME need CAP_SYS_NICE or the DRM master. The screen offers
+    * them only when a probe got one (agx_init_screen_caps), so EGL reports the
+    * priority asked; one refused since then falls back to MEDIUM.
+    */
+   ret = agx_create_command_queue(agx_device(screen), priority, &ctx->queue_id);
+   if (ret == -EACCES && priority > DRM_ASAHI_PRIORITY_MEDIUM) {
+      priority = DRM_ASAHI_PRIORITY_MEDIUM;
+      ret =
+         agx_create_command_queue(agx_device(screen), priority, &ctx->queue_id);
+   }
+   if (ret) {
+      u_upload_destroy(pctx->stream_uploader);
+      ralloc_free(ctx);
+      return NULL;
+   }
    ctx->virt_ring_idx = priority + 1;
 
    pctx->destroy = agx_destroy_context;
@@ -2330,9 +2346,19 @@ agx_init_screen_caps(struct pipe_screen *pscreen)
    caps->vs_layer_viewport = true;
    caps->tes_layer_viewport = true;
 
+   /* HIGH and REALTIME only where the kernel gives them (CAP_SYS_NICE or the
+    * DRM master): EGL masks a hint by this, and reports what it kept.
+    */
    caps->context_priority_mask =
-      PIPE_CONTEXT_PRIORITY_LOW | PIPE_CONTEXT_PRIORITY_MEDIUM |
-      PIPE_CONTEXT_PRIORITY_HIGH | PIPE_CONTEXT_PRIORITY_REALTIME;
+      PIPE_CONTEXT_PRIORITY_LOW | PIPE_CONTEXT_PRIORITY_MEDIUM;
+   struct agx_device *dev = agx_device(pscreen);
+   uint32_t probe;
+   if (!(dev->debug & AGX_DBG_1QUEUE) &&
+       !agx_create_command_queue(dev, DRM_ASAHI_PRIORITY_HIGH, &probe)) {
+      agx_destroy_command_queue(dev, probe);
+      caps->context_priority_mask |=
+         PIPE_CONTEXT_PRIORITY_HIGH | PIPE_CONTEXT_PRIORITY_REALTIME;
+   }
 
    caps->min_line_width = caps->min_line_width_aa = caps->min_point_size =
       caps->min_point_size_aa = 1;
