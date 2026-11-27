@@ -396,13 +396,16 @@ pressure_schedule_block(agx_context *ctx, agx_block *block, struct sched_ctx *s,
 
 /*
  * G15: the budget for issuing textures early, in 16-bit halves, or -1 to not
- * issue early: the shader's pressure and AGX_G15_TEX_SLACK more (default 16),
- * within the occupancy that pressure already has (agx_ra rounds its registers
- * up to it) less a margin for the allocator. The slack is small because M3's
- * register file is allocated as the threads use it (Dynamic Caching), so
- * that the occupancy may fall before G13's table says (not measured).
+ * issue early: the occupancy the shader's pressure already has (agx_ra rounds
+ * its registers up to it) less a margin for the allocator, and at most the
+ * pressure and AGX_G15_TEX_SLACK more (default: no bound but the occupancy's).
+ * Apple's programs sample back to back where the samples do not depend on
+ * each other (Grim Dawn's shadowed light 0x5f, 27.2.1's capture: seven of its
+ * nine samples in a row, 29 registers); a slack of 16 halves held Mesa's
+ * (DXVK fea63194) at 39 halves, each sample waited for before the next.
  */
-DEBUG_GET_ONCE_NUM_OPTION(agx_g15_tex_slack, "AGX_G15_TEX_SLACK", 16)
+DEBUG_GET_ONCE_NUM_OPTION(agx_g15_tex_slack, "AGX_G15_TEX_SLACK",
+                          AGX_G15_MAX_HALFREGS)
 
 static signed
 early_tex_budget(agx_context *ctx, const uint8_t *size, void *memctx)
