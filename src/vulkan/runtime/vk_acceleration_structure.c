@@ -778,6 +778,7 @@ morton_generate(VkCommandBuffer commandBuffer, struct vk_device *device,
             .counts = scratch_addr + states[i].scratch.sort_internal_offset,
             .leaf_count = states[i].leaf_node_count,
             .step = args->morton_sort_per_step ? step : 0,
+            .cube = args->morton_cube,
          };
 
          disp->CmdPushConstants(commandBuffer, layout,

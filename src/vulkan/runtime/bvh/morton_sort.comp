@@ -13,6 +13,11 @@ layout(local_size_x_id = MORTON_SORT_WORKGROUP_SIZE_ID, local_size_y = 1, local_
 
 #define KEYVALS_PER_WG (MORTON_SORT_WORKGROUP_SIZE * MORTON_SORT_KVS_PER_THREAD)
 
+layout(push_constant) uniform CONSTS
+{
+   morton_sort_args args;
+};
+
 uint32_t
 morton_component(uint32_t x)
 {
@@ -74,7 +79,11 @@ calculate_normalized_center(REF(vk_ir_header) header, VOID_REF bvh, uint32_t id)
       bvh_bounds.max.y = from_emulated_float(DEREF(header).max_bounds[1]);
       bvh_bounds.max.z = from_emulated_float(DEREF(header).max_bounds[2]);
 
-      return (center - bvh_bounds.min) / (bvh_bounds.max - bvh_bounds.min);
+      vec3 extent = bvh_bounds.max - bvh_bounds.min;
+      if (args.cube != 0)
+         extent = vec3(max(extent.x, max(extent.y, extent.z)));
+
+      return (center - bvh_bounds.min) / extent;
 }
 
 key32_id_pair
@@ -157,11 +166,6 @@ shuffle_key32(key32_id_pair val, uint lane)
 #define KEY_COMPARE_GT       compare_key32_gt
 #define KEY_SUBGROUP_SHUFFLE shuffle_key32
 #endif
-
-layout(push_constant) uniform CONSTS
-{
-   morton_sort_args args;
-};
 
 shared kvs_block
 {

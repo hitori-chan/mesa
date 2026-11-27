@@ -43,6 +43,9 @@ static const struct vk_acceleration_structure_build_args hk_build_args = {
    /* G15 stalls a core's other workgroups while one spins: the single
       dispatch's waits can hang */
    .morton_sort_per_step = true,
+   /* LBVH alone: Morton codes over the scene's cube, 21 bits an axis
+      (hk_get_build_config's 64-bit keys) */
+   .morton_cube = true,
 };
 
 static uint32_t
@@ -83,6 +86,12 @@ hk_get_as_size(VkDevice device,
 /* LBVH only: PLOC's and H-PLOC's workgroups wait on each other's progress,
  * which G15 does not promise, and LBVH bounds the tree's depth (the walk's
  * stack, HK_BVH_STACK_SIZE).
+ *
+ * Its Morton codes take 64 bits over the scene's cube (morton_cube): with 8
+ * bits an axis, each normalized on its own, a scene long on one axis splits
+ * its short axes first, into columns along the long one, and a ray along a
+ * column it misses walks every leaf of it before its own hit (the CTS's
+ * ray_query.stress: 60,000 triangles up z, 40,000 iterations a ray).
  */
 static void
 hk_get_build_config(VkDevice device,
@@ -90,6 +99,8 @@ hk_get_build_config(VkDevice device,
 {
    if (state->config.internal_type != VK_INTERNAL_BUILD_TYPE_UPDATE)
       state->config.internal_type = VK_INTERNAL_BUILD_TYPE_LBVH;
+
+   state->config.u64_keys = true;
 }
 
 static VkResult

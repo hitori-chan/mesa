@@ -151,6 +151,9 @@ struct vk_acceleration_structure_build_args {
    /* Sort in a dispatch per step, no workgroup waiting for another's (for hardware that does not keep running a
     * workgroup while others on its core spin) */
    bool morton_sort_per_step;
+   /* Morton codes over a cube, the scene's longest extent on every axis, instead of each axis's own: on a scene long
+    * on one axis the code then splits that axis first, not the short ones (for a builder that has only LBVH) */
+   bool morton_cube;
    bool propagate_cull_flags;
    bool emit_markers;
    bool has_update;

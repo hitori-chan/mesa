@@ -461,6 +461,8 @@ struct morton_sort_args {
    /* 0 the whole sort in one dispatch; 1 the tiles' sort, k + 1 the merge pass of log2 multiplier k, a dispatch
     * each (vk_acceleration_structure_build_args::morton_sort_per_step) */
    uint32_t step;
+   /* Not 0: the centres are normalized by the longest extent (vk_acceleration_structure_build_args::morton_cube) */
+   uint32_t cube;
 };
 
 #define LBVH_RIGHT_CHILD_BIT_SHIFT 29
