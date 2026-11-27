@@ -226,9 +226,15 @@ choose_instr(struct sched_ctx *s)
        *
        * Since we schedule backwards, we make that happen by only choosing
        * sample_mask when all other instructions have been exhausted.
+       *
+       * G15's release of fence 1 after a test likewise, so that it follows
+       * the test as Apple's does (movmsk, signal_pix 1) and a later fragment
+       * on the pixel tests without waiting through this one's shading.
        */
       if (n->instr->op == AGX_OPCODE_SAMPLE_MASK ||
-          n->instr->op == AGX_OPCODE_ZS_EMIT) {
+          n->instr->op == AGX_OPCODE_ZS_EMIT ||
+          (n->instr->op == AGX_OPCODE_SIGNAL_PIX &&
+           n->instr->writeout == 0x1)) {
 
          if (!last)
             last = n;

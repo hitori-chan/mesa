@@ -75,15 +75,19 @@ struct hk_fs_key {
     */
    bool force_sample_shading;
 
-   /* The pipeline draws one sample with alpha to coverage off, both static:
-    * a main shader that builds a coverage word is built for its one-sample
-    * target (fs.nr_samples 1) and runs the tests unless the epilog writes
-    * depth or stencil (hk_compile_nir), as Apple's program knows its
+   /* The pipeline draws one sample, with alpha to coverage on or off, both
+    * static: a main shader that builds a coverage word is built for its
+    * one-sample target (fs.nr_samples 1) and runs the tests unless the epilog
+    * writes depth or stencil (hk_compile_nir), as Apple's program knows its
     * pipeline's sample count
     */
    bool one_sample;
 
-   uint8_t pad[1];
+   /* With one_sample: alpha to coverage is on, and the main shader runs it
+    * (hk_lower_alpha_to_coverage_main), as Apple's program takes it from its
+    * pipeline state
+    */
+   bool alpha_to_coverage;
 };
 static_assert(sizeof(struct hk_fs_key) == 4, "packed");
 
@@ -374,9 +378,10 @@ hk_populate_fs_key(struct hk_fs_key *key,
        !BITSET_TEST(state->dynamic,
                     MESA_VK_DYNAMIC_MS_ALPHA_TO_COVERAGE_ENABLE) &&
        ms->rasterization_samples <= VK_SAMPLE_COUNT_1_BIT &&
-       !ms->alpha_to_coverage_enable &&
-       !(agx_get_compiler_debug() & AGX_DBG_OLDCOVWORD))
+       !(agx_get_compiler_debug() & AGX_DBG_OLDCOVWORD)) {
       key->one_sample = true;
+      key->alpha_to_coverage = ms->alpha_to_coverage_enable;
+   }
 }
 
 enum hk_feature_key {
@@ -2003,10 +2008,10 @@ hk_compile_backend(struct hk_device *dev, nir_shader *nir,
    hk_backend_cache_put(dev, hash, out);
 }
 
-/* The main shader of a pipeline drawn with alpha to coverage off and no depth
- * or stencil output in the epilog runs the tests itself (no_epilog_discard ~0
- * at every draw, hk_flush_dynamic_state): the switch folds, and a discard's
- * coverage word targets every sample.
+/* The main shader of a pipeline drawn with alpha to coverage off or run in the
+ * main, and no depth or stencil output in the epilog, runs the tests itself
+ * (no_epilog_discard ~0 at every draw, hk_flush_dynamic_state): the switch
+ * folds, and a discard's coverage word targets every sample.
  */
 static bool
 lower_tests_zs_main(nir_builder *b, nir_intrinsic_instr *intr, UNUSED void *data)
@@ -2043,6 +2048,202 @@ writes_coverage(nir_shader *nir)
    return found;
 }
 
+/* Whether an instruction may follow alpha to coverage's demote, run where the
+ * alpha is known rather than at the shader's end: it does and reads the same
+ * either way. A demoted invocation is a helper, which writes no memory and
+ * reads its helper state, subgroup and coverage otherwise; reorderable
+ * intrinsics, textures, arithmetic and the outputs are the same.
+ */
+static bool
+hk_a2c_may_follow(const nir_instr *instr)
+{
+   switch (instr->type) {
+   case nir_instr_type_call:
+      return false;
+   case nir_instr_type_intrinsic:
+      break;
+   default:
+      return true;
+   }
+
+   const nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+   switch (intr->intrinsic) {
+   case nir_intrinsic_store_output:
+      return true;
+   case nir_intrinsic_load_sample_mask_in:
+   case nir_intrinsic_load_sample_mask:
+      /* The coverage register on G15, which the demote changes */
+      return false;
+   default:
+      return nir_intrinsic_infos[intr->intrinsic].flags &
+             NIR_INTRINSIC_CAN_REORDER;
+   }
+}
+
+static bool
+hk_is_discard(const nir_instr *instr)
+{
+   if (instr->type != nir_instr_type_intrinsic)
+      return false;
+
+   switch (nir_instr_as_intrinsic(instr)->intrinsic) {
+   case nir_intrinsic_demote:
+   case nir_intrinsic_demote_if:
+   case nir_intrinsic_demote_samples:
+   case nir_intrinsic_terminate:
+   case nir_intrinsic_terminate_if:
+      return true;
+   default:
+      return false;
+   }
+}
+
+/* The first top-level block at or after a node of the impl's body */
+static nir_block *
+hk_top_block_after(nir_cf_node *node)
+{
+   while (node->parent->type != nir_cf_node_function)
+      node = node->parent;
+
+   return node->type == nir_cf_node_block
+             ? nir_cf_node_as_block(node)
+             : nir_cf_node_as_block(nir_cf_node_next(node));
+}
+
+/*
+ * Alpha to coverage in a main shader built for its pipeline's one sample, as
+ * Apple's G15 compiler takes it from its pipeline state (AGXCompilerCore 27.2:
+ * the fragment key's alphaToCoverage, ANDed into the sample mask by
+ * AGCLLVMUserFragmentShader::addWrapperPostfix at 0x229307324; at one sample
+ * AGCLLVMGen3TargetLowerer::buildCoverageMask's alpha > 0.5). Its test then
+ * runs in the main, right after the shader's discards and the alpha, where
+ * Apple's programs run it (Grim Dawn's G-buffer, 27.2.1: a discard's kill,
+ * wait_pix 1, the test's movmsk and signal_pix 1 after the first sample), and
+ * the main's discards kill without waiting on fence 1; the epilog runs none.
+ * In the epilog the main's kill waited on fence 1 (the tests switch is a draw
+ * uniform there) and held it through the main and the epilog, so the later
+ * fragments on a pixel waited for this one's whole program.
+ *
+ * Only where the demote changes nothing else: no forced early tests, memory
+ * writes, sample shading, depth or stencil output, and location 0 written as a
+ * four-component colour; placed after the alpha and every discard at the top
+ * level when every instruction after it may follow a demote, else before the
+ * colour's store, as nir_lower_alpha_to_coverage_single_sample does.
+ */
+static bool
+hk_lower_alpha_to_coverage_main(nir_shader *nir)
+{
+   if (nir->info.fs.early_fragment_tests || nir->info.writes_memory ||
+       nir->info.fs.uses_sample_shading ||
+       (nir->info.outputs_written & (BITFIELD64_BIT(FRAG_RESULT_DEPTH) |
+                                     BITFIELD64_BIT(FRAG_RESULT_STENCIL))))
+      return false;
+
+   /* nir_lower_io_vars_to_temporaries leaves the stores in the last block */
+   nir_function_impl *impl = nir_shader_get_entrypoint(nir);
+   nir_intrinsic_instr *store = NULL;
+   nir_foreach_instr_reverse(instr, nir_impl_last_block(impl)) {
+      if (instr->type != nir_instr_type_intrinsic)
+         continue;
+
+      nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+      if (intr->intrinsic != nir_intrinsic_store_output)
+         continue;
+
+      nir_io_semantics sem = nir_intrinsic_io_semantics(intr);
+      if (sem.location == FRAG_RESULT_DATA0 &&
+          sem.dual_source_blend_index == 0) {
+         store = intr;
+         break;
+      }
+   }
+
+   if (store == NULL || store->src[0].ssa->num_components < 4 ||
+       nir_intrinsic_component(store) != 0 ||
+       (nir_intrinsic_write_mask(store) & 0x8) == 0)
+      return false;
+
+   nir_metadata_require(impl, nir_metadata_dominance);
+   nir_scalar alpha = nir_scalar_resolved(store->src[0].ssa, 3);
+   nir_instr *def = nir_def_instr(alpha.def);
+
+   /* After the alpha, then after the last discard at or after it */
+   nir_block *block = hk_top_block_after(&def->block->cf_node);
+   nir_instr *after = block == def->block && def->type != nir_instr_type_phi
+                         ? def
+                         : NULL;
+
+   for (nir_cf_node *node = &block->cf_node; node != NULL;
+        node = nir_cf_node_next(node)) {
+      if (node->type == nir_cf_node_block) {
+         nir_block *b = nir_cf_node_as_block(node);
+         bool past = b != block || after == NULL;
+
+         nir_foreach_instr(instr, b) {
+            if (!past) {
+               past = instr == after;
+               continue;
+            }
+
+            if (hk_is_discard(instr)) {
+               block = b;
+               after = instr;
+            }
+         }
+      } else {
+         bool discards = false;
+         nir_foreach_block_in_cf_node(b, node) {
+            nir_foreach_instr(instr, b)
+               discards |= hk_is_discard(instr);
+         }
+
+         if (discards) {
+            block = nir_cf_node_as_block(nir_cf_node_next(node));
+            after = NULL;
+         }
+      }
+   }
+
+   /* Everything from there to the end may follow the demote */
+   bool early = nir_block_dominates(def->block, block);
+   for (nir_cf_node *node = &block->cf_node; early && node != NULL;
+        node = nir_cf_node_next(node)) {
+      nir_foreach_block_in_cf_node(b, node) {
+         bool past = b != block || after == NULL;
+
+         nir_foreach_instr(instr, b) {
+            if (!past) {
+               past = instr == after;
+               continue;
+            }
+
+            if (instr->type == nir_instr_type_phi && b == block)
+               continue;
+
+            early &= hk_a2c_may_follow(instr);
+         }
+      }
+   }
+
+   nir_cursor cursor = nir_before_instr(&store->instr);
+   if (early) {
+      cursor = after != NULL ? nir_after_instr(after)
+                             : nir_after_phis(block);
+   }
+
+   /* Every sample killed unless alpha > 0.5, as a discard's (the select
+    * folds into the test's live mask, Apple's cmpsel of 1 and 0) */
+   nir_builder b = nir_builder_at(cursor);
+   nir_def *a = nir_channel(&b, alpha.def, alpha.comp);
+   nir_demote_samples(&b, nir_bcsel(&b, nir_fgt_imm(&b, a, 0.5),
+                                    nir_imm_intN_t(&b, 0, 16),
+                                    nir_imm_intN_t(&b, 0xFF, 16)));
+
+   nir->info.fs.uses_discard = true;
+   nir_progress(true, impl, nir_metadata_control_flow);
+   return true;
+}
+
 static VkResult
 hk_compile_nir(struct hk_device *dev, const VkAllocationCallbacks *pAllocator,
                nir_shader *nir, VkShaderCreateFlagsEXT shader_flags,
@@ -2072,6 +2273,12 @@ hk_compile_nir(struct hk_device *dev, const VkAllocationCallbacks *pAllocator,
       if (dev->dev.params.gpu_generation >= 15)
          NIR_PASS(_, nir, agx_nir_lower_stencil_only_g15);
 
+      /* A one-sample pipeline's alpha to coverage, in the main shader */
+      bool a2c_main = false;
+      if (key && key->fs.one_sample && key->fs.alpha_to_coverage &&
+          !nir->info.internal && dev->dev.params.gpu_generation >= 15)
+         NIR_PASS(a2c_main, nir, hk_lower_alpha_to_coverage_main);
+
       /* Discards must be lowering before lowering MSAA to handle discards */
       NIR_PASS(_, nir, agx_nir_lower_discard_zs_emit);
       NIR_PASS(_, nir, agx_nir_lower_fs_output_to_epilog,
@@ -2083,9 +2290,11 @@ hk_compile_nir(struct hk_device *dev, const VkAllocationCallbacks *pAllocator,
        * to one sample at a two-sample render's: dEQP-VK.pipeline.
        * shader_object_linked_binary.multisample.resolve.renderpass_renderarea.
        * parallelogram_samples_2) */
-      if (key && key->fs.one_sample && !nir->info.internal &&
+      if (key && key->fs.one_sample &&
+          (!key->fs.alpha_to_coverage || a2c_main) && !nir->info.internal &&
           writes_coverage(nir)) {
          shader->info.fs.one_sample = true;
+         shader->info.fs.alpha_to_coverage = a2c_main;
 
          if (!shader->info.fs.epilog_key.write_z &&
              !shader->info.fs.epilog_key.write_s) {

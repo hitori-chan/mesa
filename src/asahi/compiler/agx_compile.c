@@ -1259,7 +1259,8 @@ agx_whole_live_g15(nir_scalar s)
 }
 
 static agx_instr *
-agx_emit_sample_mask_g15(agx_builder *b, nir_intrinsic_instr *instr)
+agx_emit_sample_mask_g15(agx_builder *b, nir_intrinsic_instr *instr,
+                         bool tests)
 {
    agx_index target = agx_src_index(&instr->src[0]);
    agx_index live = agx_src_index(&instr->src[1]);
@@ -1283,26 +1284,41 @@ agx_emit_sample_mask_g15(agx_builder *b, nir_intrinsic_instr *instr)
 
       agx_index dead = is_const ? agx_and(b, t, agx_immediate(~c & 0xf))
                                 : agx_andn2(b, t, live);
-      agx_sample_mask(b, agx_coverage_word_g15(b, dead, agx_immediate(0)),
-                      agx_zero());
+      agx_index kill = agx_coverage_word_g15(b, dead, agx_immediate(0));
+
+      /* The split's kill waits ahead of its test, as before */
+      if (tests)
+         agx_wait_pixel_mask(b, 0x1);
+
+      agx_sample_mask(b, kill, agx_zero());
 
       target = agx_and(b, t, is_const ? agx_immediate(c) : live);
       live = agx_immediate(0xf);
    }
 
-   return agx_sample_mask(b, agx_coverage_word_g15(b, target, live),
-                          agx_zero());
+   /* The word first, then the wait: fence 1 orders the tests alone, so the
+    * fragment holds it from its wait to its release, which Apple's programs
+    * keep to the movmsk (mov cr0, wait_pix 1, movmsk, signal_pix 1: Grim
+    * Dawn's G-buffer, 27.2.1) */
+   agx_index word = agx_coverage_word_g15(b, target, live);
+
+   if (tests)
+      agx_wait_pixel_mask(b, 0x1);
+
+   return agx_sample_mask(b, word, agx_zero());
 }
 
 /* G15: whether a main shader's test may release fence 1 at once, as Apple's
  * discarding programs do (wait_pix 1, movmsk, signal_pix 1: Grim Dawn's
  * G-buffer, 27.2.1), so that a later fragment on the pixel tests without
  * waiting through this one's shading and epilog: the test is the shader's only
- * coverage operation (no other sample mask, no depth or stencil output), at
- * the top level (every path releases), of every sample of a one-sample target,
- * outside a sample loop, and not forced early. Its epilog then builds none: a
- * discard's test targets every sample only where Honeykrisp folds the tests
- * into a main built for its one sample, alpha to coverage off and no depth or
+ * coverage operation that tests (no other testing sample mask, no depth or
+ * stencil output; the kills before it wait on no fence, as Apple's alpha to
+ * coverage programs kill before their test), at the top level (every path
+ * releases), of every sample of a one-sample target, outside a sample loop,
+ * and not forced early. Its epilog then builds none: a discard's test targets
+ * every sample only where Honeykrisp folds the tests into a main built for its
+ * one sample, alpha to coverage off or run in the main and no depth or
  * stencil written in the epilog (hk_compile_nir); forced early tests, which
  * target every sample at the start (agx_nir_lower_sample_mask), may be
  * followed by an epilog's depth output.
@@ -1327,9 +1343,14 @@ agx_test_releases_fence_g15(agx_builder *b, nir_intrinsic_instr *instr)
             if (i->type != nir_instr_type_intrinsic)
                continue;
 
-            nir_intrinsic_op op = nir_instr_as_intrinsic(i)->intrinsic;
-            ops += op == nir_intrinsic_sample_mask_agx ||
-                   op == nir_intrinsic_store_zs_agx;
+            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(i);
+            bool kills = intr->intrinsic == nir_intrinsic_sample_mask_agx &&
+                         nir_src_is_const(intr->src[1]) &&
+                         nir_src_as_uint(intr->src[1]) == 0;
+
+            ops += (intr->intrinsic == nir_intrinsic_sample_mask_agx &&
+                    !kills) ||
+                   intr->intrinsic == nir_intrinsic_store_zs_agx;
          }
       }
    }
@@ -2996,11 +3017,8 @@ agx_emit_intrinsic(agx_builder *b, nir_intrinsic_instr *instr)
       bool no_tests =
          nir_src_is_const(instr->src[1]) && nir_src_as_uint(instr->src[1]) == 0;
 
-      if (!no_tests)
-         agx_wait_pixel_mask(b, 0x1);
-
       if (b->shader->key->dev.gpu_generation >= 15) {
-         agx_instr *I = agx_emit_sample_mask_g15(b, instr);
+         agx_instr *I = agx_emit_sample_mask_g15(b, instr, !no_tests);
 
          if (!no_tests && agx_test_releases_fence_g15(b, instr)) {
             agx_signal_pix(b, 0x1);
@@ -3009,6 +3027,9 @@ agx_emit_intrinsic(agx_builder *b, nir_intrinsic_instr *instr)
 
          return I;
       }
+
+      if (!no_tests)
+         agx_wait_pixel_mask(b, 0x1);
 
       return agx_sample_mask(b, agx_src_index(&instr->src[0]),
                              agx_src_index(&instr->src[1]));

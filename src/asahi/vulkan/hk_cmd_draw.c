@@ -3502,7 +3502,10 @@ hk_flush_dynamic_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
       fs && (fs->b.info.early_fragment_tests &&
              (fs->b.info.writes_sample_mask || fs->info.fs.writes_memory));
 
-   bool epilog_discards = dyn->ms.alpha_to_coverage_enable ||
+   /* Alpha to coverage runs in the epilog unless the main runs it */
+   bool epilog_a2c = dyn->ms.alpha_to_coverage_enable &&
+                     !(fs && fs->info.fs.alpha_to_coverage);
+   bool epilog_discards = epilog_a2c ||
                           (fs && (fs->info.fs.epilog_key.write_z ||
                                   fs->info.fs.epilog_key.write_s));
    epilog_discards &= !nontrivial_force_early;
@@ -3692,7 +3695,8 @@ hk_flush_dynamic_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
       key.epilog = (struct agx_fs_epilog_key){
          .link = fs->info.fs.epilog_key,
          .nr_samples = MAX2(dyn->ms.rasterization_samples, 1),
-         .blend.alpha_to_coverage = dyn->ms.alpha_to_coverage_enable,
+         .blend.alpha_to_coverage = dyn->ms.alpha_to_coverage_enable &&
+                                    !fs->info.fs.alpha_to_coverage,
          .blend.alpha_to_one = dyn->ms.alpha_to_one_enable,
          .blend.logicop_enable = dyn->cb.logic_op_enable,
          .blend.logicop_func = vk_logic_op_to_pipe(dyn->cb.logic_op),
@@ -3703,13 +3707,13 @@ hk_flush_dynamic_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
          key.epilog.remap[rt] = map == MESA_VK_ATTACHMENT_UNUSED ? -1 : map;
       }
 
-      if (dyn->ms.alpha_to_one_enable || dyn->ms.alpha_to_coverage_enable ||
+      if (dyn->ms.alpha_to_one_enable || key.epilog.blend.alpha_to_coverage ||
           dyn->cb.logic_op_enable) {
 
          perf_debug(
             cmd, "Epilog with%s%s%s",
             dyn->ms.alpha_to_one_enable ? " alpha-to-one" : "",
-            dyn->ms.alpha_to_coverage_enable ? " alpha-to-coverage" : "",
+            key.epilog.blend.alpha_to_coverage ? " alpha-to-coverage" : "",
             dyn->cb.logic_op_enable ? " logic-op" : "");
       }
 
@@ -3717,10 +3721,13 @@ hk_flush_dynamic_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
       key.epilog.g15 = dev->dev.params.gpu_generation >= 15;
 
       /* A main shader built for its pipeline's one sample, alpha to coverage
-       * off (hk_fs_key::one_sample), is drawn so: both are static there */
+       * off or run in the main (hk_fs_key::one_sample), is drawn so: both are
+       * static there */
       assert(!fs->info.fs.one_sample ||
              (key.epilog.nr_samples == 1 &&
-              !dyn->ms.alpha_to_coverage_enable));
+              dyn->ms.alpha_to_coverage_enable ==
+                 fs->info.fs.alpha_to_coverage));
+      assert(!fs->info.fs.alpha_to_coverage || fs->info.fs.one_sample);
 
       struct hk_rendering_state *render = &cmd->state.gfx.render;
       for (uint32_t i = 0; i < render->color_att_count; i++) {

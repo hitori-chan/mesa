@@ -84,11 +84,13 @@ struct hk_shader_info {
          bool early_fragment_tests;
          bool writes_memory;
 
-         /* Builds a coverage word, built for its pipeline's one sample,
-          * alpha to coverage off (hk_fs_key::one_sample) */
+         /* Builds a coverage word, built for its pipeline's one sample
+          * (hk_fs_key::one_sample) with alpha to coverage off, or on and run
+          * in the main (alpha_to_coverage) */
          bool one_sample;
+         bool alpha_to_coverage;
 
-         uint8_t _pad[6];
+         uint8_t _pad[5];
       } fs;
 
       struct {
