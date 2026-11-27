@@ -3273,22 +3273,37 @@ uses_blend_constant(const struct vk_color_blend_state *cb)
    return false;
 }
 
+/* A key for each location in attribs_read, in the slot the shader reads it
+ * from: nir_recompute_io_bases compacts the read locations, so the Nth read
+ * location is slot N (with ~0, each location its own). Locations run to the
+ * vertex input state's 32, past maxVertexInputAttributes' 16: vkd3d-proton
+ * gives a Direct3D 12 input register (32 of them) its number as the location.
+ * A read location the vertex input does not describe gets an empty key
+ * (PIPE_FORMAT_NONE): agx_nir_lower_vbo reads it as VK_KHR_maintenance9's
+ * defaultVertexAttributeValue, (0, 0, 0, 1), without a load.
+ */
 void
 agx_fill_velem_keys(const struct vk_vertex_input_state *vi,
-                    uint64_t attribs_read, struct agx_velem_key *keys)
+                    uint64_t attribs_read, struct agx_velem_key *keys,
+                    unsigned nr_keys)
 {
-   u_foreach_bit(a, vi->attributes_valid) {
+   unsigned slot = 0;
+   u_foreach_bit64(
+      a, attribs_read & BITFIELD64_MASK(MESA_VK_MAX_VERTEX_ATTRIBUTES)) {
+      if (slot >= nr_keys)
+         break;
+
+      if (!(vi->attributes_valid & BITFIELD_BIT(a))) {
+         keys[slot++] = (struct agx_velem_key){.format = PIPE_FORMAT_NONE};
+         continue;
+      }
+
       struct vk_vertex_attribute_state attr = vi->attributes[a];
 
       assert(vi->bindings_valid & BITFIELD_BIT(attr.binding));
       struct vk_vertex_binding_state binding = vi->bindings[attr.binding];
 
-      /* nir_assign_io_var_locations compacts vertex inputs, eliminating
-       * unused inputs. We need to do the same here to match the locations.
-       */
-      unsigned slot = util_bitcount64(attribs_read & BITFIELD_MASK(a));
-
-      keys[slot] = (struct agx_velem_key){
+      keys[slot++] = (struct agx_velem_key){
          .format = hk_format_to_pipe_format(attr.format),
          .stride = binding.stride,
          .divisor = binding.divisor,
@@ -3554,16 +3569,22 @@ hk_flush_dynamic_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
 
       if (sw_vs->info.vs.use_prolog) {
          agx_fill_velem_keys(dyn->vi, sw_vs->info.vs.attribs_read,
-                             key.prolog.attribs);
+                             key.prolog.attribs,
+                             ARRAY_SIZE(key.prolog.attribs));
 
-         u_foreach_bit(a, dyn->vi->attributes_valid) {
-            unsigned slot =
-               util_bitcount64(sw_vs->info.vs.attribs_read & BITFIELD_MASK(a));
+         unsigned slot = 0;
+         u_foreach_bit(a, sw_vs->info.vs.attribs_read) {
+            if (slot >= ARRAY_SIZE(key.prolog.attribs))
+               break;
 
-            key.prolog.attribs[slot].stride =
-               gfx->dgc.dynamic_strides
-                  ? 0
-                  : dyn->vi_binding_strides[dyn->vi->attributes[a].binding];
+            if (dyn->vi->attributes_valid & BITFIELD_BIT(a)) {
+               key.prolog.attribs[slot].stride =
+                  gfx->dgc.dynamic_strides
+                     ? 0
+                     : dyn->vi_binding_strides[dyn->vi->attributes[a].binding];
+            }
+
+            ++slot;
          }
       }
 

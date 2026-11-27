@@ -321,7 +321,8 @@ hk_populate_vs_key(struct hk_vs_key *key,
    if (state && state->vi && !BITSET_TEST(state->dynamic, MESA_VK_DYNAMIC_VI) &&
        !BITSET_TEST(state->dynamic, MESA_VK_DYNAMIC_VI_BINDINGS_VALID)) {
 
-      agx_fill_velem_keys(state->vi, ~0 /* compacted on use */, key->attribs);
+      agx_fill_velem_keys(state->vi, ~0 /* compacted on use */, key->attribs,
+                          ARRAY_SIZE(key->attribs));
       key->skip_prolog = true;
       key->static_strides =
          !BITSET_TEST(state->dynamic, MESA_VK_DYNAMIC_VI_BINDING_STRIDES);
@@ -2640,14 +2641,20 @@ hk_compile_shader(struct hk_device *dev, struct vk_shader_compile_info *info,
             if (shader->info.vs.use_prolog) {
                NIR_PASS(_, clone, agx_nir_lower_vs_input_to_prolog);
             } else {
-               struct agx_velem_key attribs[AGX_MAX_ATTRIBS];
-               for (unsigned a = 0; a < AGX_MAX_ATTRIBS; ++a) {
-                  if (key->vs.attribs[a].format) {
-                     unsigned slot = util_bitcount64(
-                        shader->info.vs.attribs_read & BITFIELD_MASK(a));
+               /* key->vs.attribs holds the 32 locations
+                * (agx_fill_velem_keys): the read ones go to the shader's
+                * slots in order, as nir_recompute_io_bases compacted them,
+                * a location past 15 or one the vertex input does not
+                * describe included.
+                */
+               struct agx_velem_key attribs[AGX_MAX_ATTRIBS] = {0};
+               unsigned slot = 0;
+               u_foreach_bit64(a, shader->info.vs.attribs_read) {
+                  if (a >= ARRAY_SIZE(key->vs.attribs) ||
+                      slot >= ARRAY_SIZE(attribs))
+                     break;
 
-                     attribs[slot] = key->vs.attribs[a];
-                  }
+                  attribs[slot++] = key->vs.attribs[a];
                }
 
                struct agx_robustness agx_rs = {

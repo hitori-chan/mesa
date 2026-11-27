@@ -125,6 +125,33 @@ pass(struct nir_builder *b, nir_intrinsic_instr *intr, void *data)
    unsigned index = nir_intrinsic_base(intr) + nir_src_as_uint(*offset_src);
 
    struct agx_velem_key attrib = attribs[index];
+
+   /* A location the vertex input does not describe: (0, 0, 0, 1), as
+    * hk_physical_device reports VK_KHR_maintenance9's
+    * defaultVertexAttributeValue, its 1 an integer for an integer load. The
+    * prolog's loads carry no type and take 1.0, which an integer input reads
+    * as 0x3f800000.
+    */
+   if (attrib.format == PIPE_FORMAT_NONE) {
+      unsigned bits = intr->def.bit_size;
+      nir_alu_type t =
+         nir_intrinsic_has_dest_type(intr)
+            ? nir_alu_type_get_base_type(nir_intrinsic_dest_type(intr))
+            : nir_type_invalid;
+      nir_def *one = (t == nir_type_int || t == nir_type_uint)
+                        ? nir_imm_intN_t(b, 1, bits)
+                        : nir_imm_floatN_t(b, 1.0, bits);
+      nir_def *zero = nir_imm_intN_t(b, 0, bits);
+      nir_def *c[4] = {zero, zero, zero, one};
+      unsigned first = nir_intrinsic_component(intr);
+      nir_def *comps[4];
+      for (unsigned i = 0; i < intr->def.num_components; ++i)
+         comps[i] = c[MIN2(first + i, 3)];
+      nir_def_rewrite_uses(&intr->def,
+                           nir_vec(b, comps, intr->def.num_components));
+      return true;
+   }
+
    uint32_t stride = attrib.stride;
 
    const struct util_format_description *desc =
