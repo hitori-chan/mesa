@@ -1294,6 +1294,49 @@ agx_emit_sample_mask_g15(agx_builder *b, nir_intrinsic_instr *instr)
                           agx_zero());
 }
 
+/* G15: whether a main shader's test may release fence 1 at once, as Apple's
+ * discarding programs do (wait_pix 1, movmsk, signal_pix 1: Grim Dawn's
+ * G-buffer, 27.2.1), so that a later fragment on the pixel tests without
+ * waiting through this one's shading and epilog: the test is the shader's only
+ * coverage operation (no other sample mask, no depth or stencil output), at
+ * the top level (every path releases), of every sample of a one-sample target,
+ * outside a sample loop, and not forced early. Its epilog then builds none: a
+ * discard's test targets every sample only where Honeykrisp folds the tests
+ * into a main built for its one sample, alpha to coverage off and no depth or
+ * stencil written in the epilog (hk_compile_nir); forced early tests, which
+ * target every sample at the start (agx_nir_lower_sample_mask), may be
+ * followed by an epilog's depth output.
+ */
+static bool
+agx_test_releases_fence_g15(agx_builder *b, nir_intrinsic_instr *instr)
+{
+   const struct agx_shader_key *key = b->shader->key;
+
+   if (b->shader->is_preamble || key->secondary ||
+       key->fs.inside_sample_loop || key->fs.nr_samples != 1 ||
+       b->shader->nir->info.fs.early_fragment_tests ||
+       !nir_src_is_const(instr->src[0]) ||
+       (nir_src_as_uint(instr->src[0]) & 0xf) != 0xf ||
+       instr->instr.block->cf_node.parent->type != nir_cf_node_function)
+      return false;
+
+   unsigned ops = 0;
+   nir_foreach_function_impl(impl, b->shader->nir) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(i, block) {
+            if (i->type != nir_instr_type_intrinsic)
+               continue;
+
+            nir_intrinsic_op op = nir_instr_as_intrinsic(i)->intrinsic;
+            ops += op == nir_intrinsic_sample_mask_agx ||
+                   op == nir_intrinsic_store_zs_agx;
+         }
+      }
+   }
+
+   return ops == 1;
+}
+
 static agx_instr *
 agx_emit_store_zs(agx_builder *b, nir_intrinsic_instr *instr)
 {
@@ -2956,8 +2999,16 @@ agx_emit_intrinsic(agx_builder *b, nir_intrinsic_instr *instr)
       if (!no_tests)
          agx_wait_pixel_mask(b, 0x1);
 
-      if (b->shader->key->dev.gpu_generation >= 15)
-         return agx_emit_sample_mask_g15(b, instr);
+      if (b->shader->key->dev.gpu_generation >= 15) {
+         agx_instr *I = agx_emit_sample_mask_g15(b, instr);
+
+         if (!no_tests && agx_test_releases_fence_g15(b, instr)) {
+            agx_signal_pix(b, 0x1);
+            b->shader->out->pix_signal_mask |= 0x1;
+         }
+
+         return I;
+      }
 
       return agx_sample_mask(b, agx_src_index(&instr->src[0]),
                              agx_src_index(&instr->src[1]));
