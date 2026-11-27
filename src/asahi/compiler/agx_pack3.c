@@ -3256,7 +3256,8 @@ a3_tile_type(const struct a3 *a, const agx_instr *I)
 
 /* ld_tile/st_tile (lldcol/lstcol): the sample mask and the pixel offset go
  * to the two 16-bit sources demo15 sets to 1 and 0 (the mapping and the
- * offset's unit are guesses); the load is synchronous in the IR. */
+ * offset's unit are guesses); the load is synchronous in the IR, but a
+ * fragment program's, which its first reader waits for (agx3_wait_tile_loads). */
 static void
 a3_tile(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
 {
@@ -4073,12 +4074,88 @@ a3_sync_group(const agx_instr *I)
    }
 }
 
+/* Whether an instruction reads or writes a register in the set (of 16-bit
+ * halves) */
+static bool
+a3_touches(const agx_instr *I, const BITSET_WORD *regs)
+{
+   agx_foreach_src(I, s) {
+      if (I->src[s].type == AGX_INDEX_REGISTER &&
+          BITSET_TEST_COUNT(regs, I->src[s].value,
+                            agx_index_size_16(I->src[s])))
+         return true;
+   }
+
+   agx_foreach_dest(I, d) {
+      if (I->dest[d].type == AGX_INDEX_REGISTER &&
+          BITSET_TEST_COUNT(regs, I->dest[d].value,
+                            agx_index_size_16(I->dest[d])))
+         return true;
+   }
+
+   return false;
+}
+
+/* A fragment program's tile loads (lldcol) are not waited for at once, as
+ * Apple's are not (Grim Dawn's small blending programs, 27.2.1: each waited
+ * 6-58 instructions on, at its first reader): a load delivers in A3_SYNC_G,
+ * and its block waits for that group before the first instruction that reads
+ * or writes a register a pending load writes, before a tile store or a fence's
+ * release (the words are read before a later fragment may write them), and at
+ * its logical end. A wait is for the whole group, so the first reader waits
+ * for every load issued before it: with the loads issued together
+ * (agx_nir_hoist_tile_loads_g15), about one load's latency. The loads are
+ * marked g15_nosync, their waits placed.
+ */
+void
+agx3_wait_tile_loads(agx_context *ctx)
+{
+   if (ctx->stage != MESA_SHADER_FRAGMENT ||
+       (agx_compiler_debug & AGX_DBG_WAIT))
+      return;
+
+   BITSET_DECLARE(pending, AGX_NUM_REGS);
+
+   agx_foreach_block(ctx, block) {
+      bool any = false;
+      BITSET_ZERO(pending);
+
+      agx_foreach_instr_in_block(block, I) {
+         if (instr_after_logical_end(I))
+            break;
+
+         if (any &&
+             (I->op == AGX_OPCODE_ST_TILE || I->op == AGX_OPCODE_SIGNAL_PIX ||
+              a3_touches(I, pending))) {
+            agx_builder b = agx_init_builder(ctx, agx_before_instr(I));
+            agx_wait(&b, A3_SYNC_G);
+            BITSET_ZERO(pending);
+            any = false;
+         }
+
+         if (I->op == AGX_OPCODE_LD_TILE && !agx_is_null(I->dest[0])) {
+            assert(I->dest[0].type == AGX_INDEX_REGISTER);
+            I->g15_nosync = true;
+            BITSET_SET_COUNT(pending, I->dest[0].value,
+                             agx_index_size_16(I->dest[0]));
+            any = true;
+         }
+      }
+
+      if (any) {
+         agx_builder b = agx_init_builder(ctx, agx_after_block_logical(block));
+         agx_wait(&b, A3_SYNC_G);
+      }
+   }
+}
+
 /* Fold each wait into the next instruction of its block where that one has
  * a wait field, as Apple's B1 code does (its only waits of their own come
  * before an else or a pop_exec, which have none): the instruction waits
  * before it issues, as after the wait; and the waits the synchronous
- * instructions end with. B0 needs a wait and three nops before such an
- * instruction (not done). */
+ * instructions end with, but those whose waits are placed (g15_nosync
+ * already: agx3_wait_tile_loads). B0 needs a wait and three nops before such
+ * an instruction (not done). */
 void
 agx3_fold_waits(agx_context *ctx)
 {
@@ -4090,6 +4167,7 @@ agx3_fold_waits(agx_context *ctx)
          int sync = a3_sync_group(I);
 
          if ((I->op != AGX_OPCODE_WAIT && sync < 0) ||
+             (sync >= 0 && I->g15_nosync) ||
              I->link.next == &block->instructions)
             continue;
 

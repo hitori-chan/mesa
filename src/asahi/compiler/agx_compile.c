@@ -4667,6 +4667,159 @@ agx_nir_narrow_live_g15(nir_builder *b, nir_intrinsic_instr *intr,
    return true;
 }
 
+/* The bytes of a sample a G15 tile load or store reaches, [*lo, *hi): its base
+ * and its components at its raw format's size (agx_nir_lower_tile_raw leaves
+ * I8, I16, I32 and the unorm8 vectors), or false where not known: a packed
+ * format, or a store's explicit coordinates.
+ */
+static bool
+agx_tile_bytes_g15(nir_intrinsic_instr *intr, unsigned *lo, unsigned *hi)
+{
+   bool load = intr->intrinsic == nir_intrinsic_load_local_pixel_agx;
+   unsigned size_B;
+
+   if (!load && nir_intrinsic_explicit_coord(intr))
+      return false;
+
+   switch ((enum ail_isa_format)nir_intrinsic_format(intr)) {
+   case AIL_ISA_FORMAT_I8:
+   case AIL_ISA_FORMAT_U8NORM:
+   case AIL_ISA_FORMAT_S8NORM:
+   case AIL_ISA_FORMAT_SRGBA8:
+      size_B = 1;
+      break;
+   case AIL_ISA_FORMAT_I16:
+   case AIL_ISA_FORMAT_F16:
+   case AIL_ISA_FORMAT_U16NORM:
+   case AIL_ISA_FORMAT_S16NORM:
+      size_B = 2;
+      break;
+   case AIL_ISA_FORMAT_I32:
+      size_B = 4;
+      break;
+   default:
+      return false;
+   }
+
+   unsigned comps =
+      load ? intr->def.num_components : intr->src[0].ssa->num_components;
+   *lo = nir_intrinsic_base(intr);
+   *hi = *lo + size_B * comps;
+   return true;
+}
+
+/* Whether a tile load may move above an instruction: one with no side effect,
+ * or a tile store of other bytes; not another tile load, so that the loads
+ * keep their order.
+ */
+static bool
+agx_tile_load_may_cross_g15(nir_instr *instr, nir_intrinsic_instr *load)
+{
+   switch (instr->type) {
+   case nir_instr_type_alu:
+   case nir_instr_type_load_const:
+   case nir_instr_type_undef:
+      return true;
+   case nir_instr_type_intrinsic:
+      break;
+   default:
+      return false;
+   }
+
+   nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+   unsigned llo, lhi, slo, shi;
+
+   switch (intr->intrinsic) {
+   case nir_intrinsic_store_local_pixel_agx:
+      return agx_tile_bytes_g15(load, &llo, &lhi) &&
+             agx_tile_bytes_g15(intr, &slo, &shi) &&
+             (shi <= llo || lhi <= slo);
+   case nir_intrinsic_load_local_pixel_agx:
+      return false;
+   case nir_intrinsic_load_exported_agx:
+      return true;
+   default:
+      return nir_intrinsic_infos[intr->intrinsic].flags &
+             NIR_INTRINSIC_CAN_REORDER;
+   }
+}
+
+/* G15: a fragment program's tile loads move up their block, above the
+ * arithmetic and the stores of other bytes, a constant source with them, so
+ * that they issue together before the blends read them, as Apple's programs
+ * issue every blended target's tile load before the first blend (Grim Dawn's
+ * small blending programs, 27.2.1: five loads in 6-12 instructions), each
+ * waited for at its first reader (agx3_wait_tile_loads). Mesa's epilog loaded,
+ * blended and stored one target at a time: five tile round trips in series a
+ * fragment. After the optimizations: nir_opt_sink sinks each load to its
+ * readers.
+ */
+static bool
+agx_nir_hoist_tile_loads_g15(nir_shader *s)
+{
+   bool any = false;
+
+   nir_foreach_function_impl(impl, s) {
+      bool progress = false;
+
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr_safe(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+
+            nir_intrinsic_instr *load = nir_instr_as_intrinsic(instr);
+            unsigned lo, hi;
+            if (load->intrinsic != nir_intrinsic_load_local_pixel_agx ||
+                !agx_tile_bytes_g15(load, &lo, &hi))
+               continue;
+
+            unsigned nr_srcs = nir_intrinsic_infos[load->intrinsic].num_srcs;
+            nir_instr *carry[NIR_INTRINSIC_MAX_INPUTS];
+            unsigned nr_carry = 0;
+            bool crossed = false;
+            nir_instr *pos = nir_instr_prev(instr);
+
+            for (; pos; pos = nir_instr_prev(pos)) {
+               bool is_src = false;
+               for (unsigned i = 0; i < nr_srcs; ++i)
+                  is_src |= nir_def_instr(load->src[i].ssa) == pos;
+
+               /* A constant source moves with the load, any other stops it */
+               if (is_src) {
+                  if (pos->type != nir_instr_type_load_const &&
+                      pos->type != nir_instr_type_undef)
+                     break;
+
+                  carry[nr_carry++] = pos;
+               } else if (agx_tile_load_may_cross_g15(pos, load)) {
+                  crossed = true;
+               } else {
+                  break;
+               }
+            }
+
+            if (!crossed)
+               continue;
+
+            nir_cursor at = pos ? nir_after_instr(pos)
+                                : nir_before_block_after_phis(block);
+
+            for (int i = nr_carry - 1; i >= 0; --i) {
+               nir_instr_move(at, carry[i]);
+               at = nir_after_instr(carry[i]);
+            }
+
+            nir_instr_move(at, instr);
+            progress = true;
+         }
+      }
+
+      any |= nir_progress(progress, impl, nir_metadata_control_flow);
+   }
+
+   return any;
+}
+
 static void
 agx_optimize_nir(nir_shader *nir, bool soft_fault, uint16_t *preamble_size,
                  uint8_t *ts_count, uint8_t *ss_count, bool g15)
@@ -5830,6 +5983,11 @@ agx_compile_shader_nir_impl(nir_shader *nir, struct agx_shader_key *key,
       info->varyings.fs.nr_cf = key->fs.cf_base;
       assign_coefficient_regs(nir, &info->varyings.fs);
    }
+
+   /* Last: the optimizations sink the tile loads to their readers */
+   if (nir->info.stage == MESA_SHADER_FRAGMENT &&
+       key->dev.gpu_generation >= 15)
+      NIR_PASS(_, nir, agx_nir_hoist_tile_loads_g15);
 
    if (agx_should_dump(nir, AGX_DBG_SHADERS))
       nir_print_shader(nir, stdout);

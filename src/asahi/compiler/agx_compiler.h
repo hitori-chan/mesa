@@ -442,8 +442,9 @@ typedef struct {
    unsigned mask : 4;
 
    /* G15: the groups the instruction waits for before it issues, a wait
-    * folded into it (agx3_fold_waits). g15_nosync: the instruction after a
-    * synchronous one waits for it in its place. */
+    * folded into it (agx3_fold_waits). g15_nosync: a synchronous instruction
+    * waited for later, by the instruction after it in its place or, a tile
+    * load, at its first reader (agx3_wait_tile_loads). */
    unsigned g15_wait : 6;
    bool g15_nosync   : 1;
 
@@ -1105,6 +1106,7 @@ unsigned agx3_stack_size(const agx_instr *I, unsigned scratch_B);
 unsigned agx3_cr_count(const agx_instr *I);
 void agx3_assign_groups(agx_context *ctx);
 void agx3_assign_crs(agx_context *ctx);
+void agx3_wait_tile_loads(agx_context *ctx);
 void agx3_fold_waits(agx_context *ctx);
 void agx3_end_helpers(agx_context *ctx);
 

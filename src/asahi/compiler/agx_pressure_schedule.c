@@ -198,11 +198,14 @@ calculate_pressure_delta(agx_instr *I, const BITSET_WORD *live)
    return delta;
 }
 
+/* An instruction G15 issues early, its result waited for at its first reader:
+ * a texture, or a tile load (agx3_wait_tile_loads). Only G15 asks. */
 static bool
 is_texture(const agx_instr *I)
 {
    return I->op == AGX_OPCODE_TEXTURE_SAMPLE ||
-          I->op == AGX_OPCODE_TEXTURE_LOAD || I->op == AGX_OPCODE_IMAGE_LOAD;
+          I->op == AGX_OPCODE_TEXTURE_LOAD || I->op == AGX_OPCODE_IMAGE_LOAD ||
+          I->op == AGX_OPCODE_LD_TILE;
 }
 
 /*
