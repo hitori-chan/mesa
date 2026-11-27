@@ -3347,6 +3347,20 @@ agx_emit_intrinsic(agx_builder *b, nir_intrinsic_instr *instr)
    case nir_intrinsic_yield_agx:
       return agx_yield(b, agx_src_index(&instr->src[0]));
 
+   case nir_intrinsic_allocate_uvb_agx:
+      assert(b->shader->key->dev.gpu_generation >= 15);
+      return agx_allocate_uvb(b, agx_src_index(&instr->src[0]),
+                              agx_src_index(&instr->src[1]));
+
+   case nir_intrinsic_store_uvb_agx:
+      assert(b->shader->key->dev.gpu_generation >= 15);
+      return agx_uvb_store(b, agx_src_index(&instr->src[0]),
+                           nir_intrinsic_base(instr));
+
+   case nir_intrinsic_store_mesh_child_count_agx:
+      assert(b->shader->key->dev.gpu_generation >= 15);
+      return agx_st_child_count(b, agx_src_index(&instr->src[0]));
+
    case nir_intrinsic_doorbell_agx: {
       return agx_doorbell(b, nir_src_as_uint(instr->src[0]));
    }

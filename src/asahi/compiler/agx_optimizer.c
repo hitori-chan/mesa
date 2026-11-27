@@ -198,6 +198,9 @@ agx_optimizer_inline_imm(agx_instr **defs, agx_instr *I, bool g15)
          continue;
       if (I->op == AGX_OPCODE_ST_VARY && s != 0)
          continue;
+      /* G15's uvst takes its pair and uvsw its value from registers */
+      if (I->op == AGX_OPCODE_UVB_STORE || I->op == AGX_OPCODE_ST_CHILD_COUNT)
+         continue;
       if ((I->op == AGX_OPCODE_LOCAL_LOAD || I->op == AGX_OPCODE_DEVICE_LOAD ||
            I->op == AGX_OPCODE_STACK_STORE) &&
           s != 1)

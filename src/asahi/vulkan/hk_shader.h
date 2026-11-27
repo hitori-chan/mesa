@@ -63,6 +63,46 @@ hk_tess_info_merge(struct hk_tess_info a, struct hk_tess_info b)
    return out;
 }
 
+/*
+ * G15's mesh stage in hardware (hk_nir_lower_mesh_hw.c, spec/agx-g15c/mesh.md):
+ * a mesh draw is one VDM state update and one dispatch, the object and mesh
+ * programs compute-form programs the VDM runs. A mesh shader without a task
+ * shader, on G15 unless HK_PERFTEST=swmesh; a draw it does not cover runs as
+ * compute (hk_mesh_hw_usable).
+ */
+struct hk_mesh_hw_info {
+   /* The declared maxima and the primitive (an enum mesa_prim) */
+   uint16_t max_vertices;
+   uint16_t max_primitives;
+   uint8_t prim;
+   uint8_t _pad;
+
+   /* The threadgroup the hardware runs (pad_threadgroup) */
+   uint16_t workgroup_size[3];
+   uint16_t _pad2[2];
+};
+static_assert(sizeof(struct hk_mesh_hw_info) == 16, "packed");
+
+/* What root.draw.mesh_params points to in a hardware mesh draw */
+struct hk_mesh_hw_params {
+   /* {x, y, z}: the draw's workgroup count */
+   uint64_t grid;
+   uint32_t draw_id;
+   uint32_t _pad;
+};
+
+/* The mesh threadgroups an object threadgroup may launch: from one that
+ * launches 2^20, none runs (meshgrid, 2026-11-13: 65535 x 16 drew, 1024 x
+ * 1024 nothing), and Metal's maxTotalThreadgroupsPerMeshGrid is 2^20 by
+ * default. A larger draw runs as compute. */
+#define HK_MESH_HW_MAX_CHILDREN ((1u << 20) - 1)
+
+/* Metal's limits on G15 (constructRenderPipeline, mesh.md), and the
+ * threadgroup memory a program may have */
+#define HK_MESH_HW_MAX_VERTICES   256
+#define HK_MESH_HW_MAX_PRIMITIVES 512
+#define HK_MESH_HW_MAX_SHARED_B   32768
+
 struct hk_shader_info {
    union {
       struct {
@@ -126,6 +166,9 @@ struct hk_shader_info {
 
       /* Task and mesh shaders */
       struct poly_mesh_info mesh;
+
+      /* A mesh shader's hardware variants */
+      struct hk_mesh_hw_info mesh_hw;
 
       /* Used to initialize the union for other stages */
       uint8_t _pad[32];
@@ -250,6 +293,11 @@ enum hk_mesh_variant {
    /* Main compute shader */
    HK_MESH_VARIANT_MAIN,
 
+   /* G15: the hardware mesh program, and the passthrough object program for
+    * a mesh shader without a task shader (hk_nir_lower_mesh_hw.c) */
+   HK_MESH_VARIANT_HW,
+   HK_MESH_VARIANT_HW_OBJECT,
+
    HK_MESH_VARIANTS,
 };
 
@@ -343,7 +391,9 @@ hk_variant_name(struct hk_api_shader *obj, struct hk_shader *variant)
       return i == HK_MESH_VARIANT_RAST ? "Rasterization"
              : i == HK_MESH_VARIANT_RAST_CONSERVATIVE
                 ? "Conservative rasterization"
-                : "Main";
+             : i == HK_MESH_VARIANT_HW        ? "Hardware"
+             : i == HK_MESH_VARIANT_HW_OBJECT ? "Hardware passthrough object"
+                                              : "Main";
    } else if (i == HK_TES_VARIANT_HW_TESS) {
       assert(obj->vk.stage == MESA_SHADER_TESS_EVAL);
       return "Hardware tessellation";
@@ -456,6 +506,11 @@ bool hk_nir_lower_image_loads_g15(nir_shader *nir);
 bool hk_nir_lower_sparse_texel_buffers_g15(nir_shader *nir);
 
 bool hk_nir_lower_atomic64(nir_shader *nir);
+
+bool hk_nir_lower_mesh_hw(nir_shader *nir, struct hk_mesh_hw_info *info,
+                          struct agx_unlinked_uvs_layout *uvs);
+nir_shader *
+hk_build_mesh_hw_passthrough(const nir_shader_compiler_options *options);
 bool hk_nir_lower_shared_atomic64(nir_shader *nir);
 bool hk_nir_lower_image_r64(nir_shader *nir);
 

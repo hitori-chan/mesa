@@ -2807,6 +2807,19 @@ intrinsic("doorbell_agx", src_comp=[1])
 # src[] = { amount (16-bit) }.
 intrinsic("yield_agx", src_comp=[1])
 
+# G15's mesh shading in hardware (spec/agx-g15c/mesh.md). The mesh stage's
+# epilogue allocates the vertex buffer for its primitives and vertices, then
+# moves its indices and vertex slots there from threadgroup memory, lane i the
+# dword at the pair's address + 4i to its element + i. The object stage writes
+# the mesh grid, thread t its component t.
+# src[] = { primitive count (16-bit), vertex count (16-bit) }.
+intrinsic("allocate_uvb_agx", src_comp=[1, 1])
+# src[] = { slot | first element << 16, threadgroup address << 32 (64-bit) }.
+# BASE = the kind (0 the indices, 2 a vertex slot) and a wait after it.
+intrinsic("store_uvb_agx", src_comp=[1], indices=[BASE])
+# src[] = { the mesh grid's component of the thread's index (32-bit) }.
+intrinsic("store_mesh_child_count_agx", src_comp=[1])
+
 # src[] = { index, stack_address }.
 intrinsic("stack_map_agx", src_comp=[1, 1])
 

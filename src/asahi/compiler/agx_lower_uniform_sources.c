@@ -52,6 +52,9 @@ agx_instr_accepts_uniform(enum agx_opcode op, unsigned src_index,
    case AGX_OPCODE_LD_TILE:
    case AGX_OPCODE_UNIFORM_STORE:
    case AGX_OPCODE_ST_VARY:
+   case AGX_OPCODE_ST_CHILD_COUNT:
+   case AGX_OPCODE_ALLOCATE_UVB:
+   case AGX_OPCODE_UVB_STORE:
    case AGX_OPCODE_LOCAL_ATOMIC:
    case AGX_OPCODE_SAMPLE_MASK:
    case AGX_OPCODE_ITER:

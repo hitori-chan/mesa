@@ -164,6 +164,9 @@ enum hk_perftest {
    HK_PERF_NOBACKENDCACHE = BITFIELD_BIT(17),
    HK_PERF_NOLOWERCACHE = BITFIELD_BIT(18),
    HK_PERF_SYNCCOMPILE = BITFIELD_BIT(19),
+   HK_PERF_SWMESH = BITFIELD_BIT(20),
+   /* Not an option: on G15 unless swmesh is set */
+   HK_PERF_HWMESH = BITFIELD_BIT(21),
 };
 
 #define HK_PERF(dev, flag) unlikely((dev)->perftest &HK_PERF_##flag)

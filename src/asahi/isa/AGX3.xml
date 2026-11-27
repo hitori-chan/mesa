@@ -2459,6 +2459,26 @@
       <exact bit="8:11">0010</exact>
       <immediate name="imm" bit="0:7"/>
     </case>
+    <case>
+      <!-- no slot: the object program's child count (mesh.md; Apple's
+           st_var with the slot bits clear) -->
+      <exact bit="0:11">000000000000</exact>
+    </case>
+  </encoding>
+
+  <!--
+   uvst's source, a 64-bit register pair (mesh.md): 0:6 the pair's first
+   32-bit register, 7 lu, 8 cache, 9 register (an immediate and a uniform
+   form exist, not seen)
+  -->
+  <encoding name="uvpair">
+    <case>
+      <exact bit="9">1</exact>
+      <immediate name="reg" bit="0:6" shift="1"/>
+      <modifier name="lu" bit="7"/>
+      <modifier name="cache" bit="8"/>
+      <property name="size64"/>
+    </case>
   </encoding>
 
   <!--
@@ -3526,6 +3546,32 @@
     <src kind="crsrc" bit="24:36 51"/>
     <src kind="uvslot" bit="37:45 46 47 52"/>
     <immediate name="g" bit="48:50"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <!--
+   The mesh stage's epilogue (mesh.md, Apple's agc.mesh.write_uvb; bytes
+   from the 2026-10-31 captures, fields from Apple's encoder trees):
+   allocate_uvb allocates the vertex buffer for a primitive count and a
+   vertex count (16-bit sources) and delivers in group 0; uvst moves each
+   lane's dword of threadgroup memory there, from the pair {slot | element
+   of lane 0 << 16, threadgroup address of lane 0}, kind 0 the indices
+   (four u8 to a dword), 2 a vertex slot (1, not seen, presumably the
+   per-primitive builtins). Apple waits for group 1 after the index uvst.
+  -->
+  <ins name="allocate_uvb" display="allocate_uvb" length="6">
+    <exact bit="0:11 46:47">00001101010111</exact>
+    <src kind="src9" bit="24:31 32 42 44"/>
+    <src kind="src9" bit="33:40 41 43 45"/>
+    <modifier name="wait" bit="12:17" kind="wait"/>
+    <modifier name="unk" bit="18 20 22" kind="expect3"/>
+  </ins>
+
+  <ins name="uvst" display="uvst" length="6">
+    <exact bit="0:11 34 37:47">000000000001011011010111</exact>
+    <src kind="uvpair" bit="24:33"/>
+    <immediate name="kind" bit="35:36"/>
     <modifier name="wait" bit="12:17" kind="wait"/>
     <modifier name="unk" bit="18 20 22" kind="expect3"/>
   </ins>

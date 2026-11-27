@@ -482,6 +482,17 @@ op("doorbell", (0x60020 | 0x28 << 32, 6, _), dests = 0,
 # G15's yield: the SIMD group gives its issue slot away for a while (agx_pack3)
 op("yield", _, dests = 0, srcs = 1, can_eliminate = False, can_reorder = False)
 
+# G15's mesh shading (agx_pack3): the vertex buffer's allocation for the
+# primitive and vertex counts (16-bit), a move of 32 lanes of threadgroup
+# memory into it (the source the 64-bit pair, the immediate its kind), and
+# the object stage's child count (the mesh grid's component of the thread)
+op("allocate_uvb", _, dests = 0, srcs = 2, can_eliminate = False,
+   can_reorder = False, schedule_class = "barrier")
+op("uvb_store", _, dests = 0, srcs = 1, imms = [IMM], can_eliminate = False,
+   can_reorder = False, schedule_class = "barrier")
+op("st_child_count", _, dests = 0, srcs = 1, can_eliminate = False,
+   can_reorder = False, schedule_class = "barrier")
+
 op("stack_unmap", (0x00075, 8, _), dests = 1, srcs = 0, can_eliminate = False, can_reorder = False, imms = [IMM])
 op("stack_map",   (0x10075, 8, _), dests = 0, srcs = 1, can_eliminate = False, can_reorder = False, imms = [IMM])
 

@@ -1000,6 +1000,9 @@ a3_memshift(const struct a3 *a, unsigned bytes)
 #define T_STTPS       "ef005400000011080000"     /* sttps i32, x, r0, 0 */
 #define T_BARRIER     "070454610300"             /* threadgroup_barrier */
 #define T_YIELD       "870454000000"             /* yield 0 */
+/* Apple's mesh epilogue (the 2026-10-31 mesh capture, mesh.md) */
+#define T_ALLOC_UVB   "570354011434"             /* allocate_uvb ^r0h, r5l */
+#define T_UVST        "d70654860600"             /* uvst ^dr6, 0 */
 #define T_ST_VAR      "5706540000404800"         /* st_var ^cr0, 0, 0 */
 #define T_ST_TILE     "e70654000000012e00000000" /* tile_store i32 */
 #define T_PACK_16     "97045401020208a845c2"     /* pack rg8unorm, r0h, r1l */
@@ -1108,6 +1111,10 @@ enum {
    BARRIER_FLAGS = 0,
    BARRIER_WAIT = 1,
    YIELD_AMOUNT = 0,
+   ALLOC_UVB_PRIMS = 0,
+   ALLOC_UVB_VERTS = 1,
+   UVST_PAIR = 0,
+   UVST_KIND = 1,
    ST_VAR_CR = 0,
    ST_VAR_SLOT = 1,
    ST_VAR_G = 2,
@@ -2668,6 +2675,7 @@ agx3_cr_count(const agx_instr *I)
    case AGX_OPCODE_IMAGE_WRITE:
       return I->vary_cr + 8;
    case AGX_OPCODE_ST_VARY:
+   case AGX_OPCODE_ST_CHILD_COUNT:
       return I->vary_cr + 1;
    case AGX_OPCODE_SAMPLE_MASK:
       /* the mov to cr0 before movmsk: Apple's discard shader has 1 here;
@@ -3120,7 +3128,8 @@ agx3_assign_crs(agx_context *ctx)
                     I->op == AGX_OPCODE_TEXTURE_LOAD ||
                     I->op == AGX_OPCODE_IMAGE_LOAD;
 
-         if (I->op == AGX_OPCODE_ST_VARY) {
+         if (I->op == AGX_OPCODE_ST_VARY ||
+             I->op == AGX_OPCODE_ST_CHILD_COUNT) {
             I->vary_cr = (next_vary++) % A3_VARY_CRS;
             crs = BITFIELD64_BIT(I->vary_cr);
          } else if (I->op == AGX_OPCODE_IMAGE_WRITE) {
@@ -3184,7 +3193,8 @@ agx3_assign_crs(agx_context *ctx)
             }
          }
 
-         if (I->op == AGX_OPCODE_ST_VARY)
+         if (I->op == AGX_OPCODE_ST_VARY ||
+             I->op == AGX_OPCODE_ST_CHILD_COUNT)
             pending[A3_VARY_G] |= crs;
          else if (I->op == AGX_OPCODE_IMAGE_WRITE)
             pending[0] |= crs;
@@ -3228,6 +3238,79 @@ a3_st_vary(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
    a3_set(a, ST_VAR_G, A3_VARY_G);
    a3_set(a, ST_VAR_WAIT, BITFIELD_BIT(0));
    a3_emit(a, emission);
+}
+
+/*
+ * The mesh stages (mesh.md, from Apple's object and mesh programs of the
+ * 2026-10-31 captures). The object stage's child count is a uvsw with no
+ * slot (every slot bit clear), from a cr as st_vary's: thread t writes the
+ * mesh grid's component t.
+ */
+static void
+a3_st_child_count(struct a3 *a, const agx_instr *I,
+                  struct util_dynarray *emission)
+{
+   agx_index value = I->src[0];
+   unsigned cr = I->vary_cr;
+
+   if (value.size != AGX_SIZE_32)
+      a3_fail(a, "child count of a value that is not 32-bit");
+
+   a3_mov_cr(a, I, cr, value, emission);
+
+   a3_begin(a, I, AGX3_ST_VAR, T_ST_VAR);
+   a3_set(a, ST_VAR_CR,
+          a3_kind_value(a, ST_VAR_CR, A3_CR, cr, BITFIELD_BIT(A3_LU)));
+   a3_set(a, ST_VAR_SLOT, 0);
+   a3_set(a, ST_VAR_G, A3_VARY_G);
+   a3_set(a, ST_VAR_WAIT, BITFIELD_BIT(0));
+   a3_emit(a, emission);
+}
+
+static void
+a3_wait_mask(struct a3 *a, const agx_instr *I, unsigned mask,
+             struct util_dynarray *emission)
+{
+   a3_begin(a, I, AGX3_WAIT, T_WAIT);
+   a3_set(a, WAIT_MASK, mask);
+   a3_emit(a, emission);
+}
+
+/* The mesh epilogue's allocate_uvb delivers in group 0, which Apple's
+ * epilogue waits for at its next instruction: here at once. */
+static void
+a3_allocate_uvb(struct a3 *a, const agx_instr *I,
+                struct util_dynarray *emission)
+{
+   a3_begin(a, I, AGX3_ALLOCATE_UVB, T_ALLOC_UVB);
+   a3_set(a, ALLOC_UVB_PRIMS, a3_src9(a, ALLOC_UVB_PRIMS, I->src[0]));
+   a3_set(a, ALLOC_UVB_VERTS, a3_src9(a, ALLOC_UVB_VERTS, I->src[1]));
+   a3_emit(a, emission);
+   a3_wait_mask(a, I, BITFIELD_BIT(0), emission);
+}
+
+/* uvst: lane i moves the dword at the pair's address + 4i to its element + i.
+ * The IR's immediate is the kind (bits 1:0) and AGX_UVB_STORE_WAIT. Apple's
+ * 4-vertex epilogue waits for group 1 after its index uvst, its 256-vertex
+ * one for groups 4 and 5 between chunks of vertex uvsts, which no
+ * instruction in sight delivers in, and reuses an index uvst's registers at
+ * once. Which group uvst delivers in is not known: where the epilogue asks
+ * (after the indices, between chunks), this waits for every group. */
+#define A3_UVST_WAIT 0x3f
+
+static void
+a3_uvb_store(struct a3 *a, const agx_instr *I, struct util_dynarray *emission)
+{
+   if (I->src[0].type != AGX_INDEX_REGISTER || I->src[0].size != AGX_SIZE_64)
+      a3_fail(a, "uvst of a value that is not a 64-bit register");
+
+   a3_begin(a, I, AGX3_UVST, T_UVST);
+   a3_set(a, UVST_PAIR, a3_reg(a, UVST_PAIR, I->src[0], 0, 0, 0));
+   a3_set(a, UVST_KIND, I->imm & AGX_UVB_STORE_KIND);
+   a3_emit(a, emission);
+
+   if (I->imm & AGX_UVB_STORE_WAIT)
+      a3_wait_mask(a, I, A3_UVST_WAIT, emission);
 }
 
 /* The tile formats G15 can move: its tile instructions have no format
@@ -4481,6 +4564,18 @@ a3_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups,
    case AGX_OPCODE_JMP_EXEC_NONE:
    case AGX_OPCODE_JMP_EXEC_NONE_AFTER:
       a3_jmp(&a, I, AGX3_JMP_EXEC_NONE, emission, fixups);
+      return;
+
+   case AGX_OPCODE_ALLOCATE_UVB:
+      a3_allocate_uvb(&a, I, emission);
+      return;
+
+   case AGX_OPCODE_UVB_STORE:
+      a3_uvb_store(&a, I, emission);
+      return;
+
+   case AGX_OPCODE_ST_CHILD_COUNT:
+      a3_st_child_count(&a, I, emission);
       return;
 
    case AGX_OPCODE_YIELD:

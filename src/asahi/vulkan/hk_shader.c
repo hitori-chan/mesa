@@ -422,6 +422,15 @@ hk_may_rasterize_conservative(const struct hk_device *dev,
               VK_CONSERVATIVE_RASTERIZATION_MODE_DISABLED_EXT);
 }
 
+/* G15's mesh stage in hardware (hk_nir_lower_mesh_hw.c), unless
+ * HK_PERFTEST=swmesh */
+static bool
+hk_mesh_hw_enabled(const struct hk_device *dev)
+{
+   return dev->dev.params.gpu_generation >= 15 &&
+          (dev->perftest & HK_PERF_HWMESH);
+}
+
 static void
 hk_hash_graphics_state(struct vk_physical_device *device,
                        const struct vk_graphics_pipeline_state *state,
@@ -459,6 +468,14 @@ hk_hash_graphics_state(struct vk_physical_device *device,
                            VK_SHADER_STAGE_MESH_BIT_EXT))) {
       const bool conservative = hk_may_rasterize_conservative(NULL, state);
       _mesa_blake3_update(&blake3_ctx, &conservative, sizeof(conservative));
+   }
+
+   /* Whether a mesh shader gets its hardware variants */
+   if (stages & VK_SHADER_STAGE_MESH_BIT_EXT) {
+      const struct hk_physical_device *pdev =
+         container_of(device, struct hk_physical_device, vk);
+      const bool mesh_hw = pdev->perftest & HK_PERF_HWMESH;
+      _mesa_blake3_update(&blake3_ctx, &mesh_hw, sizeof(mesh_hw));
    }
 
    enum hk_feature_key feature_key = hk_make_feature_key(features);
@@ -2550,6 +2567,25 @@ hk_api_shader_destroy(struct vk_device *vk_dev, struct vk_shader *vk_shader,
    vk_shader_free(&dev->vk, pAllocator, &obj->vk);
 }
 
+/* Compile a hardware mesh stage's variant; a shader the hardware path does
+ * not cover keeps none (code_size 0) and draws as compute */
+static VkResult
+hk_compile_mesh_hw_variant(struct hk_device *dev,
+                           const VkAllocationCallbacks *pAllocator,
+                           struct vk_shader_compile_info *info, nir_shader *nir,
+                           enum hk_feature_key features,
+                           struct hk_shader *shader, mesa_shader_stage sw_stage)
+{
+   agx_preprocess_nir(nir);
+
+   VkResult result = hk_compile_nir(
+      dev, pAllocator, nir, info->flags, info->robustness, NULL, features,
+      shader, sw_stage, true, false, NULL, info->set_layout_count);
+
+   ralloc_free(nir);
+   return result;
+}
+
 static void dump_shader_ir(
       struct hk_api_shader *obj, struct hk_shader* shader, nir_shader* nir,
       FILE *debug_nir_stream, FILE *debug_agx_stream);
@@ -2717,6 +2753,35 @@ hk_compile_shader(struct hk_device *dev, struct vk_shader_compile_info *info,
       bool task = !(info->flags & VK_SHADER_CREATE_NO_TASK_SHADER_BIT_EXT);
       bool multiview = state && state->mv && state->mv->view_mask;
       bool conservative = hk_may_rasterize_conservative(dev, state);
+
+      /* Without a task shader, the hardware variants too, from the shader
+       * before the compute lowering: the mesh program and Metal's
+       * passthrough object program */
+      if (!task && hk_mesh_hw_enabled(dev)) {
+         nir_shader *hw = nir_shader_clone(NULL, nir);
+         struct hk_shader *variant = &obj->variants[HK_MESH_VARIANT_HW];
+
+         if (hk_nir_lower_mesh_hw(hw, &variant->info.mesh_hw,
+                                  &variant->info.uvs)) {
+            result = hk_compile_mesh_hw_variant(dev, pAllocator, info, hw,
+                                                features, variant, sw_stage);
+
+            if (result == VK_SUCCESS) {
+               result = hk_compile_mesh_hw_variant(
+                  dev, pAllocator, info,
+                  hk_build_mesh_hw_passthrough(nir->options), features,
+                  &obj->variants[HK_MESH_VARIANT_HW_OBJECT], sw_stage);
+            }
+
+            if (result != VK_SUCCESS) {
+               hk_api_shader_destroy(&dev->vk, &obj->vk, pAllocator);
+               ralloc_free(nir);
+               return result;
+            }
+         } else {
+            ralloc_free(hw);
+         }
+      }
 
       NIR_PASS(_, nir, poly_nir_lower_mesh, task, multiview, &rast,
                conservative ? &rast_cons : NULL, &main_variant->info.mesh);

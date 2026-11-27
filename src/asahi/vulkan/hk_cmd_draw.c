@@ -1820,6 +1820,22 @@ hk_upload_mesh_params(struct hk_cmd_buffer *cmd, uint32_t draw_id,
    return hk_pool_upload(cmd, &params, sizeof(params), 8);
 }
 
+/* A hardware mesh draw's parameters (hk_nir_lower_mesh_hw.c): its grid, read
+ * by the passthrough object program and the mesh program's num_workgroups */
+static uint64_t
+hk_upload_mesh_hw_params(struct hk_cmd_buffer *cmd, uint32_t draw_id,
+                         struct agx_grid grid)
+{
+   assert(!agx_is_indirect(grid) && "hk_mesh_hw_usable");
+
+   struct hk_mesh_hw_params params = {
+      .grid = hk_pool_upload(cmd, grid.count, sizeof(grid.count), 4),
+      .draw_id = draw_id,
+   };
+
+   return hk_pool_upload(cmd, &params, sizeof(params), 8);
+}
+
 static struct hk_api_shader *
 hk_build_meta_shader_locked(struct hk_device *dev, struct hk_internal_key *key,
                             hk_internal_builder_t builder)
@@ -3419,6 +3435,101 @@ hk_g15_stub_fallback(struct hk_cmd_buffer *cmd)
       gfx->draw_id_ptr = hk_pool_upload(cmd, &st->values[n], 4, 4);
 }
 
+/* Metal's barrier before an encoder's first mesh draw (mesh.md: whether the
+ * hardware needs it is not known) */
+#define HK_MESH_HW_BARRIER 0x21000100
+
+/* The mesh state update (mesh.md), 14 words */
+#define HK_MESH_HW_STATE 0x40000D2C
+
+/*
+ * G15: a mesh draw's state in the mesh hardware (hk_nir_lower_mesh_hw.c), as
+ * Metal's (encodeAndEmitMeshRenderState, AGXMetalG15X_M1_272 0x24c426024,
+ * mesh.md): every draw, in place of a vertex shader's VDM state and ahead of
+ * the PPP updates, which are a vertex shader's draw's with the mesh program
+ * as the hardware vertex shader. The dispatch follows (hk_draw_mesh_hw).
+ */
+static uint8_t *
+hk_emit_mesh_hw_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs, uint8_t *out)
+{
+   struct hk_device *dev = hk_cmd_buffer_device(cmd);
+   struct hk_graphics_state *gfx = &cmd->state.gfx;
+   struct hk_api_shader *mesh = gfx->shaders[MESA_SHADER_MESH];
+   struct hk_shader *ms = &mesh->variants[HK_MESH_VARIANT_HW];
+   struct hk_shader *os = &mesh->variants[HK_MESH_VARIANT_HW_OBJECT];
+   const struct hk_mesh_hw_info *mi = &ms->info.mesh_hw;
+
+   hk_reserve_scratch(cmd, cs, ms);
+   hk_reserve_scratch(cmd, cs, os);
+
+   uint64_t mesh_va =
+      dev->dev.shader_base + hk_upload_usc_words(cmd, ms, ms->only_linked);
+   uint64_t object_va =
+      dev->dev.shader_base + hk_upload_usc_words(cmd, os, os->only_linked);
+
+   unsigned slots = ms->info.uvs.size;
+   unsigned max_prims = mi->max_primitives;
+
+   uint32_t w[14] = {
+      HK_MESH_HW_STATE,
+
+      /* The per-vertex slots (the PPP's output size), then the slots + 1, as
+       * in each capture (Metal: plus the per-primitive slots and one more
+       * with a flag of the compiler's reply, not decoded) */
+      slots | ((slots + 1) << 8),
+
+      /* Metal: 0x10, 0x30 with its context's byte +0x7FB0 clear. Here bit 5
+       * is taken for rasterizer discard and bits 1:0 for the provoking
+       * vertex, as in the vertex shader's VDM_STATE_VERTEX_UNKNOWN (guesses:
+       * Metal's captures have neither) */
+      0x10 | (hk_rast_discard(cmd) ? 0x20 : 0) |
+         translate_vdm_vertex(gfx->provoking),
+
+      /* The view count - 1 (inferred; multiview draws as compute) */
+      0,
+
+      /* Per-thread scratch (inferred; G15 runs no spilling program yet) */
+      0,
+
+      /* Words 5-8: the object and mesh entry programs (below) */
+      0, 0, 0, 0,
+
+      /* The payload in KiB: none without a task shader */
+      0,
+
+      (max_prims - 1) | (((max_prims - 1) >> 4) << 16),
+
+      mi->workgroup_size[0] | (mi->workgroup_size[1] << 11) |
+         (mi->workgroup_size[2] << 22),
+
+      /* No per-primitive data */
+      0,
+
+      /* The vertex output in 16 B units, + 1 */
+      DIV_ROUND_UP(mi->max_vertices * slots * 4, 16) + 1,
+   };
+
+   agx_pack(&w[5], VDM_STATE_VERTEX_SHADER_WORD_1_G15, cfg) {
+      cfg.pipeline_hi = agx_g15_pipeline_hi(object_va);
+      cfg.pipeline_lo = agx_g15_pipeline_lo(object_va);
+   }
+
+   agx_pack(&w[7], VDM_STATE_VERTEX_SHADER_WORD_1_G15, cfg) {
+      cfg.pipeline_hi = agx_g15_pipeline_hi(mesh_va);
+      cfg.pipeline_lo = agx_g15_pipeline_lo(mesh_va);
+   }
+
+   if (!cs->mesh_hw_barrier) {
+      uint32_t barrier = HK_MESH_HW_BARRIER;
+      memcpy(out, &barrier, 4);
+      out += 4;
+      cs->mesh_hw_barrier = true;
+   }
+
+   memcpy(out, w, sizeof(w));
+   return out + sizeof(w);
+}
+
 static void
 hk_flush_dynamic_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
                        uint32_t draw_id, struct agx_draw draw)
@@ -3943,7 +4054,11 @@ hk_flush_dynamic_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
       gfx->descriptors.root_dirty = true;
    }
 
-   if (mesh) {
+   if (mesh && gfx->mesh_hw) {
+      gfx->descriptors.root.draw.mesh_params =
+         hk_upload_mesh_hw_params(cmd, draw_id, draw.b);
+      gfx->descriptors.root_dirty = true;
+   } else if (mesh) {
       gfx->descriptors.root.draw.mesh_params =
          hk_upload_mesh_params(cmd, draw_id, draw.b);
 
@@ -3980,10 +4095,13 @@ hk_flush_dynamic_state(struct hk_cmd_buffer *cmd, struct hk_cs *cs,
    /* Hardware dynamic state must be deferred until after the root and fast
     * linking, since it will use the root address and the linked shaders.
     */
-   if ((gfx->dirty & (HK_DIRTY_PROVOKING | HK_DIRTY_VARYINGS)) ||
-       IS_DIRTY(RS_RASTERIZER_DISCARD_ENABLE) || linked_vs_dirty || vgt_dirty ||
-       gfx->descriptors.root_dirty || gfx->draw_id_ptr || gfx->draw_params ||
-       gfx->g15_stub.active) {
+   if (mesh && gfx->mesh_hw) {
+      /* A hardware mesh draw's own state, every draw */
+      out = hk_emit_mesh_hw_state(cmd, cs, out);
+   } else if ((gfx->dirty & (HK_DIRTY_PROVOKING | HK_DIRTY_VARYINGS)) ||
+              IS_DIRTY(RS_RASTERIZER_DISCARD_ENABLE) || linked_vs_dirty ||
+              vgt_dirty || gfx->descriptors.root_dirty || gfx->draw_id_ptr ||
+              gfx->draw_params || gfx->g15_stub.active) {
 
       /* TODO: Do less often? */
       hk_reserve_scratch(cmd, cs, hw_vs);
@@ -4189,6 +4307,46 @@ hk_rast_conservative(struct hk_cmd_buffer *cmd)
           u_reduced_prim(prim) == MESA_PRIM_TRIANGLES && !hk_rast_discard(cmd);
 }
 
+/*
+ * Whether a mesh draw runs in G15's mesh hardware (hk_nir_lower_mesh_hw.c):
+ * its variants compiled (a mesh shader without a task shader, which the path
+ * covers, unless HK_PERFTEST=swmesh), and none of what it does not cover:
+ * conservative rasterization (the compute path's rasterization shader widens
+ * the triangles), multiview (the view count is presumably the state's third
+ * word, not verified), an indirect grid or one past what an object
+ * threadgroup launches (HK_MESH_HW_MAX_CHILDREN), and the queries the compute
+ * path counts after its mesh stage (hk_mesh_queries). Conditional rendering
+ * makes a draw's grid indirect (hk_CmdDrawMeshTasksEXT).
+ */
+static bool
+hk_mesh_hw_usable(struct hk_cmd_buffer *cmd, bool conservative,
+                  struct agx_grid grid)
+{
+   struct hk_device *dev = hk_cmd_buffer_device(cmd);
+   struct hk_graphics_state *gfx = &cmd->state.gfx;
+   struct hk_api_shader *mesh = gfx->shaders[MESA_SHADER_MESH];
+
+   /* A shader binary from a run under swmesh keeps no variants */
+   if (!(dev->perftest & HK_PERF_HWMESH) || gfx->shaders[MESA_SHADER_TASK] ||
+       !mesh->variants[HK_MESH_VARIANT_HW].code_size ||
+       !mesh->variants[HK_MESH_VARIANT_HW_OBJECT].code_size)
+      return false;
+
+   if (conservative || gfx->render.view_mask || agx_is_indirect(grid) ||
+       (uint64_t)grid.count[0] * grid.count[1] * grid.count[2] >
+          HK_MESH_HW_MAX_CHILDREN)
+      return false;
+
+   const VkQueryPipelineStatisticFlags counted =
+      VK_QUERY_PIPELINE_STATISTIC_MESH_SHADER_INVOCATIONS_BIT_EXT |
+      VK_QUERY_PIPELINE_STATISTIC_TASK_SHADER_INVOCATIONS_BIT_EXT |
+      VK_QUERY_PIPELINE_STATISTIC_CLIPPING_INVOCATIONS_BIT |
+      VK_QUERY_PIPELINE_STATISTIC_CLIPPING_PRIMITIVES_BIT;
+
+   return !(gfx->descriptors.root.draw.pipeline_stats_flags & counted) &&
+          !gfx->mesh_prims_query;
+}
+
 static void
 hk_handle_passthrough_gs(struct hk_cmd_buffer *cmd, struct agx_draw draw)
 {
@@ -4213,9 +4371,12 @@ hk_handle_passthrough_gs(struct hk_cmd_buffer *cmd, struct agx_draw draw)
          conservative = false;
       }
 
+      bool hw = hk_mesh_hw_usable(cmd, conservative, draw.b);
+
       /* The variant is per draw: relink when it changes */
-      if (gfx->conservative != conservative) {
+      if (gfx->conservative != conservative || gfx->mesh_hw != hw) {
          gfx->conservative = conservative;
+         gfx->mesh_hw = hw;
          gfx->shaders_dirty |= BITFIELD_BIT(MESA_SHADER_MESH);
       }
 
@@ -5694,9 +5855,42 @@ hk_mesh_queries(struct hk_cmd_buffer *cmd, uint64_t params, bool task,
                        info->record_stride, info->max_primitives);
 }
 
+/* The mesh dispatch (mesh.md): G13's index list header with bit 28 */
+#define HK_MESH_HW_DISPATCH 0x70000000
+
+/* Metal's passthrough object program's threadgroup (mesh.md) */
+#define HK_MESH_HW_PASSTHROUGH_THREADS 3
+
+/*
+ * G15: a mesh draw in the mesh hardware, after its state
+ * (hk_emit_mesh_hw_state): the 7-word dispatch, as Metal's for a mesh
+ * pipeline without an object function (HWGeometryPipelineContext::
+ * drawMeshThreadgroups, AGXMetalG15X_M1_272 0x24c3f72dc): the object grid in
+ * threads, then its threadgroup, one passthrough threadgroup of 3 threads.
+ */
+static void
+hk_draw_mesh_hw(struct hk_cmd_buffer *cmd, struct hk_cs *cs)
+{
+   struct hk_graphics_state *gfx = &cmd->state.gfx;
+   uint32_t *out = cs->current;
+
+   *(out++) = HK_MESH_HW_DISPATCH | (gfx->topology << 8);
+
+   for (unsigned grid = 0; grid < 2; ++grid) {
+      *(out++) = HK_MESH_HW_PASSTHROUGH_THREADS;
+      *(out++) = 1;
+      *(out++) = 1;
+   }
+
+   cs->current = out;
+   cs->stats.calls++;
+   cs->stats.cmds++;
+}
+
 /*
  * Mesh draws run the task and mesh stages as compute before the render pass,
- * then rasterize the mesh workgroups' outputs (poly_nir_lower_mesh.c).
+ * then rasterize the mesh workgroups' outputs (poly_nir_lower_mesh.c), or on
+ * G15 in the mesh hardware (hk_draw_mesh_hw).
  */
 void
 hk_draw_mesh(struct hk_cmd_buffer *cmd, uint32_t draw_id, struct agx_grid grid)
@@ -5716,6 +5910,11 @@ hk_draw_mesh(struct hk_cmd_buffer *cmd, uint32_t draw_id, struct agx_grid grid)
          hk_flush_gfx_state(cmd, draw_id, (struct agx_draw){.b = grid});
       if (!cs)
          return;
+
+      if (gfx->mesh_hw) {
+         hk_draw_mesh_hw(cmd, cs);
+         continue;
+      }
 
       struct hk_cs *ccs =
          hk_cmd_buffer_get_cs_general(cmd, &cmd->current_cs.pre_gfx, true);

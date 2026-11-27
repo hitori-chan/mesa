@@ -1608,3 +1608,7 @@ f7002a00010000000000 spectpr  2, 0, 0
 870454050000         yield    5
 870454020400         yield    r1l
 870454050200         yield    u2h
+570354011434         allocate_uvb ^r0h, r5l
+570354060234         allocate_uvb ^r3l, r0h
+d70654860600         uvst     ^dr6, 0
+d70654931600         uvst     ^dr19, 2

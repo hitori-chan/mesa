@@ -58,6 +58,7 @@ static const struct debug_named_value hk_perf_options[] = {
    {"nobackendcache", HK_PERF_NOBACKENDCACHE, "Compile every stage, not a result kept for the same input"},
    {"nolowercache", HK_PERF_NOLOWERCACHE, "Lower every stage, not a result kept for the same input"},
    {"synccompile", HK_PERF_SYNCCOMPILE, "Compile a pipeline's stages before its creation returns"},
+   {"swmesh",    HK_PERF_SWMESH,   "G15: run every mesh draw as compute, none in the mesh hardware"},
    DEBUG_NAMED_VALUE_END
 };
 /* clang-format on */
@@ -79,6 +80,13 @@ hk_parse_perftest(const struct hk_physical_device *pdev)
       perftest |= HK_PERF_HWTESS;
    else
       perftest &= ~(HK_PERF_HWTESS | HK_PERF_HWTESS32);
+
+   /* G15 runs a mesh shader without a task shader in its mesh hardware, as
+    * Metal (hk_nir_lower_mesh_hw.c) */
+   if (pdev->dev.params.gpu_generation >= 15 && !(perftest & HK_PERF_SWMESH))
+      perftest |= HK_PERF_HWMESH;
+   else
+      perftest &= ~HK_PERF_HWMESH;
 
    return perftest;
 }

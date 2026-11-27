@@ -329,6 +329,13 @@ agx_compact_kernel_info(struct agx_shader_info *info)
  * (in the same steps; the disk cache ignores it). */
 #define AGX_G15_MAX_HALFREGS 188
 
+/* store_uvb_agx's BASE (G15's uvst, mesh.md): the kind in bits 1:0 (0 the
+ * indices, 2 a vertex slot), and a wait for every load group after it */
+#define AGX_UVB_STORE_KIND    0x3
+#define AGX_UVB_STORE_INDICES 0
+#define AGX_UVB_STORE_VERTEX  2
+#define AGX_UVB_STORE_WAIT    0x4
+
 /* G15 (AGX3) building blocks for the entry program, from the compiler's
  * G15 packer (agx_pack3.c). Registers and uniforms are 32-bit indices. */
 struct util_dynarray;

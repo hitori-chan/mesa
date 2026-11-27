@@ -38,6 +38,7 @@ hk_files = files(
   'hk_nir_lower_atomic64.c',
   'hk_nir_lower_descriptors.c',
   'hk_nir_lower_hit_objects.c',
+  'hk_nir_lower_mesh_hw.c',
   'hk_nir_lower_ray_queries.c',
   'hk_nir_ray_tracing.c',
   'hk_nir_ray_tracing.h',

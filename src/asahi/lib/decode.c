@@ -831,6 +831,30 @@ agxdecode_vdm(struct agxdecode_ctx *ctx, const uint8_t *map, uint64_t *link,
    }
 
    case AGX_VDM_BLOCK_TYPE_VDM_STATE_UPDATE: {
+      /* G15: a mesh draw's state (spec/agx-g15c/mesh.md), 14 words */
+      if (params->gpu_generation >= 15 &&
+          !memcmp(map, (uint8_t[4]){0x2c, 0x0d, 0x00, 0x40}, 4)) {
+         uint32_t w[14];
+         memcpy(w, map, sizeof(w));
+
+         fprintf(agxdecode_dump_stream, "Mesh state:");
+         for (unsigned i = 1; i < ARRAY_SIZE(w); ++i)
+            fprintf(agxdecode_dump_stream, " %08x", w[i]);
+         fprintf(agxdecode_dump_stream, "\n");
+
+         agx_unpack(agxdecode_dump_stream, map + 20,
+                    VDM_STATE_VERTEX_SHADER_WORD_1_G15, object);
+         agx_unpack(agxdecode_dump_stream, map + 28,
+                    VDM_STATE_VERTEX_SHADER_WORD_1_G15, mesh);
+         agxdecode_entry_program(
+            ctx, "Object",
+            agx_g15_pipeline_va(object.pipeline_hi, object.pipeline_lo));
+         agxdecode_entry_program(
+            ctx, "Mesh", agx_g15_pipeline_va(mesh.pipeline_hi, mesh.pipeline_lo));
+
+         return sizeof(w);
+      }
+
       size_t length = AGX_VDM_STATE_LENGTH;
       agx_unpack(agxdecode_dump_stream, map, VDM_STATE, hdr);
       map += AGX_VDM_STATE_LENGTH;
@@ -892,6 +916,23 @@ agxdecode_vdm(struct agxdecode_ctx *ctx, const uint8_t *map, uint64_t *link,
    }
 
    case AGX_VDM_BLOCK_TYPE_INDEX_LIST: {
+      /* G15: a mesh dispatch (mesh.md), bit 28; bit 25 the indirect form,
+       * the buffer's VA in two words (not captured) */
+      if (params->gpu_generation >= 15 && (map[3] & BITFIELD_BIT(4))) {
+         bool indirect = map[3] & BITFIELD_BIT(1);
+         unsigned n = indirect ? 6 : 7;
+         uint32_t w[7];
+         memcpy(w, map, n * 4);
+
+         fprintf(agxdecode_dump_stream, "Mesh dispatch%s: primitive %u,",
+                 indirect ? " (indirect)" : "", map[1]);
+         for (unsigned i = 1; i < n; ++i)
+            fprintf(agxdecode_dump_stream, " %08x", w[i]);
+         fprintf(agxdecode_dump_stream, "\n");
+
+         return n * 4;
+      }
+
       size_t length = AGX_INDEX_LIST_LENGTH;
       agx_unpack(agxdecode_dump_stream, map, INDEX_LIST, hdr);
       DUMP_UNPACKED(INDEX_LIST, hdr, "Index List\n");

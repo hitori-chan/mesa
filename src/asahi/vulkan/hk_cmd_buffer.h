@@ -418,6 +418,9 @@ struct hk_graphics_state {
     */
    bool conservative;
 
+   /* Whether the mesh draws run in G15's mesh hardware (hk_mesh_hw_usable) */
+   bool mesh_hw;
+
    struct {
       enum agx_visibility_mode mode;
 
@@ -550,6 +553,9 @@ struct hk_cs {
 
    /* Whether a draw's vertex stage picks a layer */
    bool writes_layer;
+
+   /* Whether a hardware mesh draw went out, after Metal's barrier */
+   bool mesh_hw_barrier;
 
    /* Whether the sampler heap is required. Although we always must maintain the
     * heap for correctness, it's often not necessary since we can push lots of
@@ -768,7 +774,9 @@ hk_bound_hw_vs(struct hk_graphics_state *gfx)
    struct hk_api_shader *gs = gfx->shaders[MESA_SHADER_GEOMETRY];
    struct hk_api_shader *mesh = gfx->shaders[MESA_SHADER_MESH];
 
-   if (mesh && gfx->conservative)
+   if (mesh && gfx->mesh_hw)
+      return &mesh->variants[HK_MESH_VARIANT_HW];
+   else if (mesh && gfx->conservative)
       return &mesh->variants[HK_MESH_VARIANT_RAST_CONSERVATIVE];
    else if (mesh)
       return &mesh->variants[HK_MESH_VARIANT_RAST];
