@@ -641,7 +641,24 @@ hk_UpdateDescriptorSets(VkDevice device, uint32_t descriptorWriteCount,
       const struct hk_descriptor_set_binding_layout *dst_binding_layout =
          &dst->layout->binding[copy->dstBinding];
 
-      if (dst_binding_layout->stride > 0 && src_binding_layout->stride > 0) {
+      if (dst_binding_layout->stride > 0 &&
+          dst_binding_layout->stride == src_binding_layout->stride &&
+          copy->descriptorCount > 0) {
+         /* One stride: the elements are back to back in both sets, the next
+          * binding's included, so the range is one copy. The ranges of one set
+          * do not overlap (VUID-VkCopyDescriptorSet-srcSet-00198).
+          */
+         const uint32_t size =
+            copy->descriptorCount * dst_binding_layout->stride;
+         ASSERTED uint32_t dst_max_size, src_max_size;
+         void *dst_map = desc_ubo_data(dst, copy->dstBinding,
+                                       copy->dstArrayElement, &dst_max_size);
+         const void *src_map = desc_ubo_data(
+            src, copy->srcBinding, copy->srcArrayElement, &src_max_size);
+         assert(size <= dst_max_size && size <= src_max_size);
+         memcpy(dst_map, src_map, size);
+      } else if (dst_binding_layout->stride > 0 &&
+                 src_binding_layout->stride > 0) {
          for (uint32_t j = 0; j < copy->descriptorCount; j++) {
             ASSERTED uint32_t dst_max_size, src_max_size;
             void *dst_map = desc_ubo_data(
