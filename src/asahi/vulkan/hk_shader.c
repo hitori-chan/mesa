@@ -428,7 +428,14 @@ hk_hash_graphics_state(struct vk_physical_device *device,
       struct hk_vs_key key;
       hk_populate_vs_key(&key, state);
       _mesa_blake3_update(&blake3_ctx, &key, sizeof(key));
-   } else if (state && (stages & VK_SHADER_STAGE_FRAGMENT_BIT)) {
+   }
+
+   /* Not only a fragment shader alone: a monolithic pipeline compiles its
+    * stages as one part (vk_pipeline.c), whose fragment shader is built for
+    * this key too (sample shading, a one-sample coverage word), so that two
+    * pipelines of the same shaders and another key do not share it through
+    * the pipeline cache */
+   if (state && (stages & VK_SHADER_STAGE_FRAGMENT_BIT)) {
       struct hk_fs_key key;
       hk_populate_fs_key(&key, state);
       _mesa_blake3_update(&blake3_ctx, &key, sizeof(key));
