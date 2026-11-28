@@ -317,6 +317,20 @@ block_check_for_allowed_instrs(nir_block *block, unsigned *count,
          break;
       }
 
+      case nir_instr_type_tex: {
+         /* Run where the branch would not: a sample that may be speculated and
+          * reads no neighbour lane. A loop's sample waited for in its own
+          * branch holds the next branch's sample back (a search loop's two
+          * directions), so they go into one block to be issued together.
+          */
+         if (!options->tex_ok || !alu_ok || !nir_instr_can_speculate(instr) ||
+             nir_tex_instr_has_implicit_derivative(nir_instr_as_tex(instr)))
+            return false;
+
+         (*count)++;
+         break;
+      }
+
       default:
          return false;
       }
@@ -325,11 +339,25 @@ block_check_for_allowed_instrs(nir_block *block, unsigned *count,
    return true;
 }
 
+static bool
+cf_node_in_loop(nir_cf_node *node)
+{
+   for (nir_cf_node *n = node->parent; n; n = n->parent) {
+      if (n->type == nir_cf_node_loop)
+         return true;
+   }
+
+   return false;
+}
+
 static nir_opt_peephole_select_options
 get_options_for_if(nir_if *if_stmt,
                    const nir_opt_peephole_select_options *options)
 {
    nir_opt_peephole_select_options if_options = *options;
+
+   /* Outside a loop a branch's sample is more often skipped than waited for */
+   if_options.tex_ok = options->tex_ok && cf_node_in_loop(&if_stmt->cf_node);
 
    if (if_stmt->control == nir_selection_control_flatten) {
       /* Override driver defaults */

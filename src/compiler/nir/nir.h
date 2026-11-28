@@ -7289,6 +7289,10 @@ typedef struct nir_opt_peephole_select_options {
    bool indirect_load_ok;
    bool expensive_alu_ok;
    bool discard_ok;
+   /* A speculatable texture instruction with no implicit derivative, in an if
+    * inside a loop, counted as one instruction against the limit.
+    */
+   bool tex_ok;
 } nir_opt_peephole_select_options;
 
 bool nir_opt_peephole_select(nir_shader *shader,

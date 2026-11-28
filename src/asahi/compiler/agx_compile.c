@@ -62,6 +62,7 @@ static const struct debug_named_value agx_debug_options[] = {
    {"nodfdx",    AGX_DBG_NODFDX,    "G15: derivatives as quad swaps and subtractions, not dfdx and dfdy"},
    {"oldbody",   AGX_DBG_OLDBODY,   "(a + #b) * #c as fadd and fmul, not one fma; G15: a sample's coordinates moved into its crs, not written there by the perspective multiply"},
    {"oldcovword", AGX_DBG_OLDCOVWORD, "G15: coverage words built for an unknown sample count, and no Honeykrisp main shader built for its pipeline's one sample"},
+   {"nospectex", AGX_DBG_NOSPECTEX, "G15: a loop's branches keep their samples, not run where the branch would not"},
    DEBUG_NAMED_VALUE_END
 };
 /* clang-format on */
@@ -4926,11 +4927,17 @@ agx_optimize_nir(nir_shader *nir, bool soft_fault, uint16_t *preamble_size,
    /* Peephole select again after setting the speculate flag but before
     * vectorizing. This cleans up short-circuit loads in unrolled loops.
     *
+    * G15: a loop's samples with no implicit derivative leave their branches,
+    * which soft faults make safe, so that a search loop's samples issue
+    * together and are waited for once an iteration, not each in its branch.
+    *
     * XXX: Set indirect_load_ok once we can investigate CTS flakes.
     */
    nir_opt_peephole_select_options peephole_select_options = {
       .limit = 64,
       .expensive_alu_ok = true,
+      .tex_ok = g15 && soft_fault &&
+                !(agx_compiler_debug & AGX_DBG_NOSPECTEX),
    };
    NIR_PASS(_, nir, nir_opt_peephole_select, &peephole_select_options);
 
