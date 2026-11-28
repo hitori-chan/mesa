@@ -107,9 +107,11 @@ TYPE(hk_bvh_instance_node, 8);
 /* The walk loads this much of every node: a box node. */
 #define HK_BVH_NODE_PREFETCH_SIZE 56
 
-/* The walk's stack, for both levels. The builder is LBVH, whose tree over
- * 32-bit Morton codes, ties broken by index, is at most 32 + log2(n) deep, so
- * 61 a level for 2^29 leaves; no tree is flattened.
+/* The walk's stack, for both levels: the farther children not yet walked, at
+ * most one a level of the path. Neither builder bounds a tree's depth under
+ * it (LBVH's over 64-bit Morton codes, ties broken by index, is at most
+ * 63 + log2(n) deep, H-PLOC's has no bound); a push past the end is clamped
+ * into it (hk_build_push_stack). No tree is flattened.
  */
 #define HK_BVH_STACK_SIZE 128
 

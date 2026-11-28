@@ -524,9 +524,9 @@ hk_build_push_stack(nir_builder *b, const struct hk_ray_traversal_args *args,
                     nir_def *node)
 {
    nir_def *stack_ptr = nir_load_deref(b, args->vars.stack_ptr);
-   /* No LBVH tree is deeper than HK_BVH_STACK_SIZE; the clamp keeps a broken
-    * one, or one deeper than a shorter stack (hk_nir_lower_ray_queries.c),
-    * inside it.
+   /* The clamp keeps a walk deeper than the stack (HK_BVH_STACK_SIZE, or a
+    * shorter one, hk_nir_lower_ray_queries.c) inside it: a node lost, never
+    * a write past the array.
     */
    nir_def *slot = nir_umin(b, stack_ptr, nir_imm_int(b, args->stack_size - 1));
    nir_store_deref(b, nir_build_deref_array(b, args->vars.stack, slot), node,

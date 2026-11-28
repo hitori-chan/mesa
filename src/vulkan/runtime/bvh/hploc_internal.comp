@@ -118,7 +118,13 @@ main(void)
          if (parent_index == internal_node_count) {
             is_active = false;
          } else {
-            uint32_t prev_range = atomicExchange(DEREF(INDEX(uint32_t, args.ranges, parent_index)), use_right_parent ? range_start : range_end);
+            /* Acquire and release, as lbvh_generate_ir's count: the second to reach the parent reads the
+             * clusters the first wrote, which a core's cache may hold from before (G15's does) */
+            uint32_t prev_range = atomicExchange(DEREF(INDEX(uint32_t, args.ranges, parent_index)),
+                                                 use_right_parent ? range_start : range_end, gl_ScopeDevice,
+                                                 gl_StorageSemanticsBuffer,
+                                                 gl_SemanticsAcquireRelease | gl_SemanticsMakeAvailable |
+                                                    gl_SemanticsMakeVisible);
             if (prev_range == 0xffffffff) {
                is_active = false;
             } else {
@@ -174,22 +180,25 @@ main(void)
             node_ids[node_prefix_sum] = node_id;
             node_aabbs[node_prefix_sum] = DEREF(REF(vk_ir_node)(OFFSET(args.bvh, ir_id_to_offset(node_id)))).aabb;
          }
+         /* The lanes trade clusters through shared memory: no access moves across another lane's */
+         subgroupMemoryBarrierShared();
 
          while (node_count > (range_is_root ? 1 : cluster_threshold)) {
             node_id = VK_BVH_INVALID_NODE;
             vk_aabb node_aabb = node_aabbs[gl_SubgroupInvocationID];
             if (gl_SubgroupInvocationID < node_count) {
                candidate_infos[gl_SubgroupInvocationID] = 0xffffffff;
+               subgroupMemoryBarrierShared();
                uint32_t best_candidate = 0xffffffff;
                for (uint32_t i = 1; i <= SEARCH_RADIUS; i++) {
                   int32_t index = int32_t(gl_SubgroupInvocationID) - int(i);
-
-                  vk_aabb shared_bounds;
-                  shared_bounds.min = min(node_aabbs[index].min, node_aabb.min);
-                  shared_bounds.max = max(node_aabbs[index].max, node_aabb.max);
-
-                  uint32_t shared_sa = (floatBitsToUint(aabb_half_surface_area(shared_bounds)) << 1u) & (~(SUBGROUP_SIZE - 1));
                   if (index >= 0) {
+                     /* No shared element below the first is read */
+                     vk_aabb shared_bounds;
+                     shared_bounds.min = min(node_aabbs[index].min, node_aabb.min);
+                     shared_bounds.max = max(node_aabbs[index].max, node_aabb.max);
+
+                     uint32_t shared_sa = (floatBitsToUint(aabb_half_surface_area(shared_bounds)) << 1u) & (~(SUBGROUP_SIZE - 1));
                      uint32_t candidate = shared_sa | index;
                      best_candidate = min(best_candidate, candidate);
 
@@ -198,6 +207,7 @@ main(void)
                   }
                }
 
+               subgroupMemoryBarrierShared();
                best_candidate = min(best_candidate, candidate_infos[gl_SubgroupInvocationID]);
                uint32_t best_index = best_candidate & (SUBGROUP_SIZE - 1);
                uint32_t other_node_id = node_ids[best_index];
@@ -239,10 +249,12 @@ main(void)
 
             node_count = subgroupBallotBitCount(subgroupBallot(node_id != VK_BVH_INVALID_NODE));
             uint32_t node_prefix_sum = subgroupBallotExclusiveBitCount(subgroupBallot(node_id != VK_BVH_INVALID_NODE));
+            subgroupMemoryBarrierShared();
             if (node_id != VK_BVH_INVALID_NODE) {
                node_ids[node_prefix_sum] = node_id;
                node_aabbs[node_prefix_sum] = node_aabb;
             }
+            subgroupMemoryBarrierShared();
          }
 
          if (gl_SubgroupInvocationID < min(end - start + 1, cluster_threshold)) {

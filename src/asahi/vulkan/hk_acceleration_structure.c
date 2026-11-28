@@ -43,7 +43,7 @@ static const struct vk_acceleration_structure_build_args hk_build_args = {
    /* G15 stalls a core's other workgroups while one spins: the single
       dispatch's waits can hang */
    .morton_sort_per_step = true,
-   /* LBVH alone: Morton codes over the scene's cube, 21 bits an axis
+   /* Morton codes over the scene's cube, 21 bits an axis
       (hk_get_build_config's 64-bit keys) */
    .morton_cube = true,
 };
@@ -83,22 +83,26 @@ hk_get_as_size(VkDevice device,
                      state->leaf_node_count);
 }
 
-/* LBVH only: PLOC's and H-PLOC's workgroups wait on each other's progress,
- * which G15 does not promise, and LBVH bounds the tree's depth (the walk's
- * stack, HK_BVH_STACK_SIZE).
+/* H-PLOC where the common builder takes PLOC (a top level, a bottom level
+ * built to be traced), LBVH where it takes LBVH (four leaves or fewer, a fast
+ * or updatable build). PLOC's workgroups wait on each other's progress at
+ * every pass, which G15 does not promise; H-PLOC's subgroups climb LBVH's
+ * radix tree, the second to reach a node going on with both halves, as
+ * LBVH's own build does, so none waits. Its clusters merge by surface area,
+ * as PLOC's do, where LBVH splits by the boxes' centres alone.
  *
- * Its Morton codes take 64 bits over the scene's cube (morton_cube): with 8
- * bits an axis, each normalized on its own, a scene long on one axis splits
- * its short axes first, into columns along the long one, and a ray along a
- * column it misses walks every leaf of it before its own hit (the CTS's
- * ray_query.stress: 60,000 triangles up z, 40,000 iterations a ray).
+ * The Morton codes take 64 bits over the scene's cube for both (morton_cube):
+ * with 8 bits an axis, each normalized on its own, a scene long on one axis
+ * splits its short axes first, into columns along the long one, and a ray
+ * along a column it misses walks every leaf of it before its own hit (the
+ * CTS's ray_query.stress: 60,000 triangles up z, 40,000 iterations a ray).
  */
 static void
 hk_get_build_config(VkDevice device,
                     struct vk_acceleration_structure_build_state *state)
 {
-   if (state->config.internal_type != VK_INTERNAL_BUILD_TYPE_UPDATE)
-      state->config.internal_type = VK_INTERNAL_BUILD_TYPE_LBVH;
+   if (state->config.internal_type == VK_INTERNAL_BUILD_TYPE_PLOC)
+      state->config.internal_type = VK_INTERNAL_BUILD_TYPE_HPLOC;
 
    state->config.u64_keys = true;
 }
